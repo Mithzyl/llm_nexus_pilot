@@ -1,0 +1,62 @@
+# Operating system and editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local secrets and environment overrides; examples remain versioned
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python virtual environments and generated files
+.venv/
+venv/
+env/
+apps/api/.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local databases, runtime output, and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs/
+artifacts/
+tmp/
+
+# Node.js and Next.js generated files
+node_modules/
+apps/web/node_modules/
+.next/
+apps/web/.next/
+out/
+coverage/
+.turbo/
+.npm/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local container overrides and persisted service data
+docker-compose.override.yml
+deployments/data/
