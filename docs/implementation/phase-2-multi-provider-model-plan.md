@@ -1,12 +1,13 @@
 # 第二阶段：多供应商模型统一接口实施计划
 
-**文档日期：** 2026 年 7 月 21 日  
-**文档状态：** 待实施  
+**文档日期：** 2026 年 7 月 23 日
+**文档状态：** 已实施
 **前置阶段：** `phase-1-foundation.md`
 
 ## 目标
 
 - 要实现的结果：业务调用方通过同一套请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Google Gemini，并将每次真实请求的状态、token、费用、耗时、错误及原始响应位置写入阶段 1 已有记录。
+- 已扩展结果：OpenAI Chat Completions 风格的本地或第三方服务通过 `openai_compatible` 配置复用通用 codec，不需要新增业务接口。
 - 要实现的结果：先完成 OpenAI 和 DeepSeek 的可运行闭环，再按同一适配器契约接入 Anthropic 和 Gemini；阶段结束时四个适配器均应存在且通过契约测试。
 - 明确不处理：RabbitMQ Worker、任务自动领取、总控与工作模型、工具执行循环、MCP、代码搜索、LangGraph、OpenTelemetry 和前端页面。
 - 明确不处理：供应商自动降级、模型自动选择、多候选答案评分，以及对真实供应商发起默认测试请求。
@@ -90,7 +91,7 @@ response.failed
 - 需要修改：后端依赖与配置，增加四家供应商凭据、允许的基础 URL、统一超时、重试和价格配置。
 - 需要修改：数据库模型与 Alembic 迁移，补足调用重试次数、统一错误类型及必要的幂等标识；不复制已有 token、费用、URI 字段。
 - 需要新增：`packages/models` 独立 Python 包，承担统一类型、供应商协议、适配器注册、错误转换、重试、流式事件归一化和费用计算。
-- 需要修改：FastAPI 增加普通生成和 SSE 流式生成入口，并通过应用服务协调调用记录与对象存储。
+- 需要修改：FastAPI 增加统一 `POST /api/v1/responses` 入口，通过 `stream` 决定普通 JSON 或 SSE，并由应用服务协调调用记录与对象存储。
 - 需要新增：供应商契约测试、服务测试、SSE 测试、超时和重试测试，以及可选的真实供应商冒烟测试入口。
 - 需要修改：README、环境变量示例和当前实施说明。
 - 明确不修改：任务调度状态机、outbox 发布逻辑、工具权限模型、Agent 角色和 Compose 中尚未启用的 RabbitMQ。
@@ -105,16 +106,15 @@ packages/models/
 │   ├── errors.py             # 稳定的平台错误分类
 │   ├── provider.py           # ModelProvider 抽象协议
 │   ├── registry.py           # 供应商名称到适配器的显式登记
-│   ├── retry.py              # 只重试允许重试的暂时性故障
 │   ├── pricing.py            # 基于显式版本价格表估算费用
+│   ├── transport.py          # 通用 HTTP、SSE、超时、重试与物理请求证据
 │   └── providers/
 │       ├── openai.py
-│       ├── deepseek.py
+│       ├── openai_compatible.py # DeepSeek 与可配置兼容服务共用
 │       ├── anthropic.py
 │       └── gemini.py
 └── tests/
-    ├── contract/
-    └── providers/
+    └── test_providers.py
 
 apps/api/src/nexuspilot_api/
 ├── api.py                    # 统一生成和 SSE 路由
@@ -135,8 +135,8 @@ apps/api/src/nexuspilot_api/
 | 5 | 超时、重试和错误转换 | 仅对限流、短暂网络故障和部分 5xx 重试；认证、参数错误和明确不支持不重试 | 超时、退避、最大次数、不可重试错误测试 |
 | 6 | token 与费用估算 | 优先记录供应商返回 usage；费用按带生效日期和币种的显式价格配置计算，未知模型返回 `estimated_cost=null` | 已知/未知模型、缓存 token、舍入边界测试 |
 | 7 | `model_invocation.py` 和数据库迁移 | 调用开始即产生 attempt；成功、失败、超时和断流均写入最终状态；原始内容写入 MinIO | 服务事务测试、迁移升级与 `alembic check` |
-| 8 | FastAPI 普通生成接口 | `POST /api/v1/model/generate` 校验运行和任务后返回统一结果及 `attempt_id` | ASGI 集成测试、鉴权和跨运行 task 拒绝测试 |
-| 9 | FastAPI SSE 接口 | `POST /api/v1/model/generate/stream` 按固定事件协议输出并正确处理断开 | SSE 顺序、结束事件、错误事件、客户端取消测试 |
+| 8 | FastAPI 普通生成接口 | `POST /api/v1/responses` 校验运行和任务后返回统一结果及 `attempt_id` | ASGI 集成测试、鉴权和跨运行 task 拒绝测试 |
+| 9 | FastAPI SSE 接口 | 同一接口设置 `stream=true` 后按固定事件协议输出并正确处理断开 | SSE 顺序、结束事件、错误事件、客户端取消测试 |
 | 10 | 文档与可选真实冒烟测试 | 环境变量、调用示例、供应商能力差异和测试方式可复现 | README 命令审查；仅在显式开关及凭据存在时运行真实测试 |
 
 ## 错误与重试规则
@@ -194,3 +194,22 @@ internal_error
 - 真实供应商测试若未运行，文档明确标为 `NOT_RUN`，不以伪造响应测试代替真实连通性结论。
 - README、`.env.example` 和当前实施文档与最终运行方式一致，不保留相互冲突的阶段 2 描述。
 
+## 实施结果
+
+- `provider` 使用稳定枚举；`model` 保留供应商原始字符串，并由对应 Provider 的可选 allowlist 校验组合。
+- OpenAI 使用 Responses API codec；DeepSeek 使用通用 OpenAI-compatible Chat Completions codec；Anthropic 使用 Messages codec；Gemini 使用 GenerateContent codec。
+- 公共 HTTP 层封装为 `POST /api/v1/responses`，业务方不直接接触任何供应商 payload。
+- `HttpTransport` 统一负责 JSON、SSE、连接超时、HTTP 状态分类和指数退避，Provider 只负责编解码。
+- 每个逻辑调用写入 `llm_attempts`；每个物理网络请求写入 `llm_attempt_retries`。
+- API Key 仅从服务端 `SecretStr` 配置进入认证 Header，不进入公共请求、数据库原始请求或错误响应。
+- 价格不内置可能过期的数字，只读取带供应商/模型键的显式 JSON 配置；未知价格保持 `null`。
+- 未配置凭据的 Provider 不注册，服务仍可启动；调用时返回 `provider_not_configured`。
+- 单元、Provider 契约、SSE、ASGI、迁移一致性和静态检查均为阶段 2 验收项。
+- 真实供应商连通性测试：`NOT_RUN`，本次没有读取用户供应商凭据，也没有产生模型费用。
+
+## 官方接口依据
+
+- [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)
+- [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion)
+- [Anthropic Messages streaming](https://platform.claude.com/docs/en/build-with-claude/streaming)
+- [Gemini GenerateContent](https://ai.google.dev/api/generate-content)

@@ -1,15 +1,22 @@
 """Versioned HTTP routes for phase-one run tracking and artifact persistence."""
 
+from collections.abc import AsyncIterator
 from pathlib import PurePath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.auth import require_api_key
 from nexuspilot_api.config import get_settings
 from nexuspilot_api.database import get_session
+from nexuspilot_api.dependencies import (
+    ModelInvocationServiceDependency,
+    ProviderRegistryDependency,
+)
 from nexuspilot_api.models import LlmArtifact, new_id
+from nexuspilot_api.response_schemas import ResponsesRequest, ResponsesResult
 from nexuspilot_api.schemas import (
     ArtifactRead,
     AttemptCreate,
@@ -35,6 +42,37 @@ from nexuspilot_api.storage import ObjectStorage, get_object_storage
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_key)])
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+@router.get("/providers")
+async def get_providers(registry: ProviderRegistryDependency) -> dict[str, list[str]]:
+    """List provider adapters currently registered from server-side configuration."""
+
+    return {"providers": [name.value for name in registry.registered_names]}
+
+
+@router.post("/responses", response_model=None)
+async def post_response(
+    payload: ResponsesRequest,
+    service: ModelInvocationServiceDependency,
+) -> ResponsesResult | StreamingResponse:
+    """Create a provider-routed response or return normalized SSE when stream is true."""
+
+    if not payload.stream:
+        return await service.generate(payload)
+
+    async def event_source() -> AsyncIterator[str]:
+        """Serialize provider-neutral stream events using the SSE wire format."""
+
+        async for event in service.stream(payload):
+            data = event.model_dump_json()
+            yield f"event: {event.type.value}\ndata: {data}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/users", response_model=UserRead, status_code=status.HTTP_201_CREATED)

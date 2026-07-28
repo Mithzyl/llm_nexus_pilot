@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexuspilot_api.models import (
     LlmArtifact,
     LlmAttempt,
+    LlmAttemptRetry,
     LlmRun,
     LlmTask,
     LlmTaskDependency,
@@ -145,6 +146,23 @@ async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
         .scalars()
         .all()
     )
+    attempt_ids = [attempt.attempt_id for attempt in attempts]
+    retries = (
+        (
+            await session.execute(
+                select(LlmAttemptRetry)
+                .where(LlmAttemptRetry.attempt_id.in_(attempt_ids))
+                .order_by(LlmAttemptRetry.attempt_id, LlmAttemptRetry.attempt_index)
+            )
+        )
+        .scalars()
+        .all()
+        if attempt_ids
+        else []
+    )
+    retries_by_attempt: dict[str, list[LlmAttemptRetry]] = {}
+    for retry in retries:
+        retries_by_attempt.setdefault(retry.attempt_id, []).append(retry)
     artifacts = (
         (
             await session.execute(
@@ -156,4 +174,16 @@ async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
         .scalars()
         .all()
     )
-    return {**run.__dict__, "tasks": tasks, "attempts": attempts, "artifacts": artifacts}
+    attempt_details = [
+        {
+            **attempt.__dict__,
+            "retries": retries_by_attempt.get(attempt.attempt_id, []),
+        }
+        for attempt in attempts
+    ]
+    return {
+        **run.__dict__,
+        "tasks": tasks,
+        "attempts": attempt_details,
+        "artifacts": artifacts,
+    }

@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、拆解任务、执行工具并保存审核证据的 LLM 运行平台。本仓库当前实现规划中的阶段 1 基础服务。
+NexusPilot 是一个统一调用模型、拆解任务、执行工具并保存审核证据的 LLM 运行平台。本仓库当前已完成阶段 1 基础服务和阶段 2 多供应商模型接口。
 
 ## 当前能力
 
@@ -12,8 +12,13 @@ NexusPilot 是一个统一调用模型、拆解任务、执行工具并保存审
 - Alembic MySQL 数据库迁移；
 - MinIO 对象存储客户端和产物上传接口；
 - Docker Compose 本地基础设施定义。
+- OpenAI、DeepSeek、Anthropic 和 Gemini 的独立 Provider codec；
+- 可配置的通用 OpenAI Chat Completions 兼容 Provider；
+- 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
+- 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；
+- 每次物理 HTTP 重试及原始请求/响应的持久化证据。
 
-多供应商模型调用、RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到后续阶段，不在当前服务中伪实现。
+RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到后续阶段，不在当前服务中伪实现。
 
 ## 后端本地启动
 
@@ -33,6 +38,49 @@ API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要
 X-API-Key: .env 中的 NEXUSPILOT_API_KEY
 ```
 
+## 统一 Responses 接口
+
+Provider 只在服务端配置相应凭据后注册。可以通过以下接口查看当前可用 Provider：
+
+```http
+GET /api/v1/providers
+```
+
+普通生成请求：
+
+```json
+{
+  "run_id": "已创建的 run_id",
+  "provider": "deepseek",
+  "model": "供应商实际模型名称",
+  "input": "解释事务隔离级别",
+  "instructions": "回答应简洁且准确",
+  "max_output_tokens": 1000,
+  "idempotency_key": "业务侧唯一请求编号"
+}
+```
+
+同一个接口设置 `"stream": true` 后返回 SSE。公开事件固定为：
+
+```text
+response.started
+response.text.delta
+response.tool_call.delta
+response.usage
+response.completed
+response.failed
+```
+
+除四家内置适配器外，OpenAI Chat Completions 风格的本地或第三方服务可配置为：
+
+```text
+NEXUSPILOT_OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
+NEXUSPILOT_OPENAI_COMPATIBLE_API_KEY=
+NEXUSPILOT_OPENAI_COMPATIBLE_MODELS=example-model
+```
+
+请求时使用 `"provider": "openai_compatible"`。模型 allowlist 留空表示允许该 Provider 下任意非空模型名；生产环境建议显式配置。
+
 运行测试和静态检查：
 
 ```bash
@@ -42,4 +90,4 @@ make api-lint
 
 详细接口和阶段边界见 `docs/implementation/phase-1-foundation.md`。
 
-下一阶段的实施范围、统一模型契约和验收条件见 `docs/implementation/phase-2-multi-provider-model-plan.md`。
+阶段 2 的实现、统一模型契约和验收结果见 `docs/implementation/phase-2-multi-provider-model-plan.md`。

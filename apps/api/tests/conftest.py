@@ -11,7 +11,22 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 os.environ["NEXUSPILOT_API_KEY"] = "test-api-key-long-enough"
 os.environ["NEXUSPILOT_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
+from nexuspilot_models.contracts import (  # noqa: E402
+    ModelRequest,
+    ModelResponse,
+    ProviderName,
+    StreamEvent,
+    StreamEventType,
+    TransportAttempt,
+)
+from nexuspilot_models.pricing import ModelPrice, PriceCatalog  # noqa: E402
+from nexuspilot_models.registry import ProviderRegistry  # noqa: E402
+
 from nexuspilot_api.database import get_session  # noqa: E402
+from nexuspilot_api.dependencies import (  # noqa: E402
+    get_price_catalog,
+    get_provider_registry,
+)
 from nexuspilot_api.main import app  # noqa: E402
 from nexuspilot_api.models import Base  # noqa: E402
 from nexuspilot_api.storage import StoredObject, get_object_storage  # noqa: E402
@@ -33,6 +48,72 @@ class FakeObjectStorage:
         )
 
 
+class FakeProvider:
+    """Return deterministic provider-neutral responses without external network access."""
+
+    name = ProviderName.OPENAI
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Return a completed response containing stable usage and transport evidence."""
+
+        return ModelResponse(
+            text=f"answer for {request.model}",
+            finish_reason="stop",
+            input_tokens=100,
+            output_tokens=20,
+            cached_tokens=10,
+            latency_ms=5,
+            provider_request_id="provider-request-1",
+            raw_response={"id": "provider-request-1", "text": "answer"},
+            transport_attempts=[TransportAttempt(attempt_index=1, status_code=200, latency_ms=5)],
+        )
+
+    async def stream(self, request: ModelRequest):
+        """Yield a complete ordered stream ending with a normalized model response."""
+
+        yield StreamEvent(type=StreamEventType.STARTED, sequence=1)
+        yield StreamEvent(
+            type=StreamEventType.TEXT_DELTA,
+            sequence=2,
+            data={"delta": "streamed answer"},
+        )
+        response = await self.generate(request)
+        response = response.model_copy(update={"text": "streamed answer"})
+        yield StreamEvent(
+            type=StreamEventType.COMPLETED,
+            sequence=3,
+            data={"response": response.model_dump(mode="json")},
+        )
+
+
+def fake_provider_registry() -> ProviderRegistry:
+    """Return a registry containing one fake OpenAI adapter for API tests."""
+
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI,
+        FakeProvider(),
+        allowed_models=frozenset({"test-model"}),
+    )
+    return registry
+
+
+def fake_price_catalog() -> PriceCatalog:
+    """Return deterministic prices so API tests can verify run cost persistence."""
+
+    from decimal import Decimal
+
+    return PriceCatalog(
+        {
+            (ProviderName.OPENAI, "test-model"): ModelPrice(
+                input_per_million=Decimal("10"),
+                output_per_million=Decimal("30"),
+                cached_input_per_million=Decimal("2"),
+            )
+        }
+    )
+
+
 @pytest_asyncio.fixture
 async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
     """Yield an authenticated ASGI client backed by a fresh SQLite database."""
@@ -50,6 +131,8 @@ async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
         await connection.run_sync(Base.metadata.create_all)
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_object_storage] = FakeObjectStorage
+    app.dependency_overrides[get_provider_registry] = fake_provider_registry
+    app.dependency_overrides[get_price_catalog] = fake_price_catalog
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport,

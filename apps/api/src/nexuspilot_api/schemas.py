@@ -131,6 +131,8 @@ class AttemptRead(ApiModel):
     provider: str
     model: str
     request_type: str
+    request_key: str | None
+    retry_count: int
     status: AttemptStatus
     input_tokens: int | None
     output_tokens: int | None
@@ -144,6 +146,20 @@ class AttemptRead(ApiModel):
     error_message: str | None
     started_at: datetime
     completed_at: datetime | None
+    retries: list["AttemptRetryRead"] = Field(default_factory=list)
+
+
+class AttemptRetryRead(ApiModel):
+    """Expose one physical HTTP request made within a logical model attempt."""
+
+    retry_id: str
+    attempt_id: str
+    attempt_index: int
+    status_code: int | None
+    latency_ms: int
+    error_type: str | None
+    error_message: str | None
+    created_at: datetime
 
 
 class ArtifactRead(ApiModel):

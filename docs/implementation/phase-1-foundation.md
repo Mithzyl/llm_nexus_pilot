@@ -27,4 +27,4 @@
 
 多供应商模型接口应在新增的独立 `packages/models` 职责中实现，并通过当前 attempts 和 artifacts 服务保存统一调用记录及原始响应；不要让业务路由直接依赖厂商 SDK。
 
-可执行范围、接口契约、步骤和验收条件已固化在 [`phase-2-multi-provider-model-plan.md`](./phase-2-multi-provider-model-plan.md)。
+阶段 2 已实施，接口契约、Provider 分层、步骤和验收结果记录在 [`phase-2-multi-provider-model-plan.md`](./phase-2-multi-provider-model-plan.md)。

@@ -3,29 +3,66 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from nexuspilot_models.errors import ModelProviderError
 
 from nexuspilot_api.api import router
 from nexuspilot_api.config import get_settings
 from nexuspilot_api.database import engine
+from nexuspilot_api.provider_factory import create_price_catalog, create_provider_registry
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Own process-level resources and dispose database connections on shutdown."""
+    """Create shared provider resources and dispose them with database connections."""
 
-    del app
-    yield
-    await engine.dispose()
+    settings = get_settings()
+    http_client = httpx.AsyncClient(
+        limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
+    )
+    app.state.provider_registry = create_provider_registry(settings, http_client)
+    app.state.price_catalog = create_price_catalog(settings)
+    try:
+        yield
+    finally:
+        await http_client.aclose()
+        await engine.dispose()
 
 
 app = FastAPI(
     title="NexusPilot LLM Platform API",
-    version="0.1.0",
-    description="Phase-one run, task, model-call, and artifact persistence service.",
+    version="0.2.0",
+    description="Provider-neutral Responses API and durable NexusPilot execution records.",
     lifespan=lifespan,
 )
 app.include_router(router)
+
+
+@app.exception_handler(ModelProviderError)
+async def model_provider_error_handler(_request: object, error: ModelProviderError) -> JSONResponse:
+    """Convert provider failures to a stable public error envelope and HTTP status."""
+
+    status_code = {
+        "authentication_error": 502,
+        "invalid_request": 422,
+        "unsupported_capability": 422,
+        "provider_not_configured": 503,
+        "model_not_allowed": 422,
+        "rate_limited": 503,
+        "timeout": 504,
+    }.get(error.error_type, 502)
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "type": error.error_type,
+                "message": error.message,
+                "retryable": error.retryable,
+            }
+        },
+    )
 
 
 @app.get("/health", tags=["system"])
