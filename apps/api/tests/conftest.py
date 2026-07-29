@@ -6,7 +6,11 @@ from pathlib import Path
 
 import httpx
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 os.environ["NEXUSPILOT_API_KEY"] = "test-api-key-long-enough"
 os.environ["NEXUSPILOT_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
@@ -118,25 +122,37 @@ def fake_price_catalog() -> PriceCatalog:
 
 
 @pytest_asyncio.fixture
-async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
-    """Yield an authenticated ASGI client backed by a fresh SQLite database."""
+async def test_session_factory(
+    tmp_path: Path,
+) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Yield a session factory backed by a fresh database and dispose it afterward."""
 
     test_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
+    async with test_engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    yield test_factory
+    await test_engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def client(
+    test_session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Yield an authenticated ASGI client with isolated dependencies."""
+
     async def override_session() -> AsyncIterator[AsyncSession]:
         """Yield an isolated session connected to this test's temporary database."""
 
-        async with test_factory() as session:
+        async with test_session_factory() as session:
             yield session
 
-    async with test_engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_object_storage] = FakeObjectStorage
     app.dependency_overrides[get_provider_registry] = fake_provider_registry
     app.dependency_overrides[get_price_catalog] = fake_price_catalog
-    transport = httpx.ASGITransport(app=app)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(
         transport=transport,
         base_url="http://test",
@@ -144,4 +160,3 @@ async def client(tmp_path: Path) -> AsyncIterator[httpx.AsyncClient]:
     ) as test_client:
         yield test_client
     app.dependency_overrides.clear()
-    await test_engine.dispose()

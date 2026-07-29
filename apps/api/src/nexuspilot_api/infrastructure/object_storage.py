@@ -19,6 +19,10 @@ class StoredObject:
     size_bytes: int
 
 
+class ObjectStorageError(RuntimeError):
+    """Report a safe object-storage failure without exposing endpoint credentials."""
+
+
 class ObjectStorage:
     """Store artifact bytes in a configured MinIO bucket using async-safe wrappers."""
 
@@ -34,18 +38,21 @@ class ObjectStorage:
         )
 
     async def put_bytes(self, object_name: str, content: bytes, content_type: str) -> StoredObject:
-        """Create the bucket when needed, upload bytes, and return verifiable object metadata."""
+        """Upload bytes and return metadata, or raise a credential-safe storage error."""
 
-        await to_thread.run_sync(self._ensure_bucket)
-        await to_thread.run_sync(
-            lambda: self.client.put_object(
-                self.settings.minio_bucket,
-                object_name,
-                io.BytesIO(content),
-                len(content),
-                content_type=content_type,
+        try:
+            await to_thread.run_sync(self._ensure_bucket)
+            await to_thread.run_sync(
+                lambda: self.client.put_object(
+                    self.settings.minio_bucket,
+                    object_name,
+                    io.BytesIO(content),
+                    len(content),
+                    content_type=content_type,
+                )
             )
-        )
+        except Exception as exc:
+            raise ObjectStorageError("Object storage operation failed.") from exc
         digest = hashlib.sha256(content).hexdigest()
         return StoredObject(
             uri=f"minio://{self.settings.minio_bucket}/{object_name}",

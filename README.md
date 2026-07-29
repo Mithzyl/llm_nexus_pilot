@@ -105,6 +105,8 @@ make api-test
 make api-lint
 ```
 
-详细接口和阶段边界见 `docs/implementation/phase-1-foundation.md`。
+项目阶段、质量门禁和当前完成度以 [`platform-roadmap.md`](docs/architecture/platform-roadmap.md) 为准。
 
-阶段 2 的实现、统一模型契约和验收结果见 `docs/implementation/phase-2-multi-provider-model-plan.md`。
+- 阶段 1 基础服务：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
+- 阶段 2 多供应商接口及稳定化：[`phase-2-multi-provider-model-plan.md`](docs/implementation/phase-2-multi-provider-model-plan.md)
+- 阶段 3 RabbitMQ 需求讨论：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)

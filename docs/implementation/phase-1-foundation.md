@@ -1,8 +1,11 @@
 # 第一阶段：基础服务实施说明
 
+**当前状态：** 已完成
+**总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
+
 ## 实施边界
 
-当前完成原规划“阶段 1：基础服务”，提供可持久化的运行、任务、模型调用和产物接口。当前不会请求真实模型，不会发布 RabbitMQ 消息，也不会启动工作模型；相关表只是为后续阶段保留稳定的业务事实结构。
+阶段 1 交付了可持久化的运行、任务、模型调用和产物接口。该阶段交付时不会请求真实模型、发布 RabbitMQ 消息或启动 Worker；模型调用已在后续阶段 2 实现，RabbitMQ 与 Worker 仍未实施。
 
 ## 数据与运行行为
 
@@ -23,8 +26,8 @@
 
 后端虚拟环境位于 `apps/api/.venv`。MySQL 和 MinIO 定义在 `deployments/compose/docker-compose.yml`。当前机器没有 Docker 时，仍可在虚拟环境中运行基于临时 SQLite 和内存对象存储替身的 API 测试，但不能完成真实 MySQL/MinIO 集成验证。
 
-## 下一阶段入口
+## 后续阶段入口
 
-多供应商模型接口应在新增的独立 `packages/models` 职责中实现，并通过当前 attempts 和 artifacts 服务保存统一调用记录及原始响应；不要让业务路由直接依赖厂商 SDK。
+多供应商模型接口已经在独立 `packages/models` 中实现，并通过当前 attempts 和 artifacts 服务保存统一调用记录及原始响应；业务路由不直接依赖厂商 SDK。
 
 阶段 2 已实施，接口契约、Provider 分层、步骤和验收结果记录在 [`phase-2-multi-provider-model-plan.md`](./phase-2-multi-provider-model-plan.md)。

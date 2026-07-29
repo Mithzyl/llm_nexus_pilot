@@ -1,5 +1,6 @@
 """Async SQLAlchemy engine and request-scoped session management."""
 
+import asyncio
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,7 +13,11 @@ session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Yield a request-scoped database session and close it after the request."""
+    """Yield one request session, roll back failures, and always close the session."""
 
     async with session_factory() as session:
-        yield session
+        try:
+            yield session
+        except (Exception, asyncio.CancelledError):
+            await session.rollback()
+            raise

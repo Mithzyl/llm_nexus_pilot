@@ -3,7 +3,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexuspilot_api.infrastructure.object_storage import ObjectStorage
+from nexuspilot_api.infrastructure.object_storage import ObjectStorage, ObjectStorageError
 from nexuspilot_api.models import LlmArtifact, new_id
 from nexuspilot_api.services.lookups import require_run, require_task
 
@@ -43,11 +43,18 @@ async def create_artifact(
     )
     session.add(artifact)
     await session.flush()
-    stored = await storage.put_bytes(
-        f"{run_id}/{artifact.artifact_id}/{filename}",
-        content,
-        content_type,
-    )
+    try:
+        stored = await storage.put_bytes(
+            f"{run_id}/{artifact.artifact_id}/{filename}",
+            content,
+            content_type,
+        )
+    except ObjectStorageError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Object storage unavailable",
+        ) from exc
     artifact.content_hash = stored.content_hash
     artifact.storage_uri = stored.uri
     artifact.size_bytes = stored.size_bytes

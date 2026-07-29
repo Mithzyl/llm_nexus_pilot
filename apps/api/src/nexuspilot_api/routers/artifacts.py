@@ -1,6 +1,6 @@
 """Artifact upload controller."""
 
-from pathlib import PurePath
+from pathlib import PurePosixPath
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
@@ -11,6 +11,13 @@ from nexuspilot_api.schemas.artifacts import ArtifactRead
 from nexuspilot_api.services.artifact_service import create_artifact
 
 router = APIRouter(tags=["artifacts"])
+
+
+def sanitize_upload_filename(filename: str | None) -> str:
+    """Return a basename for POSIX or Windows-style upload paths."""
+
+    normalized = (filename or "artifact.bin").replace("\\", "/")
+    return PurePosixPath(normalized).name or "artifact.bin"
 
 
 @router.post(
@@ -28,7 +35,7 @@ async def post_artifact(
 ) -> ArtifactRead:
     """Read a bounded upload and delegate object and metadata persistence to the service."""
 
-    filename = PurePath(file.filename or "artifact.bin").name
+    filename = sanitize_upload_filename(file.filename)
     max_size = get_settings().max_artifact_size_bytes
     content = await file.read(max_size + 1)
     if len(content) > max_size:

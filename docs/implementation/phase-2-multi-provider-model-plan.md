@@ -1,8 +1,9 @@
 # 第二阶段：多供应商模型统一接口实施计划
 
-**文档日期：** 2026 年 7 月 23 日
-**文档状态：** 已实施
+**文档日期：** 2026 年 7 月 29 日
+**文档状态：** 已实施并完成稳定化测试
 **前置阶段：** `phase-1-foundation.md`
+**总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 目标
 
@@ -226,6 +227,15 @@ internal_error
 - 未配置凭据的 Provider 不注册，服务仍可启动；调用时返回 `provider_not_configured`。
 - 单元、Provider 契约、SSE、ASGI、迁移一致性和静态检查均为阶段 2 验收项。
 - 真实供应商连通性测试：`NOT_RUN`，本次没有读取用户供应商凭据，也没有产生模型费用。
+
+## 2026 年 7 月稳定化结果
+
+- API、Service、ORM、Schema、依赖注入和外部适配已拆分到明确的 MVC 风格职责目录。
+- 当前测试共 43 项，新增覆盖数据库 session 的 yield/rollback/close 生命周期、请求取消回滚、重复身份、缺失资源、非法任务依赖、跨 run attempt、上传路径清理、上传大小限制、对象存储失败回滚与安全错误转换、Provider timeout 和 retry 证据。
+- 资源 Router 有架构测试约束，不能直接导入 ORM Model 或 SQLAlchemy 事务实现。
+- 上传文件名同时清理 POSIX 和 Windows 风格路径片段。
+- `get_session()` 在请求异常时显式 rollback，并由异步上下文保证 session 关闭。
+- RabbitMQ、Worker 和任务自动执行仍未实现，不计入阶段 2 完成范围。
 
 ## 官方接口依据
 
