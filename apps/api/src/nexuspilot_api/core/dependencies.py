@@ -7,9 +7,9 @@ from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexuspilot_api.database import get_session
-from nexuspilot_api.model_invocation import ModelInvocationService
-from nexuspilot_api.storage import ObjectStorage, get_object_storage
+from nexuspilot_api.infrastructure.database import get_session
+from nexuspilot_api.infrastructure.object_storage import ObjectStorage, get_object_storage
+from nexuspilot_api.services.model_response_service import ModelInvocationService
 
 
 def get_provider_registry(request: Request) -> ProviderRegistry:

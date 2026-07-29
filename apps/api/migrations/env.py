@@ -7,7 +7,7 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from nexuspilot_api.config import get_settings
+from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.models import Base
 
 config = context.config

@@ -13,7 +13,7 @@ from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatPr
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
 
-from nexuspilot_api.config import Settings
+from nexuspilot_api.core.config import Settings
 
 
 def create_provider_registry(

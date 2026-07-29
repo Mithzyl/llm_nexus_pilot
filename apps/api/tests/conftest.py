@@ -22,14 +22,17 @@ from nexuspilot_models.contracts import (  # noqa: E402
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog  # noqa: E402
 from nexuspilot_models.registry import ProviderRegistry  # noqa: E402
 
-from nexuspilot_api.database import get_session  # noqa: E402
-from nexuspilot_api.dependencies import (  # noqa: E402
+from nexuspilot_api.core.dependencies import (  # noqa: E402
     get_price_catalog,
     get_provider_registry,
 )
+from nexuspilot_api.infrastructure.database import get_session  # noqa: E402
+from nexuspilot_api.infrastructure.object_storage import (  # noqa: E402
+    StoredObject,
+    get_object_storage,
+)
 from nexuspilot_api.main import app  # noqa: E402
 from nexuspilot_api.models import Base  # noqa: E402
-from nexuspilot_api.storage import StoredObject, get_object_storage  # noqa: E402
 
 
 class FakeObjectStorage:

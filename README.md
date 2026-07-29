@@ -20,6 +20,23 @@ NexusPilot 是一个统一调用模型、拆解任务、执行工具并保存审
 
 RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到后续阶段，不在当前服务中伪实现。
 
+## 后端结构
+
+后端采用按职责分层的 MVC 风格结构。Router 是 HTTP Controller，不直接编写数据库事务；Service 承担业务规则；SQLAlchemy Model 和 Pydantic Schema 分开维护：
+
+```text
+apps/api/src/nexuspilot_api/
+├── main.py                 # 应用创建与顶层资源生命周期
+├── core/                   # 配置、认证、FastAPI 依赖注入
+├── routers/                # 按 users/runs/tasks/attempts/artifacts/responses 拆分的控制器
+├── services/               # 按业务资源拆分的事务与业务逻辑
+├── models/                 # SQLAlchemy 持久化模型
+├── schemas/                # Pydantic HTTP 请求和响应结构
+└── infrastructure/         # 数据库、MinIO、Provider 注册等外部适配
+```
+
+`packages/models` 是独立的模型供应商适配包，不依赖 FastAPI 和平台数据库。新增接口时应在对应资源 Router 和 Service 中扩展，不再向单一聚合路由文件追加所有行为。
+
 ## 后端本地启动
 
 后端必须使用项目虚拟环境：

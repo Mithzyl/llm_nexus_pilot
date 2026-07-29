@@ -117,12 +117,32 @@ packages/models/
     └── test_providers.py
 
 apps/api/src/nexuspilot_api/
-├── api.py                    # 统一生成和 SSE 路由
-├── config.py                 # 凭据、端点、超时及功能开关
-└── model_invocation.py       # 记录 attempt、调用适配器、保存原始内容
+├── main.py                   # FastAPI 应用组装与资源生命周期
+├── core/
+│   ├── config.py             # 凭据、端点、超时及功能开关
+│   ├── security.py           # API 认证
+│   └── dependencies.py       # Provider 与业务服务依赖注入
+├── routers/                  # 按业务资源拆分的 HTTP Controller
+│   ├── responses.py          # 统一生成和 SSE 路由
+│   ├── providers.py          # Provider 发现
+│   ├── users.py
+│   ├── runs.py
+│   ├── tasks.py
+│   ├── attempts.py
+│   └── artifacts.py
+├── services/                 # 事务边界和业务规则
+│   ├── model_response_service.py
+│   ├── user_service.py
+│   ├── run_service.py
+│   ├── task_service.py
+│   ├── attempt_service.py
+│   └── artifact_service.py
+├── models/                   # 按身份、执行、调用和证据拆分的 ORM Model
+├── schemas/                  # 按资源拆分的 Pydantic 请求/响应结构
+└── infrastructure/          # SQLAlchemy、MinIO 和 Provider 组装
 ```
 
-`packages/models` 不直接访问 FastAPI、SQLAlchemy、MySQL 或 MinIO。`apps/api` 负责把独立模型包接入平台事实记录，避免供应商代码反向依赖业务数据库。
+`packages/models` 不直接访问 FastAPI、SQLAlchemy、MySQL 或 MinIO。`routers` 只处理 HTTP 输入输出，`services` 负责业务规则和事务，`models` 负责持久化映射，`infrastructure` 封装外部系统。`apps/api` 通过这些分层把独立模型包接入平台事实记录，避免供应商代码反向依赖业务数据库。
 
 ## 实施步骤
 
@@ -134,7 +154,7 @@ apps/api/src/nexuspilot_api/
 | 4 | Anthropic 与 Gemini 适配器 | 将消息、工具调用、结构化输出和结束原因映射到同一协议 | 与步骤 3 相同的契约测试矩阵 |
 | 5 | 超时、重试和错误转换 | 仅对限流、短暂网络故障和部分 5xx 重试；认证、参数错误和明确不支持不重试 | 超时、退避、最大次数、不可重试错误测试 |
 | 6 | token 与费用估算 | 优先记录供应商返回 usage；费用按带生效日期和币种的显式价格配置计算，未知模型返回 `estimated_cost=null` | 已知/未知模型、缓存 token、舍入边界测试 |
-| 7 | `model_invocation.py` 和数据库迁移 | 调用开始即产生 attempt；成功、失败、超时和断流均写入最终状态；原始内容写入 MinIO | 服务事务测试、迁移升级与 `alembic check` |
+| 7 | `services/model_response_service.py` 和数据库迁移 | 调用开始即产生 attempt；成功、失败、超时和断流均写入最终状态；原始内容写入 MinIO | 服务事务测试、迁移升级与 `alembic check` |
 | 8 | FastAPI 普通生成接口 | `POST /api/v1/responses` 校验运行和任务后返回统一结果及 `attempt_id` | ASGI 集成测试、鉴权和跨运行 task 拒绝测试 |
 | 9 | FastAPI SSE 接口 | 同一接口设置 `stream=true` 后按固定事件协议输出并正确处理断开 | SSE 顺序、结束事件、错误事件、客户端取消测试 |
 | 10 | 文档与可选真实冒烟测试 | 环境变量、调用示例、供应商能力差异和测试方式可复现 | README 命令审查；仅在显式开关及凭据存在时运行真实测试 |

@@ -1,4 +1,4 @@
-"""HTTP contracts for the provider-neutral Responses facade."""
+"""HTTP schemas for the provider-neutral Responses facade."""
 
 from typing import Any, Literal
 

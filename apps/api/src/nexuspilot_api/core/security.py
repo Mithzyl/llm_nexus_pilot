@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import Header, HTTPException, status
 
-from nexuspilot_api.config import get_settings
+from nexuspilot_api.core.config import get_settings
 
 
 async def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:

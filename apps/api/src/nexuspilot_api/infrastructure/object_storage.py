@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from anyio import to_thread
 from minio import Minio
 
-from nexuspilot_api.config import Settings, get_settings
+from nexuspilot_api.core.config import Settings, get_settings
 
 
 @dataclass(frozen=True)
