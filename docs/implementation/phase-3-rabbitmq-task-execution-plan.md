@@ -1,8 +1,10 @@
 # 第三阶段：RabbitMQ 任务执行需求讨论与功能规划
 
-**文档日期：** 2026 年 7 月 29 日
-**文档状态：** 需求评审中，尚未实施
+**文档日期：** 2026 年 7 月 30 日
+**文档状态：** `PAUSED`，保留设计但暂停实施
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
+
+> Phase 1 的 Unit of Work、资源查询、Session/Message 和状态管理完成前，不恢复本阶段开发。
 
 ## 目标
 
@@ -18,6 +20,7 @@
 - 当前 API 创建任务时不会写 outbox，也没有 RabbitMQ 依赖、发布器或 Worker。
 - 当前 `ModelInvocationService` 可以执行统一模型调用，但 `llm_tasks` 尚未定义足以让 Worker 重建模型请求的稳定执行载荷。
 - 当前不能安全声称阶段 3 已开始运行。
+- 当前优先级已调整为完成 Phase 1 数据与控制平面，并继续规划 Phase 2 的 LLM 核心能力单元。
 
 ## 可靠性结论
 

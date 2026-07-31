@@ -1,17 +1,18 @@
-# 第二阶段：多供应商模型统一接口实施计划
+# 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 7 月 29 日
-**文档状态：** 已实施并完成稳定化测试
+**文档日期：** 2026 年 7 月 30 日
+**文档状态：** `PARTIAL`（Model Gateway 已完成，其余核心单元未实施）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 目标
 
-- 要实现的结果：业务调用方通过同一套请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Google Gemini，并将每次真实请求的状态、token、费用、耗时、错误及原始响应位置写入阶段 1 已有记录。
-- 已扩展结果：OpenAI Chat Completions 风格的本地或第三方服务通过 `openai_compatible` 配置复用通用 codec，不需要新增业务接口。
-- 要实现的结果：先完成 OpenAI 和 DeepSeek 的可运行闭环，再按同一适配器契约接入 Anthropic 和 Gemini；阶段结束时四个适配器均应存在且通过契约测试。
+- 提供可独立调用的 Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录和 Evaluation/Guardrail。
+- Agent 只组合这些稳定单元，不在工作流节点中临时实现消息历史、上下文裁剪、记忆检索或知识查询。
+- 业务调用方通过同一请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Gemini 和 OpenAI-compatible 服务。
+- 每次模型调用、上下文构建、记忆读写、知识引用和评估都具有可查询输入来源、结果、耗时和错误。
 - 明确不处理：RabbitMQ Worker、任务自动领取、总控与工作模型、工具执行循环、MCP、代码搜索、LangGraph、OpenTelemetry 和前端页面。
-- 明确不处理：供应商自动降级、模型自动选择、多候选答案评分，以及对真实供应商发起默认测试请求。
+- 明确不处理：自训练模型选择器、默认多候选答案投票，以及对真实供应商发起默认批量测试请求。
 
 ## 当前事实
 
@@ -19,11 +20,95 @@
 - 当前实现：`llm_attempts` 已保存供应商、模型、token、费用、耗时、供应商请求编号、原始请求/响应 URI 和错误；阶段 2 应复用该表，不创建第二套调用记录。
 - 当前实现：`ObjectStorage` 已能保存二进制内容并返回 SHA-256、大小和 `minio://` URI；原始供应商请求和响应应复用该能力。
 - 当前实现：`POST /api/v1/runs/{run_id}/attempts` 是阶段 1 的记录写入接口，不具备模型调用能力。阶段 2 增加统一生成接口后，该接口暂时保留，用于内部迁移和兼容，不作为普通业务调用入口。
+- 已完成：四家 Provider、OpenAI-compatible codec、统一 Responses、SSE、重试、费用与原始响应证据。
+- 未实施：正式 Session/Message、Context Builder、Memory、Knowledge、Prompt Registry、模型能力目录和 Evaluation/Guardrail Service。
+- 当前结论：Model Gateway 已完成不等于 Phase 2 完成，Phase 2 状态必须保持 `PARTIAL`。
 - 当前约束：后端依赖必须安装在 `apps/api/.venv`，测试、迁移和静态检查均从该虚拟环境运行。
 - 当前应以什么为准：用户目标和本计划优先；统一请求/响应结构、MySQL 事实边界和 MinIO 大对象边界以总技术方案为准；具体字段以实际 ORM 模型和迁移为准。
 - 待确认事项：供应商生产模型名称、各环境可用 API Key、代理地址及费用表不写死在本计划中，实施时通过环境配置和独立价格配置提供。
 
-## 统一接口契约
+## 阶段 2 核心能力范围
+
+### Conversation 与 Context
+
+- Conversation Service 读取 Phase 1 的 Session 和 Message，不另建隐藏会话状态。
+- Context Builder 根据 token 预算选择 system instruction、最近消息、历史摘要、记忆、知识引用和工具结果。
+- 每次构建结果记录来源 ID、裁剪原因、token 估算和顺序，便于复现模型输入。
+- Context 生成与 Provider 调用分离，可以单独测试和预览。
+- 长对话必须支持摘要和分段，不允许无限追加完整历史。
+
+### Memory
+
+Memory 是独立能力，不是 Agent 工作流内部的临时字典。至少提供：
+
+```text
+Memory Store
+Memory Writer
+Memory Retriever
+Memory Ranker
+Memory Compactor
+Memory Policy
+```
+
+至少区分：
+
+- 短期工作记忆；
+- Session 情节记忆；
+- 用户事实与偏好；
+- 可复用知识；
+- 执行经验与过程摘要。
+
+建议统一字段：
+
+```text
+memory_id
+owner_type
+owner_id
+session_id
+memory_type
+content_text 或 content_uri
+source_message_ids
+importance
+confidence
+created_at
+updated_at
+last_accessed_at
+expires_at
+supersedes_memory_id
+```
+
+必须定义：
+
+- 哪些内容允许写入长期记忆；
+- 如何保留消息和工具结果来源；
+- 冲突事实如何替换而不是并存注入；
+- 过期、遗忘、压缩和用户删除；
+- 如何避免把模型推测直接固化成事实；
+- 检索结果如何按权限、相关度、时效和 token 预算排序；
+- 用户如何查看、纠正和删除自己的记忆。
+
+### Knowledge
+
+- 文档登记、分块、内容哈希、来源 URI、版本和访问范围必须独立建模。
+- Retrieval 返回内容片段时必须同时返回来源和定位证据。
+- 第一版可以使用结构化过滤与全文检索；没有事实依据时不强制引入向量数据库。
+- Knowledge 与 Memory 分开：Knowledge 表达外部资料，Memory 表达用户或执行过程中的长期状态。
+
+### Prompt 与模型能力目录
+
+- Prompt Template 具有名称、版本、用途、变量 Schema、启用状态和变更记录。
+- Model Catalog 记录 provider/model 的 context window、工具、结构化输出、视觉、缓存和流式能力。
+- 路由策略只读取能力和显式配置，不根据模型名称硬编码业务分支。
+- Prompt 渲染与模型调用分离，渲染结果可单独测试。
+
+### Evaluation 与 Guardrail
+
+- 确定性 Schema、引用完整性、长度和安全检查优先于模型评分。
+- 重要结果可以调用独立 evaluator，但必须保存评估输入、规则版本、结论和证据。
+- Guardrail 失败必须返回明确类型，不以删除用户参数后继续请求来伪造成功。
+- Evaluation 单元可以独立调用，不依赖完整 Agent 工作流。
+
+## Model Gateway：统一接口契约（已完成）
 
 ### 模型请求
 
@@ -87,7 +172,7 @@ response.failed
 
 每个事件至少携带 `attempt_id` 和单调递增的 `sequence`。正常结束、供应商错误、超时、客户端断开都必须结束或更新对应 `llm_attempts`，不能长期保留无法解释的 `started` 状态。
 
-## 实施范围
+## Model Gateway 实施范围（已完成）
 
 - 需要修改：后端依赖与配置，增加四家供应商凭据、允许的基础 URL、统一超时、重试和价格配置。
 - 需要修改：数据库模型与 Alembic 迁移，补足调用重试次数、统一错误类型及必要的幂等标识；不复制已有 token、费用、URI 字段。
@@ -145,7 +230,7 @@ apps/api/src/nexuspilot_api/
 
 `packages/models` 不直接访问 FastAPI、SQLAlchemy、MySQL 或 MinIO。`routers` 只处理 HTTP 输入输出，`services` 负责业务规则和事务，`models` 负责持久化映射，`infrastructure` 封装外部系统。`apps/api` 通过这些分层把独立模型包接入平台事实记录，避免供应商代码反向依赖业务数据库。
 
-## 实施步骤
+## Model Gateway 实施步骤（已完成）
 
 | 步骤 | 修改对象 | 预期结果 | 验证方式 |
 |---|---|---|---|
@@ -197,12 +282,16 @@ internal_error
 - 风险：SSE 客户端断开可能发生在供应商仍输出时；实现必须取消上游请求并最终记录 attempt 状态。
 - 风险：价格会变化；价格配置必须注明来源、生效时间和币种，未知价格不允许按 0 计费。
 - 风险：原始响应可能包含用户敏感内容；只写入受控对象存储，不写普通日志或 OpenTelemetry 属性。
+- 风险：Memory 可能把模型推测固化为长期事实；没有来源、置信度和纠正机制的内容不得自动写入长期记忆。
+- 风险：Context、Memory 和 Knowledge 同时注入可能超出 token 预算或重复内容；必须由统一 Context Builder 排序、去重和裁剪。
+- 风险：不同用户、Session 或项目的记忆和知识可能越权泄露；所有读写必须在查询层验证 owner scope。
 - 需要停止并确认的情况：实施要求使用未提供且无法通过安全配置表达的私有供应商协议。
 - 需要停止并确认的情况：需要执行会产生明显费用的批量真实模型测试。
 - 需要停止并确认的情况：现有 `llm_attempts` 无法表达每次物理重试且必须进行破坏性数据迁移。
 - 需要停止并确认的情况：供应商能力与验收要求冲突，例如指定模型明确不支持工具调用但要求静默兼容。
+- 需要停止并确认的情况：Phase 1 尚未提供 Session、Message、资源归属和删除能力，却要求实现长期 Memory。
 
-## 完成标准
+## Model Gateway 完成标准（已达到）
 
 - OpenAI、DeepSeek、Anthropic 和 Gemini 均实现 `ModelProvider` 契约并通过同一参数化契约测试。
 - 至少 OpenAI 和 DeepSeek 可在配置凭据后通过同一业务接口切换调用。
@@ -236,6 +325,33 @@ internal_error
 - 上传文件名同时清理 POSIX 和 Windows 风格路径片段。
 - `get_session()` 在请求异常时显式 rollback，并由异步上下文保证 session 关闭。
 - RabbitMQ、Worker 和任务自动执行仍未实现，不计入阶段 2 完成范围。
+
+## Phase 2 剩余实施顺序
+
+以下内容仍属于同一个 Phase 2，不拆分为新的阶段编号：
+
+| 顺序 | 能力 | 前置条件 | 验证重点 |
+|---|---|---|---|
+| 1 | Conversation 与 Context Builder | Phase 1 Session/Message 和分页查询完成 | 消息顺序、token 预算、裁剪来源、可复现输入 |
+| 2 | Memory Store 与 Policy | Phase 1 资源归属、查询和删除能力完成 | 来源、权限、纠正、遗忘、冲突和敏感信息 |
+| 3 | Memory Retriever/Ranker/Compactor | Memory Store 契约稳定 | 相关度、时效、去重、token 上限和压缩可追溯 |
+| 4 | Knowledge Store 与 Retrieval | Artifact 和内容读取闭环完成 | 文档版本、分块、引用、权限和更新一致性 |
+| 5 | Prompt Registry 与 Model Catalog | Model Gateway 能力字段确认 | 版本、变量 Schema、能力匹配和禁用策略 |
+| 6 | Evaluation 与 Guardrail | Context、Memory 和 Knowledge 输出契约稳定 | 确定性检查、规则版本、独立评估和错误分类 |
+| 7 | Phase 2 集成验收 | 上述所有能力独立测试通过 | 不通过 Agent 工作流也能完整调用和观测 |
+
+## Phase 2 总体完成标准
+
+- Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录和 Evaluation 均具有独立 Service、Schema 和测试。
+- Session/Message、Memory 和 Knowledge 数据具有正式归属、分页查询、修改或删除策略。
+- Context Builder 可以在固定 token 预算下生成可复现输入，并记录被选中和被裁剪的来源。
+- Memory 写入必须有来源和策略，检索必须有权限、排序、数量和 token 上限。
+- 用户可以查询、纠正和删除自己的长期记忆。
+- Knowledge 检索结果包含稳定引用，文档更新不会静默混用旧版本。
+- Prompt 和模型能力配置具有版本，Agent 不直接硬编码厂商能力差异。
+- Evaluation 与 Guardrail 可以脱离 Agent 单独执行，并保留规则与证据。
+- 全部能力通过单元测试、数据库集成、权限、分页、删除、并发和敏感信息测试。
+- 以上条件未满足前，Phase 2 状态保持 `PARTIAL`。
 
 ## 官方接口依据
 

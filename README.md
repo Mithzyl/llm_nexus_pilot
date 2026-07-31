@@ -1,13 +1,13 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、拆解任务、执行工具并保存审核证据的 LLM 运行平台。本仓库当前已完成阶段 1 基础服务和阶段 2 多供应商模型接口。
+NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务、执行工具并保存审核证据的 LLM 运行平台。当前 Model Gateway 已可运行，但 Phase 1 数据与查询底座、Phase 2 其余 LLM 核心能力仍在完善，Phase 3 已暂停。
 
 ## 当前能力
 
 - FastAPI 健康检查和版本化 REST API；
 - API Key 基础认证；
 - 基础用户身份创建与运行归属校验；
-- 创建并查询运行、任务和模型调用记录；
+- 创建运行、任务和模型调用记录，并通过现有详情接口读取部分历史；完整列表和反向查询仍属于 Phase 1 待办；
 - 保存任务依赖、工具调用、产物、审核结果和 outbox 事件的数据结构；
 - Alembic MySQL 数据库迁移；
 - MinIO 对象存储客户端和产物上传接口；
@@ -107,6 +107,6 @@ make api-lint
 
 项目阶段、质量门禁和当前完成度以 [`platform-roadmap.md`](docs/architecture/platform-roadmap.md) 为准。
 
-- 阶段 1 基础服务：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
-- 阶段 2 多供应商接口及稳定化：[`phase-2-multi-provider-model-plan.md`](docs/implementation/phase-2-multi-provider-model-plan.md)
-- 阶段 3 RabbitMQ 需求讨论：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
+- Phase 1 数据与控制平面：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
+- Phase 2 LLM 核心能力：[`phase-2-llm-core-capabilities.md`](docs/implementation/phase-2-llm-core-capabilities.md)
+- Phase 3 RabbitMQ 规划（暂停）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
