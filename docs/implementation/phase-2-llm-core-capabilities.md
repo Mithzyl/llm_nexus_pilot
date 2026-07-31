@@ -221,8 +221,8 @@ apps/api/src/nexuspilot_api/
 │   ├── user_service.py
 │   ├── run_service.py
 │   ├── task_service.py
-│   ├── attempt_service.py
-│   └── artifact_service.py
+│   ├── model_attempt_service.py
+│   └── run_artifact_service.py
 ├── models/                   # 按身份、执行、调用和证据拆分的 ORM Model
 ├── schemas/                  # 按资源拆分的 Pydantic 请求/响应结构
 └── infrastructure/          # SQLAlchemy、MinIO 和 Provider 组装

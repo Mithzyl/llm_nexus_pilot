@@ -19,7 +19,7 @@ from nexuspilot_api.infrastructure.object_storage import (
     get_object_storage,
 )
 from nexuspilot_api.main import app
-from nexuspilot_api.routers.artifacts import sanitize_upload_filename
+from nexuspilot_api.routers.run_artifacts import sanitize_run_artifact_filename
 
 
 class FailingObjectStorage:
@@ -156,9 +156,9 @@ async def test_attempt_task_must_belong_to_run(client: httpx.AsyncClient) -> Non
 def test_upload_filename_sanitizes_posix_and_windows_paths() -> None:
     """Verify browser-supplied path fragments cannot become object path segments."""
 
-    assert sanitize_upload_filename("../../secret.txt") == "secret.txt"
-    assert sanitize_upload_filename(r"C:\private\secret.txt") == "secret.txt"
-    assert sanitize_upload_filename(None) == "artifact.bin"
+    assert sanitize_run_artifact_filename("../../secret.txt") == "secret.txt"
+    assert sanitize_run_artifact_filename(r"C:\private\secret.txt") == "secret.txt"
+    assert sanitize_run_artifact_filename(None) == "artifact.bin"
 
 
 async def test_artifact_size_limit_rejects_before_storage(
@@ -167,10 +167,10 @@ async def test_artifact_size_limit_rejects_before_storage(
 ) -> None:
     """Verify oversized uploads are rejected without creating artifact metadata."""
 
-    from nexuspilot_api.routers import artifacts
+    from nexuspilot_api.routers import run_artifacts
 
     monkeypatch.setattr(
-        artifacts,
+        run_artifacts,
         "get_settings",
         lambda: SimpleNamespace(max_artifact_size_bytes=4),
     )

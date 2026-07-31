@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 os.environ["NEXUSPILOT_API_KEY"] = "test-api-key-long-enough"
+os.environ["NEXUSPILOT_INTERNAL_API_KEY"] = "test-internal-key-long-enough"
 os.environ["NEXUSPILOT_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 
 from nexuspilot_models.contracts import (  # noqa: E402
@@ -32,6 +33,9 @@ from nexuspilot_api.core.dependencies import (  # noqa: E402
 )
 from nexuspilot_api.infrastructure.database import get_database_session  # noqa: E402
 from nexuspilot_api.infrastructure.object_storage import (  # noqa: E402
+    ObjectContent,
+    ObjectStorageIntegrityError,
+    ObjectStorageNotFoundError,
     StoredObject,
     get_object_storage,
 )
@@ -40,18 +44,44 @@ from nexuspilot_api.models import Base  # noqa: E402
 
 
 class FakeObjectStorage:
-    """Provide deterministic in-memory object metadata without contacting MinIO."""
+    """Provide deterministic in-memory upload and streaming behavior without MinIO."""
+
+    def __init__(self) -> None:
+        """Create an isolated object dictionary for one API client fixture."""
+
+        self.objects: dict[str, tuple[bytes, str]] = {}
 
     async def put_bytes(self, object_name: str, content: bytes, content_type: str) -> StoredObject:
-        """Return stable metadata for uploaded test bytes and preserve no external state."""
+        """Persist test bytes and return stable metadata matching production uploads."""
 
-        del content_type
         import hashlib
 
+        uri = f"memory://test/{object_name}"
+        self.objects[uri] = (content, content_type)
         return StoredObject(
-            uri=f"memory://test/{object_name}",
+            uri=uri,
             content_hash=hashlib.sha256(content).hexdigest(),
             size_bytes=len(content),
+        )
+
+    async def open_object(
+        self,
+        storage_uri: str,
+        *,
+        expected_size_bytes: int | None = None,
+    ) -> ObjectContent:
+        """Return stored test bytes as a lazy single-chunk object stream."""
+
+        stored_object_entry = self.objects.get(storage_uri)
+        if stored_object_entry is None:
+            raise ObjectStorageNotFoundError("Stored object not found.")
+        object_content, content_type = stored_object_entry
+        if expected_size_bytes is not None and len(object_content) != expected_size_bytes:
+            raise ObjectStorageIntegrityError("Stored object size does not match metadata.")
+        return ObjectContent(
+            chunks=iter([object_content]),
+            size_bytes=len(object_content),
+            content_type=content_type,
         )
 
 
@@ -148,8 +178,9 @@ async def client(
         async with test_database_session_factory() as db_session:
             yield db_session
 
+    fake_object_storage = FakeObjectStorage()
     app.dependency_overrides[get_database_session] = override_database_session
-    app.dependency_overrides[get_object_storage] = FakeObjectStorage
+    app.dependency_overrides[get_object_storage] = lambda: fake_object_storage
     app.dependency_overrides[get_provider_registry] = fake_provider_registry
     app.dependency_overrides[get_price_catalog] = fake_price_catalog
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)

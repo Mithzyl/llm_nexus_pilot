@@ -1,4 +1,4 @@
-"""Model-attempt request and response schemas."""
+"""LLM model invocation and provider transport-attempt API schemas."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -9,8 +9,8 @@ from nexuspilot_api.models import AttemptStatus
 from nexuspilot_api.schemas.base import ApiModel
 
 
-class AttemptCreate(BaseModel):
-    """Validate one completed, failed, or in-progress provider call record."""
+class ModelAttemptCreate(BaseModel):
+    """Validate one completed, failed, or in-progress LLM model invocation."""
 
     task_id: str | None = None
     provider: str = Field(min_length=1, max_length=64)
@@ -30,8 +30,8 @@ class AttemptCreate(BaseModel):
     completed_at: datetime | None = None
 
 
-class AttemptRetryRead(ApiModel):
-    """Expose one physical HTTP request made within a logical model attempt."""
+class ModelTransportAttemptRead(ApiModel):
+    """Expose one provider HTTP request within a logical LLM model invocation."""
 
     retry_id: str
     attempt_id: str
@@ -43,8 +43,8 @@ class AttemptRetryRead(ApiModel):
     created_at: datetime
 
 
-class AttemptRead(ApiModel):
-    """Expose immutable accounting and diagnostic data for a model call."""
+class ModelAttemptRead(ApiModel):
+    """Expose immutable accounting and diagnostics for an LLM model invocation."""
 
     attempt_id: str
     run_id: str
@@ -67,4 +67,52 @@ class AttemptRead(ApiModel):
     error_message: str | None
     started_at: datetime
     completed_at: datetime | None
-    retries: list[AttemptRetryRead] = Field(default_factory=list)
+    retries: list[ModelTransportAttemptRead] = Field(default_factory=list)
+
+
+class ModelAttemptSummary(ApiModel):
+    """Expose bounded model invocation accounting without raw object locations."""
+
+    attempt_id: str
+    run_id: str
+    task_id: str | None
+    provider: str
+    model: str
+    request_type: str
+    retry_count: int
+    status: AttemptStatus
+    input_tokens: int | None
+    output_tokens: int | None
+    cached_tokens: int | None
+    estimated_cost: Decimal | None
+    latency_ms: int | None
+    error_code: str | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
+class ModelAttemptDetail(ModelAttemptSummary):
+    """Expose safe model invocation diagnostics without internal storage URIs."""
+
+    request_key: str | None
+    provider_request_id: str | None
+    error_message_preview: str | None
+    has_raw_request: bool
+    has_raw_response: bool
+
+
+class ModelTransportAttemptSummary(ApiModel):
+    """Expose one provider HTTP transport attempt with a bounded error preview."""
+
+    retry_id: str
+    attempt_id: str
+    attempt_index: int
+    status_code: int | None
+    latency_ms: int
+    error_type: str | None
+    error_message_preview: str | None
+    created_at: datetime
+
+
+class ModelTransportAttemptDetail(ModelTransportAttemptSummary):
+    """Expose the safe public representation of one provider transport attempt."""

@@ -1,4 +1,4 @@
-"""Logical model-attempt and physical retry persistence models."""
+"""LLM model invocation and provider HTTP transport-attempt persistence models."""
 
 from datetime import datetime
 from decimal import Decimal
@@ -16,15 +16,31 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, new_id
+from nexuspilot_api.models.base import Base, new_id, utc_now
 from nexuspilot_api.models.enums import AttemptStatus
 
 
-class LlmAttempt(Base):
-    """Record one logical model request including cost, latency, and failure data."""
+class LlmModelAttempt(Base):
+    """Record one logical LLM model invocation with cost, latency, and failure data."""
 
     __tablename__ = "llm_attempts"
-    __table_args__ = (Index("ix_attempt_run_task", "run_id", "task_id"),)
+    __table_args__ = (
+        Index("ix_attempt_run_task", "run_id", "task_id"),
+        Index(
+            "ix_attempt_run_status_started_id",
+            "run_id",
+            "status",
+            "started_at",
+            "attempt_id",
+        ),
+        Index(
+            "ix_attempt_task_status_started_id",
+            "task_id",
+            "status",
+            "started_at",
+            "attempt_id",
+        ),
+    )
 
     attempt_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     run_id: Mapped[str] = mapped_column(ForeignKey("llm_runs.run_id", ondelete="CASCADE"))
@@ -47,12 +63,16 @@ class LlmAttempt(Base):
     raw_response_uri: Mapped[str | None] = mapped_column(String(1024))
     error_code: Mapped[str | None] = mapped_column(String(128))
     error_message: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class LlmAttemptRetry(Base):
-    """Record one physical HTTP request belonging to a logical model attempt."""
+class LlmModelTransportAttempt(Base):
+    """Record one provider HTTP request belonging to an LLM model invocation."""
 
     __tablename__ = "llm_attempt_retries"
     __table_args__ = (UniqueConstraint("attempt_id", "attempt_index"),)
@@ -66,4 +86,8 @@ class LlmAttemptRetry(Base):
     latency_ms: Mapped[int]
     error_type: Mapped[str | None] = mapped_column(String(128))
     error_message: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+    )

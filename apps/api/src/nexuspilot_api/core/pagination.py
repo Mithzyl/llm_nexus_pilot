@@ -186,10 +186,13 @@ class CursorCodec:
 
     @staticmethod
     def _decode_bytes(value: str) -> bytes:
-        """Decode URL-safe base64 after restoring required padding."""
+        """Decode canonical URL-safe base64 and reject alternate padded-bit encodings."""
 
         padding = "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode(value + padding)
+        decoded = base64.urlsafe_b64decode(value + padding)
+        if CursorCodec._encode_bytes(decoded) != value:
+            raise InvalidCursorError
+        return decoded
 
 
 def database_query_fingerprint(resource_name: str, filters: dict[str, object]) -> str:

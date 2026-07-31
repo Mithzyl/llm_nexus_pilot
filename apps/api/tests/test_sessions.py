@@ -104,6 +104,44 @@ async def test_session_list_uses_signed_cursor_without_duplicates(
     assert tampered.status_code == 422
 
 
+async def test_session_cursor_is_bound_to_list_filters(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a conversation cursor cannot be replayed under different list filters."""
+
+    await create_user(client, "session-filter-owner-a")
+    await create_user(client, "session-filter-owner-b")
+    for title in ["One", "Two"]:
+        await create_session(client, "session-filter-owner-a", title)
+    first_page = (
+        await client.get(
+            "/api/v1/sessions",
+            params={"user_id": "session-filter-owner-a", "limit": 1},
+        )
+    ).json()
+
+    changed_owner = await client.get(
+        "/api/v1/sessions",
+        params={
+            "user_id": "session-filter-owner-b",
+            "cursor": first_page["next_cursor"],
+        },
+    )
+    changed_status = await client.get(
+        "/api/v1/sessions",
+        params={
+            "user_id": "session-filter-owner-a",
+            "status": "archived",
+            "cursor": first_page["next_cursor"],
+        },
+    )
+
+    assert changed_owner.status_code == 422
+    assert changed_owner.json() == {"detail": "Invalid pagination cursor"}
+    assert changed_status.status_code == 422
+    assert changed_status.json() == {"detail": "Invalid pagination cursor"}
+
+
 async def test_messages_are_immutable_and_sequence_paginated(
     client: httpx.AsyncClient,
 ) -> None:

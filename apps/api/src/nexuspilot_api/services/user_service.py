@@ -7,8 +7,16 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
-from nexuspilot_api.core.pagination import CursorCodec, DatabasePaginationKey
+from nexuspilot_api.core.errors import (
+    InvalidCursorError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
+from nexuspilot_api.core.pagination import (
+    CursorCodec,
+    DatabaseQueryPaginationKey,
+    database_query_fingerprint,
+)
 from nexuspilot_api.models import User
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.schemas.users import UserCreate, UserRead, UserUpdate
@@ -19,7 +27,7 @@ class UserDatabasePage:
     """Contain one user query page and its next database pagination key."""
 
     items: list[User]
-    next_database_key: DatabasePaginationKey | None
+    next_database_key: DatabaseQueryPaginationKey | None
 
 
 async def create_user(db_session: AsyncSession, payload: UserCreate) -> User:
@@ -57,15 +65,22 @@ async def list_users(
 ) -> CursorPage[UserRead]:
     """Return a stable signed-cursor page of optionally filtered users."""
 
-    after_database_key = codec.decode(cursor) if cursor else None
+    query_fingerprint = database_query_fingerprint(
+        "users",
+        {"is_active": is_active},
+    )
+    after_database_key = codec.decode_query(cursor) if cursor else None
+    if after_database_key and after_database_key.query_fingerprint != query_fingerprint:
+        raise InvalidCursorError
     page = await _query_user_database_page(
         db_session,
         is_active=is_active,
         after_database_key=after_database_key,
+        query_fingerprint=query_fingerprint,
         limit=limit,
     )
     next_cursor = (
-        codec.encode(page.next_database_key) if page.next_database_key else None
+        codec.encode_query(page.next_database_key) if page.next_database_key else None
     )
     return CursorPage[UserRead](
         items=[UserRead.model_validate(user) for user in page.items],
@@ -94,7 +109,8 @@ async def _query_user_database_page(
     db_session: AsyncSession,
     *,
     is_active: bool | None,
-    after_database_key: DatabasePaginationKey | None,
+    after_database_key: DatabaseQueryPaginationKey | None,
+    query_fingerprint: str,
     limit: int,
 ) -> UserDatabasePage:
     """Query one ordered user page after an optional database pagination key."""
@@ -120,8 +136,9 @@ async def _query_user_database_page(
     next_database_key = None
     if has_more and items:
         last_user = items[-1]
-        next_database_key = DatabasePaginationKey(
+        next_database_key = DatabaseQueryPaginationKey(
             created_at=last_user.created_at,
             identifier=last_user.user_id,
+            query_fingerprint=query_fingerprint,
         )
     return UserDatabasePage(items=items, next_database_key=next_database_key)

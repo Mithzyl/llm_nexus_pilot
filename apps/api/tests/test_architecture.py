@@ -5,10 +5,11 @@ from pathlib import Path
 import pytest
 
 from nexuspilot_api.routers import (
-    artifacts,
-    attempts,
+    internal_audit,
+    model_attempts,
     providers,
     responses,
+    run_artifacts,
     runs,
     sessions,
     tasks,
@@ -44,8 +45,36 @@ PACKAGE_ROOT = Path(__file__).parents[1] / "src" / "nexuspilot_api"
                 "/tasks/{task_id}/retry",
             },
         ),
-        (attempts.router, {"/runs/{run_id}/attempts"}),
-        (artifacts.router, {"/runs/{run_id}/artifacts"}),
+        (
+            model_attempts.router,
+            {
+                "/runs/{run_id}/attempts",
+                "/attempts",
+                "/attempts/{attempt_id}",
+                "/attempts/{attempt_id}/retries",
+                "/attempt-retries/{retry_id}",
+            },
+        ),
+        (
+            run_artifacts.router,
+            {
+                "/runs/{run_id}/artifacts",
+                "/artifacts",
+                "/artifacts/{artifact_id}",
+                "/artifacts/{artifact_id}/content",
+            },
+        ),
+        (
+            internal_audit.router,
+            {
+                "/internal/tool-calls",
+                "/internal/tool-calls/{tool_call_id}",
+                "/internal/evaluations",
+                "/internal/evaluations/{evaluation_id}",
+                "/internal/outbox-events",
+                "/internal/outbox-events/{event_id}",
+            },
+        ),
     ],
 )
 def test_each_resource_owns_its_routes(router: object, expected_paths: set[str]) -> None:

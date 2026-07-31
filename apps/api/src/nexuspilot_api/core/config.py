@@ -1,8 +1,9 @@
 """Core application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,10 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     api_key: str = Field(default="local-development-key-change-me", min_length=16)
+    internal_api_key: SecretStr = Field(
+        default=SecretStr("local-internal-key-change-me"),
+        min_length=16,
+    )
     cursor_signing_key: SecretStr | None = Field(default=None, min_length=16)
     database_url: str = "mysql+aiomysql://nexuspilot:nexuspilot@localhost:3306/nexuspilot"
     minio_endpoint: str = "localhost:9000"
@@ -49,6 +54,14 @@ class Settings(BaseSettings):
     openai_compatible_api_key: SecretStr | None = None
     openai_compatible_base_url: str | None = None
     openai_compatible_models: str = ""
+
+    @model_validator(mode="after")
+    def validate_separate_internal_key(self) -> Self:
+        """Reject configurations that collapse public and internal trust boundaries."""
+
+        if self.api_key == self.internal_api_key.get_secret_value():
+            raise ValueError("internal_api_key must differ from api_key")
+        return self
 
 
 @lru_cache

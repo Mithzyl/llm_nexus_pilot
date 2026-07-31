@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends
 
 from nexuspilot_api.core.security import require_api_key
 from nexuspilot_api.routers import (
-    artifacts,
-    attempts,
+    internal_audit,
+    model_attempts,
     providers,
     responses,
+    run_artifacts,
     runs,
     sessions,
     tasks,
@@ -21,7 +22,8 @@ api_router.include_router(users.router)
 api_router.include_router(sessions.router)
 api_router.include_router(runs.router)
 api_router.include_router(tasks.router)
-api_router.include_router(attempts.router)
-api_router.include_router(artifacts.router)
+api_router.include_router(model_attempts.router)
+api_router.include_router(run_artifacts.router)
+api_router.include_router(internal_audit.router)
 
 __all__ = ["api_router"]

@@ -6,9 +6,9 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 from nexuspilot_api.models import RunStatus
-from nexuspilot_api.schemas.artifacts import ArtifactRead
-from nexuspilot_api.schemas.attempts import AttemptRead
 from nexuspilot_api.schemas.base import ApiModel
+from nexuspilot_api.schemas.model_attempts import ModelAttemptRead
+from nexuspilot_api.schemas.run_artifacts import RunArtifactRead
 from nexuspilot_api.schemas.tasks import TaskRead
 
 
@@ -57,8 +57,11 @@ class RunSummary(ApiModel):
 
 
 class RunDetail(RunRead):
-    """Expose a run together with its current task tree and model attempts."""
+    """Expose a bounded compatibility snapshot and indicate truncated child histories."""
 
     tasks: list[TaskRead]
-    attempts: list[AttemptRead]
-    artifacts: list[ArtifactRead]
+    attempts: list[ModelAttemptRead]
+    artifacts: list[RunArtifactRead]
+    tasks_has_more: bool = False
+    attempts_has_more: bool = False
+    artifacts_has_more: bool = False

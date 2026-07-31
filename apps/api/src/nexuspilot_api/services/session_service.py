@@ -14,8 +14,9 @@ from nexuspilot_api.core.errors import (
 )
 from nexuspilot_api.core.pagination import (
     CursorCodec,
-    DatabasePaginationKey,
+    DatabaseQueryPaginationKey,
     DatabaseSequencePaginationKey,
+    database_query_fingerprint,
 )
 from nexuspilot_api.models import LlmMessage, LlmRun, LlmSession, SessionStatus, User
 from nexuspilot_api.schemas.pagination import CursorPage
@@ -33,7 +34,7 @@ class SessionDatabasePage:
     """Contain one conversation query page and its next database pagination key."""
 
     items: list[LlmSession]
-    next_database_key: DatabasePaginationKey | None
+    next_database_key: DatabaseQueryPaginationKey | None
 
 
 @dataclass(frozen=True)
@@ -77,16 +78,26 @@ async def list_sessions(
 ) -> CursorPage[SessionRead]:
     """Return a signed-cursor page of conversations filtered by owner or status."""
 
-    after_database_key = codec.decode(cursor) if cursor else None
+    query_fingerprint = database_query_fingerprint(
+        "sessions",
+        {
+            "user_id": user_id,
+            "status": session_status.value if session_status else None,
+        },
+    )
+    after_database_key = codec.decode_query(cursor) if cursor else None
+    if after_database_key and after_database_key.query_fingerprint != query_fingerprint:
+        raise InvalidCursorError
     page = await _query_session_database_page(
         db_session,
         user_id=user_id,
         session_status=session_status,
         after_database_key=after_database_key,
+        query_fingerprint=query_fingerprint,
         limit=limit,
     )
     next_cursor = (
-        codec.encode(page.next_database_key) if page.next_database_key else None
+        codec.encode_query(page.next_database_key) if page.next_database_key else None
     )
     return CursorPage[SessionRead](
         items=[SessionRead.model_validate(item) for item in page.items],
@@ -219,7 +230,8 @@ async def _query_session_database_page(
     *,
     user_id: str | None,
     session_status: SessionStatus | None,
-    after_database_key: DatabasePaginationKey | None,
+    after_database_key: DatabaseQueryPaginationKey | None,
+    query_fingerprint: str,
     limit: int,
 ) -> SessionDatabasePage:
     """Query one stable database page of conversations after an optional key."""
@@ -247,9 +259,10 @@ async def _query_session_database_page(
     next_database_key = None
     if has_more and items:
         last_session = items[-1]
-        next_database_key = DatabasePaginationKey(
+        next_database_key = DatabaseQueryPaginationKey(
             created_at=last_session.created_at,
             identifier=last_session.session_id,
+            query_fingerprint=query_fingerprint,
         )
     return SessionDatabasePage(items=items, next_database_key=next_database_key)
 

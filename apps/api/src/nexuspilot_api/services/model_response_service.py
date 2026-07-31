@@ -1,4 +1,4 @@
-"""Coordinate provider calls with durable attempt, retry, cost, and raw-object records."""
+"""Coordinate provider calls with durable model and transport-attempt records."""
 
 import asyncio
 import json
@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import (
     AttemptStatus,
-    LlmAttempt,
-    LlmAttemptRetry,
+    LlmModelAttempt,
+    LlmModelTransportAttempt,
     LlmRun,
     new_id,
 )
@@ -50,34 +50,39 @@ class ModelInvocationService:
         self.storage = storage
 
     async def generate(self, payload: ResponsesRequest) -> ResponsesResult:
-        """Execute a non-streaming response and finalize its durable attempt record."""
+        """Execute a response and finalize its durable LLM model invocation record."""
 
         request = payload.to_model_request()
-        attempt = await self._start_attempt(payload)
+        model_attempt = await self._start_model_attempt(payload)
         try:
             provider = self.registry.resolve(request.provider, request.model)
             response = await provider.generate(request)
             response = self._apply_price(response, request.provider, request.model)
-            await self._complete_attempt(attempt, response)
-            return self._to_result(attempt.attempt_id, request.provider, request.model, response)
+            await self._complete_model_attempt(model_attempt, response)
+            return self._to_result(
+                model_attempt.attempt_id,
+                request.provider,
+                request.model,
+                response,
+            )
         except ModelProviderError as error:
-            await self._fail_attempt(attempt, error)
+            await self._fail_model_attempt(model_attempt, error)
             raise
         except Exception as exc:
             error = ModelProviderError("internal_error", "Model response processing failed.")
-            await self._fail_attempt(attempt, error)
+            await self._fail_model_attempt(model_attempt, error)
             raise error from exc
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
         """Stream normalized events and finalize success, failure, timeout, or cancellation."""
 
         request = payload.to_model_request()
-        attempt = await self._start_attempt(payload)
+        model_attempt = await self._start_model_attempt(payload)
         sequence = 1
         try:
             provider = self.registry.resolve(request.provider, request.model)
             async for event in provider.stream(request):
-                event_data = {**event.data, "attempt_id": attempt.attempt_id}
+                event_data = {**event.data, "attempt_id": model_attempt.attempt_id}
                 if event.type is StreamEventType.COMPLETED:
                     response_data = event_data.get("response")
                     if not isinstance(response_data, dict):
@@ -87,9 +92,9 @@ class ModelInvocationService:
                         )
                     response = ModelResponse.model_validate(response_data)
                     response = self._apply_price(response, request.provider, request.model)
-                    await self._complete_attempt(attempt, response)
+                    await self._complete_model_attempt(model_attempt, response)
                     event_data["response"] = self._to_result(
-                        attempt.attempt_id,
+                        model_attempt.attempt_id,
                         request.provider,
                         request.model,
                         response,
@@ -97,32 +102,32 @@ class ModelInvocationService:
                 sequence = max(sequence, event.sequence)
                 yield event.model_copy(update={"data": event_data})
         except asyncio.CancelledError:
-            await self._cancel_attempt(attempt)
+            await self._cancel_model_attempt(model_attempt)
             raise
         except ModelProviderError as error:
-            await self._fail_attempt(attempt, error)
+            await self._fail_model_attempt(model_attempt, error)
             yield StreamEvent(
                 type=StreamEventType.FAILED,
                 sequence=sequence + 1,
                 data={
-                    "attempt_id": attempt.attempt_id,
+                    "attempt_id": model_attempt.attempt_id,
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
         except Exception:
             error = ModelProviderError("internal_error", "Model stream processing failed.")
-            await self._fail_attempt(attempt, error)
+            await self._fail_model_attempt(model_attempt, error)
             yield StreamEvent(
                 type=StreamEventType.FAILED,
                 sequence=sequence + 1,
                 data={
-                    "attempt_id": attempt.attempt_id,
+                    "attempt_id": model_attempt.attempt_id,
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
 
-    async def _start_attempt(self, payload: ResponsesRequest) -> LlmAttempt:
-        """Validate ownership, prevent duplicate request keys, and persist a started attempt."""
+    async def _start_model_attempt(self, payload: ResponsesRequest) -> LlmModelAttempt:
+        """Validate ownership and persist a started LLM model invocation."""
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -134,14 +139,19 @@ class ModelInvocationService:
                 )
         if payload.idempotency_key:
             existing = await self.db_session.scalar(
-                select(LlmAttempt).where(LlmAttempt.request_key == payload.idempotency_key)
+                select(LlmModelAttempt).where(
+                    LlmModelAttempt.request_key == payload.idempotency_key
+                )
             )
             if existing:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Idempotency key already belongs to attempt {existing.attempt_id}",
+                    detail=(
+                        "Idempotency key already belongs to model attempt "
+                        f"{existing.attempt_id}"
+                    ),
                 )
-        attempt = LlmAttempt(
+        model_attempt = LlmModelAttempt(
             attempt_id=new_id(),
             run_id=payload.run_id,
             task_id=payload.task_id,
@@ -152,104 +162,122 @@ class ModelInvocationService:
             retry_count=0,
             status=AttemptStatus.STARTED,
         )
-        self.db_session.add(attempt)
+        self.db_session.add(model_attempt)
         await self.db_session.commit()
         try:
             raw_request = payload.model_dump(mode="json", exclude={"idempotency_key"})
-            stored = await self.storage.put_bytes(
-                f"{payload.run_id}/{attempt.attempt_id}/raw-request.json",
+            stored_raw_request = await self.storage.put_bytes(
+                f"{payload.run_id}/{model_attempt.attempt_id}/raw-request.json",
                 json.dumps(raw_request, ensure_ascii=False).encode(),
                 "application/json",
             )
-            attempt.raw_request_uri = stored.uri
+            model_attempt.raw_request_uri = stored_raw_request.uri
             await self.db_session.commit()
         except Exception as exc:
-            attempt.status = AttemptStatus.FAILED
-            attempt.error_code = "object_storage_error"
-            attempt.error_message = "Failed to persist the raw model request."
-            attempt.completed_at = datetime.now(UTC)
+            model_attempt.status = AttemptStatus.FAILED
+            model_attempt.error_code = "object_storage_error"
+            model_attempt.error_message = "Failed to persist the raw model request."
+            model_attempt.completed_at = datetime.now(UTC)
             await self.db_session.commit()
             raise ModelProviderError(
                 "internal_error",
                 "Failed to persist the raw model request.",
             ) from exc
-        return attempt
+        return model_attempt
 
-    async def _complete_attempt(self, attempt: LlmAttempt, response: ModelResponse) -> None:
+    async def _complete_model_attempt(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+    ) -> None:
         """Persist raw response, physical attempts, accounting, and completed state atomically."""
 
-        stored = await self.storage.put_bytes(
-            f"{attempt.run_id}/{attempt.attempt_id}/raw-response.json",
+        stored_raw_response = await self.storage.put_bytes(
+            f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-response.json",
             json.dumps(response.raw_response, ensure_ascii=False).encode(),
             "application/json",
         )
-        attempt.status = AttemptStatus.COMPLETED
-        attempt.input_tokens = response.input_tokens
-        attempt.output_tokens = response.output_tokens
-        attempt.cached_tokens = response.cached_tokens
-        attempt.estimated_cost = (
+        model_attempt.status = AttemptStatus.COMPLETED
+        model_attempt.input_tokens = response.input_tokens
+        model_attempt.output_tokens = response.output_tokens
+        model_attempt.cached_tokens = response.cached_tokens
+        model_attempt.estimated_cost = (
             Decimal(response.estimated_cost) if response.estimated_cost is not None else None
         )
-        attempt.latency_ms = response.latency_ms
-        attempt.provider_request_id = response.provider_request_id
-        attempt.raw_response_uri = stored.uri
-        attempt.retry_count = max(0, len(response.transport_attempts) - 1)
-        attempt.completed_at = datetime.now(UTC)
-        self._add_transport_attempts(attempt.attempt_id, response.transport_attempts)
-        if attempt.estimated_cost is not None:
+        model_attempt.latency_ms = response.latency_ms
+        model_attempt.provider_request_id = response.provider_request_id
+        model_attempt.raw_response_uri = stored_raw_response.uri
+        model_attempt.retry_count = max(0, len(response.transport_attempts) - 1)
+        model_attempt.completed_at = datetime.now(UTC)
+        self._add_provider_transport_attempts(
+            model_attempt.attempt_id,
+            response.transport_attempts,
+        )
+        if model_attempt.estimated_cost is not None:
             await self.db_session.execute(
                 update(LlmRun)
-                .where(LlmRun.run_id == attempt.run_id)
-                .values(cost_used=LlmRun.cost_used + attempt.estimated_cost)
+                .where(LlmRun.run_id == model_attempt.run_id)
+                .values(cost_used=LlmRun.cost_used + model_attempt.estimated_cost)
             )
         await self.db_session.commit()
 
-    async def _fail_attempt(self, attempt: LlmAttempt, error: ModelProviderError) -> None:
+    async def _fail_model_attempt(
+        self,
+        model_attempt: LlmModelAttempt,
+        error: ModelProviderError,
+    ) -> None:
         """Persist safe provider failure evidence and all completed physical HTTP attempts."""
 
-        attempt.status = (
+        model_attempt.status = (
             AttemptStatus.TIMED_OUT if error.error_type == "timeout" else AttemptStatus.FAILED
         )
-        attempt.error_code = error.error_type
-        attempt.error_message = error.message[:4000]
-        attempt.provider_request_id = error.provider_request_id
-        attempt.retry_count = max(0, len(error.transport_attempts) - 1)
-        attempt.completed_at = datetime.now(UTC)
-        self._add_transport_attempts(attempt.attempt_id, error.transport_attempts)
+        model_attempt.error_code = error.error_type
+        model_attempt.error_message = error.message[:4000]
+        model_attempt.provider_request_id = error.provider_request_id
+        model_attempt.retry_count = max(0, len(error.transport_attempts) - 1)
+        model_attempt.completed_at = datetime.now(UTC)
+        self._add_provider_transport_attempts(
+            model_attempt.attempt_id,
+            error.transport_attempts,
+        )
         if error.raw_error:
             try:
-                stored = await self.storage.put_bytes(
-                    f"{attempt.run_id}/{attempt.attempt_id}/raw-error.json",
+                stored_raw_error = await self.storage.put_bytes(
+                    f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-error.json",
                     json.dumps(error.raw_error, ensure_ascii=False).encode(),
                     "application/json",
                 )
-                attempt.raw_response_uri = stored.uri
+                model_attempt.raw_response_uri = stored_raw_error.uri
             except Exception:
                 pass
         await self.db_session.commit()
 
-    async def _cancel_attempt(self, attempt: LlmAttempt) -> None:
+    async def _cancel_model_attempt(self, model_attempt: LlmModelAttempt) -> None:
         """Mark a client-disconnected stream as cancelled before releasing its database session."""
 
-        attempt.status = AttemptStatus.CANCELLED
-        attempt.error_code = "cancelled"
-        attempt.error_message = "Client disconnected before the stream completed."
-        attempt.completed_at = datetime.now(UTC)
+        model_attempt.status = AttemptStatus.CANCELLED
+        model_attempt.error_code = "cancelled"
+        model_attempt.error_message = "Client disconnected before the stream completed."
+        model_attempt.completed_at = datetime.now(UTC)
         await self.db_session.commit()
 
-    def _add_transport_attempts(self, attempt_id: str, attempts: list) -> None:
-        """Attach physical HTTP attempt traces to the current database transaction."""
+    def _add_provider_transport_attempts(
+        self,
+        model_attempt_id: str,
+        provider_transport_attempts: list,
+    ) -> None:
+        """Attach provider HTTP transport attempts to the database transaction."""
 
         self.db_session.add_all(
-            LlmAttemptRetry(
-                attempt_id=attempt_id,
-                attempt_index=item.attempt_index,
-                status_code=item.status_code,
-                latency_ms=item.latency_ms,
-                error_type=item.error_type,
-                error_message=item.error_message,
+            LlmModelTransportAttempt(
+                attempt_id=model_attempt_id,
+                attempt_index=provider_transport_attempt.attempt_index,
+                status_code=provider_transport_attempt.status_code,
+                latency_ms=provider_transport_attempt.latency_ms,
+                error_type=provider_transport_attempt.error_type,
+                error_message=provider_transport_attempt.error_message,
             )
-            for item in attempts
+            for provider_transport_attempt in provider_transport_attempts
         )
 
     def _apply_price(

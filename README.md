@@ -1,17 +1,20 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务、执行工具并保存审核证据的 LLM 运行平台。当前 Model Gateway 已可运行，但 Phase 1 数据与查询底座、Phase 2 其余 LLM 核心能力仍在完善，Phase 3 已暂停。
+NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务、执行工具并保存审核证据的 LLM 运行平台。Phase 1 数据与控制平面已经完成；Model Gateway 已可运行，Phase 2 其余 LLM 核心能力仍待建设，Phase 3 继续暂停。
 
 ## 当前能力
 
 - FastAPI 健康检查和版本化 REST API；
 - API Key 基础认证；
-- 受信 API 调用方可以创建、查询、分页筛选和受限更新用户及会话；
+- 受信 API 调用方可以创建、查询、分页筛选和受限更新用户及会话；分页 cursor 与完整筛选条件绑定；
 - 可以追加不可变会话消息，按数据库分配的序号分页读取，并验证 Message、Run 与 Session 归属；
-- Run 和 Task 支持独立签名 cursor 分页、归属与状态过滤；列表只返回有界预览；
+- Run 和 Task 支持独立签名 cursor 分页、归属与状态过滤；列表只返回有界预览，Run 兼容聚合详情对每类子资源最多返回 100 条并明确标记是否还有更多；
 - Run/Task 取消和 Task 重试经过状态机保护，运行中取消及重试请求与 outbox 事实原子提交；
+- Attempt 支持按 Run/Task、Provider、Model、状态和时间独立分页，物理请求 Retry 可按 Attempt 顺序查询；
+- Artifact 支持元数据独立分页和受控流式内容读取，查询响应不暴露 MinIO 内部对象 URI；
+- Model Tool Call、Task Evaluation 和 Outbox Event 提供双密钥内部分页、归属校验和脱敏详情；
 - 基础用户身份创建与运行归属校验；
-- 创建运行、任务和模型调用记录，并通过现有详情接口读取部分历史；完整列表和反向查询仍属于 Phase 1 待办；
+- 创建运行、任务和模型调用记录，并通过独立详情和分页接口读取执行历史；
 - 保存任务依赖、工具调用、产物、审核结果和 outbox 事件的数据结构；
 - Alembic MySQL 数据库迁移；
 - MinIO 对象存储客户端和产物上传接口；
@@ -32,7 +35,7 @@ RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到�
 apps/api/src/nexuspilot_api/
 ├── main.py                 # 应用创建与顶层资源生命周期
 ├── core/                   # 配置、认证、FastAPI 依赖注入
-├── routers/                # 按 users/sessions/runs/tasks/attempts/artifacts/responses 拆分的控制器
+├── routers/                # 按 users/sessions/runs/tasks/model_attempts/run_artifacts 拆分控制器
 ├── services/               # 按业务资源拆分的事务与业务逻辑
 ├── models/                 # SQLAlchemy 持久化模型
 ├── schemas/                # Pydantic HTTP 请求和响应结构
@@ -73,6 +76,14 @@ API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要
 ```text
 X-API-Key: .env 中的 NEXUSPILOT_API_KEY
 ```
+
+`/api/v1/internal/*` 审计接口还必须同时携带：
+
+```text
+X-Internal-API-Key: .env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
+```
+
+公共和内部密钥必须不同，否则应用配置校验失败。
 
 分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。
 

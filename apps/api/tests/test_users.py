@@ -97,6 +97,27 @@ async def test_user_list_filters_active_state(client: httpx.AsyncClient) -> None
     assert [item["user_id"] for item in response.json()["items"]] == ["inactive-user"]
 
 
+async def test_user_cursor_is_bound_to_active_filter(client: httpx.AsyncClient) -> None:
+    """Verify a user cursor cannot be replayed under a different active-state filter."""
+
+    for user_id in ["active-cursor-a", "active-cursor-b"]:
+        await create_user(client, user_id)
+    first_page = (
+        await client.get(
+            "/api/v1/users",
+            params={"is_active": "true", "limit": 1},
+        )
+    ).json()
+
+    replay = await client.get(
+        "/api/v1/users",
+        params={"is_active": "false", "cursor": first_page["next_cursor"]},
+    )
+
+    assert replay.status_code == 422
+    assert replay.json() == {"detail": "Invalid pagination cursor"}
+
+
 async def test_user_list_rejects_tampered_cursor(client: httpx.AsyncClient) -> None:
     """Verify clients cannot alter cursor positions without invalidating the signature."""
 

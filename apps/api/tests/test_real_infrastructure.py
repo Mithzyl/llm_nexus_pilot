@@ -45,8 +45,29 @@ async def test_real_mysql_schema_and_concurrent_retry() -> None:
             table_names = await connection.run_sync(
                 lambda sync_connection: set(inspect(sync_connection).get_table_names())
             )
+            tool_call_indexes = await connection.run_sync(
+                lambda sync_connection: {
+                    index["name"]
+                    for index in inspect(sync_connection).get_indexes("llm_tool_calls")
+                }
+            )
+            evaluation_indexes = await connection.run_sync(
+                lambda sync_connection: {
+                    index["name"]
+                    for index in inspect(sync_connection).get_indexes("llm_evaluations")
+                }
+            )
+            outbox_indexes = await connection.run_sync(
+                lambda sync_connection: {
+                    index["name"]
+                    for index in inspect(sync_connection).get_indexes("llm_outbox_events")
+                }
+            )
             server_version = connection.dialect.server_version_info
         assert {"users", "llm_runs", "llm_tasks", "llm_outbox_events"} <= table_names
+        assert "ix_tool_attempt_status_started_id" in tool_call_indexes
+        assert "ix_evaluation_run_type_created_id" in evaluation_indexes
+        assert "ix_outbox_status_created_id" in outbox_indexes
         assert server_version and server_version[0] >= 8
 
         async with mysql_session_factory() as db_session:
@@ -140,9 +161,15 @@ async def test_real_minio_bucket_and_object_round_trip() -> None:
         metadata = await to_thread.run_sync(
             lambda: storage.client.stat_object(settings.minio_bucket, object_name)
         )
+        streamed = await storage.open_object(
+            stored.uri,
+            expected_size_bytes=len(content),
+        )
         assert stored.size_bytes == len(content)
         assert metadata.size == len(content)
         assert stored.uri == f"minio://{settings.minio_bucket}/{object_name}"
+        assert streamed.size_bytes == len(content)
+        assert b"".join(streamed.chunks) == content
     finally:
         await to_thread.run_sync(
             lambda: storage.client.remove_object(settings.minio_bucket, object_name)

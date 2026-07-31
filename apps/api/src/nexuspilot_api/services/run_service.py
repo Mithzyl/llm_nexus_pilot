@@ -19,10 +19,10 @@ from nexuspilot_api.core.pagination import (
     database_query_fingerprint,
 )
 from nexuspilot_api.models import (
-    LlmArtifact,
-    LlmAttempt,
-    LlmAttemptRetry,
+    LlmModelAttempt,
+    LlmModelTransportAttempt,
     LlmRun,
+    LlmRunArtifact,
     LlmSession,
     LlmTask,
     RunStatus,
@@ -35,6 +35,8 @@ from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.schemas.runs import RunCreate, RunSummary
 from nexuspilot_api.services.lookups import require_run
 from nexuspilot_api.services.task_service import create_task_control_event
+
+RUN_DETAIL_CHILD_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -79,69 +81,100 @@ async def create_run(db_session: AsyncSession, payload: RunCreate) -> LlmRun:
 
 
 async def get_run_detail(db_session: AsyncSession, run_id: str) -> dict:
-    """Load a run with ordered task, model-attempt, retry, and artifact records."""
+    """Load a Run with bounded child snapshots for the legacy aggregate response.
+
+    Each child collection is capped at ``RUN_DETAIL_CHILD_LIMIT`` and reports whether
+    additional rows exist. Callers must use the dedicated cursor endpoints to read the
+    complete growth history.
+    """
 
     run = await require_run(db_session, run_id)
     tasks = (
         (
             await db_session.execute(
-                select(LlmTask).where(LlmTask.run_id == run_id).order_by(LlmTask.created_at)
+                select(LlmTask)
+                .where(LlmTask.run_id == run_id)
+                .order_by(LlmTask.created_at, LlmTask.task_id)
+                .limit(RUN_DETAIL_CHILD_LIMIT + 1)
             )
         )
         .scalars()
         .all()
     )
-    attempts = (
+    model_attempts = (
         (
             await db_session.execute(
-                select(LlmAttempt)
-                .where(LlmAttempt.run_id == run_id)
-                .order_by(LlmAttempt.started_at)
+                select(LlmModelAttempt)
+                .where(LlmModelAttempt.run_id == run_id)
+                .order_by(LlmModelAttempt.started_at, LlmModelAttempt.attempt_id)
+                .limit(RUN_DETAIL_CHILD_LIMIT + 1)
             )
         )
         .scalars()
         .all()
     )
-    attempt_ids = [attempt.attempt_id for attempt in attempts]
-    retries = (
+    tasks_has_more = len(tasks) > RUN_DETAIL_CHILD_LIMIT
+    tasks = tasks[:RUN_DETAIL_CHILD_LIMIT]
+    attempts_has_more = len(model_attempts) > RUN_DETAIL_CHILD_LIMIT
+    model_attempts = model_attempts[:RUN_DETAIL_CHILD_LIMIT]
+    model_attempt_ids = [model_attempt.attempt_id for model_attempt in model_attempts]
+    provider_transport_attempts = (
         (
             await db_session.execute(
-                select(LlmAttemptRetry)
-                .where(LlmAttemptRetry.attempt_id.in_(attempt_ids))
-                .order_by(LlmAttemptRetry.attempt_id, LlmAttemptRetry.attempt_index)
+                select(LlmModelTransportAttempt)
+                .where(LlmModelTransportAttempt.attempt_id.in_(model_attempt_ids))
+                .order_by(
+                    LlmModelTransportAttempt.attempt_id,
+                    LlmModelTransportAttempt.attempt_index,
+                )
             )
         )
         .scalars()
         .all()
-        if attempt_ids
+        if model_attempt_ids
         else []
     )
-    retries_by_attempt: dict[str, list[LlmAttemptRetry]] = {}
-    for retry in retries:
-        retries_by_attempt.setdefault(retry.attempt_id, []).append(retry)
-    artifacts = (
+    provider_transport_attempts_by_model_attempt: dict[
+        str,
+        list[LlmModelTransportAttempt],
+    ] = {}
+    for provider_transport_attempt in provider_transport_attempts:
+        provider_transport_attempts_by_model_attempt.setdefault(
+            provider_transport_attempt.attempt_id,
+            [],
+        ).append(provider_transport_attempt)
+    run_artifacts = (
         (
             await db_session.execute(
-                select(LlmArtifact)
-                .where(LlmArtifact.run_id == run_id)
-                .order_by(LlmArtifact.created_at)
+                select(LlmRunArtifact)
+                .where(LlmRunArtifact.run_id == run_id)
+                .order_by(LlmRunArtifact.created_at, LlmRunArtifact.artifact_id)
+                .limit(RUN_DETAIL_CHILD_LIMIT + 1)
             )
         )
         .scalars()
         .all()
     )
-    attempt_details = [
+    artifacts_has_more = len(run_artifacts) > RUN_DETAIL_CHILD_LIMIT
+    run_artifacts = run_artifacts[:RUN_DETAIL_CHILD_LIMIT]
+    model_attempt_details = [
         {
-            **attempt.__dict__,
-            "retries": retries_by_attempt.get(attempt.attempt_id, []),
+            **model_attempt.__dict__,
+            "retries": provider_transport_attempts_by_model_attempt.get(
+                model_attempt.attempt_id,
+                [],
+            ),
         }
-        for attempt in attempts
+        for model_attempt in model_attempts
     ]
     return {
         **run.__dict__,
         "tasks": tasks,
-        "attempts": attempt_details,
-        "artifacts": artifacts,
+        "attempts": model_attempt_details,
+        "artifacts": run_artifacts,
+        "tasks_has_more": tasks_has_more,
+        "attempts_has_more": attempts_has_more,
+        "artifacts_has_more": artifacts_has_more,
     }
 
 

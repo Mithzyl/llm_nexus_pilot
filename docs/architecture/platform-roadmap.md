@@ -2,7 +2,7 @@
 
 **文档日期：** 2026 年 7 月 31 日
 **文档状态：** 当前总体规划（权威入口）
-**当前实施焦点：** 重新完成 Phase 1；Phase 3 暂停
+**当前实施焦点：** Phase 1 已完成；下一步继续 Phase 2；Phase 3 仍暂停
 
 ## 目标
 
@@ -23,12 +23,12 @@
 
 | 能力 | 当前状态 | 结论 |
 |---|---|---|
-| FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已有实现 | 基础设施可用，但资源管理与查询框架不完整 |
-| User 管理 | 已形成首个查询闭环 | 支持新增、详情、签名 cursor 列表、激活状态过滤和受限更新 |
+| FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已完成 Phase 1 门禁 | 公共与内部认证、事务、查询、迁移和真实基础设施验证均通过 |
+| User 管理 | 已形成首个查询闭环 | 支持新增、详情、查询条件绑定 cursor、激活状态过滤和受限更新 |
 | Run、Task 管理 | 已形成查询与动作闭环 | 支持独立分页、过滤、取消、Task 重试、并发锁顺序和 outbox 控制事实 |
-| Attempt、Artifact 管理 | 部分完成 | 以 POST 和聚合详情为主，缺少独立分页查询与受控内容读取 |
-| Session、Conversation、Message | 已形成首个查询闭环 | 支持会话新增、详情、筛选、更新，以及不可变消息追加、详情和顺序分页 |
-| Tool Call、Evaluation、Outbox 查询 | 未实施 | 有预留 ORM 表，但没有可用查询或运维接口 |
+| Attempt、Retry、Artifact 管理 | 已形成查询闭环 | 支持归属范围内独立分页、安全详情、物理重试顺序查询和 Artifact 受控流式读取 |
+| Session、Conversation、Message | 已形成首个查询闭环 | 支持会话新增、详情、查询条件绑定 cursor、更新，以及不可变消息追加、详情和会话绑定顺序分页 |
+| Tool Call、Evaluation、Outbox 查询 | 已形成内部查询闭环 | 使用独立内部密钥、查询绑定 cursor、归属校验和递归脱敏详情 |
 | 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于 Phase 2 已完成部分 |
 | Context、Memory、Knowledge、Prompt、Evaluation 单元 | 未实施 | Agent 之前必须补齐的 LLM 核心能力 |
 | RabbitMQ、Publisher、Worker | 未实施 | Phase 3 已暂停 |
@@ -65,7 +65,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
-| Phase 1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | `PARTIAL`，重新打开 | 每个核心资源形成新增、详情、分页列表、归属和必要动作闭环 |
+| Phase 1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | `DONE` | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、权限和脱敏门禁 |
 | Phase 2：LLM 核心能力 | Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录、Evaluation/Guardrail | `PARTIAL` | 所有能力均可脱离 Agent 单独调用、测试和观测 |
 | Phase 3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | `PAUSED` | Phase 1 事务底座完成；任务执行规格确认；故障窗口验证通过 |
 | Phase 4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
@@ -107,7 +107,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 ## 当前结论
 
-- Phase 1 状态调整为 `PARTIAL`，优先补齐事务、查询、会话和历史管理底座。
+- Phase 1 已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
 - Phase 2 状态调整为 `PARTIAL`：Model Gateway 已完成，但 Context、Memory、Knowledge、Prompt 和 Evaluation 单元尚未实现。
 - Phase 3 状态调整为 `PAUSED`，不继续 RabbitMQ 或 Worker 开发。
 - Phase 1 详见 [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)。
