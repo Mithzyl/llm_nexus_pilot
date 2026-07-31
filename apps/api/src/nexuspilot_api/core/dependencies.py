@@ -7,7 +7,7 @@ from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nexuspilot_api.infrastructure.database import get_session
+from nexuspilot_api.infrastructure.database import get_database_session
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage, get_object_storage
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 
@@ -27,7 +27,7 @@ def get_price_catalog(request: Request) -> PriceCatalog:
 def get_model_invocation_service(
     registry: Annotated[ProviderRegistry, Depends(get_provider_registry)],
     prices: Annotated[PriceCatalog, Depends(get_price_catalog)],
-    session: Annotated[AsyncSession, Depends(get_session)],
+    db_session: Annotated[AsyncSession, Depends(get_database_session)],
     storage: Annotated[ObjectStorage, Depends(get_object_storage)],
 ) -> ModelInvocationService:
     """Create a request-scoped invocation service around shared providers and pricing."""
@@ -35,7 +35,7 @@ def get_model_invocation_service(
     return ModelInvocationService(
         registry=registry,
         prices=prices,
-        session=session,
+        db_session=db_session,
         storage=storage,
     )
 

@@ -39,14 +39,14 @@ class ModelInvocationService:
         *,
         registry: ProviderRegistry,
         prices: PriceCatalog,
-        session: AsyncSession,
+        db_session: AsyncSession,
         storage: ObjectStorage,
     ) -> None:
         """Bind application-level provider, pricing, persistence, and storage dependencies."""
 
         self.registry = registry
         self.prices = prices
-        self.session = session
+        self.db_session = db_session
         self.storage = storage
 
     async def generate(self, payload: ResponsesRequest) -> ResponsesResult:
@@ -124,16 +124,16 @@ class ModelInvocationService:
     async def _start_attempt(self, payload: ResponsesRequest) -> LlmAttempt:
         """Validate ownership, prevent duplicate request keys, and persist a started attempt."""
 
-        await require_run(self.session, payload.run_id)
+        await require_run(self.db_session, payload.run_id)
         if payload.task_id:
-            task = await require_task(self.session, payload.task_id)
+            task = await require_task(self.db_session, payload.task_id)
             if task.run_id != payload.run_id:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Task does not belong to the run",
                 )
         if payload.idempotency_key:
-            existing = await self.session.scalar(
+            existing = await self.db_session.scalar(
                 select(LlmAttempt).where(LlmAttempt.request_key == payload.idempotency_key)
             )
             if existing:
@@ -152,8 +152,8 @@ class ModelInvocationService:
             retry_count=0,
             status=AttemptStatus.STARTED,
         )
-        self.session.add(attempt)
-        await self.session.commit()
+        self.db_session.add(attempt)
+        await self.db_session.commit()
         try:
             raw_request = payload.model_dump(mode="json", exclude={"idempotency_key"})
             stored = await self.storage.put_bytes(
@@ -162,13 +162,13 @@ class ModelInvocationService:
                 "application/json",
             )
             attempt.raw_request_uri = stored.uri
-            await self.session.commit()
+            await self.db_session.commit()
         except Exception as exc:
             attempt.status = AttemptStatus.FAILED
             attempt.error_code = "object_storage_error"
             attempt.error_message = "Failed to persist the raw model request."
             attempt.completed_at = datetime.now(UTC)
-            await self.session.commit()
+            await self.db_session.commit()
             raise ModelProviderError(
                 "internal_error",
                 "Failed to persist the raw model request.",
@@ -197,12 +197,12 @@ class ModelInvocationService:
         attempt.completed_at = datetime.now(UTC)
         self._add_transport_attempts(attempt.attempt_id, response.transport_attempts)
         if attempt.estimated_cost is not None:
-            await self.session.execute(
+            await self.db_session.execute(
                 update(LlmRun)
                 .where(LlmRun.run_id == attempt.run_id)
                 .values(cost_used=LlmRun.cost_used + attempt.estimated_cost)
             )
-        await self.session.commit()
+        await self.db_session.commit()
 
     async def _fail_attempt(self, attempt: LlmAttempt, error: ModelProviderError) -> None:
         """Persist safe provider failure evidence and all completed physical HTTP attempts."""
@@ -226,21 +226,21 @@ class ModelInvocationService:
                 attempt.raw_response_uri = stored.uri
             except Exception:
                 pass
-        await self.session.commit()
+        await self.db_session.commit()
 
     async def _cancel_attempt(self, attempt: LlmAttempt) -> None:
-        """Mark a client-disconnected stream as cancelled before releasing its session."""
+        """Mark a client-disconnected stream as cancelled before releasing its database session."""
 
         attempt.status = AttemptStatus.CANCELLED
         attempt.error_code = "cancelled"
         attempt.error_message = "Client disconnected before the stream completed."
         attempt.completed_at = datetime.now(UTC)
-        await self.session.commit()
+        await self.db_session.commit()
 
     def _add_transport_attempts(self, attempt_id: str, attempts: list) -> None:
         """Attach physical HTTP attempt traces to the current database transaction."""
 
-        self.session.add_all(
+        self.db_session.add_all(
             LlmAttemptRetry(
                 attempt_id=attempt_id,
                 attempt_index=item.attempt_index,

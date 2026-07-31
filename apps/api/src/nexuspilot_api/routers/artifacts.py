@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from nexuspilot_api.core.config import get_settings
-from nexuspilot_api.routers.common import ObjectStorageDependency, SessionDependency
+from nexuspilot_api.routers.common import DatabaseSessionDependency, ObjectStorageDependency
 from nexuspilot_api.schemas.artifacts import ArtifactRead
 from nexuspilot_api.services.artifact_service import create_artifact
 
@@ -27,7 +27,7 @@ def sanitize_upload_filename(filename: str | None) -> str:
 )
 async def post_artifact(
     run_id: str,
-    session: SessionDependency,
+    db_session: DatabaseSessionDependency,
     storage: ObjectStorageDependency,
     file: Annotated[UploadFile, File()],
     artifact_type: Annotated[str, Form(min_length=1, max_length=64)],
@@ -44,7 +44,7 @@ async def post_artifact(
             detail=f"Artifact exceeds {max_size} bytes",
         )
     artifact = await create_artifact(
-        session=session,
+        db_session=db_session,
         storage=storage,
         run_id=run_id,
         task_id=task_id,

@@ -11,8 +11,8 @@ from nexuspilot_api.core.errors import InvalidCursorError
 
 
 @dataclass(frozen=True)
-class CursorPosition:
-    """Identify the last row in a page using its stable sort fields."""
+class DatabasePaginationKey:
+    """Identify a database page boundary using the last row's stable sort fields."""
 
     created_at: datetime
     identifier: str
@@ -28,17 +28,17 @@ class CursorCodec:
             raise ValueError("Cursor signing key must not be empty")
         self._key = signing_key.encode()
 
-    def encode(self, position: CursorPosition) -> str:
-        """Return a URL-safe signed cursor for one stable sort position."""
+    def encode(self, database_key: DatabasePaginationKey) -> str:
+        """Return a URL-safe cursor containing one signed database pagination key."""
 
-        created_at = position.created_at
+        created_at = database_key.created_at
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=UTC)
         payload = json.dumps(
             {
                 "v": 1,
                 "created_at": created_at.astimezone(UTC).isoformat(),
-                "id": position.identifier,
+                "id": database_key.identifier,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -47,8 +47,8 @@ class CursorCodec:
         signature = hmac.new(self._key, encoded_payload.encode(), hashlib.sha256).digest()
         return f"{encoded_payload}.{self._encode_bytes(signature)}"
 
-    def decode(self, cursor: str) -> CursorPosition:
-        """Verify and decode a cursor or raise a stable invalid-cursor error."""
+    def decode(self, cursor: str) -> DatabasePaginationKey:
+        """Verify a public cursor and return its internal database pagination key."""
 
         try:
             encoded_payload, encoded_signature = cursor.split(".", 1)
@@ -66,7 +66,7 @@ class CursorCodec:
             created_at = datetime.fromisoformat(payload["created_at"])
             if created_at.tzinfo is None:
                 raise InvalidCursorError
-            return CursorPosition(
+            return DatabasePaginationKey(
                 created_at=created_at.astimezone(UTC),
                 identifier=str(payload["id"]),
             )

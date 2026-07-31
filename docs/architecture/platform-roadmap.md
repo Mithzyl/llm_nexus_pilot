@@ -64,7 +64,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
-| Phase 1：数据与控制平面 | 事务、Repository、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | `PARTIAL`，重新打开 | 每个核心资源形成新增、详情、分页列表、归属和必要动作闭环 |
+| Phase 1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | `PARTIAL`，重新打开 | 每个核心资源形成新增、详情、分页列表、归属和必要动作闭环 |
 | Phase 2：LLM 核心能力 | Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录、Evaluation/Guardrail | `PARTIAL` | 所有能力均可脱离 Agent 单独调用、测试和观测 |
 | Phase 3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | `PAUSED` | Phase 1 事务底座完成；任务执行规格确认；故障窗口验证通过 |
 | Phase 4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
@@ -85,8 +85,8 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 1. 正确性、可查询性和可恢复性优先于开发速度。
 2. 先定义资源、状态、事务、故障模型和验收测试，再连接外部系统。
-3. Controller 只处理协议；Application Service 负责用例；Repository 负责持久化；事务由 Unit of Work 统一控制。
-4. Service 不应各自随意 commit，跨 Repository 操作必须能够在一个事务内完成。
+3. Controller 只处理协议；Application Service 负责用例及其数据库事务；复杂且可复用的数据查询出现后再提取 Repository。
+4. 单资源 Service 直接使用请求级数据库会话；跨资源操作必须在同一事务内完成，届时再提取事务协调器。
 5. 所有增长型历史使用稳定 cursor 分页、限制 page size，并具有明确过滤与排序语义。
 6. MySQL 是任务、消息、记忆、费用、错误和结果的业务事实来源。
 7. LLM 基础单元必须可独立测试，不以 Agent 工作流跑通代替单元完成。

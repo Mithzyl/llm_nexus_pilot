@@ -10,7 +10,7 @@ from nexuspilot_api.services.lookups import require_run, require_task
 
 async def create_artifact(
     *,
-    session: AsyncSession,
+    db_session: AsyncSession,
     storage: ObjectStorage,
     run_id: str,
     task_id: str | None,
@@ -21,9 +21,9 @@ async def create_artifact(
 ) -> LlmArtifact:
     """Store artifact bytes and persist searchable metadata under the owning run."""
 
-    await require_run(session, run_id)
+    await require_run(db_session, run_id)
     if task_id:
-        task = await require_task(session, task_id)
+        task = await require_task(db_session, task_id)
         if task.run_id != run_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -41,8 +41,8 @@ async def create_artifact(
         storage_uri=f"pending://{run_id}/{artifact_id}",
         size_bytes=len(content),
     )
-    session.add(artifact)
-    await session.flush()
+    db_session.add(artifact)
+    await db_session.flush()
     try:
         stored = await storage.put_bytes(
             f"{run_id}/{artifact.artifact_id}/{filename}",
@@ -50,7 +50,7 @@ async def create_artifact(
             content_type,
         )
     except ObjectStorageError as exc:
-        await session.rollback()
+        await db_session.rollback()
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Object storage unavailable",
@@ -58,6 +58,6 @@ async def create_artifact(
     artifact.content_hash = stored.content_hash
     artifact.storage_uri = stored.uri
     artifact.size_bytes = stored.size_bytes
-    await session.commit()
-    await session.refresh(artifact)
+    await db_session.commit()
+    await db_session.refresh(artifact)
     return artifact

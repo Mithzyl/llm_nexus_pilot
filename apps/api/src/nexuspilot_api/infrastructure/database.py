@@ -1,4 +1,4 @@
-"""Async SQLAlchemy engine and request-scoped session management."""
+"""Async SQLAlchemy engine and request-scoped database session management."""
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -9,15 +9,15 @@ from nexuspilot_api.core.config import get_settings
 
 settings = get_settings()
 engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-session_factory = async_sessionmaker(engine, expire_on_commit=False)
+database_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """Yield one request session, roll back failures, and always close the session."""
+async def get_database_session() -> AsyncIterator[AsyncSession]:
+    """Yield one request database session, roll back failures, and always close it."""
 
-    async with session_factory() as session:
+    async with database_session_factory() as db_session:
         try:
-            yield session
+            yield db_session
         except (Exception, asyncio.CancelledError):
-            await session.rollback()
+            await db_session.rollback()
             raise

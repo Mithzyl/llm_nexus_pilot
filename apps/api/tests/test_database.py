@@ -1,4 +1,4 @@
-"""Unit tests for request-scoped SQLAlchemy session lifecycle."""
+"""Unit tests for request-scoped SQLAlchemy database session lifecycle."""
 
 import asyncio
 from typing import Any
@@ -9,23 +9,23 @@ from nexuspilot_api.infrastructure import database
 
 
 class TrackingSessionContext:
-    """Provide an async session context that records rollback and close behavior."""
+    """Provide an async database session context that records rollback and close behavior."""
 
     def __init__(self) -> None:
-        """Initialize lifecycle flags for one simulated request session."""
+        """Initialize lifecycle flags for one simulated request database session."""
 
         self.entered = False
         self.closed = False
         self.rolled_back = False
 
     async def __aenter__(self) -> "TrackingSessionContext":
-        """Mark the simulated session as opened and return it."""
+        """Mark the simulated database session as opened and return it."""
 
         self.entered = True
         return self
 
     async def __aexit__(self, *_args: Any) -> None:
-        """Mark the simulated session as closed when dependency cleanup runs."""
+        """Mark the simulated database session as closed when dependency cleanup runs."""
 
         self.closed = True
 
@@ -36,7 +36,7 @@ class TrackingSessionContext:
 
 
 class TrackingSessionFactory:
-    """Return the same tracking context when the dependency requests a session."""
+    """Return the same tracking context when the dependency requests a database session."""
 
     def __init__(self, context: TrackingSessionContext) -> None:
         """Store the context used to observe the dependency lifecycle."""
@@ -49,12 +49,18 @@ class TrackingSessionFactory:
         return self.context
 
 
-async def test_get_session_yields_then_closes_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify FastAPI receives an open session and cleanup closes it after the response."""
+async def test_get_database_session_yields_then_closes_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify FastAPI receives an open database session and closes it after the response."""
 
     context = TrackingSessionContext()
-    monkeypatch.setattr(database, "session_factory", TrackingSessionFactory(context))
-    dependency = database.get_session()
+    monkeypatch.setattr(
+        database,
+        "database_session_factory",
+        TrackingSessionFactory(context),
+    )
+    dependency = database.get_database_session()
 
     yielded = await anext(dependency)
     assert yielded is context
@@ -66,14 +72,18 @@ async def test_get_session_yields_then_closes_on_success(monkeypatch: pytest.Mon
     assert context.rolled_back is False
 
 
-async def test_get_session_rolls_back_then_closes_on_failure(
+async def test_get_database_session_rolls_back_then_closes_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify an endpoint exception is rolled back before session cleanup completes."""
+    """Verify an endpoint exception is rolled back before database session cleanup."""
 
     context = TrackingSessionContext()
-    monkeypatch.setattr(database, "session_factory", TrackingSessionFactory(context))
-    dependency = database.get_session()
+    monkeypatch.setattr(
+        database,
+        "database_session_factory",
+        TrackingSessionFactory(context),
+    )
+    dependency = database.get_database_session()
     await anext(dependency)
 
     with pytest.raises(RuntimeError, match="request failed"):
@@ -83,14 +93,18 @@ async def test_get_session_rolls_back_then_closes_on_failure(
     assert context.closed is True
 
 
-async def test_get_session_rolls_back_cancelled_requests(
+async def test_get_database_session_rolls_back_cancelled_requests(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify client cancellation rolls back before releasing the database session."""
 
     context = TrackingSessionContext()
-    monkeypatch.setattr(database, "session_factory", TrackingSessionFactory(context))
-    dependency = database.get_session()
+    monkeypatch.setattr(
+        database,
+        "database_session_factory",
+        TrackingSessionFactory(context),
+    )
+    dependency = database.get_database_session()
     await anext(dependency)
 
     with pytest.raises(asyncio.CancelledError):

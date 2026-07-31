@@ -17,29 +17,29 @@ from nexuspilot_api.schemas.runs import RunCreate
 from nexuspilot_api.services.lookups import require_run
 
 
-async def create_run(session: AsyncSession, payload: RunCreate) -> LlmRun:
+async def create_run(db_session: AsyncSession, payload: RunCreate) -> LlmRun:
     """Persist a new user request after validating that its owner is active."""
 
-    user = await session.get(User, payload.user_id)
+    user = await db_session.get(User, payload.user_id)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Run user must exist and be active",
         )
     run = LlmRun(**payload.model_dump(), status=RunStatus.PENDING)
-    session.add(run)
-    await session.commit()
-    await session.refresh(run)
+    db_session.add(run)
+    await db_session.commit()
+    await db_session.refresh(run)
     return run
 
 
-async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
+async def get_run_detail(db_session: AsyncSession, run_id: str) -> dict:
     """Load a run with ordered task, model-attempt, retry, and artifact records."""
 
-    run = await require_run(session, run_id)
+    run = await require_run(db_session, run_id)
     tasks = (
         (
-            await session.execute(
+            await db_session.execute(
                 select(LlmTask).where(LlmTask.run_id == run_id).order_by(LlmTask.created_at)
             )
         )
@@ -48,7 +48,7 @@ async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
     )
     attempts = (
         (
-            await session.execute(
+            await db_session.execute(
                 select(LlmAttempt)
                 .where(LlmAttempt.run_id == run_id)
                 .order_by(LlmAttempt.started_at)
@@ -60,7 +60,7 @@ async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
     attempt_ids = [attempt.attempt_id for attempt in attempts]
     retries = (
         (
-            await session.execute(
+            await db_session.execute(
                 select(LlmAttemptRetry)
                 .where(LlmAttemptRetry.attempt_id.in_(attempt_ids))
                 .order_by(LlmAttemptRetry.attempt_id, LlmAttemptRetry.attempt_index)
@@ -76,7 +76,7 @@ async def get_run_detail(session: AsyncSession, run_id: str) -> dict:
         retries_by_attempt.setdefault(retry.attempt_id, []).append(retry)
     artifacts = (
         (
-            await session.execute(
+            await db_session.execute(
                 select(LlmArtifact)
                 .where(LlmArtifact.run_id == run_id)
                 .order_by(LlmArtifact.created_at)

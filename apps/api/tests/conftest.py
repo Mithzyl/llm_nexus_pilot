@@ -30,7 +30,7 @@ from nexuspilot_api.core.dependencies import (  # noqa: E402
     get_price_catalog,
     get_provider_registry,
 )
-from nexuspilot_api.infrastructure.database import get_session  # noqa: E402
+from nexuspilot_api.infrastructure.database import get_database_session  # noqa: E402
 from nexuspilot_api.infrastructure.object_storage import (  # noqa: E402
     StoredObject,
     get_object_storage,
@@ -122,10 +122,10 @@ def fake_price_catalog() -> PriceCatalog:
 
 
 @pytest_asyncio.fixture
-async def test_session_factory(
+async def test_database_session_factory(
     tmp_path: Path,
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    """Yield a session factory backed by a fresh database and dispose it afterward."""
+    """Yield a database session factory backed by a fresh database and dispose it afterward."""
 
     test_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
@@ -138,17 +138,17 @@ async def test_session_factory(
 
 @pytest_asyncio.fixture
 async def client(
-    test_session_factory: async_sessionmaker[AsyncSession],
+    test_database_session_factory: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[httpx.AsyncClient]:
     """Yield an authenticated ASGI client with isolated dependencies."""
 
-    async def override_session() -> AsyncIterator[AsyncSession]:
-        """Yield an isolated session connected to this test's temporary database."""
+    async def override_database_session() -> AsyncIterator[AsyncSession]:
+        """Yield an isolated database session connected to this test database."""
 
-        async with test_session_factory() as session:
-            yield session
+        async with test_database_session_factory() as db_session:
+            yield db_session
 
-    app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_database_session] = override_database_session
     app.dependency_overrides[get_object_storage] = FakeObjectStorage
     app.dependency_overrides[get_provider_registry] = fake_provider_registry
     app.dependency_overrides[get_price_catalog] = fake_price_catalog

@@ -5,21 +5,21 @@ from datetime import UTC, datetime
 import pytest
 
 from nexuspilot_api.core.errors import InvalidCursorError
-from nexuspilot_api.core.pagination import CursorCodec, CursorPosition
+from nexuspilot_api.core.pagination import CursorCodec, DatabasePaginationKey
 
 
 def test_cursor_round_trip_preserves_stable_position() -> None:
     """Verify a valid signed cursor restores its UTC timestamp and identifier."""
 
     codec = CursorCodec("test-signing-key")
-    position = CursorPosition(
+    database_key = DatabasePaginationKey(
         created_at=datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
         identifier="user-123",
     )
 
-    decoded = codec.decode(codec.encode(position))
+    decoded = codec.decode(codec.encode(database_key))
 
-    assert decoded == position
+    assert decoded == database_key
 
 
 def test_cursor_rejects_wrong_signing_key() -> None:
@@ -28,7 +28,7 @@ def test_cursor_rejects_wrong_signing_key() -> None:
     first = CursorCodec("first-signing-key")
     second = CursorCodec("second-signing-key")
     cursor = first.encode(
-        CursorPosition(
+        DatabasePaginationKey(
             created_at=datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
             identifier="user-123",
         )
