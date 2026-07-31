@@ -9,8 +9,10 @@ from nexuspilot_api.models import (
     LlmAttempt,
     LlmAttemptRetry,
     LlmRun,
+    LlmSession,
     LlmTask,
     RunStatus,
+    SessionStatus,
     User,
 )
 from nexuspilot_api.schemas.runs import RunCreate
@@ -26,6 +28,23 @@ async def create_run(db_session: AsyncSession, payload: RunCreate) -> LlmRun:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Run user must exist and be active",
         )
+    if payload.session_id:
+        conversation = await db_session.get(LlmSession, payload.session_id)
+        if conversation is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Run session must exist",
+            )
+        if conversation.user_id != payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Run session must belong to the run user",
+            )
+        if conversation.status != SessionStatus.ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Run session must be active",
+            )
     run = LlmRun(**payload.model_dump(), status=RunStatus.PENDING)
     db_session.add(run)
     await db_session.commit()

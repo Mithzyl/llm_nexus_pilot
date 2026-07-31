@@ -26,7 +26,7 @@
 | FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已有实现 | 基础设施可用，但资源管理与查询框架不完整 |
 | User 管理 | 已形成首个查询闭环 | 支持新增、详情、签名 cursor 列表、激活状态过滤和受限更新 |
 | Run、Task、Attempt、Artifact 管理 | 部分完成 | 以 POST 和聚合详情为主，缺少独立分页查询与动作接口 |
-| Session、Conversation、Message | 未实施 | `llm_runs.session_id` 只是字符串，不能代替会话和消息实体 |
+| Session、Conversation、Message | 已形成首个查询闭环 | 支持会话新增、详情、筛选、更新，以及不可变消息追加、详情和顺序分页 |
 | Tool Call、Evaluation、Outbox 查询 | 未实施 | 有预留 ORM 表，但没有可用查询或运维接口 |
 | 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于 Phase 2 已完成部分 |
 | Context、Memory、Knowledge、Prompt、Evaluation 单元 | 未实施 | Agent 之前必须补齐的 LLM 核心能力 |

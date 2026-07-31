@@ -21,10 +21,10 @@
 - Run、Task、Attempt、Retry、Artifact、Tool Call、Evaluation 和 Outbox ORM 表。
 - User Service 的请求级数据库事务和签名 cursor 基础设施。
 - `GET /users/{user_id}`、`GET /users` 和受限 `PATCH /users/{user_id}`。
+- Session、Message ORM 与迁移，以及 Session 新增、详情、筛选、更新和 Message 追加、详情、顺序分页接口。
 
 当前缺失：
 
-- Session、Conversation 和 Message 实体及接口。
 - Run、Task、Attempt、Retry、Artifact 的独立分页列表。
 - Artifact 内容读取或受控下载。
 - Tool Call、Evaluation、Outbox 的内部查询接口。
@@ -265,7 +265,18 @@ Database Transaction Coordinator
 - 为新 ORM 记录统一应用侧 UTC 时间，同时保留数据库 server default，避免 SQLite 和 MySQL 时间精度差异破坏 cursor 边界。
 - 新增 API、cursor、数据库事务和唯一约束竞争保护测试；公开 API 行为不受数据层简化影响。
 - 当前认证仍是平台级 API Key，只能将这些接口定义为“受信调用方管理接口”，尚不能声称完成用户本人资源隔离。
-- Phase 1 状态保持 `PARTIAL`；下一切片优先完成 Session/Message，并用真实跨资源写入需求验证后续事务抽象。
+- Phase 1 状态保持 `PARTIAL`；本次数据层简化后继续以真实资源用例验证事务边界。
+
+## 2026 年 7 月 31 日 Session / Message 实施
+
+- 新增 `llm_sessions` 和 `llm_messages`；会话归属于 User，消息归属于 Session，并可选关联同一用户、同一会话下的 Run 和父消息。
+- Session 支持新增、详情、按 user/status 筛选的签名 cursor 分页，以及 title/status 的受限更新。
+- Message 创建后不提供更新或删除接口；内容必须在最多 16000 字符的内联文本和对象 URI 中二选一，列表只返回最多 200 字符的预览和 URI，完整内联内容仅由详情接口返回。
+- Message 顺序由锁定会话行后读取并递增 `next_message_sequence` 分配，数据库唯一约束 `(session_id, sequence)` 作为竞争条件的最终保护。
+- Message 分页使用数据库序号键，并把 `session_id` 写入签名 cursor；其他会话不能复用该 cursor 跳过历史。
+- Run 创建现在会验证 Session 存在、处于 active 状态且与 Run 属于同一 User；存量 `llm_runs.session_id` 暂不增加数据库外键，以避免现有任意字符串数据导致不可逆迁移失败。
+- Session 归档后仍可读取历史，但不能追加新消息。
+- 当前 Phase 1 仍为 `PARTIAL`；下一切片是 Run / Task 的独立分页查询与合法状态动作。
 
 ## 完成标准
 

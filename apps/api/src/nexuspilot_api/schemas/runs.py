@@ -17,7 +17,7 @@ class RunCreate(BaseModel):
 
     user_request: str = Field(min_length=1, max_length=100_000)
     user_id: str = Field(min_length=1, max_length=128)
-    session_id: str | None = Field(default=None, max_length=128)
+    session_id: str | None = Field(default=None, max_length=36)
     run_type: str = Field(default="general", min_length=1, max_length=64)
     budget_limit: Decimal | None = Field(default=None, ge=0)
 

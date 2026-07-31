@@ -18,6 +18,14 @@ class DatabasePaginationKey:
     identifier: str
 
 
+@dataclass(frozen=True)
+class DatabaseSequencePaginationKey:
+    """Identify a scoped database page boundary using a unique sequence number."""
+
+    scope_id: str
+    sequence: int
+
+
 class CursorCodec:
     """Encode and verify opaque HMAC-signed cursor positions."""
 
@@ -43,24 +51,13 @@ class CursorCodec:
             separators=(",", ":"),
             sort_keys=True,
         ).encode()
-        encoded_payload = self._encode_bytes(payload)
-        signature = hmac.new(self._key, encoded_payload.encode(), hashlib.sha256).digest()
-        return f"{encoded_payload}.{self._encode_bytes(signature)}"
+        return self._sign_payload(payload)
 
     def decode(self, cursor: str) -> DatabasePaginationKey:
         """Verify a public cursor and return its internal database pagination key."""
 
         try:
-            encoded_payload, encoded_signature = cursor.split(".", 1)
-            expected = hmac.new(
-                self._key,
-                encoded_payload.encode(),
-                hashlib.sha256,
-            ).digest()
-            supplied = self._decode_bytes(encoded_signature)
-            if not hmac.compare_digest(expected, supplied):
-                raise InvalidCursorError
-            payload = json.loads(self._decode_bytes(encoded_payload))
+            payload = self._verify_payload(cursor)
             if payload.get("v") != 1 or not payload.get("id"):
                 raise InvalidCursorError
             created_at = datetime.fromisoformat(payload["created_at"])
@@ -74,6 +71,65 @@ class CursorCodec:
             raise
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise InvalidCursorError from exc
+
+    def encode_sequence(self, database_key: DatabaseSequencePaginationKey) -> str:
+        """Return a signed cursor for a sequence-ordered database page boundary."""
+
+        payload = json.dumps(
+            {
+                "v": 1,
+                "scope_id": database_key.scope_id,
+                "sequence": database_key.sequence,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return self._sign_payload(payload)
+
+    def decode_sequence(self, cursor: str) -> DatabaseSequencePaginationKey:
+        """Verify a sequence cursor and return its scoped database pagination key."""
+
+        try:
+            payload = self._verify_payload(cursor)
+            if (
+                payload.get("v") != 1
+                or not payload.get("scope_id")
+                or not isinstance(payload.get("sequence"), int)
+                or payload["sequence"] < 1
+            ):
+                raise InvalidCursorError
+            return DatabaseSequencePaginationKey(
+                scope_id=str(payload["scope_id"]),
+                sequence=payload["sequence"],
+            )
+        except InvalidCursorError:
+            raise
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise InvalidCursorError from exc
+
+    def _sign_payload(self, payload: bytes) -> str:
+        """Sign serialized cursor payload bytes and return the public token."""
+
+        encoded_payload = self._encode_bytes(payload)
+        signature = hmac.new(self._key, encoded_payload.encode(), hashlib.sha256).digest()
+        return f"{encoded_payload}.{self._encode_bytes(signature)}"
+
+    def _verify_payload(self, cursor: str) -> dict[str, object]:
+        """Verify a public cursor signature and return its decoded JSON object."""
+
+        encoded_payload, encoded_signature = cursor.split(".", 1)
+        expected = hmac.new(
+            self._key,
+            encoded_payload.encode(),
+            hashlib.sha256,
+        ).digest()
+        supplied = self._decode_bytes(encoded_signature)
+        if not hmac.compare_digest(expected, supplied):
+            raise InvalidCursorError
+        payload = json.loads(self._decode_bytes(encoded_payload))
+        if not isinstance(payload, dict):
+            raise InvalidCursorError
+        return payload
 
     @staticmethod
     def _encode_bytes(value: bytes) -> str:

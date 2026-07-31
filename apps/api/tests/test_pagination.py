@@ -5,7 +5,11 @@ from datetime import UTC, datetime
 import pytest
 
 from nexuspilot_api.core.errors import InvalidCursorError
-from nexuspilot_api.core.pagination import CursorCodec, DatabasePaginationKey
+from nexuspilot_api.core.pagination import (
+    CursorCodec,
+    DatabasePaginationKey,
+    DatabaseSequencePaginationKey,
+)
 
 
 def test_cursor_round_trip_preserves_stable_position() -> None:
@@ -36,6 +40,20 @@ def test_cursor_rejects_wrong_signing_key() -> None:
 
     with pytest.raises(InvalidCursorError):
         second.decode(cursor)
+
+
+def test_sequence_cursor_round_trip_preserves_scope_and_sequence() -> None:
+    """Verify sequence cursors retain both their database scope and page boundary."""
+
+    codec = CursorCodec("test-signing-key")
+    database_key = DatabaseSequencePaginationKey(
+        scope_id="session-123",
+        sequence=42,
+    )
+
+    decoded = codec.decode_sequence(codec.encode_sequence(database_key))
+
+    assert decoded == database_key
 
 
 @pytest.mark.parametrize("cursor", ["", "missing-signature", "a.b.c", "%%%.%%%"])

@@ -37,3 +37,19 @@ class AttemptStatus(str, enum.Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
+
+
+class SessionStatus(str, enum.Enum):
+    """Lifecycle states for a persisted LLM conversation session."""
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class MessageRole(str, enum.Enum):
+    """Supported roles for persisted LLM conversation messages."""
+
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"

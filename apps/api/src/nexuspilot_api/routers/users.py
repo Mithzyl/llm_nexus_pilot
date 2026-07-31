@@ -2,9 +2,7 @@
 
 from fastapi import APIRouter, Query, status
 
-from nexuspilot_api.core.config import get_settings
-from nexuspilot_api.core.pagination import CursorCodec
-from nexuspilot_api.routers.common import DatabaseSessionDependency
+from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.schemas.users import UserCreate, UserRead, UserUpdate
 from nexuspilot_api.services.user_service import (
@@ -27,21 +25,16 @@ async def post_user(payload: UserCreate, db_session: DatabaseSessionDependency) 
 @router.get("/users", response_model=CursorPage[UserRead])
 async def get_users(
     db_session: DatabaseSessionDependency,
+    cursor_codec: CursorCodecDependency,
     cursor: str | None = None,
     is_active: bool | None = None,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> CursorPage[UserRead]:
     """List users using stable signed cursor pagination and optional status filtering."""
 
-    settings = get_settings()
-    signing_key = (
-        settings.cursor_signing_key.get_secret_value()
-        if settings.cursor_signing_key
-        else settings.api_key
-    )
     return await list_users(
         db_session,
-        codec=CursorCodec(signing_key),
+        codec=cursor_codec,
         cursor=cursor,
         is_active=is_active,
         limit=limit,

@@ -6,7 +6,7 @@ import httpx
 
 
 async def create_test_run(client: httpx.AsyncClient) -> dict:
-    """Create and return a reusable run fixture through the public HTTP contract."""
+    """Create a user, conversation, and reusable run through the public HTTP contract."""
 
     user_id = f"user-{create_test_run.counter}"
     create_test_run.counter += 1
@@ -15,11 +15,16 @@ async def create_test_run(client: httpx.AsyncClient) -> dict:
         json={"user_id": user_id, "display_name": "Test User"},
     )
     assert user_response.status_code == 201
+    session_response = await client.post(
+        "/api/v1/sessions",
+        json={"user_id": user_id, "title": "Test Conversation"},
+    )
+    assert session_response.status_code == 201
     response = await client.post(
         "/api/v1/runs",
         json={
             "user_id": user_id,
-            "session_id": "session-1",
+            "session_id": session_response.json()["session_id"],
             "user_request": "Investigate a repository",
             "budget_limit": "5.000000",
         },
