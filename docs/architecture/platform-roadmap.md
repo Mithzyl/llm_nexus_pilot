@@ -2,7 +2,7 @@
 
 **文档日期：** 2026 年 7 月 31 日
 **文档状态：** 当前总体规划（权威入口）
-**当前实施焦点：** Phase 1 已完成；下一步继续 Phase 2；Phase 3 仍暂停
+**当前实施焦点：** 阶段1已完成；下一步继续阶段2；阶段3仍暂停
 
 ## 目标
 
@@ -16,22 +16,22 @@
 - 本文是阶段顺序、状态和完成门禁的唯一总体入口。
 - `docs/implementation/phase-*.md` 记录对应阶段的详细规划、实施事实和验证证据。
 - README 只提供运行入口和当前能力摘要，不作为完成状态依据。
-- 一个阶段只有在其完整能力和查询闭环通过验收后才能标记 `DONE`；只有表、POST 接口或目录不能代表完成。
+- 一个阶段只有在其完整能力和查询闭环通过验收后才能标记“已完成”；只有表、POST 接口或目录不能代表完成。
 - 代码、测试和迁移与文档冲突时，必须更新唯一当前描述，不保留两个互相冲突的路线图。
 
 ## 当前事实
 
 | 能力 | 当前状态 | 结论 |
 |---|---|---|
-| FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已完成 Phase 1 门禁 | 公共与内部认证、事务、查询、迁移和真实基础设施验证均通过 |
+| FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已完成阶段1门禁 | 公共与内部认证、事务、查询、迁移和真实基础设施验证均通过；公共认证仍是受信调用方级 API Key |
 | User 管理 | 已形成首个查询闭环 | 支持新增、详情、查询条件绑定 cursor、激活状态过滤和受限更新 |
 | Run、Task 管理 | 已形成查询与动作闭环 | 支持独立分页、过滤、取消、Task 重试、并发锁顺序和 outbox 控制事实 |
 | Attempt、Retry、Artifact 管理 | 已形成查询闭环 | 支持归属范围内独立分页、安全详情、物理重试顺序查询和 Artifact 受控流式读取 |
 | Session、Conversation、Message | 已形成首个查询闭环 | 支持会话新增、详情、查询条件绑定 cursor、更新，以及不可变消息追加、详情和会话绑定顺序分页 |
 | Tool Call、Evaluation、Outbox 查询 | 已形成内部查询闭环 | 使用独立内部密钥、查询绑定 cursor、归属校验和递归脱敏详情 |
-| 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于 Phase 2 已完成部分 |
+| 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于阶段2已完成部分 |
 | Context、Memory、Knowledge、Prompt、Evaluation 单元 | 未实施 | Agent 之前必须补齐的 LLM 核心能力 |
-| RabbitMQ、Publisher、Worker | 未实施 | Phase 3 已暂停 |
+| RabbitMQ、Publisher、Worker | 未实施 | 阶段3已暂停 |
 | Agent、工具、MCP、OpenTelemetry、Web | 未实施 | 不能以规划或空目录视为完成 |
 
 ## 总体结构
@@ -65,22 +65,23 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
-| Phase 1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | `DONE` | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、权限和脱敏门禁 |
-| Phase 2：LLM 核心能力 | Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录、Evaluation/Guardrail | `PARTIAL` | 所有能力均可脱离 Agent 单独调用、测试和观测 |
-| Phase 3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | `PAUSED` | Phase 1 事务底座完成；任务执行规格确认；故障窗口验证通过 |
-| Phase 4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
-| Phase 5：Agent Runtime 与工作流 | 单 Agent 循环、总控与工作模型、并行只读任务、写任务隔离、独立审核 | 未开始 | 只组合已完成单元；上下文完整；循环和成本有边界 |
-| Phase 6：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 结果包含稳定文件位置、定义引用和可复核证据 |
-| Phase 7：MCP Client | 连接、能力发现、工具、资源、认证、超时和权限 | 未开始 | 外部调用受控且完整记录，不绕过工具权限层 |
-| Phase 8：可观测性 | API、模型、消息、Worker 和工具链路关联 | 未开始 | 不记录密钥或完整敏感内容；MySQL 仍是事实源 |
-| Phase 9：应用入口 | 按实际需求建设 Web 或接入其他业务应用 | 未开始 | 核心 API 和异步状态查询稳定后再规划 |
+| 阶段1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | 已完成 | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、受信调用方权限边界和脱敏门禁 |
+| 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录、Evaluation/Guardrail | 进行中 | 所有能力均可脱离 Agent 单独调用、测试和观测 |
+| 阶段3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | 暂停 | 阶段1事务底座完成；任务执行规格确认；故障窗口验证通过 |
+| 阶段4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
+| 阶段5：Agent Runtime 与工作流 | 单 Agent 循环、总控与工作模型、并行只读任务、写任务隔离、独立审核 | 未开始 | 只组合已完成单元；上下文完整；循环和成本有边界 |
+| 阶段6：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 结果包含稳定文件位置、定义引用和可复核证据 |
+| 阶段7：MCP Client | 连接、能力发现、工具、资源、认证、超时和权限 | 未开始 | 外部调用受控且完整记录，不绕过工具权限层 |
+| 阶段8：可观测性 | API、模型、消息、Worker 和工具链路关联 | 未开始 | 不记录密钥或完整敏感内容；MySQL 仍是事实源 |
+| 阶段9：应用入口 | 按实际需求建设 Web 或接入其他业务应用 | 未开始 | 核心 API 和异步状态查询稳定后再规划 |
 
-## Phase 1 与 Phase 2 的关系
+## 阶段1与阶段2的关系
 
-- Phase 1 解决“数据是否可管理、可查询、可组合事务、可追溯”。
-- Phase 2 解决“LLM 能力是否可以作为独立模块使用”。
-- Phase 3 以后解决“这些稳定单元如何可靠异步执行与组合”。
-- Memory 不是 Agent 工作流中的一个临时步骤，而是 Phase 2 的独立能力；其数据归属、查询和删除依赖 Phase 1。
+- 阶段1解决“数据是否可管理、可查询、可组合事务、可追溯”。
+- 阶段2解决“LLM 能力是否可以作为独立模块使用”。
+- 阶段3以后解决“这些稳定单元如何可靠异步执行与组合”。
+- Memory 不是 Agent 工作流中的一个临时步骤，而是阶段2的独立能力；它复用阶段1的 User、Session、Message 和事务底座，但由阶段2自行定义版本、逻辑删除和保留策略。
+- 阶段1公共认证是受信调用方级 API Key；任何核心资源直接面向最终用户前，必须另行完成可验证的用户认证授权。
 
 ## 质量原则
 
@@ -103,12 +104,12 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 - 外部依赖不可用时安全失败，不留下无法解释的中间状态。
 - API Key、凭据和敏感内容不进入普通日志、队列消息或公开错误。
 - 当前文档、Schema、迁移、环境示例和运行命令与代码一致。
-- 未运行的真实基础设施或供应商验证明确标记 `NOT_RUN`。
+- 未运行的真实基础设施或供应商验证明确标记“未运行”。
 
 ## 当前结论
 
-- Phase 1 已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
-- Phase 2 状态调整为 `PARTIAL`：Model Gateway 已完成，但 Context、Memory、Knowledge、Prompt 和 Evaluation 单元尚未实现。
-- Phase 3 状态调整为 `PAUSED`，不继续 RabbitMQ 或 Worker 开发。
-- Phase 1 详见 [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)。
-- Phase 2 详见 [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)。
+- 阶段1已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
+- 阶段2进行中：Model Gateway 已完成，但 Context、Memory、Knowledge、Prompt 和 Evaluation 单元尚未实现；具体契约、失败恢复和测试门禁已经固化。
+- 阶段3暂停，不继续 RabbitMQ 或 Worker 开发。
+- 阶段1详见 [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)。
+- 阶段2详见 [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)。
