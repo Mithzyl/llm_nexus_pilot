@@ -14,7 +14,7 @@ PACKAGE_ROOT = Path(__file__).parents[1] / "src" / "nexuspilot_api"
     [
         (providers.router, {"/providers"}),
         (responses.router, {"/responses"}),
-        (users.router, {"/users"}),
+        (users.router, {"/users", "/users/{user_id}"}),
         (runs.router, {"/runs", "/runs/{run_id}"}),
         (tasks.router, {"/runs/{run_id}/tasks", "/tasks/{task_id}"}),
         (attempts.router, {"/runs/{run_id}/attempts"}),

@@ -1,6 +1,6 @@
 # 第一阶段：数据与控制平面规划
 
-**文档日期：** 2026 年 7 月 30 日
+**文档日期：** 2026 年 7 月 31 日
 **文档状态：** `PARTIAL`，重新打开
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -19,16 +19,17 @@
 - `POST /users`、`POST /runs`、`POST /runs/{run_id}/tasks`、`POST /runs/{run_id}/attempts` 和 artifact 上传。
 - `GET /runs/{run_id}` 聚合详情、`GET /tasks/{task_id}` 和 Provider 列表。
 - Run、Task、Attempt、Retry、Artifact、Tool Call、Evaluation 和 Outbox ORM 表。
+- User Repository、请求级 Unit of Work 和签名 cursor 基础设施。
+- `GET /users/{user_id}`、`GET /users` 和受限 `PATCH /users/{user_id}`。
 
 当前缺失：
 
-- User 详情与列表查询。
 - Session、Conversation 和 Message 实体及接口。
 - Run、Task、Attempt、Retry、Artifact 的独立分页列表。
 - Artifact 内容读取或受控下载。
 - Tool Call、Evaluation、Outbox 的内部查询接口。
 - 统一 cursor、过滤、排序和资源归属规范。
-- 可以组合多个 Repository 的 Unit of Work；当前多个 Service 自己 `commit()`，不能作为 transactional outbox 的可靠基础。
+- Unit of Work 当前只接入 User 用例；Run、Task、Attempt、Artifact 和 Responses Service 仍自行 `commit()`，尚不能作为 transactional outbox 的可靠基础。
 
 因此 Phase 1 不能标记为完成。
 
@@ -246,6 +247,18 @@ Unit of Work
 - Artifact 上传、元数据查询、权限读取和对象存储故障。
 - Outbox 和内部审计接口的脱敏与权限。
 - SQLite 只用于快速测试；Phase 1 完成必须有真实 MySQL 行为验证。
+
+## 2026 年 7 月 31 日补充实现
+
+- 新增 `UserRepository`，Repository 只负责查询、add 和分页，不调用 commit。
+- 新增请求级 `SqlAlchemyUnitOfWork`；User 创建、更新和竞争冲突统一从 Unit of Work 提交或回滚。
+- 新增 HMAC 签名 cursor，位置包含 `created_at + user_id`，非法、篡改或错误密钥返回稳定 422。
+- User 列表支持 `is_active` 过滤，`limit` 范围为 1～100，排序固定为创建时间和用户 ID 正序。
+- User PATCH 只允许 `display_name` 和 `is_active`，禁止主键和未知字段。
+- 为新 ORM 记录统一应用侧 UTC 时间，同时保留数据库 server default，避免 SQLite 和 MySQL 时间精度差异破坏 cursor 边界。
+- 新增 API、cursor、Repository、Unit of Work 和数据库唯一约束竞争保护测试；当前全仓本地测试为 59 项。
+- 当前认证仍是平台级 API Key，只能将这些接口定义为“受信调用方管理接口”，尚不能声称完成用户本人资源隔离。
+- Phase 1 状态保持 `PARTIAL`；下一切片应先完成 Session/Message，或把现有 Run/Task 等 Service 迁入同一 Unit of Work。
 
 ## 完成标准
 

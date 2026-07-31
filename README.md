@@ -6,6 +6,7 @@ NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务
 
 - FastAPI 健康检查和版本化 REST API；
 - API Key 基础认证；
+- 受信 API 调用方可以创建、查询、分页筛选和受限更新用户；
 - 基础用户身份创建与运行归属校验；
 - 创建运行、任务和模型调用记录，并通过现有详情接口读取部分历史；完整列表和反向查询仍属于 Phase 1 待办；
 - 保存任务依赖、工具调用、产物、审核结果和 outbox 事件的数据结构；
@@ -54,6 +55,8 @@ API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要
 ```text
 X-API-Key: .env 中的 NEXUSPILOT_API_KEY
 ```
+
+分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。
 
 ## 统一 Responses 接口
 

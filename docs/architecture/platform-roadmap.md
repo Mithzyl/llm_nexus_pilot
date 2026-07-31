@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform 总体规划
 
-**文档日期：** 2026 年 7 月 30 日
+**文档日期：** 2026 年 7 月 31 日
 **文档状态：** 当前总体规划（权威入口）
 **当前实施焦点：** 重新完成 Phase 1；Phase 3 暂停
 
@@ -24,7 +24,8 @@
 | 能力 | 当前状态 | 结论 |
 |---|---|---|
 | FastAPI、认证、SQLAlchemy、Alembic、MinIO | 已有实现 | 基础设施可用，但资源管理与查询框架不完整 |
-| User、Run、Task、Attempt、Artifact 新增 | 部分完成 | 以 POST 为主，缺少完整详情、列表、过滤和动作接口 |
+| User 管理 | 已形成首个查询闭环 | 支持新增、详情、签名 cursor 列表、激活状态过滤和受限更新 |
+| Run、Task、Attempt、Artifact 管理 | 部分完成 | 以 POST 和聚合详情为主，缺少独立分页查询与动作接口 |
 | Session、Conversation、Message | 未实施 | `llm_runs.session_id` 只是字符串，不能代替会话和消息实体 |
 | Tool Call、Evaluation、Outbox 查询 | 未实施 | 有预留 ORM 表，但没有可用查询或运维接口 |
 | 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于 Phase 2 已完成部分 |

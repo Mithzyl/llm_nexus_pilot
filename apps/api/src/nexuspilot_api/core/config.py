@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     api_key: str = Field(default="local-development-key-change-me", min_length=16)
+    cursor_signing_key: SecretStr | None = Field(default=None, min_length=16)
     database_url: str = "mysql+aiomysql://nexuspilot:nexuspilot@localhost:3306/nexuspilot"
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "nexuspilot"

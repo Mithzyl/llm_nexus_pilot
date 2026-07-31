@@ -9,6 +9,12 @@ from fastapi.responses import JSONResponse
 from nexuspilot_models.errors import ModelProviderError
 
 from nexuspilot_api.core.config import get_settings
+from nexuspilot_api.core.errors import (
+    ApplicationError,
+    InvalidCursorError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
 from nexuspilot_api.infrastructure.database import engine
 from nexuspilot_api.infrastructure.provider_registry import (
     create_price_catalog,
@@ -36,11 +42,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="NexusPilot LLM Platform API",
-    version="0.2.0",
+    version="0.3.0",
     description="Provider-neutral Responses API and durable NexusPilot execution records.",
     lifespan=lifespan,
 )
 app.include_router(api_router)
+
+
+@app.exception_handler(ApplicationError)
+async def application_error_handler(_request: object, error: ApplicationError) -> JSONResponse:
+    """Convert expected application failures to stable public HTTP responses."""
+
+    status_code = {
+        ResourceNotFoundError: 404,
+        ResourceConflictError: 409,
+        InvalidCursorError: 422,
+    }.get(type(error), 400)
+    return JSONResponse(status_code=status_code, content={"detail": str(error)})
 
 
 @app.exception_handler(ModelProviderError)
