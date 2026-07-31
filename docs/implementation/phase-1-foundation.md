@@ -22,10 +22,11 @@
 - User Service 的请求级数据库事务和签名 cursor 基础设施。
 - `GET /users/{user_id}`、`GET /users` 和受限 `PATCH /users/{user_id}`。
 - Session、Message ORM 与迁移，以及 Session 新增、详情、筛选、更新和 Message 追加、详情、顺序分页接口。
+- Run、Task 独立分页查询，以及 Run/Task 取消和 Task 重试状态动作。
 
 当前缺失：
 
-- Run、Task、Attempt、Retry、Artifact 的独立分页列表。
+- Attempt、Retry、Artifact 的独立分页列表。
 - Artifact 内容读取或受控下载。
 - Tool Call、Evaluation、Outbox 的内部查询接口。
 - 统一 cursor、过滤、排序和资源归属规范。
@@ -101,6 +102,16 @@ GET  /api/v1/runs/{run_id}/tasks
 - `cancel` 使用状态机，不开放任意状态覆盖。
 - Run 详情可以聚合摘要，但大量 Task、Attempt 和 Artifact 必须通过独立分页接口读取。
 
+Run 取消状态转换：
+
+| 当前状态 | 取消结果 | 子任务处理 |
+|---|---|---|
+| `pending` / `running` | 没有运行中任务时进入 `cancelled`；否则进入 `cancel_requested` | 未开始任务直接 `cancelled`；运行中任务进入 `cancel_requested` 并写入 outbox 事实 |
+| `cancel_requested` / `cancelled` | 幂等返回当前状态 | 不重复写入 outbox |
+| `completed` / `failed` | 返回 409 | 不修改任何记录 |
+
+Run 列表只返回请求预览，不嵌入完整用户请求、Task、Attempt 或 Artifact。cursor 与完整过滤条件绑定，不能跨另一组 user/session/status/time-range 过滤复用。
+
 ### Task
 
 ```http
@@ -114,6 +125,19 @@ POST /api/v1/tasks/{task_id}/retry
 - 父任务和依赖任务必须属于同一 Run。
 - retry 必须创建新的执行事实，不能覆盖旧错误。
 - 状态转换由统一状态机校验。
+
+Task 动作状态转换：
+
+| 动作 | 允许状态 | 结果 |
+|---|---|---|
+| cancel | `pending`、`ready`、各 waiting 状态、`retry_scheduled` | 直接进入 `cancelled` |
+| cancel | `running` | 进入 `cancel_requested`，并原子写入 `task.cancel_requested` outbox 事实 |
+| cancel | `cancel_requested`、`cancelled` | 幂等返回，不重复写入事件 |
+| cancel | `completed`、`failed` | 返回 409 |
+| retry | `failed` 且 `current_attempt < max_attempts` | `current_attempt + 1`，进入 `retry_scheduled`，原子写入 `task.retry_requested` outbox 事实 |
+| retry | 其他状态或已达最大次数 | 返回 409 |
+
+Task 列表只返回 objective 预览；支持按 run、status、task type 和 assigned role 过滤。`GET /runs/{run_id}/tasks` 是强制限定 Run 的便捷查询，和 `GET /tasks?run_id=` 使用同一查询实现。
 
 ### Attempt 与 Retry
 
@@ -276,7 +300,22 @@ Database Transaction Coordinator
 - Message 分页使用数据库序号键，并把 `session_id` 写入签名 cursor；其他会话不能复用该 cursor 跳过历史。
 - Run 创建现在会验证 Session 存在、处于 active 状态且与 Run 属于同一 User；存量 `llm_runs.session_id` 暂不增加数据库外键，以避免现有任意字符串数据导致不可逆迁移失败。
 - Session 归档后仍可读取历史，但不能追加新消息。
-- 当前 Phase 1 仍为 `PARTIAL`；下一切片是 Run / Task 的独立分页查询与合法状态动作。
+- 该切片后的 Run / Task 查询与动作已在下一节完成，Phase 1 仍保持 `PARTIAL`。
+
+## 2026 年 7 月 31 日 Run / Task 查询与动作实施
+
+- 新增 `GET /runs`，支持 user、session、status 和 UTC 时间范围过滤；列表不返回完整 `user_request`，只返回 200 字符预览。
+- 新增 `GET /tasks` 和 `GET /runs/{run_id}/tasks`，共享 run、status、task type、assigned role 过滤；列表只返回 200 字符 objective 预览。
+- Run/Task cursor 使用 `DatabaseQueryPaginationKey`，包含稳定的 `created_at + primary_key` 数据库边界和完整过滤条件指纹；改变过滤条件后复用 cursor 返回 422。
+- 新增 Run cancel、Task cancel 和 Task retry；状态转换严格按本节状态表执行，不提供通用状态 PATCH。
+- Run 取消和 Task 动作统一采用“先锁 Run、再锁 Task”的 MySQL 行锁顺序；并发 retry 只有一个请求能够创建 `task.retry_requested` outbox 事实。
+- 运行中 Task 的取消创建 `task.cancel_requested` outbox 事实；立即取消的未开始任务不产生无意义队列消息。
+- outbox 记录与状态更新使用同一个 `db_session.commit()`，Publisher 尚未实现，因此当前只保存可靠待发布事实，不发送 RabbitMQ 消息。
+- 新增 Run/Task 常用过滤和稳定排序组合索引，并通过 Alembic `20260731_0004` 管理。
+- 将 SQLAlchemy 升级到 `2.0.51`、aiomysql 升级到 `0.3.2`，并增加 `cryptography 46.0.7`，修复 MySQL 8/9 默认认证和连接池 `ping()` 兼容问题。
+- 真实基础设施验证：MySQL 8.4 空库迁移到 head、`alembic check` 和双会话并发 retry 通过；MinIO bucket 初始化、对象上传、stat 和清理通过。
+- 宿主机 MySQL 9.0.1 保持运行且未被修改；因没有可用管理员登录，真实验证使用项目 Compose MySQL 8.4 并映射到 `3307`，避免占用宿主机 `3306`。
+- 当前 Phase 1 仍为 `PARTIAL`；下一切片是 Attempt、Retry 和 Artifact 的独立查询与受控内容读取。
 
 ## 完成标准
 

@@ -25,3 +25,7 @@ class InvalidCursorError(ApplicationError):
         """Create a stable error without exposing cursor decoding details."""
 
         super().__init__("Invalid pagination cursor")
+
+
+class InvalidRequestError(ApplicationError):
+    """Report a semantically invalid query or action request."""

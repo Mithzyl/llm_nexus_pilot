@@ -26,6 +26,15 @@ class DatabaseSequencePaginationKey:
     sequence: int
 
 
+@dataclass(frozen=True)
+class DatabaseQueryPaginationKey:
+    """Identify a database page boundary bound to one normalized query fingerprint."""
+
+    created_at: datetime
+    identifier: str
+    query_fingerprint: str
+
+
 class CursorCodec:
     """Encode and verify opaque HMAC-signed cursor positions."""
 
@@ -107,6 +116,44 @@ class CursorCodec:
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise InvalidCursorError from exc
 
+    def encode_query(self, database_key: DatabaseQueryPaginationKey) -> str:
+        """Return a signed time cursor bound to one normalized database query."""
+
+        created_at = database_key.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        payload = json.dumps(
+            {
+                "v": 1,
+                "created_at": created_at.astimezone(UTC).isoformat(),
+                "id": database_key.identifier,
+                "query": database_key.query_fingerprint,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        return self._sign_payload(payload)
+
+    def decode_query(self, cursor: str) -> DatabaseQueryPaginationKey:
+        """Verify a query-bound cursor and return its internal database key."""
+
+        try:
+            payload = self._verify_payload(cursor)
+            if payload.get("v") != 1 or not payload.get("id") or not payload.get("query"):
+                raise InvalidCursorError
+            created_at = datetime.fromisoformat(str(payload["created_at"]))
+            if created_at.tzinfo is None:
+                raise InvalidCursorError
+            return DatabaseQueryPaginationKey(
+                created_at=created_at.astimezone(UTC),
+                identifier=str(payload["id"]),
+                query_fingerprint=str(payload["query"]),
+            )
+        except InvalidCursorError:
+            raise
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise InvalidCursorError from exc
+
     def _sign_payload(self, payload: bytes) -> str:
         """Sign serialized cursor payload bytes and return the public token."""
 
@@ -143,3 +190,14 @@ class CursorCodec:
 
         padding = "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(value + padding)
+
+
+def database_query_fingerprint(resource_name: str, filters: dict[str, object]) -> str:
+    """Hash a normalized resource filter set for binding cursors to one database query."""
+
+    payload = json.dumps(
+        {"resource": resource_name, "filters": filters},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()

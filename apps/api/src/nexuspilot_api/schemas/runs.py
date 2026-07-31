@@ -39,6 +39,23 @@ class RunRead(ApiModel):
     updated_at: datetime
 
 
+class RunSummary(ApiModel):
+    """Expose bounded run-list metadata without the complete user request or children."""
+
+    run_id: str
+    user_id: str
+    session_id: str | None
+    request_preview: str
+    run_type: str
+    status: RunStatus
+    budget_limit: Decimal | None
+    cost_used: Decimal
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class RunDetail(RunRead):
     """Expose a run together with its current task tree and model attempts."""
 

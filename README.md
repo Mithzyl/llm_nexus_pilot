@@ -8,6 +8,8 @@ NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务
 - API Key 基础认证；
 - 受信 API 调用方可以创建、查询、分页筛选和受限更新用户及会话；
 - 可以追加不可变会话消息，按数据库分配的序号分页读取，并验证 Message、Run 与 Session 归属；
+- Run 和 Task 支持独立签名 cursor 分页、归属与状态过滤；列表只返回有界预览；
+- Run/Task 取消和 Task 重试经过状态机保护，运行中取消及重试请求与 outbox 事实原子提交；
 - 基础用户身份创建与运行归属校验；
 - 创建运行、任务和模型调用记录，并通过现有详情接口读取部分历史；完整列表和反向查询仍属于 Phase 1 待办；
 - 保存任务依赖、工具调用、产物、审核结果和 outbox 事件的数据结构；
@@ -50,6 +52,21 @@ docker compose -f deployments/compose/docker-compose.yml up -d mysql minio
 make api-migrate
 make api-run
 ```
+
+如果宿主机 MySQL 已占用 `3306`，可以把项目 MySQL 隔离到其他端口：
+
+```bash
+NEXUSPILOT_MYSQL_HOST_PORT=3307 \
+  docker compose -f deployments/compose/docker-compose.yml up -d mysql minio
+```
+
+此时本地虚拟环境使用：
+
+```text
+NEXUSPILOT_DATABASE_URL=mysql+aiomysql://nexuspilot:nexuspilot@localhost:3307/nexuspilot
+```
+
+Compose 中的 API 会自动使用容器内部的 `mysql:3306` 和 `minio:9000`，不会读取宿主机地址。
 
 API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要携带：
 
@@ -107,6 +124,14 @@ NEXUSPILOT_OPENAI_COMPATIBLE_MODELS=example-model
 ```bash
 make api-test
 make api-lint
+```
+
+真实基础设施测试默认跳过，显式配置后执行：
+
+```bash
+NEXUSPILOT_TEST_MYSQL_URL=mysql+aiomysql://nexuspilot:nexuspilot@127.0.0.1:3307/nexuspilot \
+NEXUSPILOT_RUN_MINIO_TEST=1 \
+apps/api/.venv/bin/pytest -q apps/api/tests/test_real_infrastructure.py
 ```
 
 项目阶段、质量门禁和当前完成度以 [`platform-roadmap.md`](docs/architecture/platform-roadmap.md) 为准。

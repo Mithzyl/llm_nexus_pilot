@@ -8,6 +8,7 @@ from nexuspilot_api.core.errors import InvalidCursorError
 from nexuspilot_api.core.pagination import (
     CursorCodec,
     DatabasePaginationKey,
+    DatabaseQueryPaginationKey,
     DatabaseSequencePaginationKey,
 )
 
@@ -52,6 +53,21 @@ def test_sequence_cursor_round_trip_preserves_scope_and_sequence() -> None:
     )
 
     decoded = codec.decode_sequence(codec.encode_sequence(database_key))
+
+    assert decoded == database_key
+
+
+def test_query_cursor_round_trip_preserves_database_key_and_filter_scope() -> None:
+    """Verify query cursors retain their time boundary and normalized filter identity."""
+
+    codec = CursorCodec("test-signing-key")
+    database_key = DatabaseQueryPaginationKey(
+        created_at=datetime(2026, 7, 31, 12, 0, tzinfo=UTC),
+        identifier="run-123",
+        query_fingerprint="a" * 64,
+    )
+
+    decoded = codec.decode_query(codec.encode_query(database_key))
 
     assert decoded == database_key
 

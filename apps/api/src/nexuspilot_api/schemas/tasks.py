@@ -49,3 +49,34 @@ class TaskRead(ApiModel):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskSummary(ApiModel):
+    """Expose bounded task-list metadata without the complete objective text."""
+
+    task_id: str
+    run_id: str
+    parent_task_id: str | None
+    task_type: str
+    title: str
+    objective_preview: str
+    assigned_role: str | None
+    status: TaskStatus
+    priority: int
+    max_attempts: int
+    current_attempt: int
+    timeout_seconds: int
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskRetryRead(BaseModel):
+    """Expose the rescheduled task state and its durable retry-request event."""
+
+    task_id: str
+    status: TaskStatus
+    current_attempt: int
+    max_attempts: int
+    event_id: str

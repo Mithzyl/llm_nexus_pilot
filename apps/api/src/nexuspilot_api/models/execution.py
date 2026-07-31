@@ -3,7 +3,17 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from nexuspilot_api.models.base import Base, TimestampMixin, new_id
@@ -14,6 +24,23 @@ class LlmRun(TimestampMixin, Base):
     """Represent one complete user request and its budget consumption."""
 
     __tablename__ = "llm_runs"
+    __table_args__ = (
+        Index("ix_llm_runs_created", "created_at", "run_id"),
+        Index(
+            "ix_llm_runs_user_status_created",
+            "user_id",
+            "status",
+            "created_at",
+            "run_id",
+        ),
+        Index(
+            "ix_llm_runs_session_status_created",
+            "session_id",
+            "status",
+            "created_at",
+            "run_id",
+        ),
+    )
 
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
@@ -34,6 +61,30 @@ class LlmTask(TimestampMixin, Base):
     """Represent one concrete work item belonging to a run."""
 
     __tablename__ = "llm_tasks"
+    __table_args__ = (
+        Index("ix_llm_tasks_created", "created_at", "task_id"),
+        Index(
+            "ix_llm_tasks_run_status_created",
+            "run_id",
+            "status",
+            "created_at",
+            "task_id",
+        ),
+        Index(
+            "ix_llm_tasks_type_status_created",
+            "task_type",
+            "status",
+            "created_at",
+            "task_id",
+        ),
+        Index(
+            "ix_llm_tasks_role_status_created",
+            "assigned_role",
+            "status",
+            "created_at",
+            "task_id",
+        ),
+    )
 
     task_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     run_id: Mapped[str] = mapped_column(

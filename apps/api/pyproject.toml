@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexuspilot-api"
-version = "0.4.0"
+version = "0.5.0"
 description = "NexusPilot API and provider-neutral model response service"
 requires-python = ">=3.11"
 
@@ -15,6 +15,9 @@ where = ["src"]
 asyncio_mode = "auto"
 pythonpath = ["src", "../../packages/models/src"]
 testpaths = ["tests"]
+markers = [
+    "infrastructure: requires explicitly configured real MySQL or MinIO services",
+]
 
 [tool.ruff]
 line-length = 100

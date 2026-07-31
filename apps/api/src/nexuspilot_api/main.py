@@ -12,6 +12,7 @@ from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import (
     ApplicationError,
     InvalidCursorError,
+    InvalidRequestError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
@@ -42,7 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="NexusPilot LLM Platform API",
-    version="0.4.0",
+    version="0.5.0",
     description="Provider-neutral Responses API and durable NexusPilot execution records.",
     lifespan=lifespan,
 )
@@ -57,6 +58,7 @@ async def application_error_handler(_request: object, error: ApplicationError) -
         ResourceNotFoundError: 404,
         ResourceConflictError: 409,
         InvalidCursorError: 422,
+        InvalidRequestError: 422,
     }.get(type(error), 400)
     return JSONResponse(status_code=status_code, content={"detail": str(error)})
 

@@ -4,7 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from nexuspilot_api.routers import artifacts, attempts, providers, responses, runs, tasks, users
+from nexuspilot_api.routers import (
+    artifacts,
+    attempts,
+    providers,
+    responses,
+    runs,
+    sessions,
+    tasks,
+    users,
+)
 
 PACKAGE_ROOT = Path(__file__).parents[1] / "src" / "nexuspilot_api"
 
@@ -15,8 +24,26 @@ PACKAGE_ROOT = Path(__file__).parents[1] / "src" / "nexuspilot_api"
         (providers.router, {"/providers"}),
         (responses.router, {"/responses"}),
         (users.router, {"/users", "/users/{user_id}"}),
-        (runs.router, {"/runs", "/runs/{run_id}"}),
-        (tasks.router, {"/runs/{run_id}/tasks", "/tasks/{task_id}"}),
+        (
+            sessions.router,
+            {
+                "/sessions",
+                "/sessions/{session_id}",
+                "/sessions/{session_id}/messages",
+                "/messages/{message_id}",
+            },
+        ),
+        (runs.router, {"/runs", "/runs/{run_id}", "/runs/{run_id}/cancel"}),
+        (
+            tasks.router,
+            {
+                "/runs/{run_id}/tasks",
+                "/tasks",
+                "/tasks/{task_id}",
+                "/tasks/{task_id}/cancel",
+                "/tasks/{task_id}/retry",
+            },
+        ),
         (attempts.router, {"/runs/{run_id}/attempts"}),
         (artifacts.router, {"/runs/{run_id}/artifacts"}),
     ],
