@@ -495,13 +495,11 @@ async def _update_memory_transaction(
         for field_name in payload.model_fields_set
         if field_name not in {"idempotency_key", "expected_version_number"}
     )
-    if before_status == target_status and not creates_version:
-        operation = MemoryMutationOperation.UPDATE_METADATA
-    elif target_status == MemoryStatus.ACTIVE:
+    if before_status != target_status and target_status == MemoryStatus.ACTIVE:
         operation = MemoryMutationOperation.ACTIVATE
-    elif target_status == MemoryStatus.REJECTED:
+    elif before_status != target_status and target_status == MemoryStatus.REJECTED:
         operation = MemoryMutationOperation.REJECT
-    elif target_status == MemoryStatus.SUPERSEDED:
+    elif before_status != target_status and target_status == MemoryStatus.SUPERSEDED:
         operation = MemoryMutationOperation.SUPERSEDE
     elif creates_version:
         operation = MemoryMutationOperation.CORRECT

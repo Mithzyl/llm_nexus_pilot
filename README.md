@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理运行与调用证据，并为后续任务和 Agent 执行提供底座的 LLM 平台。阶段1数据与控制平面已经完成；阶段2正在收敛，Model Gateway 已可运行；阶段3继续暂停。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 调用链。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并为后续任务和 Agent 执行提供底座的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力已经完成；阶段3进入需求与可靠性规划，尚未实施。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 调用链。
 
 ## 当前能力
 
@@ -28,7 +28,7 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并为后
 - Memory Retrieval 使用有界的中英文词法候选、版本化整数评分、整条内容 token 预算和持久化检索证据，不返回跨 User、范围不匹配、非有效或已过期内容。
 - L0 手动 Agent Working State、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile 和 L4 User Profile 已有实验性同步接口；这些接口不属于当前模型响应链，Memory Packet 不在阶段2创建或绑定 Model Attempt。
 
-当前 Memory 只作为规划与实验性准备代码保留，不继续扩展，也不接入 `/responses`。现有 Context Preview 代码仍带有可选 Memory/Knowledge 候选分支，这是待收敛的实验性实现，不是稳定合同；阶段2验收前应禁用或移除这些分支。Knowledge 属于后续独立知识库规划；现有 Knowledge 结构代码不是稳定能力。Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail 已有代码但缺少行为测试，阶段2因此仍是进行中。默认不引入 Vector Store 或 Mem0。
+当前 Memory 只作为规划与实验性准备代码保留，不继续扩展，也不接入 `/responses`。Context Preview 的稳定合同已移除 Memory/Knowledge 候选字段，只选择显式 instruction、安全 instruction 和 Session Message，并使用 Model Catalog 与不可变来源快照。Knowledge 属于后续独立知识库规划；现有 Knowledge 结构代码不是稳定能力。Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail 已通过阶段2行为与基础设施验收。默认不引入 Vector Store 或 Mem0。
 
 ## 后端结构
 
@@ -189,5 +189,19 @@ apps/api/.venv/bin/pytest -q apps/api/tests/test_real_infrastructure.py
 
 - 阶段1数据与控制平面：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
 - 阶段2 LLM 核心能力：[`phase-2-llm-core-capabilities.md`](docs/implementation/phase-2-llm-core-capabilities.md)
-- 阶段3 RabbitMQ 规划（暂停）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
+- 阶段3 RabbitMQ 规划（规划中，尚未实施）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
 - 阶段9 Web 前端规划：[`phase-9-web-ui-plan.md`](docs/frontend/phase-9-web-ui-plan.md)
+
+## Web 前端本地启动
+
+阶段9第一版前端位于 `apps/web`，采用 Next.js 服务端转发层连接 FastAPI。浏览器不直接持有平台 API Key：
+
+```bash
+cd apps/web
+npm install
+NEXUSPILOT_API_URL=http://127.0.0.1:8000 \
+NEXUSPILOT_API_KEY=local-development-key-change-me \
+npm run dev
+```
+
+打开 `http://localhost:3000`。界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。具体行为边界见 [`phase-9-web-ui-plan.md`](docs/frontend/phase-9-web-ui-plan.md)。

@@ -346,7 +346,7 @@ Database Transaction Coordinator
 - ORM 名称明确区分 `LlmModelToolCall`、`LlmTaskEvaluation` 和 `LlmOutboxEvent`；新增组合索引由 Alembic `20260731_0006` 管理。
 - Task retry、运行中 Task cancel 和 Run cancel 已验证状态更新与 outbox 事实在同一个 `db_session.commit()` 中原子提交，并通过真实 MySQL 并发锁测试。
 - 最终验证：Ruff 全量通过；快速测试 `95 passed, 2 skipped`；真实 MySQL/MinIO 测试 `2 passed`；MySQL 8.4 位于 `20260731_0006 (head)`；`alembic check` 无迁移漂移。
-- 阶段1状态更新为“已完成”。后续可以继续阶段2独立能力建设；阶段3仍保持暂停，直到其执行规格讨论完成。
+- 阶段1状态更新为“已完成”。阶段2随后已经完成稳定能力验收；阶段3当前进入执行规格与可靠性规划，尚未修改运行代码。
 
 ## 完成标准
 

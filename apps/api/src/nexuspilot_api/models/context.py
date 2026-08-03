@@ -9,6 +9,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -53,9 +54,17 @@ class LlmContextBuild(Base):
         ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
         index=True,
     )
+    catalog_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "llm_model_catalog_versions.catalog_version_id", ondelete="RESTRICT"
+        ),
+        index=True,
+    )
     provider: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(128))
     token_budget: Mapped[int] = mapped_column(Integer)
+    reserved_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    recent_message_count: Mapped[int] = mapped_column(Integer, default=12)
     tokenizer_name: Mapped[str] = mapped_column(String(64))
     tokenizer_version: Mapped[str] = mapped_column(String(64))
     input_token_estimate: Mapped[int] = mapped_column(Integer)
@@ -92,6 +101,7 @@ class LlmContextSource(Base):
     source_type: Mapped[str] = mapped_column(String(64))
     source_id: Mapped[str] = mapped_column(String(36))
     source_version: Mapped[str | None] = mapped_column(String(64))
+    message_role: Mapped[str | None] = mapped_column(String(32))
     source_order: Mapped[int] = mapped_column(Integer)
     token_estimate: Mapped[int] = mapped_column(Integer)
     selection_status: Mapped[ContextSourceSelectionStatus] = mapped_column(
@@ -100,3 +110,4 @@ class LlmContextSource(Base):
     )
     exclusion_reason: Mapped[str | None] = mapped_column(String(128))
     content_hash: Mapped[str | None] = mapped_column(String(64))
+    content_text: Mapped[str | None] = mapped_column(Text)

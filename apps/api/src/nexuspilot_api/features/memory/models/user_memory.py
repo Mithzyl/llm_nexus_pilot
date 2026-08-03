@@ -162,13 +162,16 @@ class LlmMemorySnapshotObject(Base):
     object_type: Mapped[str] = mapped_column(String(64))
     schema_version: Mapped[str] = mapped_column(String(64))
     object_version: Mapped[int] = mapped_column(Integer)
-    storage_uri: Mapped[str] = mapped_column(String(1024))
+    # MySQL utf8mb4 unique indexes can cover at most 768 characters (3072 bytes).
+    # Object storage URIs are bounded to 512 here, matching durable artifact metadata.
+    storage_uri: Mapped[str] = mapped_column(String(512))
     content_hash: Mapped[str] = mapped_column(String(64))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     mime_type: Mapped[str] = mapped_column(String(128))
     status: Mapped[SnapshotObjectStatus] = mapped_column(
         Enum(SnapshotObjectStatus, native_enum=False, length=32),
         default=SnapshotObjectStatus.ACTIVE,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -1,8 +1,8 @@
 """Prompt rendering and Model Catalog capability use cases."""
 
-import re
+from re import Match
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from nexuspilot_api.models import (
 )
 from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.schemas.prompt_catalog import (
+    PROMPT_VARIABLE_PATTERN,
     ModelCapabilityRead,
     ModelCatalogStatusUpdate,
     ModelCatalogVersionCreate,
@@ -30,11 +31,12 @@ from nexuspilot_api.schemas.prompt_catalog import (
     PromptRenderRead,
     PromptTemplateCreate,
     PromptTemplateRead,
+    PromptTemplateStatusUpdate,
     PromptTemplateVersionCreate,
+    PromptVariableValue,
 )
 
 MAX_RENDERED_PROMPT_CHARACTERS = 40_000
-_VARIABLE_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
 
 
 async def create_prompt_template(
@@ -85,7 +87,11 @@ async def get_prompt_template(
 ) -> PromptTemplateRead:
     """Return one Prompt template and its active immutable version."""
 
-    template = await db_session.get(LlmPromptTemplate, template_name)
+    template = await db_session.scalar(
+        select(LlmPromptTemplate)
+        .where(LlmPromptTemplate.template_name == template_name)
+        .execution_options(populate_existing=True)
+    )
     if template is None:
         raise ResourceNotFoundError("Prompt Template")
     version = await db_session.scalar(
@@ -123,7 +129,12 @@ async def create_prompt_template_version(
     )
     if template is None:
         raise ResourceNotFoundError("Prompt Template")
-    next_version = template.current_version_number + 1
+    latest_version_number = await db_session.scalar(
+        select(func.max(LlmPromptTemplateVersion.version_number)).where(
+            LlmPromptTemplateVersion.template_name == template_name
+        )
+    )
+    next_version = (latest_version_number or 0) + 1
     db_session.add(
         LlmPromptTemplateVersion(
             template_version_id=new_id(),
@@ -144,7 +155,13 @@ async def create_prompt_template_version(
             actor_id=payload.created_by_actor_id,
         )
     )
-    await db_session.commit()
+    try:
+        await db_session.commit()
+    except IntegrityError as exc:
+        await db_session.rollback()
+        raise ResourceConflictError(
+            "Prompt template version was created concurrently"
+        ) from exc
     return await get_prompt_template(db_session, template_name)
 
 
@@ -212,6 +229,7 @@ async def render_prompt(
     if not provided_variables.issubset(declared_variables):
         unknown = sorted(provided_variables - declared_variables)
         raise InvalidRequestError(f"Unknown prompt variables: {unknown}")
+    _validate_prompt_variable_values(version.variable_schema_json, payload.variables)
     rendered = _substitute_variables(version.content_text, payload.variables)
     if len(rendered) > MAX_RENDERED_PROMPT_CHARACTERS:
         raise InvalidRequestError("Rendered prompt exceeds the allowed length")
@@ -224,15 +242,83 @@ async def render_prompt(
     )
 
 
-def _substitute_variables(content_text: str, variables: dict[str, str]) -> str:
+def _validate_prompt_variable_values(
+    variable_schema: dict[str, str],
+    variables: dict[str, PromptVariableValue],
+) -> None:
+    """Enforce each rendered value against its immutable declared scalar type."""
+
+    expected_python_types = {
+        "string": str,
+        "integer": int,
+        "number": (int, float),
+        "boolean": bool,
+    }
+    for variable_name, declared_type in variable_schema.items():
+        expected_type = expected_python_types.get(declared_type)
+        if expected_type is None:
+            raise ResourceConflictError(
+                f"Prompt variable {variable_name} has an unsupported stored type"
+            )
+        value = variables[variable_name]
+        if declared_type in {"integer", "number"} and isinstance(value, bool):
+            raise InvalidRequestError(
+                f"Prompt variable {variable_name} must be {declared_type}"
+            )
+        if not isinstance(value, expected_type):
+            raise InvalidRequestError(
+                f"Prompt variable {variable_name} must be {declared_type}"
+            )
+
+
+def _render_prompt_variable(value: PromptVariableValue) -> str:
+    """Render one validated scalar with deterministic boolean formatting."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _substitute_variables(
+    content_text: str,
+    variables: dict[str, PromptVariableValue],
+) -> str:
     """Replace each declared {{ variable }} exactly once with its rendered value."""
 
-    def _replace(match: re.Match[str]) -> str:
+    def _replace(match: Match[str]) -> str:
         """Return the caller-provided value for one validated template variable."""
 
-        return variables[match.group(1)]
+        return _render_prompt_variable(variables[match.group(1)])
 
-    return _VARIABLE_PATTERN.sub(_replace, content_text)
+    return PROMPT_VARIABLE_PATTERN.sub(_replace, content_text)
+
+
+async def update_prompt_template_status(
+    db_session: AsyncSession,
+    template_name: str,
+    payload: PromptTemplateStatusUpdate,
+) -> PromptTemplateRead:
+    """Enable or disable one Prompt template and record the actor transition."""
+
+    template = await db_session.scalar(
+        select(LlmPromptTemplate)
+        .where(LlmPromptTemplate.template_name == template_name)
+        .with_for_update()
+    )
+    if template is None:
+        raise ResourceNotFoundError("Prompt Template")
+    template.status = payload.status
+    db_session.add(
+        LlmPromptTemplateChange(
+            change_id=new_id(),
+            template_name=template_name,
+            action=payload.status.value.lower(),
+            version_number=template.current_version_number,
+            actor_id=payload.actor_id,
+        )
+    )
+    await db_session.commit()
+    return await get_prompt_template(db_session, template_name)
 
 
 async def create_model_catalog_version(
@@ -298,22 +384,14 @@ async def get_model_capability(
 ) -> ModelCapabilityRead:
     """Return one enabled capability snapshot or an explicit unknown answer."""
 
-    statement = select(LlmModelCatalogVersion).where(
-        LlmModelCatalogVersion.provider == provider,
-        LlmModelCatalogVersion.model == model,
+    entry = await resolve_enabled_model_catalog_version(
+        db_session, provider, model, catalog_version
     )
-    if catalog_version is not None:
-        statement = statement.where(
-            LlmModelCatalogVersion.catalog_version == catalog_version
-        )
-    statement = statement.order_by(
-        LlmModelCatalogVersion.catalog_version.desc()
-    ).limit(1)
-    entry = await db_session.scalar(statement)
-    if entry is None or entry.status != ModelCatalogStatus.ENABLED:
+    if entry is None:
         return ModelCapabilityRead(
             provider=provider,
             model=model,
+            catalog_version_id=None,
             catalog_version=catalog_version,
             known=False,
             context_window=None,
@@ -325,9 +403,41 @@ async def get_model_capability(
             tokenizer_name=None,
             tokenizer_version=None,
         )
+    return _model_capability_read(entry)
+
+
+async def resolve_enabled_model_catalog_version(
+    db_session: AsyncSession,
+    provider: str,
+    model: str,
+    catalog_version: str | None = None,
+) -> LlmModelCatalogVersion | None:
+    """Resolve the newest enabled immutable capability snapshot by creation evidence."""
+
+    statement = select(LlmModelCatalogVersion).where(
+        LlmModelCatalogVersion.provider == provider,
+        LlmModelCatalogVersion.model == model,
+        LlmModelCatalogVersion.status == ModelCatalogStatus.ENABLED,
+    )
+    if catalog_version is not None:
+        statement = statement.where(
+            LlmModelCatalogVersion.catalog_version == catalog_version
+        )
+    statement = statement.order_by(
+        LlmModelCatalogVersion.confirmed_at.desc(),
+        LlmModelCatalogVersion.created_at.desc(),
+        LlmModelCatalogVersion.catalog_version_id.desc(),
+    ).limit(1)
+    return await db_session.scalar(statement)
+
+
+def _model_capability_read(entry: LlmModelCatalogVersion) -> ModelCapabilityRead:
+    """Map one enabled catalog row to the public capability contract."""
+
     return ModelCapabilityRead(
         provider=entry.provider,
         model=entry.model,
+        catalog_version_id=entry.catalog_version_id,
         catalog_version=entry.catalog_version,
         known=True,
         context_window=entry.context_window,

@@ -118,14 +118,18 @@ class LlmMemory(TimestampMixin, Base):
     approval_method: Mapped[ApprovalMethod] = mapped_column(
         Enum(ApprovalMethod, native_enum=False, length=32),
         default=ApprovalMethod.NONE,
+        index=True,
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by_actor_id: Mapped[str | None] = mapped_column(String(128))
     sensitivity_classification: Mapped[SensitivityClassification] = mapped_column(
         Enum(SensitivityClassification, native_enum=False, length=32),
         default=SensitivityClassification.NONE,
+        index=True,
     )
-    is_core_profile_eligible: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_core_profile_eligible: Mapped[bool] = mapped_column(
+        Boolean, default=False, index=True
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     creation_idempotency_key: Mapped[str] = mapped_column(String(128))
@@ -205,6 +209,7 @@ class LlmMemoryMutation(Base):
     operation: Mapped[MemoryMutationOperation] = mapped_column(
         Enum(MemoryMutationOperation, native_enum=False, length=32),
         default=MemoryMutationOperation.UPDATE_METADATA,
+        index=True,
     )
     actor_type: Mapped[MemoryMutationActorType] = mapped_column(
         Enum(MemoryMutationActorType, native_enum=False, length=32),

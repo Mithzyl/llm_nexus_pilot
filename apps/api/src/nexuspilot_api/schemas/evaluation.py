@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import (
     EvaluationRuleSetStatus,
@@ -19,9 +20,30 @@ class EvaluationRuleCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rule_key: str = Field(min_length=1, max_length=128)
-    rule_type: str = Field(min_length=1, max_length=64)
-    severity: str = Field(default="error", min_length=1, max_length=32)
+    rule_type: Literal[
+        "input_length",
+        "credential_scan",
+        "attempt_reference",
+        "evidence_reference",
+    ]
+    severity: Literal["error", "warning"] = "error"
     config_json: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_rule_configuration(self) -> "EvaluationRuleCreate":
+        """Reject rule configuration that cannot be evaluated deterministically."""
+
+        if self.rule_type == "input_length":
+            if set(self.config_json) != {"max_characters"}:
+                raise ValueError("input_length requires only max_characters")
+            maximum = self.config_json["max_characters"]
+            if isinstance(maximum, bool) or not isinstance(maximum, int):
+                raise ValueError("max_characters must be an integer")
+            if not 1 <= maximum <= 40_000:
+                raise ValueError("max_characters must be between 1 and 40000")
+        elif self.config_json:
+            raise ValueError(f"{self.rule_type} does not accept configuration")
+        return self
 
 
 class EvaluationRuleSetCreate(BaseModel):

@@ -23,22 +23,269 @@ from nexuspilot_api.features.memory.services.memory_service import (
 )
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import (
+    LlmContextBuild,
+    LlmContextSource,
+    LlmEvaluationRule,
+    LlmEvaluationRuleSet,
     LlmMemory,
     LlmMemoryMutation,
     LlmMemoryVersion,
+    LlmMessage,
+    LlmModelCatalogVersion,
     LlmOutboxEvent,
+    LlmPromptTemplate,
+    LlmPromptTemplateChange,
+    LlmPromptTemplateVersion,
     LlmRun,
+    LlmSession,
     LlmTask,
+    LlmTaskEvaluation,
+    MemoryMutationOperation,
     MemoryStatus,
     MemoryType,
+    MessageRole,
     RunStatus,
     TaskStatus,
     User,
     new_id,
 )
+from nexuspilot_api.schemas.context_builds import ContextBuildCreate
+from nexuspilot_api.schemas.evaluation import EvaluationCreate, EvaluationRuleSetCreate
+from nexuspilot_api.schemas.prompt_catalog import (
+    ModelCatalogVersionCreate,
+    PromptTemplateCreate,
+    PromptTemplateVersionCreate,
+)
+from nexuspilot_api.services.context_builder_service import build_context, get_context_build
+from nexuspilot_api.services.evaluation_service import create_evaluation, create_rule_set
+from nexuspilot_api.services.prompt_catalog_service import (
+    create_model_catalog_version,
+    create_prompt_template,
+    create_prompt_template_version,
+)
 from nexuspilot_api.services.task_service import retry_task
 
 pytestmark = pytest.mark.infrastructure
+
+
+@pytest.mark.skipif(
+    not os.getenv("NEXUSPILOT_TEST_MYSQL_URL"),
+    reason="NEXUSPILOT_TEST_MYSQL_URL is not configured",
+)
+async def test_real_mysql_phase2_context_prompt_and_evaluation() -> None:
+    """Verify stable phase 2 persistence, Prompt locking, and Evaluation idempotency."""
+
+    database_url = os.environ["NEXUSPILOT_TEST_MYSQL_URL"]
+    mysql_engine = create_async_engine(database_url, pool_pre_ping=True)
+    mysql_session_factory = async_sessionmaker(mysql_engine, expire_on_commit=False)
+    unique_suffix = uuid4().hex
+    user_id = f"phase2-infra-{unique_suffix}"
+    session_id = new_id()
+    run_id = new_id()
+    task_id = new_id()
+    template_name = f"phase2-prompt-{unique_suffix}"
+    rule_set_name = f"phase2-rules-{unique_suffix}"
+    context_build_id: str | None = None
+    catalog_version_id: str | None = None
+    rule_set_id: str | None = None
+    try:
+        async with mysql_session_factory() as db_session:
+            db_session.add(User(user_id=user_id, display_name="Phase 2 Infrastructure"))
+            await db_session.flush()
+            db_session.add(LlmSession(session_id=session_id, user_id=user_id))
+            await db_session.flush()
+            db_session.add_all(
+                [
+                    LlmMessage(
+                        session_id=session_id,
+                        role=MessageRole.USER,
+                        content_text=f"message-{sequence}",
+                        sequence=sequence,
+                    )
+                    for sequence in range(1, 4)
+                ]
+            )
+            db_session.add(
+                LlmRun(
+                    run_id=run_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_request="Verify phase 2 on MySQL",
+                )
+            )
+            await db_session.flush()
+            db_session.add(
+                LlmTask(
+                    task_id=task_id,
+                    run_id=run_id,
+                    task_type="phase2_infrastructure",
+                    title="Verify stable phase 2 units",
+                    objective="Exercise MySQL constraints and row locks",
+                )
+            )
+            await db_session.commit()
+
+        async with mysql_session_factory() as db_session:
+            capability = await create_model_catalog_version(
+                db_session,
+                ModelCatalogVersionCreate(
+                    provider="openai",
+                    model=f"phase2-model-{unique_suffix}",
+                    catalog_version="v1",
+                    source="real-mysql-test",
+                    context_window=8_192,
+                    tokenizer_name="utf8_bytes_upper_bound",
+                    tokenizer_version="v1",
+                ),
+            )
+            catalog_version_id = capability.catalog_version_id
+            context = await build_context(
+                db_session,
+                ContextBuildCreate(
+                    user_id=user_id,
+                    session_id=session_id,
+                    provider="openai",
+                    model=f"phase2-model-{unique_suffix}",
+                    catalog_version="v1",
+                    token_budget=2_048,
+                    reserved_output_tokens=256,
+                    recent_message_count=2,
+                ),
+            )
+            context_build_id = context.context_build_id
+            reloaded_context = await get_context_build(db_session, context_build_id)
+            assert reloaded_context.messages == context.messages
+            assert reloaded_context.catalog_version_id == catalog_version_id
+
+        async with mysql_session_factory() as db_session:
+            await create_prompt_template(
+                db_session,
+                PromptTemplateCreate(
+                    template_name=template_name,
+                    content_text="Hello {{ name }}",
+                    variable_schema={"name": "string"},
+                    created_by_actor_id="real-mysql-test",
+                ),
+            )
+
+        async def add_prompt_version(version_label: str) -> int:
+            """Append one Prompt version in an isolated row-locking transaction."""
+
+            async with mysql_session_factory() as db_session:
+                prompt = await create_prompt_template_version(
+                    db_session,
+                    template_name,
+                    PromptTemplateVersionCreate(
+                        content_text=f"{version_label} {{{{ name }}}}",
+                        variable_schema={"name": "string"},
+                        created_by_actor_id="real-mysql-test",
+                    ),
+                )
+                return prompt.current_version_number
+
+        prompt_versions = await asyncio.gather(
+            add_prompt_version("Second"),
+            add_prompt_version("Third"),
+        )
+        assert sorted(prompt_versions) == [2, 3]
+
+        async with mysql_session_factory() as db_session:
+            rule_set = await create_rule_set(
+                db_session,
+                EvaluationRuleSetCreate(
+                    name=rule_set_name,
+                    schema_version="v1",
+                    rules=[
+                        {
+                            "rule_key": "length",
+                            "rule_type": "input_length",
+                            "config_json": {"max_characters": 100},
+                        }
+                    ],
+                ),
+            )
+            rule_set_id = rule_set["rule_set_id"]
+
+        evaluation_payload = EvaluationCreate(
+            run_id=run_id,
+            task_id=task_id,
+            evaluation_type="deterministic",
+            rule_set_id=rule_set_id,
+            idempotency_key=f"phase2-evaluation-{unique_suffix}",
+            input_text="bounded input",
+        )
+
+        async def create_same_evaluation() -> tuple[str, bool]:
+            """Create or replay one Evaluation in an isolated concurrent transaction."""
+
+            async with mysql_session_factory() as db_session:
+                result = await create_evaluation(db_session, evaluation_payload)
+                return result.record.evaluation_id, result.was_replayed
+
+        evaluation_results = await asyncio.gather(
+            create_same_evaluation(),
+            create_same_evaluation(),
+        )
+        assert len({evaluation_id for evaluation_id, _ in evaluation_results}) == 1
+        assert sorted(was_replayed for _, was_replayed in evaluation_results) == [False, True]
+    finally:
+        async with mysql_session_factory() as db_session:
+            await db_session.execute(
+                delete(LlmTaskEvaluation).where(LlmTaskEvaluation.task_id == task_id)
+            )
+            if rule_set_id is not None:
+                await db_session.execute(
+                    delete(LlmEvaluationRule).where(
+                        LlmEvaluationRule.rule_set_id == rule_set_id
+                    )
+                )
+                await db_session.execute(
+                    delete(LlmEvaluationRuleSet).where(
+                        LlmEvaluationRuleSet.rule_set_id == rule_set_id
+                    )
+                )
+            await db_session.execute(
+                delete(LlmContextSource).where(
+                    LlmContextSource.context_build_id == context_build_id
+                )
+            )
+            await db_session.execute(
+                delete(LlmContextBuild).where(
+                    LlmContextBuild.context_build_id == context_build_id
+                )
+            )
+            await db_session.execute(
+                delete(LlmPromptTemplateChange).where(
+                    LlmPromptTemplateChange.template_name == template_name
+                )
+            )
+            await db_session.execute(
+                delete(LlmPromptTemplateVersion).where(
+                    LlmPromptTemplateVersion.template_name == template_name
+                )
+            )
+            await db_session.execute(
+                delete(LlmPromptTemplate).where(
+                    LlmPromptTemplate.template_name == template_name
+                )
+            )
+            if catalog_version_id is not None:
+                await db_session.execute(
+                    delete(LlmModelCatalogVersion).where(
+                        LlmModelCatalogVersion.catalog_version_id == catalog_version_id
+                    )
+                )
+            await db_session.execute(delete(LlmTask).where(LlmTask.task_id == task_id))
+            await db_session.execute(delete(LlmRun).where(LlmRun.run_id == run_id))
+            await db_session.execute(
+                delete(LlmMessage).where(LlmMessage.session_id == session_id)
+            )
+            await db_session.execute(
+                delete(LlmSession).where(LlmSession.session_id == session_id)
+            )
+            await db_session.execute(delete(User).where(User.user_id == user_id))
+            await db_session.commit()
+        await mysql_engine.dispose()
 
 
 @pytest.mark.skipif(
@@ -280,15 +527,21 @@ async def test_real_mysql_serializes_memory_semantic_slot_and_corrections() -> N
                 .select_from(LlmMemoryVersion)
                 .where(LlmMemoryVersion.memory_id == memory_id)
             )
-            mutation_count = await db_session.scalar(
-                select(func.count())
-                .select_from(LlmMemoryMutation)
-                .where(LlmMemoryMutation.memory_id == memory_id)
+            mutation_operations = set(
+                (
+                    await db_session.scalars(
+                        select(LlmMemoryMutation.operation)
+                        .where(LlmMemoryMutation.memory_id == memory_id)
+                    )
+                ).all()
             )
             assert memory is not None
             assert memory.current_version_number == 2
             assert version_count == 2
-            assert mutation_count == 1
+            assert mutation_operations == {
+                MemoryMutationOperation.CREATE,
+                MemoryMutationOperation.CORRECT,
+            }
     finally:
         async with mysql_session_factory() as db_session:
             await db_session.execute(delete(LlmMemory).where(LlmMemory.user_id == user_id))

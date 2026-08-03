@@ -1,11 +1,48 @@
 """Prompt template and Model Catalog HTTP schemas."""
 
+import re
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 from nexuspilot_api.models import ModelCatalogStatus, PromptTemplateStatus
 from nexuspilot_api.schemas.base import ApiModel
+
+PROMPT_VARIABLE_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+PROMPT_VARIABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+PromptVariableType = Literal["string", "integer", "number", "boolean"]
+PromptVariableValue = StrictStr | StrictInt | StrictFloat | StrictBool
+
+
+def validate_prompt_variable_contract(
+    content_text: str,
+    variable_schema: dict[str, PromptVariableType],
+) -> None:
+    """Require declared variable names and template placeholders to match exactly."""
+
+    if len(variable_schema) > 64:
+        raise ValueError("Prompt templates support at most 64 variables")
+    invalid_names = [
+        name
+        for name in variable_schema
+        if not PROMPT_VARIABLE_NAME_PATTERN.fullmatch(name)
+    ]
+    if invalid_names:
+        raise ValueError(f"Invalid prompt variable names: {sorted(invalid_names)}")
+    placeholders = set(PROMPT_VARIABLE_PATTERN.findall(content_text))
+    declared = set(variable_schema)
+    if placeholders != declared:
+        raise ValueError("Prompt placeholders must exactly match variable_schema")
 
 
 class PromptTemplateCreate(BaseModel):
@@ -16,8 +53,15 @@ class PromptTemplateCreate(BaseModel):
     template_name: str = Field(min_length=1, max_length=128)
     purpose: str | None = Field(default=None, max_length=4_000)
     content_text: str = Field(min_length=1, max_length=40_000)
-    variable_schema: dict[str, str] = Field(default_factory=dict)
+    variable_schema: dict[str, PromptVariableType] = Field(default_factory=dict)
     created_by_actor_id: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_variable_contract(self) -> "PromptTemplateCreate":
+        """Validate the first immutable version's placeholder contract."""
+
+        validate_prompt_variable_contract(self.content_text, self.variable_schema)
+        return self
 
 
 class PromptTemplateVersionCreate(BaseModel):
@@ -26,8 +70,15 @@ class PromptTemplateVersionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     content_text: str = Field(min_length=1, max_length=40_000)
-    variable_schema: dict[str, str] = Field(default_factory=dict)
+    variable_schema: dict[str, PromptVariableType] = Field(default_factory=dict)
     created_by_actor_id: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_variable_contract(self) -> "PromptTemplateVersionCreate":
+        """Validate a new immutable version's placeholder contract."""
+
+        validate_prompt_variable_contract(self.content_text, self.variable_schema)
+        return self
 
 
 class PromptActiveVersionUpdate(BaseModel):
@@ -39,6 +90,15 @@ class PromptActiveVersionUpdate(BaseModel):
     actor_id: str = Field(min_length=1, max_length=128)
 
 
+class PromptTemplateStatusUpdate(BaseModel):
+    """Validate one explicit Prompt template status transition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: PromptTemplateStatus
+    actor_id: str = Field(min_length=1, max_length=128)
+
+
 class PromptTemplateRead(ApiModel):
     """Expose one Prompt template with its active immutable version."""
 
@@ -47,7 +107,7 @@ class PromptTemplateRead(ApiModel):
     status: PromptTemplateStatus
     current_version_number: int
     content_text: str
-    variable_schema: dict[str, str]
+    variable_schema: dict[str, PromptVariableType]
     created_at: datetime
     updated_at: datetime
 
@@ -59,7 +119,7 @@ class PromptRenderCreate(BaseModel):
 
     template_name: str = Field(min_length=1, max_length=128)
     version_number: int | None = Field(default=None, ge=1)
-    variables: dict[str, str] = Field(default_factory=dict)
+    variables: dict[str, PromptVariableValue] = Field(default_factory=dict)
 
 
 class PromptRenderRead(ApiModel):
@@ -105,6 +165,7 @@ class ModelCapabilityRead(ApiModel):
 
     provider: str
     model: str
+    catalog_version_id: str | None
     catalog_version: str | None
     known: bool
     context_window: int | None

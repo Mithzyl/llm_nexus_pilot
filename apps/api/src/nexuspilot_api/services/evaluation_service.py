@@ -133,6 +133,8 @@ async def create_evaluation(
             raise ResourceNotFoundError("Model Attempt")
         if attempt.run_id != run.run_id:
             raise ResourceConflictError("Candidate attempt does not belong to the Run")
+        if attempt.task_id != task.task_id:
+            raise ResourceConflictError("Candidate attempt does not belong to the Task")
     rule_set = await db_session.get(LlmEvaluationRuleSet, payload.rule_set_id)
     if rule_set is None:
         raise ResourceNotFoundError("Evaluation Rule Set")
@@ -147,6 +149,7 @@ async def create_evaluation(
         )
     )
     if replay is not None:
+        _validate_evaluation_replay(replay, request_hash)
         return EvaluationWriteResult(
             record=await get_evaluation(db_session, replay.evaluation_id),
             was_replayed=True,
@@ -212,6 +215,7 @@ async def create_evaluation(
             )
         )
         if replay is not None:
+            _validate_evaluation_replay(replay, request_hash)
             return EvaluationWriteResult(
                 record=await get_evaluation(db_session, replay.evaluation_id),
                 was_replayed=True,
@@ -283,8 +287,9 @@ def _evaluate_rule(
     """Evaluate one deterministic rule and never echo rejected sensitive input."""
 
     config = rule.config_json or {}
+    _validate_stored_rule(rule.rule_type, rule.severity, config)
     if rule.rule_type == "input_length":
-        maximum = int(config.get("max_characters", MAX_EVALUATION_INPUT_CHARACTERS))
+        maximum = config["max_characters"]
         length = len(payload.input_text or "")
         if length > maximum:
             return EvaluationVerdict.FAIL, f"input_length {length} exceeds {maximum}"
@@ -305,4 +310,44 @@ def _evaluate_rule(
         if not payload.input_evidence_uri:
             return EvaluationVerdict.FAIL, "input_evidence_uri required"
         return EvaluationVerdict.PASS, "input evidence present"
-    return EvaluationVerdict.PASS, "unsupported rule treated as pass"
+    raise ResourceConflictError("Stored Evaluation rule type is unsupported")
+
+
+def _validate_stored_rule(
+    rule_type: str,
+    severity: str,
+    config: dict,
+) -> None:
+    """Fail safely when historical database rules violate the current contract."""
+
+    supported_types = {
+        "input_length",
+        "credential_scan",
+        "attempt_reference",
+        "evidence_reference",
+    }
+    if rule_type not in supported_types or severity not in {"error", "warning"}:
+        raise ResourceConflictError("Stored Evaluation rule is unsupported")
+    if rule_type == "input_length":
+        maximum = config.get("max_characters")
+        if (
+            set(config) != {"max_characters"}
+            or isinstance(maximum, bool)
+            or not isinstance(maximum, int)
+            or not 1 <= maximum <= MAX_EVALUATION_INPUT_CHARACTERS
+        ):
+            raise ResourceConflictError("Stored input_length rule is invalid")
+    elif config:
+        raise ResourceConflictError("Stored Evaluation rule configuration is invalid")
+
+
+def _validate_evaluation_replay(
+    evaluation: LlmTaskEvaluation,
+    request_hash: str,
+) -> None:
+    """Allow an idempotent replay only when the complete normalized request matches."""
+
+    if evaluation.findings_json.get("request_hash") != request_hash:
+        raise ResourceConflictError(
+            "Evaluation idempotency key was already used for different input"
+        )

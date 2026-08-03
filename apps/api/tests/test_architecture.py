@@ -170,6 +170,7 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                 "/internal/prompt-templates",
                 "/internal/prompt-templates/{template_name}/versions",
                 "/internal/prompt-templates/{template_name}/active-version",
+                "/internal/prompt-templates/{template_name}/status",
                 "/internal/model-catalog-versions",
                 "/internal/model-catalog-versions/{catalog_version_id}/status",
             },

@@ -782,7 +782,7 @@ def _create_snapshot_registry() -> None:
         sa.Column("object_type", sa.String(64), nullable=False),
         sa.Column("schema_version", sa.String(64), nullable=False),
         sa.Column("object_version", sa.Integer(), nullable=False),
-        sa.Column("storage_uri", sa.String(1024), nullable=False),
+        sa.Column("storage_uri", sa.String(512), nullable=False),
         sa.Column("content_hash", sa.String(64), nullable=False),
         sa.Column("size_bytes", sa.BigInteger(), nullable=False),
         sa.Column("mime_type", sa.String(128), nullable=False),
@@ -893,7 +893,7 @@ def _create_profile_tables() -> None:
         ["json_snapshot_object_id"],
     )
     op.create_index(
-        "ix_llm_project_memory_profile_snapshots_markdown_snapshot_object_id",
+        "ix_project_profile_markdown_snapshot_object",
         "llm_project_memory_profile_snapshots",
         ["markdown_snapshot_object_id"],
     )
@@ -1621,6 +1621,7 @@ def _extend_existing_tables() -> None:
             sa.ForeignKey(
                 "llm_user_memory_profile_snapshots.user_memory_profile_snapshot_id",
                 ondelete="SET NULL",
+                name="fk_user_memory_profile_snapshot",
             ),
         ),
     )
@@ -1635,7 +1636,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "project_id",
             sa.String(36),
-            sa.ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
+            sa.ForeignKey(
+                "llm_projects.project_id",
+                ondelete="RESTRICT",
+                name="fk_session_project",
+            ),
         ),
     )
     op.add_column(
@@ -1643,7 +1648,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "current_state_id",
             sa.String(36),
-            sa.ForeignKey("llm_session_states.session_state_id", ondelete="SET NULL"),
+            sa.ForeignKey(
+                "llm_session_states.session_state_id",
+                ondelete="SET NULL",
+                name="fk_session_current_state",
+            ),
         ),
     )
     op.add_column(
@@ -1651,7 +1660,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "current_summary_id",
             sa.String(36),
-            sa.ForeignKey("llm_session_summaries.session_summary_id", ondelete="SET NULL"),
+            sa.ForeignKey(
+                "llm_session_summaries.session_summary_id",
+                ondelete="SET NULL",
+                name="fk_session_current_summary",
+            ),
         ),
     )
     op.create_index("ix_llm_sessions_project_id", "llm_sessions", ["project_id"])
@@ -1663,7 +1676,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "project_id",
             sa.String(36),
-            sa.ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
+            sa.ForeignKey(
+                "llm_projects.project_id",
+                ondelete="RESTRICT",
+                name="fk_run_project",
+            ),
         ),
     )
     op.add_column(
@@ -1671,7 +1688,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "current_memory_snapshot_id",
             sa.String(36),
-            sa.ForeignKey("llm_run_memory_snapshots.run_memory_snapshot_id", ondelete="SET NULL"),
+            sa.ForeignKey(
+                "llm_run_memory_snapshots.run_memory_snapshot_id",
+                ondelete="SET NULL",
+                name="fk_run_current_memory_snapshot",
+            ),
         ),
     )
     op.create_index("ix_llm_runs_project_id", "llm_runs", ["project_id"])
@@ -1686,7 +1707,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "project_id",
             sa.String(36),
-            sa.ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
+            sa.ForeignKey(
+                "llm_projects.project_id",
+                ondelete="RESTRICT",
+                name="fk_memory_project",
+            ),
         ),
     )
     op.add_column(
@@ -1798,7 +1823,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "memory_packet_id",
             sa.String(36),
-            sa.ForeignKey("llm_memory_packets.memory_packet_id", ondelete="SET NULL"),
+            sa.ForeignKey(
+                "llm_memory_packets.memory_packet_id",
+                ondelete="SET NULL",
+                name="fk_attempt_memory_packet",
+            ),
         ),
     )
     op.create_index("ix_llm_attempts_memory_packet_id", "llm_attempts", ["memory_packet_id"])
@@ -1808,7 +1837,11 @@ def _extend_existing_tables() -> None:
         sa.Column(
             "rule_set_id",
             sa.String(36),
-            sa.ForeignKey("llm_evaluation_rule_sets.rule_set_id", ondelete="RESTRICT"),
+            sa.ForeignKey(
+                "llm_evaluation_rule_sets.rule_set_id",
+                ondelete="RESTRICT",
+                name="fk_evaluation_rule_set",
+            ),
         ),
     )
     op.add_column("llm_evaluations", sa.Column("rule_set_schema_version", sa.String(64)))
@@ -1842,6 +1875,11 @@ def downgrade() -> None:
         "llm_evaluations",
         type_="unique",
     )
+    op.drop_constraint(
+        "fk_evaluation_rule_set",
+        "llm_evaluations",
+        type_="foreignkey",
+    )
     op.drop_index("ix_llm_evaluations_status", table_name="llm_evaluations")
     op.drop_index("ix_llm_evaluations_rule_set_id", table_name="llm_evaluations")
     op.drop_column("llm_evaluations", "completed_at")
@@ -1852,6 +1890,11 @@ def downgrade() -> None:
     op.drop_column("llm_evaluations", "rule_set_schema_version")
     op.drop_column("llm_evaluations", "rule_set_id")
 
+    op.drop_constraint(
+        "fk_attempt_memory_packet",
+        "llm_attempts",
+        type_="foreignkey",
+    )
     op.drop_index("ix_llm_attempts_memory_packet_id", table_name="llm_attempts")
     op.drop_column("llm_attempts", "memory_packet_id")
 
@@ -1868,6 +1911,7 @@ def downgrade() -> None:
 
     op.drop_column("llm_memory_sources", "trust_level")
 
+    op.drop_constraint("fk_memory_project", "llm_memories", type_="foreignkey")
     op.drop_index("ix_llm_memories_is_core_profile_eligible", table_name="llm_memories")
     op.drop_index("ix_llm_memories_sensitivity_classification", table_name="llm_memories")
     op.drop_index("ix_llm_memories_approval_method", table_name="llm_memories")
@@ -1879,11 +1923,28 @@ def downgrade() -> None:
     op.drop_column("llm_memories", "approval_method")
     op.drop_column("llm_memories", "project_id")
 
+    op.drop_constraint(
+        "fk_run_current_memory_snapshot",
+        "llm_runs",
+        type_="foreignkey",
+    )
+    op.drop_constraint("fk_run_project", "llm_runs", type_="foreignkey")
     op.drop_index("ix_llm_runs_current_memory_snapshot_id", table_name="llm_runs")
     op.drop_index("ix_llm_runs_project_id", table_name="llm_runs")
     op.drop_column("llm_runs", "current_memory_snapshot_id")
     op.drop_column("llm_runs", "project_id")
 
+    op.drop_constraint(
+        "fk_session_current_summary",
+        "llm_sessions",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "fk_session_current_state",
+        "llm_sessions",
+        type_="foreignkey",
+    )
+    op.drop_constraint("fk_session_project", "llm_sessions", type_="foreignkey")
     op.drop_index("ix_llm_sessions_current_summary_id", table_name="llm_sessions")
     op.drop_index("ix_llm_sessions_current_state_id", table_name="llm_sessions")
     op.drop_index("ix_llm_sessions_project_id", table_name="llm_sessions")
@@ -1891,6 +1952,11 @@ def downgrade() -> None:
     op.drop_column("llm_sessions", "current_state_id")
     op.drop_column("llm_sessions", "project_id")
 
+    op.drop_constraint(
+        "fk_user_memory_profile_snapshot",
+        "users",
+        type_="foreignkey",
+    )
     op.drop_index(
         "ix_users_current_memory_profile_snapshot_id",
         table_name="users",

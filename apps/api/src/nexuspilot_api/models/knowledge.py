@@ -104,7 +104,6 @@ class LlmKnowledgeDocumentVersion(Base):
     status: Mapped[KnowledgeVersionStatus] = mapped_column(
         Enum(KnowledgeVersionStatus, native_enum=False, length=32),
         default=KnowledgeVersionStatus.PENDING,
-        index=True,
     )
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
@@ -147,7 +146,7 @@ class LlmKnowledgeChunk(Base):
     content_text: Mapped[str] = mapped_column(Text)
     stable_locator: Mapped[str] = mapped_column(String(512))
     artifact_uri: Mapped[str] = mapped_column(String(1024))
-    content_hash: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
     token_estimate: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

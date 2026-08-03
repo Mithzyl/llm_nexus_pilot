@@ -101,6 +101,10 @@ class LlmProjectMemoryProfileSnapshot(Base):
             "status",
             "version",
         ),
+        Index(
+            "ix_project_profile_markdown_snapshot_object",
+            "markdown_snapshot_object_id",
+        ),
     )
 
     project_memory_profile_snapshot_id: Mapped[str] = mapped_column(
@@ -122,7 +126,7 @@ class LlmProjectMemoryProfileSnapshot(Base):
     tokenizer_version: Mapped[str] = mapped_column(String(64))
     previous_snapshot_id: Mapped[str | None] = mapped_column(String(36))
     json_snapshot_object_id: Mapped[str | None] = mapped_column(String(36), index=True)
-    markdown_snapshot_object_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    markdown_snapshot_object_id: Mapped[str | None] = mapped_column(String(36))
     idempotency_key: Mapped[str] = mapped_column(String(128))
     request_hash: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(

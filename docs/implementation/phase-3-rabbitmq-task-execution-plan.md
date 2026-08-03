@@ -1,10 +1,10 @@
 # 第三阶段：RabbitMQ 任务执行需求讨论与功能规划
 
-**文档日期：** 2026 年 7 月 30 日
-**文档状态：** 暂停，保留设计但暂停实施
+**文档日期：** 2026 年 8 月 3 日
+**文档状态：** 规划中（阶段2已完成；阶段3尚未修改运行代码，等待执行合同确认）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
-> 阶段3仍未开始实施；其前置条件现为先完成阶段2当前能力，并确认任务执行规格。
+> 阶段2稳定能力已完成。阶段3现在只进行需求、状态机、消息合同和故障恢复规划；执行规格确认前不实现 RabbitMQ、Publisher 或 Worker。
 
 ## 目标
 
@@ -19,8 +19,8 @@
 - `llm_outbox_events` 已有事件、聚合对象、载荷、发布次数和下次重试时间，但没有并发发布锁、最后发布错误和发布确认编号。
 - 当前 API 创建任务时不会写 outbox，也没有 RabbitMQ 依赖、发布器或 Worker。
 - 当前 `ModelInvocationService` 可以执行统一模型调用，但 `llm_tasks` 尚未定义足以让 Worker 重建模型请求的稳定执行载荷。
-- 当前不能安全声称阶段 3 已开始运行。
-- 阶段1数据与控制平面已经完成；当前优先级是实现阶段2的大语言模型核心能力单元。
+- 阶段2的 Model Gateway、Context、Prompt/Model Catalog 和 Evaluation 已完成快速测试、真实 MySQL/MinIO、迁移循环和静态检查，可作为 Worker handler 的已验证依赖。
+- 当前仍没有 RabbitMQ 依赖、拓扑声明、发布循环、消费去重表或 Worker 进程，不能声称阶段3已经实施。
 
 ## 可靠性结论
 
@@ -46,6 +46,54 @@
 | 取消语义 | `cancel_requested` 阻止新领取；运行中调用采用协作式取消，不能承诺强制终止外部模型计费 | 与当前状态枚举一致，避免虚假即时取消 |
 
 如果不接受 `execution_spec_json`，必须先提供另一种能够版本化、校验并重建执行请求的数据契约；否则停止 Worker 实现。
+
+## 规划结论与编码前决定
+
+本轮把阶段3边界收敛为一个可独立交付能力，不拆成额外阶段。编码前需要确认以下决定；未确认时只允许继续文档和测试设计：
+
+| 决定 | 当前建议 | 通过条件 |
+|---|---|---|
+| 首个 handler | `model_response` | 能从版本化执行规格重建一个已验证 `ModelRequest`，并复用现有 `ModelInvocationService` |
+| 执行规格 | `execution_spec_json` 使用带 `schema_version` 的判别联合 | 未知版本、未知任务类型和超限输入在写 outbox 前拒绝 |
+| 自动入队 | 只为状态可进入 `ready` 且依赖已完成的可执行任务，在同一事务写 `task.ready` | task 写入失败或 outbox 写入失败时整个事务回滚 |
+| 取消 | 协作式取消 | 未领取任务不执行；运行中任务只在安全点停止，不承诺撤销已产生的模型费用 |
+| 交付语义 | 至少一次 | 重复发布、重复消费和 ack 丢失均不重复产生模型调用或终态结果 |
+
+### 状态机合同
+
+任务状态继续使用已有 `TaskStatus`，阶段3只增加受控转换，不创建第二套 Worker 状态：
+
+```text
+pending / waiting_for_dependency
+  → ready
+  → running
+  → completed | failed | cancelled
+
+failed（可重试且未超限）
+  → retry_scheduled
+  → ready
+
+pending | ready | retry_scheduled
+  → cancel_requested
+  → cancelled
+```
+
+约束：
+
+- `completed`、`cancelled` 和达到尝试上限的 `failed` 是终态，重复消息只记录 delivery 结果并 ack，不重新执行。
+- `ready → running` 必须使用带版本或状态条件的原子更新；影响行数为 0 表示任务已被其他 Worker 领取或状态已变化。
+- `running` 租约过期不直接代表失败。恢复器必须先确认没有有效领取者，再增加执行尝试并重新排队。
+- `cancel_requested` 与模型请求可能并发；数据库只记录已确认的最终事实，不把收到取消请求等同于外部调用已停止。
+
+Outbox 状态建议固定为：
+
+```text
+pending → publishing → published
+                 └──→ pending（临时失败并设置 next_retry_at）
+                 └──→ failed（永久失败或超过发布上限）
+```
+
+`publishing` 必须带发布租约。进程崩溃后只有租约过期事件可回到 `pending`；publisher confirm 成功后才进入 `published`。
 
 ## 消息契约
 

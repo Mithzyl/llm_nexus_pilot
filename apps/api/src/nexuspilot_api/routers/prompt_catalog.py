@@ -15,6 +15,7 @@ from nexuspilot_api.schemas.prompt_catalog import (
     PromptRenderRead,
     PromptTemplateCreate,
     PromptTemplateRead,
+    PromptTemplateStatusUpdate,
     PromptTemplateVersionCreate,
 )
 from nexuspilot_api.services.prompt_catalog_service import (
@@ -25,6 +26,7 @@ from nexuspilot_api.services.prompt_catalog_service import (
     render_prompt,
     set_active_prompt_version,
     update_model_catalog_status,
+    update_prompt_template_status,
 )
 
 router = APIRouter(tags=["prompt-catalog"])
@@ -95,6 +97,21 @@ async def patch_internal_prompt_active_version(
     """Switch the single active Prompt version."""
 
     return await set_active_prompt_version(db_session, template_name, payload)
+
+
+@router.patch(
+    "/internal/prompt-templates/{template_name}/status",
+    response_model=PromptTemplateRead,
+    dependencies=internal_key,
+)
+async def patch_internal_prompt_template_status(
+    template_name: str,
+    payload: PromptTemplateStatusUpdate,
+    db_session: DatabaseSessionDependency,
+) -> PromptTemplateRead:
+    """Enable or disable one Prompt template with an auditable actor record."""
+
+    return await update_prompt_template_status(db_session, template_name, payload)
 
 
 @router.post(

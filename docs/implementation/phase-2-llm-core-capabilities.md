@@ -1,14 +1,14 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
 **文档日期：** 2026 年 8 月 3 日
-**文档状态：** 进行中（Model Gateway 已完成；Conversation Context、Prompt/模型能力目录和 Evaluation 尚缺行为验证；Memory 只保留规划与实验性准备代码；Knowledge 已移出本阶段）
+**文档状态：** 已完成（稳定范围已通过快速测试、真实 MySQL/MinIO、迁移循环和静态检查；Memory 只保留规划与实验性准备代码；Knowledge 已移出本阶段）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 目标
 
 - 提供可独立调用的 Model Gateway、Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail。
-- Memory 按 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 分层记录规划；现有同步代码作为实验性准备保留，本阶段不继续扩展、不接入实际 `/responses` 调用链，也不作为阶段2完成门禁。Context Preview 中已经存在的 Memory 候选分支属于待收敛代码，不构成稳定集成。
+- Memory 按 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 分层记录规划；现有同步代码作为实验性准备保留，本阶段不继续扩展、不接入实际 `/responses` 调用链，也不作为阶段2完成门禁。Context Preview 已移除 Memory 候选输入和读取分支，稳定合同只处理显式 instruction、安全 instruction 与 Session Message。
 - Knowledge 明确属于独立知识库能力。本阶段不继续实施或验收；现有 ORM、Schema、Service 和 Router 只作为待重新评审的实验性代码，后续另行确定需求、边界和实施阶段。
 - Agent 后续只组合已经完成验收的稳定单元，不在工作流节点中临时实现消息历史或上下文裁剪；Memory 和 Knowledge 在各自重新通过启用门禁前不得被 Agent 自动读取。
 - 业务调用方通过同一请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Gemini 和 OpenAI-compatible 服务。
@@ -28,8 +28,10 @@
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
 - 当前实现：平台只有公共 API Key 与内部 API Key，没有可验证的最终用户认证主体；现有 Memory 详情、纠正和删除按 `memory_id` 与受信调用方边界工作，不能声称已完成用户本人越权隔离。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
-- 当前实现：Context Builder、Prompt Registry、模型能力目录和 Evaluation/Guardrail 已有 ORM、Schema、Service 和 Router，但目前只有路由结构检查，没有各自的行为、状态转换和失败恢复测试，不能视为完成。Context Preview 仍有默认开启的 Memory/Knowledge 候选分支，阶段2收敛时必须禁用或移出稳定合同。Knowledge 也存在结构代码，但已经移出阶段2，不能据此声明知识库能力可用。
-- 当前结论：Model Gateway 已完成不等于阶段2完成，阶段2状态保持“进行中”。
+- 已验证：Context Builder 的稳定请求只接受显式 instruction、安全 instruction 和指定数量的 Session Message；tokenizer/context window 来自启用的 Model Catalog，历史读取使用不可变内容快照，不读取 Memory/Knowledge，也不接入 `/responses`。
+- 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
+- 已验证：Evaluation/Guardrail 拒绝未知或非法规则，同一幂等键只允许相同输入重放，候选 Attempt 必须属于指定 Task，历史非法规则安全失败。
+- 当前结论：阶段2稳定范围已满足完成条件。Memory 仍是规划和实验性准备代码，Knowledge 仍等待独立知识库规划；两者均不因阶段2完成而成为运行时能力。
 - 当前约束：后端依赖必须安装在 `apps/api/.venv`，测试、迁移和静态检查均从该虚拟环境运行。
 - 当前应以什么为准：用户目标和本计划优先；统一请求/响应结构、MySQL 事实边界和 MinIO 大对象边界以总技术方案为准；具体字段以实际 ORM 模型和迁移为准。
 - 待确认事项：各环境可用 API Key、代理地址及费用表不写死在本计划中；模型 allowlist 通过环境配置提供，后续由 Model Catalog 保存有来源的能力快照。Memory 的正式启用阶段和 Knowledge 的独立路线图均待后续决策。
@@ -74,20 +76,21 @@ POST /api/v1/context-builds/preview
 GET  /api/v1/context-builds/{context_build_id}
 ```
 
-请求至少包含 `user_id`、`session_id`、`provider`、`model`、`token_budget`，可以包含 `system_instruction` 和预留输出 token。阶段2稳定合同只选择显式指令与 Session Message；现有 Memory/Knowledge 开关属于实验性字段，不进入 `/responses`，在后续对应能力重新规划前不得作为稳定接口承诺。返回统一消息、总 token 估算、各来源记录以及未选中原因。
+请求至少包含 `user_id`、`session_id`、`provider`、`model`、`token_budget`，可以包含 `catalog_version`、`system_instruction`、预留输出 token 和最近消息数量。稳定合同不接受 Memory/Knowledge 开关，也不接受调用方指定 tokenizer。返回统一消息、总 token 估算、各来源记录以及未选中原因。
 
 持久化事实至少包含：
 
 ```text
 llm_context_builds
-context_build_id, user_id, session_id, provider, model,
-token_budget, tokenizer_name, tokenizer_version,
+context_build_id, catalog_version_id, user_id, session_id, provider, model,
+token_budget, reserved_output_tokens, recent_message_count,
+tokenizer_name, tokenizer_version,
 input_token_estimate, status, created_at
 
 llm_context_sources
 context_source_id, context_build_id, source_type, source_id,
 source_version, source_order, token_estimate, selection_status,
-exclusion_reason, content_hash
+exclusion_reason, content_hash, message_role, content_text
 ```
 
 规则：
@@ -1007,14 +1010,14 @@ internal_error
 - 工具或结构化输出中的 `strict` 只能在 Model Catalog 对当前模型明确记录支持时传递。未声明或未验证时必须返回 `unsupported_capability`，不得删除 `strict`、放宽 Schema 或改用普通文本后继续请求。本计划不声称 DeepSeek beta strict 已经完成真实供应商验证。
 - 已验证新参数 Schema 边界、两个模型的参数组合、Pro/low 拒绝、reasoning/temperature 冲突、`[DONE]` 完整/缺失、公开流不暴露 `reasoning_content`、失败 Attempt 落库、弃用字段拒绝、strict 能力失败和原有 Chat Completions 回归。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
 
-## 2026 年 8 月 3 日本轮审查与验证结果
+## 2026 年 8 月 3 日阶段2最终审查与验证结果
 
 - Memory 已迁入 `features/memory`，内部继续按 Model、Schema、Service、Router 分层；架构测试同时检查全局 Router 和 Memory Router 不直接导入 ORM/SQLAlchemy。
-- 快速测试共收集 182 项，其中 179 项通过，3 项真实基础设施测试按默认配置跳过；Ruff 全量静态检查通过。
+- 快速测试共收集 194 项，其中 190 项通过，4 项真实基础设施测试按默认配置跳过；这 4 项随后在本地 MySQL 8.4 与 MinIO 上显式启用并全部通过。Ruff 全量静态检查通过。
 - 本轮修复了 Session 当前指针先于版本插入导致的外键冲突、Profile 快照/明细/指针写入顺序、L2 合并遗漏 confirmed facts、L0 Schema 接受未知隐藏字段，以及 Agent Run 终止参数和非终止状态校验。
 - Memory 审批与 Profile rebuild 已拆成两个显式操作。审批只在 MySQL 中转换事实状态；调用方按当前 Profile 版本单独重建快照，MinIO 失败不会被吞掉或伪装成审批已完整刷新。
-- `20260803_0008` 已通过 `alembic upgrade head --sql` 离线 SQL 生成，但尚未执行本轮真实 MySQL 升级/降级和 `alembic check`；3 项真实基础设施测试也因未启用环境开关而跳过。先前对 `20260801_0007` 的验证不能替代新迁移验收。
-- Context、Prompt/Model Catalog 和 Evaluation 目前只有实现代码和路由结构检查，没有行为测试，因此保持“进行中”，不能由全量测试通过数量推断为已完成。Knowledge 已移出阶段2；Memory 只保留规划和实验性准备代码。
+- 真实 MySQL 验证先发现并修复了唯一 URI 索引过长、MySQL 标识符超过 64 字符，以及外键/索引降级顺序错误。当前迁移已通过空库 `0001 → 0009`、`0009 → 0007` 降级、`0007 → 0009` 再升级和 `alembic check`；检查结果为无待生成迁移。
+- Context、Prompt/Model Catalog 和 Evaluation 已补齐行为、失败、幂等、历史证据和真实 MySQL 并发测试。Knowledge 已移出阶段2；Memory 只保留规划和实验性准备代码，不进入稳定调用链。
 - 上传文件名同时清理 POSIX 和 Windows 风格路径片段。
 - `get_session()` 在请求异常时显式 rollback，并由异步上下文保证 session 关闭。
 - 真实 DeepSeek 请求未运行，没有读取供应商凭据，也没有产生模型费用；当前结论只证明本地契约与集成行为。
@@ -1022,15 +1025,15 @@ internal_error
 
 ## 阶段2实施顺序与当前状态
 
-以下内容属于同一个阶段2，不拆分为新的阶段编号。Memory 与 Knowledge 不再是本阶段实施或集成门禁；Context、Prompt/Model Catalog 和 Evaluation 仍缺必要行为测试，因此阶段2保持“进行中”：
+以下内容属于同一个阶段2，不拆分为新的阶段编号。Memory 与 Knowledge 不是本阶段实施或集成门禁；稳定范围已经完成验证：
 
 | 顺序 | 工作项 | 具体任务 | 失败与恢复设计 | 验证门禁 | 状态 |
 |---|---|---|---|---|---|
 | 1 | Model Gateway 回归 | 保持四家 Provider、统一 Responses、SSE、重试、费用和原始证据行为 | 供应商差异显式失败，不静默降级 | 既有契约和 API 测试持续通过 | 已完成 |
-| 2 | Prompt Registry 与 Model Catalog | 验证不可变 Prompt 版本、内部管理/渲染和模型能力目录 | 并发启用只有一个有效版本；未知能力明确拒绝；禁用不影响历史证据 | 补齐变量、并发、能力和版本行为测试 | 进行中 |
-| 3 | Conversation Context | 收敛为独立预览能力，稳定选择显式指令、安全指令和 Session Message | 来源缺失明确失败；超预算返回排除证据；历史证据可重读 | 补齐 owner、预算、版本重读和错误行为测试；不接入 Memory/Knowledge 或 `/responses` | 进行中 |
-| 4 | Evaluation 与 Guardrail | 验证规则集、确定性检查和评估接口 | 未知规则安全失败；同键异请求冲突；执行状态与 verdict 分离；敏感输入不泄露 | 补齐状态、幂等、脱敏和失败测试 | 进行中 |
-| 5 | 阶段2验收 | 验证上述单元可独立调用，并保持 `/responses` 直接使用显式请求输入 | 任一独立单元失败不影响或伪造 Model Gateway 成功；没有隐式 Memory/Knowledge 读取 | Ruff、完整快速测试、迁移、OpenAPI、鉴权和敏感信息测试全部通过 | 未开始 |
+| 2 | Prompt Registry 与 Model Catalog | 验证不可变 Prompt 版本、内部管理/渲染和模型能力目录 | 并发版本单调；未知能力明确拒绝；禁用不影响历史证据 | 变量、并发、能力和版本行为测试通过 | 已完成 |
+| 3 | Conversation Context | 收敛为独立预览能力，稳定选择显式指令、安全指令和 Session Message | 来源缺失明确失败；超预算返回排除证据；历史证据可重读 | owner、预算、目录版本、快照重读和错误行为测试通过；未接入 Memory/Knowledge 或 `/responses` | 已完成 |
+| 4 | Evaluation 与 Guardrail | 验证规则集、确定性检查和评估接口 | 未知规则安全失败；同键异请求冲突；执行状态与 verdict 分离；敏感输入不泄露 | 状态、幂等、归属、脱敏和失败测试通过 | 已完成 |
+| 5 | 阶段2验收 | 验证上述单元可独立调用，并保持 `/responses` 直接使用显式请求输入 | 任一独立单元失败不影响或伪造 Model Gateway 成功；没有隐式 Memory/Knowledge 读取 | Ruff、完整快速测试、迁移循环、OpenAPI、鉴权、敏感信息和真实基础设施测试通过 | 已完成 |
 
 ## 逐能力接口和错误契约
 
@@ -1152,6 +1155,8 @@ M3 Collaboration Memory 必须先建立以下测试：
 - 阶段2范围内能力通过单元测试、数据库集成、鉴权、并发、OpenAPI 和敏感信息测试；未运行验证必须明确记录。
 - 当前文档、迁移、Schema、环境配置和运行说明与代码事实一致，不保留相互冲突的阶段状态。
 - 以上条件未满足前，阶段2状态保持“进行中”。
+
+当前结论：上述阶段2稳定范围条件已经满足，阶段2状态为“已完成”。后续新增的 Memory、Knowledge、异步任务或前端需求不回退本阶段状态，分别进入其所属规划。
 
 ## 官方接口依据
 
