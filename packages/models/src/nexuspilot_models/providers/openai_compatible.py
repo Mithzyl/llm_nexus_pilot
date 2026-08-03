@@ -33,6 +33,8 @@ class OpenAICompatibleChatProvider:
         base_url: str,
         api_key: str,
         supports_json_schema: bool = True,
+        supports_reasoning_configuration: bool = False,
+        requires_done_marker: bool = False,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         """Configure one OpenAI-compatible provider without coupling it to FastAPI or storage."""
@@ -42,6 +44,8 @@ class OpenAICompatibleChatProvider:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.supports_json_schema = supports_json_schema
+        self.supports_reasoning_configuration = supports_reasoning_configuration
+        self.requires_done_marker = requires_done_marker
         self.extra_headers = extra_headers or {}
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
@@ -69,10 +73,12 @@ class OpenAICompatibleChatProvider:
         started = time.perf_counter()
         sequence = 1
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_parts: dict[int, dict[str, str]] = {}
         finish_reason = "stop"
         usage: dict[str, Any] = {}
         request_id: str | None = None
+        received_done_marker = False
         async with self.transport.open_sse(
             f"{self.base_url}/chat/completions",
             headers=self._headers(),
@@ -83,6 +89,7 @@ class OpenAICompatibleChatProvider:
             sequence += 1
             async for message in messages:
                 if message.data == "[DONE]":
+                    received_done_marker = True
                     break
                 try:
                     chunk = json.loads(message.data)
@@ -109,6 +116,9 @@ class OpenAICompatibleChatProvider:
                 choice = choices[0]
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
+                reasoning_content = delta.get("reasoning_content")
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    reasoning_parts.append(reasoning_content)
                 content = delta.get("content")
                 if isinstance(content, str) and content:
                     text_parts.append(content)
@@ -140,6 +150,13 @@ class OpenAICompatibleChatProvider:
                     )
                     sequence += 1
 
+        if self.requires_done_marker and not received_done_marker:
+            raise ModelProviderError(
+                "response_parse_error",
+                "Compatible provider stream ended without the required [DONE] marker.",
+                transport_attempts=attempts,
+            )
+
         text = "".join(text_parts) or None
         response = ModelResponse(
             text=text,
@@ -165,6 +182,7 @@ class OpenAICompatibleChatProvider:
             raw_response={
                 "streamed": True,
                 "text": text,
+                "reasoning_content": "".join(reasoning_parts) or None,
                 "tool_calls": list(tool_parts.values()),
                 "finish_reason": finish_reason,
                 "usage": usage,
@@ -294,6 +312,11 @@ class OpenAICompatibleChatProvider:
             raise ModelProviderError(
                 "unsupported_capability",
                 f"Provider '{self.name.value}' does not declare JSON Schema output support.",
+            )
+        if request.reasoning and not self.supports_reasoning_configuration:
+            raise ModelProviderError(
+                "unsupported_capability",
+                f"Provider '{self.name.value}' does not declare reasoning configuration support.",
             )
 
     def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, Any]:

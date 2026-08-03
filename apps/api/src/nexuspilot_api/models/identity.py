@@ -28,6 +28,13 @@ class User(TimestampMixin, Base):
     user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(default=True)
+    current_memory_profile_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "llm_user_memory_profile_snapshots.user_memory_profile_snapshot_id",
+            ondelete="SET NULL",
+        ),
+        index=True,
+    )
 
 
 class LlmSession(TimestampMixin, Base):
@@ -49,10 +56,22 @@ class LlmSession(TimestampMixin, Base):
         ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True,
     )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
+        index=True,
+    )
     title: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[SessionStatus] = mapped_column(
         Enum(SessionStatus, native_enum=False, length=32),
         default=SessionStatus.ACTIVE,
+        index=True,
+    )
+    current_state_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_session_states.session_state_id", ondelete="SET NULL"),
+        index=True,
+    )
+    current_summary_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_session_summaries.session_summary_id", ondelete="SET NULL"),
         index=True,
     )
     next_message_sequence: Mapped[int] = mapped_column(Integer, default=1)

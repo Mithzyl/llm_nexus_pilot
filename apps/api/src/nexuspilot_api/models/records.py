@@ -3,10 +3,23 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nexuspilot_api.models.base import Base, new_id, utc_now
+from nexuspilot_api.models.enums import EvaluationStatus, EvaluationVerdict
 
 
 class LlmModelToolCall(Base):
@@ -85,7 +98,7 @@ class LlmRunArtifact(Base):
 
 
 class LlmTaskEvaluation(Base):
-    """Record an independent or deterministic evaluation of a task result."""
+    """Record a deterministic or evaluator-assisted evaluation of a task result."""
 
     __tablename__ = "llm_evaluations"
     __table_args__ = (
@@ -103,6 +116,11 @@ class LlmTaskEvaluation(Base):
             "created_at",
             "evaluation_id",
         ),
+        UniqueConstraint(
+            "task_id",
+            "idempotency_key",
+            name="uq_evaluation_task_idempotency_key",
+        ),
     )
 
     evaluation_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -117,14 +135,31 @@ class LlmTaskEvaluation(Base):
         ForeignKey("llm_attempts.attempt_id", ondelete="SET NULL")
     )
     evaluation_type: Mapped[str] = mapped_column(String(64))
-    verdict: Mapped[str] = mapped_column(String(32))
+    rule_set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_evaluation_rule_sets.rule_set_id", ondelete="RESTRICT"),
+        index=True,
+    )
+    rule_set_schema_version: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    input_evidence_uri: Mapped[str | None] = mapped_column(String(1024))
+    status: Mapped[EvaluationStatus] = mapped_column(
+        Enum(EvaluationStatus, native_enum=False, length=32),
+        default=EvaluationStatus.PENDING,
+        index=True,
+    )
+    verdict: Mapped[EvaluationVerdict] = mapped_column(
+        Enum(EvaluationVerdict, native_enum=False, length=32),
+        default=EvaluationVerdict.UNKNOWN,
+    )
     score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    error_code: Mapped[str | None] = mapped_column(String(128))
     findings_json: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
         server_default=func.now(),
     )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class LlmOutboxEvent(Base):

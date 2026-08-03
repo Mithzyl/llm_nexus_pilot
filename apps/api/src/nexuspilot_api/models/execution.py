@@ -45,6 +45,14 @@ class LlmRun(TimestampMixin, Base):
     run_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
     session_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
+        index=True,
+    )
+    current_memory_snapshot_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_run_memory_snapshots.run_memory_snapshot_id", ondelete="SET NULL"),
+        index=True,
+    )
     user_request: Mapped[str] = mapped_column(Text)
     run_type: Mapped[str] = mapped_column(String(64), default="general")
     status: Mapped[RunStatus] = mapped_column(

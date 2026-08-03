@@ -300,11 +300,16 @@ class OpenAIResponsesProvider:
         }
 
     def _validate_request(self, request: ModelRequest) -> None:
-        """Reject requests routed to OpenAI with another provider identity."""
+        """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
             raise ModelProviderError(
                 "invalid_request", "Request was routed to the wrong provider."
+            )
+        if request.reasoning:
+            raise ModelProviderError(
+                "unsupported_capability",
+                "OpenAI reasoning configuration is not implemented by this codec.",
             )
 
     def _elapsed_ms(self, started: float) -> int:

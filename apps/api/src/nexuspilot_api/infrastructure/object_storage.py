@@ -83,6 +83,52 @@ class ObjectStorage:
             size_bytes=len(content),
         )
 
+    async def delete_object(self, storage_uri: str) -> None:
+        """Delete one configured-bucket object and ignore already-missing keys."""
+
+        object_name = self._object_name_from_uri(storage_uri)
+        try:
+            await to_thread.run_sync(
+                lambda: self.client.remove_object(self.settings.minio_bucket, object_name)
+            )
+        except Exception as exc:
+            raise ObjectStorageError("Object storage operation failed.") from exc
+
+    async def list_objects(self, prefix: str) -> list[str]:
+        """Return configured-bucket object names under a deterministic prefix."""
+
+        try:
+            await to_thread.run_sync(self._ensure_bucket)
+            return await to_thread.run_sync(lambda: self._list_object_names(prefix))
+        except ObjectStorageError:
+            raise
+        except Exception as exc:
+            raise ObjectStorageError("Object storage operation failed.") from exc
+
+    async def verify_object(self, storage_uri: str, expected_hash: str) -> bool:
+        """Return True when object bytes hash to the expected value, False otherwise."""
+
+        try:
+            content = await self.open_object(storage_uri)
+        except ObjectStorageNotFoundError:
+            return False
+        digest = hashlib.sha256()
+        for chunk in content.chunks:
+            digest.update(chunk)
+        return digest.hexdigest() == expected_hash
+
+    def _list_object_names(self, prefix: str) -> list[str]:
+        """Return object names matching one opaque prefix without exposing pagination state."""
+
+        object_names: list[str] = []
+        try:
+            for item in self.client.list_objects(self.settings.minio_bucket, prefix=prefix):
+                if item.object_name:
+                    object_names.append(item.object_name)
+        except Exception as exc:
+            raise ObjectStorageError("Object storage operation failed.") from exc
+        return object_names
+
     async def open_object(
         self,
         storage_uri: str,

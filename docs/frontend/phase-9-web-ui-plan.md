@@ -1,0 +1,285 @@
+# 阶段9：NexusPilot Web 前端规划
+
+**文档日期：** 2026 年 8 月 3 日
+**文档状态：** 未开始（已完成第一版交互与实施边界规划）
+**总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
+**后端能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
+
+## 目标
+
+- 建设以对话为主要入口的 Web 应用，采用类似 ChatGPT 的清晰布局与渐进式交互，但不复制其品牌、图标、文案或视觉资产。
+- 第一版只消费已经验证的 User、Session、Message、Run、Task、Provider、Responses、Model Attempt 和 Artifact API。
+- 普通生成与服务器发送事件（SSE）流式生成使用同一消息界面；用户可以看到生成中、完成、失败和取消状态。
+- 为后续 Agent Runtime 预留可解释的执行轨迹区域，能够显示当前 Agent、当前步骤、正在调用的工具、审核和验证状态。
+- 运行状态必须来自后端事实或事件，不根据前端定时器伪造“正在思考”“正在调用工具”等状态。
+
+## 明确不处理
+
+- 第一版不消费实验性 Memory 或 Knowledge 接口，不展示 Memory Profile、Memory Packet 或知识库检索结果。
+- 第一版不实现 RabbitMQ、Worker、Agent Runtime、工具执行、MCP 或 OpenTelemetry；只为它们保留界面扩展点。
+- 不把模型流中的 `response.tool_call.delta` 显示成“工具正在执行”。该事件只表示模型提出了工具调用参数；只有未来后端产生正式 Tool Call 执行事件后才能显示执行进度。
+- 不在浏览器中保存平台内部 API Key、供应商 API Key、MinIO URI 或未脱敏原始供应商响应。
+- 不在阶段9顺便建设项目看板、生活管理、邮件、日历或其他超级 App 功能。
+
+## 当前后端事实与前端边界
+
+当前公共认证是受信服务调用方级 API Key，不是最终用户登录。因此第一版前端只能作为开发/内部使用界面，采用 Next.js 服务端转发层保存平台 API Key：
+
+```text
+Browser
+  ↓ same-origin request
+Next.js Server / Backend-for-Frontend
+  ↓ server-side X-API-Key
+FastAPI
+```
+
+浏览器不能直接持有 `X-API-Key` 或 `X-Internal-API-Key`。正式面向多用户发布前，必须另行完成登录主体、Session Cookie、跨站请求伪造防护、用户与资源授权映射及退出失效策略。
+
+第一版可以使用的后端能力：
+
+| 前端用途 | 后端资源 | 第一版行为 |
+|---|---|---|
+| Provider 选择 | `GET /api/v1/providers` | 只展示服务端实际注册的 Provider；模型值来自配置或后续 Model Catalog |
+| 会话列表与详情 | Session 查询接口 | 左侧栏分页加载，cursor 与筛选条件绑定 |
+| 消息历史 | Session Message 接口 | 按不可变顺序读取，不在前端改写历史消息 |
+| 创建运行与任务 | Run、Task 接口 | 每次需要可审计模型执行时创建对应 Run；任务信息进入详情抽屉 |
+| 普通与流式生成 | `POST /api/v1/responses` | 发送显式输入；不请求 Memory、Knowledge 或 Context Preview 自动注入 |
+| 调用详情 | Model Attempt 和 Retry 接口 | 展示 Provider、Model、状态、token、费用、时长与安全错误 |
+| 生成产物 | Artifact 接口 | 展示元数据并通过受控内容接口下载，不暴露 MinIO 对象键 |
+| 运行审计 | Run、Task、内部审计接口 | 仅内部开发/运维视图使用，不默认暴露给普通用户 |
+
+Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验收后，可以加入开发者抽屉；它们不应阻塞第一版聊天界面，也不能被前端自行组合成第二套调用链。
+
+### 前端实施前必须处理的后端缺口
+
+- 当前 Session Message、Run 和 Task 创建接口没有统一幂等键，浏览器超时后不能安全地自动重试整条“发送消息”编排。开始实施前应增加稳定的 `client_request_id`/幂等合同，或提供一个由后端事务协调的聊天提交接口。
+- `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
+- 当前只有平台 API Key，没有最终用户登录和资源授权。公开部署前必须补齐认证；开发版只能由服务端持有密钥。
+- 当前 SSE 可以传输模型生成状态，但没有跨刷新恢复游标。第一版刷新后以 Model Attempt 最终状态为准；需要恢复增量文本时必须先扩展后端事件保存和游标合同。
+- 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
+
+## 信息架构
+
+### 主布局
+
+桌面端使用“会话侧栏 + 对话主区 + 按需详情抽屉”，移动端将侧栏和抽屉改为覆盖层：
+
+```text
+┌────────────────┬──────────────────────────────────┬──────────────────┐
+│ NexusPilot     │ 当前会话标题        Provider/Model│ 运行详情（按需） │
+│ + 新对话       ├──────────────────────────────────┤                  │
+│                │ 用户消息                          │ Run 状态         │
+│ 今天           │                                  │ Task 状态        │
+│  会话 A        │ Assistant 流式响应                │ Attempt/Retry    │
+│  会话 B        │  ▌                               │ token / 费用     │
+│                │                                  │ Artifact         │
+│ 更早           │ [未来：Agent/Tool 执行轨迹]       │ 错误证据         │
+│  会话 C        ├──────────────────────────────────┤                  │
+│                │ 输入框                     发送  │                  │
+└────────────────┴──────────────────────────────────┴──────────────────┘
+```
+
+默认只显示侧栏和对话主区。运行详情抽屉由用户主动打开，避免让审计信息挤占主要对话体验。
+
+### 页面与路由
+
+| 页面 | 建议路由 | 作用 |
+|---|---|---|
+| 新对话 | `/` | 空状态、Provider/Model 选择和首次输入 |
+| 会话 | `/c/[sessionId]` | 消息历史、流式响应和当前 Run 摘要 |
+| 运行详情 | `/runs/[runId]` | Task、Attempt、Retry、Artifact 和错误的完整内部视图 |
+| 设置 | `/settings/models` | 查看实际注册 Provider；后续查看已验证 Model Catalog |
+| 内部审计 | `/internal/audit` | 双密钥保护的开发/运维入口，不出现在普通用户导航中 |
+
+第一版不创建 Memory、Knowledge、Project 看板或 Agent 管理页面。
+
+## ChatGPT 风格的视觉与交互原则
+
+- 中央阅读列保持约 720～820 像素的舒适文本宽度，宽屏剩余空间用于留白或详情抽屉。
+- 左侧栏使用低对比度背景，突出“新对话”和最近会话，不堆叠多层卡片。
+- 消息主体以排版区分角色；避免每条消息都使用厚重边框和阴影。
+- 输入框固定在主区底部，支持多行输入、Enter 发送、Shift+Enter 换行和生成中停止按钮。
+- 流式文本直接追加到当前 Assistant 消息；每一帧不重新渲染完整 Markdown，按批次刷新以避免长响应卡顿。
+- 代码块提供语言标识、复制按钮和横向滚动；表格、引用和列表遵循 Markdown 语义。
+- 状态、错误和费用使用低干扰的辅助信息，不覆盖正文。
+- 使用自有中性色、字体、图标和品牌名称，不复制 ChatGPT 商标或专有视觉资产。
+
+建议第一版设计令牌：
+
+```text
+背景：近白色 / 深灰黑两套主题
+主文字：高对比中性色
+辅助文字：中等对比中性色
+强调色：NexusPilot 自有蓝紫色，仅用于主要动作和运行焦点
+成功：绿色
+警告：琥珀色
+失败：红色
+圆角：输入框和浮层适中，普通消息内容不滥用卡片圆角
+动效：150～220ms；遵循 prefers-reduced-motion
+```
+
+## 第一版核心流程
+
+### 新建并发送对话
+
+1. 前端服务端获取可用 Provider。
+2. 用户选择 Provider 和 Model，输入消息。
+3. Next.js 服务端按现有 API 创建或复用 User、创建 Session，并追加用户 Message。
+4. 创建可审计 Run；只有实际需要任务对象时才创建 Task，不伪造 Agent 任务。
+5. 调用 `/api/v1/responses`，请求内容只来自用户当前显式输入和明确填写的 instructions。
+6. 普通响应一次渲染；SSE 响应按 sequence 去重并增量渲染。
+7. 完成后通过 Message 接口追加 Assistant Message；如果追加失败，界面保留已收到内容并显示“响应已生成，但会话保存失败”。在 Message 幂等合同完成前只能由用户查看 Run/Attempt 并人工处理，不得自动重试写入或重新请求模型。
+8. 详情抽屉读取 Attempt，展示 token、费用、耗时和 Provider 请求状态。
+
+前端编排必须使用稳定的客户端请求 ID；只有对应后端接口支持幂等键时才允许自动重试。页面刷新后从 Session Message 和 Run/Attempt 事实恢复，不从浏览器内存猜测最终状态。
+
+### SSE 状态映射
+
+| 当前事件 | 界面行为 |
+|---|---|
+| `response.started` | 创建空 Assistant 消息并显示生成状态 |
+| `response.text.delta` | 按 sequence 追加文本 |
+| `response.tool_call.delta` | 显示“模型提出工具调用”，只展示有界、脱敏参数预览 |
+| `response.usage` | 更新 token 与费用辅助信息 |
+| `response.completed` | 固定最终消息，允许复制和打开运行详情 |
+| `response.failed` | 停止流并显示稳定错误；保留已经收到的部分文本但标记为未完成 |
+
+浏览器断线后不能把部分文本标为完成。若后端已有最终 Attempt 状态，重新读取；没有恢复协议时明确提示用户查看运行详情，不自动发起第二次计费请求。
+
+## 未来 Agent 与工具流转显示
+
+Agent Runtime 和工具执行完成后，每条 Assistant 响应下方增加可折叠的“执行过程”。默认展示当前步骤，展开后展示经过脱敏的时间线：
+
+```text
+Controller：正在拆解任务
+  ├── Researcher：已完成代码调查
+  ├── Planner：已形成实施计划
+  ├── Implementer：正在执行工具
+  │      └── run_command · pytest · 00:18
+  └── Reviewer：等待实现结果
+```
+
+推荐的用户可见状态：
+
+```text
+等待执行
+正在规划
+正在调用模型
+正在等待工具
+正在执行工具
+正在审核
+正在验证
+等待用户输入
+等待用户批准
+已完成
+失败
+已取消
+```
+
+每个工具调用最多展示：
+
+- 工具的人类可理解名称；
+- 风险等级；
+- 开始时间和持续时间；
+- 当前状态；
+- 有界、脱敏的输入摘要；
+- 有界结果摘要或 Artifact 链接；
+- 是否等待批准；
+- 稳定错误类型。
+
+不展示：完整 Shell 环境、密钥、内部对象 URI、模型隐藏推理、完整私人文件、未脱敏工具输出。
+
+前端未来需要消费统一运行事件，而不是轮询多个表拼接猜测状态。建议后端事件至少包含：
+
+```text
+event_id
+run_id
+task_id
+agent_run_id
+tool_call_id
+event_type
+status
+sequence
+occurred_at
+public_summary
+```
+
+事件枚举与恢复游标应在阶段3、阶段4和阶段5实现时共同确定。第一版 UI 只保留组件接口，不生成虚假事件。
+
+## 前端模块建议
+
+```text
+apps/web/
+├── app/
+│   ├── page.tsx
+│   ├── c/[sessionId]/page.tsx
+│   ├── runs/[runId]/page.tsx
+│   └── settings/models/page.tsx
+├── components/
+│   ├── chat/
+│   ├── conversation/
+│   ├── execution/
+│   ├── model-selector/
+│   └── ui/
+├── lib/
+│   ├── api/
+│   ├── sse/
+│   ├── errors/
+│   └── formatting/
+└── tests/
+```
+
+- `chat`：消息列表、Markdown、Composer 和流式状态。
+- `conversation`：会话侧栏、分页和标题。
+- `execution`：Run/Task/Attempt 详情；未来扩展 Agent/Tool 时间线。
+- `model-selector`：Provider/Model 选择与能力提示。
+- `lib/api`：Next.js 服务端调用 FastAPI，不把内部密钥传给浏览器。
+- `lib/sse`：事件 sequence、取消、断线和终止状态处理。
+
+具体技术版本在开始实施时以当前 Next.js 长期支持版本和仓库运行环境为准，不在规划中写死可能过期的版本号。
+
+## 失败与恢复设计
+
+| 失败场景 | 界面与恢复行为 |
+|---|---|
+| Provider 未配置 | 禁用对应选项或显示明确配置错误，不回退到其他 Provider |
+| 请求校验失败 | 在输入区显示字段错误，不清空用户输入 |
+| SSE 中途断开 | 保留部分文本并标记未完成；读取 Attempt 最终状态，不自动重新计费 |
+| 用户主动停止 | 取消上游请求并等待后端最终状态；不能只在前端停止渲染 |
+| Message 保存失败 | 保留响应并指向 Run/Attempt；在 Message 幂等能力完成前不自动重试保存，更不能重复调用模型 |
+| Run/Attempt 查询失败 | 正文仍可阅读，详情抽屉显示依赖暂不可用并允许手动重试 |
+| cursor 失效 | 清空对应分页窗口后从第一页重新加载，不混合新旧筛选结果 |
+| 未授权或凭据失效 | 清除前端应用会话并返回登录/配置入口，不显示内部错误正文 |
+
+## 测试设计
+
+- 组件测试：空状态、消息角色、Markdown、代码块、错误提示、生成中与完成状态。
+- SSE 测试：sequence 顺序、重复事件、缺失终止、失败事件、取消和断线。
+- 页面集成测试：新建会话、追加用户消息、普通响应、流式响应、保存 Assistant Message、打开 Attempt 详情。
+- 安全测试：浏览器响应和静态资源不包含平台 API Key、内部 API Key、供应商凭据或 MinIO URI。
+- 可访问性测试：键盘发送/换行、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
+- 响应式测试：桌面侧栏、移动端覆盖层、长代码块和长单词不会破坏布局。
+- 恢复测试：刷新页面、SSE 中断、保存失败和重复提交不会重复产生计费调用。
+- 未来 Agent 测试：乱序事件、并行 Agent、工具等待批准、工具失败、审核退回和 Run 取消。
+
+## 实施工作项
+
+| 工作项 | 交付内容 | 依赖 | 完成条件 | 状态 |
+|---|---|---|---|---|
+| 前端基础工程 | Next.js、TypeScript、样式令牌、测试和服务端 API Client | 稳定开发环境 | 构建、Lint、类型检查和最小页面测试通过 | 未开始 |
+| 对话外壳 | 侧栏、会话页、消息列表、Composer、明暗主题和响应式布局 | User/Session/Message API | 可读取、创建和恢复会话，不暴露密钥 | 未开始 |
+| 模型调用 | Provider/Model 选择、普通响应、SSE、停止、错误与费用摘要 | Model Gateway | 普通与流式端到端通过；断线不伪造完成 | 未开始 |
+| 运行详情 | Run、Task、Attempt、Retry 和 Artifact 抽屉/详情页 | 阶段1查询 API | 归属、分页、错误和脱敏行为与 API 一致 | 未开始 |
+| Context/Prompt/Evaluation 开发视图 | 只在阶段2对应能力验收后提供预览和证据 | 阶段2完成 | 不在前端重写后端规则，不进入默认聊天路径 | 未开始 |
+| Agent/Tool 时间线 | Agent、任务、工具、审核与验证的实时状态 | 阶段3～5事件合同 | 当前步骤真实、可恢复、可取消且不泄露敏感数据 | 未开始 |
+
+## 第一版完成标准
+
+- 用户可以创建和选择会话、查看消息历史，并通过同一界面完成普通或 SSE 流式模型调用。
+- Provider 列表来自后端注册事实；前端不硬编码供应商可用状态。
+- 页面刷新后能够从 Session、Run 和 Attempt 恢复已持久化状态。
+- 失败、取消和断流不会被显示为完成，也不会自动产生第二次模型费用。
+- 平台 API Key 和内部 API Key 只存在于 Next.js 服务端配置，不进入浏览器。
+- 第一版不读取 Memory、不创建 Memory Packet、不读取 Knowledge，也不展示虚假的 Agent 或工具执行状态。
+- 桌面和移动端关键流程通过组件、集成、可访问性和响应式验证。
+- 文档、界面文案和实际 API 状态一致；尚未实现的 Agent/Tool 功能明确显示为未提供，而不是空白演示数据。

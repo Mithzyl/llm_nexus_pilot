@@ -7,6 +7,7 @@ import httpx
 from nexuspilot_models.contracts import ProviderName
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog
 from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
+from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatProvider
@@ -41,12 +42,10 @@ def create_provider_registry(
     if settings.deepseek_api_key:
         registry.register(
             ProviderName.DEEPSEEK,
-            OpenAICompatibleChatProvider(
-                name=ProviderName.DEEPSEEK,
+            DeepSeekChatProvider(
                 transport=transport,
                 base_url=settings.deepseek_base_url,
                 api_key=settings.deepseek_api_key.get_secret_value(),
-                supports_json_schema=False,
             ),
             allowed_models=_parse_model_allowlist(settings.deepseek_models),
         )

@@ -1,8 +1,8 @@
 # NexusPilot LLM Platform 总体规划
 
-**文档日期：** 2026 年 7 月 31 日
+**文档日期：** 2026 年 8 月 3 日
 **文档状态：** 当前总体规划（权威入口）
-**当前实施焦点：** 阶段1已完成；下一步继续阶段2；阶段3仍暂停
+**当前实施焦点：** 阶段1已完成；下一步收敛阶段2；阶段3仍暂停；阶段9前端已形成独立规划但尚未实施
 
 ## 目标
 
@@ -29,10 +29,12 @@
 | Attempt、Retry、Artifact 管理 | 已形成查询闭环 | 支持归属范围内独立分页、安全详情、物理重试顺序查询和 Artifact 受控流式读取 |
 | Session、Conversation、Message | 已形成首个查询闭环 | 支持会话新增、详情、查询条件绑定 cursor、更新，以及不可变消息追加、详情和会话绑定顺序分页 |
 | Tool Call、Evaluation、Outbox 查询 | 已形成内部查询闭环 | 使用独立内部密钥、查询绑定 cursor、归属校验和递归脱敏详情 |
-| 多供应商 Model Gateway、Responses、SSE | 已完成 | 属于阶段2已完成部分 |
-| Context、Memory、Knowledge、Prompt、Evaluation 单元 | 未实施 | Agent 之前必须补齐的 LLM 核心能力 |
+| 多供应商 Model Gateway、Responses、SSE | 已完成 | DeepSeek 最新 Chat Completions 思考与流式约束已通过契约和 API 集成测试；真实供应商连通性未运行 |
+| Memory 设计与实验性准备代码 | 规划中 | 已固定 L0～L4 边界并存在同步接口和快速测试；本轮不继续扩展，不接入实际 `/responses` 调用链，也不作为阶段2运行能力验收 |
+| Conversation Context、Prompt、模型能力目录、Evaluation 单元 | 进行中 | 已有结构代码，仍需行为测试和失败路径验证；保持可独立调用，不隐式拼接 Memory |
+| Knowledge 知识库 | 暂停 | Knowledge 属于独立知识库能力；现有结构代码仅作实验性准备，需求、数据来源、解析、检索和权限将在后续单独规划，不计入阶段2 |
 | RabbitMQ、Publisher、Worker | 未实施 | 阶段3已暂停 |
-| Agent、工具、MCP、OpenTelemetry、Web | 未实施 | 不能以规划或空目录视为完成 |
+| Agent、工具、MCP、OpenTelemetry、Web | 未实施 | 阶段9 Web 已有独立 UI 规划，其余不能以规划或空目录视为完成 |
 
 ## 总体结构
 
@@ -45,7 +47,10 @@ API 与控制平面
           │
           ▼
 LLM 核心能力层
-Model Gateway / Context / Memory / Knowledge / Prompt / Evaluation
+Model Gateway / Context / Prompt / Model Catalog / Evaluation
+          │
+          ├── Memory（仅规划和实验性管理能力，不进入 Responses）
+          └── Knowledge（独立知识库，后续另行规划）
           │
           ▼
 异步执行层
@@ -66,21 +71,26 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
 | 阶段1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | 已完成 | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、受信调用方权限边界和脱敏门禁 |
-| 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、Memory、Knowledge、Prompt/模型能力目录、Evaluation/Guardrail | 进行中 | 所有能力均可脱离 Agent 单独调用、测试和观测 |
+| 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 进行中 | 运行能力可脱离 Agent 单独调用、测试和观测；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
 | 阶段3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | 暂停 | 阶段1事务底座完成；任务执行规格确认；故障窗口验证通过 |
 | 阶段4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
 | 阶段5：Agent Runtime 与工作流 | 单 Agent 循环、总控与工作模型、并行只读任务、写任务隔离、独立审核 | 未开始 | 只组合已完成单元；上下文完整；循环和成本有边界 |
 | 阶段6：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 结果包含稳定文件位置、定义引用和可复核证据 |
 | 阶段7：MCP Client | 连接、能力发现、工具、资源、认证、超时和权限 | 未开始 | 外部调用受控且完整记录，不绕过工具权限层 |
 | 阶段8：可观测性 | API、模型、消息、Worker 和工具链路关联 | 未开始 | 不记录密钥或完整敏感内容；MySQL 仍是事实源 |
-| 阶段9：应用入口 | 按实际需求建设 Web 或接入其他业务应用 | 未开始 | 核心 API 和异步状态查询稳定后再规划 |
+| 阶段9：Web 前端 | 建设类似 ChatGPT 交互方式的对话平台，并逐步展示 Run、Agent、模型与工具执行过程 | 未开始 | 初始界面只消费已验证 API；后续 Agent/Tool 状态必须来自稳定事件，不伪造执行进度；详见 [`docs/frontend/phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md) |
 
 ## 阶段1与阶段2的关系
 
 - 阶段1解决“数据是否可管理、可查询、可组合事务、可追溯”。
 - 阶段2解决“LLM 能力是否可以作为独立模块使用”。
 - 阶段3以后解决“这些稳定单元如何可靠异步执行与组合”。
-- Memory 不是 Agent 工作流中的一个临时步骤，而是阶段2的独立能力；它复用阶段1的 User、Session、Message 和事务底座，但由阶段2自行定义版本、逻辑删除和保留策略。
+- Memory 不是 Agent 工作流中的一个临时字典，而是 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 五层设计。当前只保留边界、数据合同和实验性管理接口，不继续扩展，不由 `/responses` 自动读取；Context Preview 中现存的可选候选分支应在阶段2验收前禁用或移出稳定合同。未来启用前必须重新确认形成策略、权限、删除语义和评估门禁。
+- MySQL 保存五层 Memory 的事实、状态、版本和当前指针；L1～L4 使用 MinIO 不可变 JSON/Markdown 快照，L0 只保存有界 MySQL 检查点。现有 `llm_memories` 继续承担细粒度长期事实，不用一个通用状态对象代替所有层级。
+- Project Memory 默认关闭，只服务显式绑定的 Session/Run；它是最小记忆 scope，不建设看板、排期或项目管理业务。多用户共享必须等待最终用户认证与 Membership 权限模型。
+- 五层 Memory 默认不引入 Vector Store 或 Mem0。只有固定评估证明词法/精确选择不足，且 Embedding、可靠异步投影、删除同步和重建门禁均满足时，才评估向量投影。
+- L0 数据合同在规划中固定，自动检查点和崩溃恢复由阶段5 Agent Runtime 重新评估；L0 不能复制 Run/Task 状态、Model Attempt、Tool Call 或 L2 Handoff。
+- Knowledge 明确从阶段2移出。它属于独立知识库能力，后续先确定资料导入、版本、解析器、引用、检索质量、权限和删除恢复，再决定实施阶段；现有实验性代码不代表稳定接口。
 - 阶段1公共认证是受信调用方级 API Key；任何核心资源直接面向最终用户前，必须另行完成可验证的用户认证授权。
 
 ## 质量原则
@@ -109,7 +119,8 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 ## 当前结论
 
 - 阶段1已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
-- 阶段2进行中：Model Gateway 已完成，但 Context、Memory、Knowledge、Prompt 和 Evaluation 单元尚未实现；具体契约、失败恢复和测试门禁已经固化。
+- 阶段2进行中：Model Gateway 已完成；Context、Prompt/模型能力目录和 Evaluation 仍需行为验证。Memory 当前只保留规划和实验性准备代码，不进入实际模型响应链路；Knowledge 已移出本阶段，等待独立规划。
 - 阶段3暂停，不继续 RabbitMQ 或 Worker 开发。
 - 阶段1详见 [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)。
 - 阶段2详见 [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)。
+- 阶段9前端详见 [`phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md)。

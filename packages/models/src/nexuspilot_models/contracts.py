@@ -30,6 +30,29 @@ class MessageRole(StrEnum):
     TOOL = "tool"
 
 
+class ReasoningEffort(StrEnum):
+    """Identify the portable reasoning-strength levels supported by the public contract."""
+
+    LOW = "low"
+    HIGH = "high"
+    MAX = "max"
+
+
+class ReasoningConfiguration(ContractModel):
+    """Control whether model reasoning is enabled and optionally select its strength."""
+
+    enabled: bool = True
+    effort: ReasoningEffort | None = None
+
+    @model_validator(mode="after")
+    def validate_disabled_reasoning_has_no_effort(self) -> "ReasoningConfiguration":
+        """Reject an effort value that cannot take effect while reasoning is disabled."""
+
+        if not self.enabled and self.effort is not None:
+            raise ValueError("reasoning effort is only valid when reasoning is enabled")
+        return self
+
+
 class Message(ContractModel):
     """Represent one portable conversation turn without provider-native content blocks."""
 
@@ -87,6 +110,7 @@ class ModelRequest(ContractModel):
     system_instruction: str | None = Field(default=None, max_length=100_000)
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
+    reasoning: ReasoningConfiguration | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     timeout_seconds: float = Field(default=60, ge=1, le=600)

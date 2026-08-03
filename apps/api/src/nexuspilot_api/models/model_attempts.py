@@ -61,6 +61,10 @@ class LlmModelAttempt(Base):
     provider_request_id: Mapped[str | None] = mapped_column(String(255))
     raw_request_uri: Mapped[str | None] = mapped_column(String(1024))
     raw_response_uri: Mapped[str | None] = mapped_column(String(1024))
+    memory_packet_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_memory_packets.memory_packet_id", ondelete="SET NULL"),
+        index=True,
+    )
     error_code: Mapped[str | None] = mapped_column(String(128))
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(

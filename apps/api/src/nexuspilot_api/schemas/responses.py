@@ -7,14 +7,17 @@ from nexuspilot_models.contracts import (
     MessageRole,
     ModelRequest,
     ProviderName,
+    ReasoningConfiguration,
     ToolCall,
     ToolDefinition,
 )
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ResponsesRequest(BaseModel):
     """Accept an OpenAI-Responses-inspired request while retaining explicit provider routing."""
+
+    model_config = ConfigDict(extra="forbid")
 
     run_id: str
     task_id: str | None = None
@@ -24,6 +27,7 @@ class ResponsesRequest(BaseModel):
     instructions: str | None = Field(default=None, max_length=100_000)
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
+    reasoning: ReasoningConfiguration | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     timeout_seconds: float = Field(default=60, ge=1, le=600)
@@ -56,6 +60,7 @@ class ResponsesRequest(BaseModel):
             system_instruction=self.instructions,
             tools=self.tools,
             output_schema=self.output_schema,
+            reasoning=self.reasoning,
             temperature=self.temperature,
             max_output_tokens=self.max_output_tokens,
             timeout_seconds=self.timeout_seconds,

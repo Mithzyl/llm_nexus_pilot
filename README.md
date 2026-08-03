@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务、执行工具并保存审核证据的 LLM 运行平台。Phase 1 数据与控制平面已经完成；Model Gateway 已可运行，Phase 2 其余 LLM 核心能力仍待建设，Phase 3 继续暂停。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并为后续任务和 Agent 执行提供底座的 LLM 平台。阶段1数据与控制平面已经完成；阶段2正在收敛，Model Gateway 已可运行；阶段3继续暂停。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 调用链。
 
 ## 当前能力
 
@@ -24,8 +24,11 @@ NexusPilot 是一个统一调用模型、管理上下文与记忆、拆解任务
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；
 - 每次物理 HTTP 重试及原始请求/响应的持久化证据。
+- 当前用户长期 Memory 事实账本支持有来源的候选/有效事实、不可变版本、显式 User/Session/Run/Task 范围、激活/拒绝/替代/逻辑删除、持久化幂等和乐观并发控制；
+- Memory Retrieval 使用有界的中英文词法候选、版本化整数评分、整条内容 token 预算和持久化检索证据，不返回跨 User、范围不匹配、非有效或已过期内容。
+- L0 手动 Agent Working State、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile 和 L4 User Profile 已有实验性同步接口；这些接口不属于当前模型响应链，Memory Packet 不在阶段2创建或绑定 Model Attempt。
 
-RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到后续阶段，不在当前服务中伪实现。
+当前 Memory 只作为规划与实验性准备代码保留，不继续扩展，也不接入 `/responses`。现有 Context Preview 代码仍带有可选 Memory/Knowledge 候选分支，这是待收敛的实验性实现，不是稳定合同；阶段2验收前应禁用或移除这些分支。Knowledge 属于后续独立知识库规划；现有 Knowledge 结构代码不是稳定能力。Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail 已有代码但缺少行为测试，阶段2因此仍是进行中。默认不引入 Vector Store 或 Mem0。
 
 ## 后端结构
 
@@ -35,7 +38,9 @@ RabbitMQ Worker、工具循环、Agent 协作和 OpenTelemetry 按规划留到�
 apps/api/src/nexuspilot_api/
 ├── main.py                 # 应用创建与顶层资源生命周期
 ├── core/                   # 配置、认证、FastAPI 依赖注入
-├── routers/                # 按 users/sessions/runs/tasks/model_attempts/run_artifacts 拆分控制器
+├── features/
+│   └── memory/             # Memory 业务域，内部按 models/schemas/services/routers 分层
+├── routers/                # 非 Memory 资源的 HTTP Controller
 ├── services/               # 按业务资源拆分的事务与业务逻辑
 ├── models/                 # SQLAlchemy 持久化模型
 ├── schemas/                # Pydantic HTTP 请求和响应结构
@@ -109,6 +114,24 @@ GET /api/v1/providers
 }
 ```
 
+DeepSeek 当前通过专用 Chat Completions 适配器调用，不调用 DeepSeek 提供的 Responses 端点。示例模型 allowlist 为 `deepseek-v4-flash,deepseek-v4-pro`；思考控制使用平台统一字段，由适配器转换为 DeepSeek 顶层 `thinking` 和 `reasoning_effort`：
+
+```json
+{
+  "run_id": "已创建的 run_id",
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "input": "分析这段代码的失败边界",
+  "reasoning": {
+    "enabled": true,
+    "effort": "high"
+  },
+  "idempotency_key": "业务侧唯一请求编号"
+}
+```
+
+`deepseek-v4-pro` 的 `low` 会在网络请求前被拒绝；思考启用时传入 `temperature` 也会被拒绝。流式响应只有收到 DeepSeek 的 `[DONE]` 终止标记才会记为完成。`strict` 工具和结构化 JSON Schema 目前没有经过模型能力目录确认，因此不会被静默降级或发送到普通 DeepSeek 端点。
+
 同一个接口设置 `"stream": true` 后返回 SSE。公开事件固定为：
 
 ```text
@@ -130,6 +153,23 @@ NEXUSPILOT_OPENAI_COMPATIBLE_MODELS=example-model
 
 请求时使用 `"provider": "openai_compatible"`。模型 allowlist 留空表示允许该 Provider 下任意非空模型名；生产环境建议显式配置。
 
+## 实验性 Memory 管理接口
+
+以下资源只用于受信开发调用和 Memory 设计验证，不会被 `/responses` 或前端第一版自动使用，也不代表 Memory 已成为正式运行能力。现有 Context Preview 的实验性候选分支不得作为正式消费者。Session、Collaboration、Project 和 Profile 使用 `features/memory` 中的独立实验性接口与持久化结构：
+
+```text
+POST   /api/v1/memories
+GET    /api/v1/memories
+GET    /api/v1/memories/{memory_id}
+GET    /api/v1/memories/{memory_id}/versions
+PATCH  /api/v1/memories/{memory_id}
+DELETE /api/v1/memories/{memory_id}
+POST   /api/v1/memory-retrievals
+GET    /api/v1/memory-retrievals/{memory_retrieval_id}
+```
+
+正文限制为 1～4000 个字符，每个版本必须有 1～20 个来源。模型提出的内容只能从 `candidate` 开始，不能直接成为有效事实。带时区的过期时间会先归一化为 UTC；Session、Run、Task 范围外键禁止通过删除父资源静默放宽。删除会立即使 Memory 不可检索，并擦除所有版本的内联正文和词法检索词；独立的 Message、Artifact 等原始来源不会被级联删除。当前公共 API Key 代表受信服务调用方，不代表已经完成最终用户身份认证授权。
+
 运行测试和静态检查：
 
 ```bash
@@ -147,6 +187,7 @@ apps/api/.venv/bin/pytest -q apps/api/tests/test_real_infrastructure.py
 
 项目阶段、质量门禁和当前完成度以 [`platform-roadmap.md`](docs/architecture/platform-roadmap.md) 为准。
 
-- Phase 1 数据与控制平面：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
-- Phase 2 LLM 核心能力：[`phase-2-llm-core-capabilities.md`](docs/implementation/phase-2-llm-core-capabilities.md)
-- Phase 3 RabbitMQ 规划（暂停）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
+- 阶段1数据与控制平面：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
+- 阶段2 LLM 核心能力：[`phase-2-llm-core-capabilities.md`](docs/implementation/phase-2-llm-core-capabilities.md)
+- 阶段3 RabbitMQ 规划（暂停）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
+- 阶段9 Web 前端规划：[`phase-9-web-ui-plan.md`](docs/frontend/phase-9-web-ui-plan.md)

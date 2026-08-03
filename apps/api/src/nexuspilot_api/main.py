@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="NexusPilot LLM Platform API",
-    version="0.7.0",
+    version="0.8.0",
     description="Provider-neutral Responses API and durable NexusPilot execution records.",
     lifespan=lifespan,
 )

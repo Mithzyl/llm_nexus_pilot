@@ -1,7 +1,7 @@
 # 第一阶段：数据与控制平面规划
 
 **文档日期：** 2026 年 7 月 31 日
-**文档状态：** `DONE`，Phase 1 验收依据
+**文档状态：** 已完成，阶段1验收依据
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 目标
@@ -28,10 +28,10 @@
 
 当前缺失：
 
-- Phase 1 范围内无缺失项。
-- RabbitMQ Publisher、Worker、工具执行、Evaluation 算法、Memory 和 Agent 属于后续阶段，不作为 Phase 1 缺失。
+- 阶段1范围内无缺失项。
+- RabbitMQ Publisher、Worker、工具执行、Evaluation 算法、Memory 和 Agent 属于后续阶段，不作为阶段1缺失。
 
-因此 Phase 1 已满足完成门禁。
+因此阶段1已满足完成门禁。
 
 ## 资源边界
 
@@ -281,7 +281,7 @@ Database Transaction Coordinator
 - Session message 顺序、不变性和大内容 URI。
 - Artifact 上传、元数据查询、权限读取和对象存储故障。
 - Outbox 和内部审计接口的脱敏与权限。
-- SQLite 只用于快速测试；Phase 1 完成必须有真实 MySQL 行为验证。
+- SQLite 只用于快速测试；阶段1完成必须有真实 MySQL 行为验证。
 
 ## 2026 年 7 月 31 日补充实现
 
@@ -292,7 +292,7 @@ Database Transaction Coordinator
 - 为新 ORM 记录统一应用侧 UTC 时间，同时保留数据库 server default，避免 SQLite 和 MySQL 时间精度差异破坏 cursor 边界。
 - 新增 API、cursor、数据库事务和唯一约束竞争保护测试；公开 API 行为不受数据层简化影响。
 - 当前认证仍是平台级 API Key，只能将这些接口定义为“受信调用方管理接口”，尚不能声称完成用户本人资源隔离。
-- Phase 1 状态保持 `PARTIAL`；本次数据层简化后继续以真实资源用例验证事务边界。
+- 当时阶段1仍在进行中；本次数据层简化后继续以真实资源用例验证事务边界。
 
 ## 2026 年 7 月 31 日 Session / Message 实施
 
@@ -303,7 +303,7 @@ Database Transaction Coordinator
 - Message 分页使用数据库序号键，并把 `session_id` 写入签名 cursor；其他会话不能复用该 cursor 跳过历史。
 - Run 创建现在会验证 Session 存在、处于 active 状态且与 Run 属于同一 User；存量 `llm_runs.session_id` 暂不增加数据库外键，以避免现有任意字符串数据导致不可逆迁移失败。
 - Session 归档后仍可读取历史，但不能追加新消息。
-- 该切片后的 Run / Task 查询与动作已在下一节完成，Phase 1 仍保持 `PARTIAL`。
+- 该切片后的 Run / Task 查询与动作已在下一节完成，当时阶段1仍在进行中。
 
 ## 2026 年 7 月 31 日 Run / Task 查询与动作实施
 
@@ -318,7 +318,7 @@ Database Transaction Coordinator
 - 将 SQLAlchemy 升级到 `2.0.51`、aiomysql 升级到 `0.3.2`，并增加 `cryptography 46.0.7`，修复 MySQL 8/9 默认认证和连接池 `ping()` 兼容问题。
 - 真实基础设施验证：MySQL 8.4 空库迁移到 head、`alembic check` 和双会话并发 retry 通过；MinIO bucket 初始化、对象上传、stat 和清理通过。
 - 宿主机 MySQL 9.0.1 保持运行且未被修改；因没有可用管理员登录，真实验证使用项目 Compose MySQL 8.4 并映射到 `3307`，避免占用宿主机 `3306`。
-- 当前 Phase 1 仍为 `PARTIAL`；Attempt、Retry 和 Artifact 查询与内容读取已在下一节完成。
+- 当时阶段1仍在进行中；Attempt、Retry 和 Artifact 查询与内容读取已在下一节完成。
 
 ## 2026 年 7 月 31 日 Attempt / Retry / Artifact 查询实施
 
@@ -336,7 +336,7 @@ Database Transaction Coordinator
 - 验证结果：Ruff 全量通过；SQLite API 测试 72 项通过、2 项真实基础设施测试默认跳过；显式启用后 MySQL 8.4 迁移到 `20260731_0005 (head)`、`alembic check` 和 MySQL/MinIO 真实测试 2 项通过。
 - Attempt、Provider Transport Attempt 和 Run Artifact 查询切片已完成，内部审计切片见下一节。
 
-## 2026 年 7 月 31 日内部审计与 Phase 1 验收
+## 2026 年 7 月 31 日内部审计与阶段1验收
 
 - 新增 `GET /internal/tool-calls` 和详情接口；支持 model attempt、Run、Task、tool name、risk、status、permission 过滤，Run/Task/Model Attempt 组合过滤会验证归属。
 - 新增 `GET /internal/evaluations` 和详情接口；支持 Run、Task、evaluation type、verdict 过滤，列表不返回 findings，详情只返回有界脱敏结果。
@@ -346,11 +346,11 @@ Database Transaction Coordinator
 - ORM 名称明确区分 `LlmModelToolCall`、`LlmTaskEvaluation` 和 `LlmOutboxEvent`；新增组合索引由 Alembic `20260731_0006` 管理。
 - Task retry、运行中 Task cancel 和 Run cancel 已验证状态更新与 outbox 事实在同一个 `db_session.commit()` 中原子提交，并通过真实 MySQL 并发锁测试。
 - 最终验证：Ruff 全量通过；快速测试 `95 passed, 2 skipped`；真实 MySQL/MinIO 测试 `2 passed`；MySQL 8.4 位于 `20260731_0006 (head)`；`alembic check` 无迁移漂移。
-- Phase 1 状态更新为 `DONE`。后续可以继续 Phase 2 独立能力建设；Phase 3 仍保持暂停，直到其执行规格讨论完成。
+- 阶段1状态更新为“已完成”。后续可以继续阶段2独立能力建设；阶段3仍保持暂停，直到其执行规格讨论完成。
 
 ## 完成标准
 
-Phase 1 `DONE` 验收结果：
+阶段1已完成验收结果：
 
 - [x] User、Session、Message、Run、Task、Model Attempt、Provider Transport Attempt 和 Run Artifact 具有查询闭环。
 - [x] Model Tool Call、Task Evaluation 和 Outbox Event 具有双密钥受限内部查询入口。
@@ -358,8 +358,8 @@ Phase 1 `DONE` 验收结果：
 - [x] 每个 Service 的事务边界明确；Task 与 Outbox 跨资源写入由同一数据库事务原子提交。
 - [x] 合法状态转换、幂等与并发保护经过 SQLite 和真实 MySQL 测试。
 - [x] MySQL、MinIO、迁移、OpenAPI 路由、单元和集成测试全部通过。
-- [x] Phase 3 未在 Phase 1 完成过程中提前恢复。
+- [x] 阶段3未在阶段1完成过程中提前恢复。
 
 ## 后续阶段入口
 
-Phase 2 统一包含 Model Gateway、Context、Memory、Knowledge、Prompt/模型能力目录和 Evaluation，详见 [`phase-2-llm-core-capabilities.md`](./phase-2-llm-core-capabilities.md)。
+阶段2包含 Model Gateway、独立 Conversation Context、Prompt/模型能力目录和 Evaluation；Memory 只保留规划与实验性准备代码，不进入实际模型响应链，Knowledge 改为后续独立知识库规划。详见 [`phase-2-llm-core-capabilities.md`](./phase-2-llm-core-capabilities.md)。

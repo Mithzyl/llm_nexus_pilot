@@ -1,14 +1,24 @@
 """Contract tests for provider codecs, registry routing, retries, and pricing."""
 
+import json
 from decimal import Decimal
 
 import httpx
 import pytest
 
-from nexuspilot_models.contracts import Message, MessageRole, ModelRequest, ProviderName
+from nexuspilot_models.contracts import (
+    Message,
+    MessageRole,
+    ModelRequest,
+    ProviderName,
+    ReasoningConfiguration,
+    ReasoningEffort,
+    ToolDefinition,
+)
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog
 from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
+from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatProvider
@@ -84,12 +94,10 @@ async def test_all_provider_streams_share_public_event_contract(
             transport, base_url="https://provider.example/v1", api_key="key"
         )
     elif provider_name is ProviderName.DEEPSEEK:
-        provider = OpenAICompatibleChatProvider(
-            name=ProviderName.DEEPSEEK,
+        provider = DeepSeekChatProvider(
             transport=transport,
             base_url="https://provider.example/v1",
             api_key="key",
-            supports_json_schema=False,
         )
     elif provider_name is ProviderName.ANTHROPIC:
         provider = AnthropicMessagesProvider(
@@ -150,7 +158,7 @@ async def test_openai_compatible_provider_reuses_chat_codec(
         """Assert the compatible wire shape and return a provider-style completion."""
 
         assert request.url.path.endswith(expected_path)
-        body = __import__("json").loads(request.content)
+        body = json.loads(request.content)
         assert body["messages"][-1] == {"role": "user", "content": "Hello"}
         return httpx.Response(200, json=response_payload)
 
@@ -192,6 +200,326 @@ async def test_compatible_provider_rejects_undeclared_json_schema_support() -> N
     await client.aclose()
 
     assert caught.value.error_type == "unsupported_capability"
+
+
+@pytest.mark.parametrize(
+    ("model", "effort"),
+    [
+        ("deepseek-v4-flash", ReasoningEffort.LOW),
+        ("deepseek-v4-flash", ReasoningEffort.HIGH),
+        ("deepseek-v4-flash", ReasoningEffort.MAX),
+        ("deepseek-v4-pro", ReasoningEffort.HIGH),
+        ("deepseek-v4-pro", ReasoningEffort.MAX),
+    ],
+)
+async def test_deepseek_maps_supported_reasoning_configuration(
+    model: str,
+    effort: ReasoningEffort,
+) -> None:
+    """Verify supported reasoning modes use the current DeepSeek Chat Completions wire shape."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert DeepSeek never receives a Responses API request or nested effort field."""
+
+        assert request.url.path == "/chat/completions"
+        body = json.loads(request.content)
+        assert body["thinking"] == {"type": "enabled"}
+        assert body["reasoning_effort"] == effort.value
+        assert "reasoning_effort" not in body["thinking"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "deepseek-response",
+                "choices": [{"message": {"content": "answer"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, model).model_copy(
+        update={
+            "reasoning": ReasoningConfiguration(enabled=True, effort=effort),
+        }
+    )
+
+    response = await provider.generate(request)
+    await client.aclose()
+
+    assert response.text == "answer"
+
+
+def test_reasoning_configuration_rejects_effort_when_disabled() -> None:
+    """Verify disabled reasoning cannot carry an effort that would have no effect."""
+
+    with pytest.raises(ValueError, match="effort"):
+        ReasoningConfiguration(enabled=False, effort=ReasoningEffort.HIGH)
+
+
+async def test_deepseek_rejects_low_effort_for_v4_pro_before_network() -> None:
+    """Verify the platform does not silently let DeepSeek map v4-pro low effort to high."""
+
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Record an unexpected provider request made after local capability validation."""
+
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, "deepseek-v4-pro").model_copy(
+        update={
+            "reasoning": ReasoningConfiguration(
+                enabled=True,
+                effort=ReasoningEffort.LOW,
+            )
+        }
+    )
+
+    with pytest.raises(ModelProviderError, match="does not support reasoning effort") as caught:
+        await provider.generate(request)
+    await client.aclose()
+
+    assert caught.value.error_type == "unsupported_capability"
+    assert request_count == 0
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [None, ReasoningConfiguration(enabled=True)],
+)
+async def test_deepseek_rejects_temperature_when_reasoning_is_enabled(
+    reasoning: ReasoningConfiguration | None,
+) -> None:
+    """Verify an ignored sampling parameter fails locally instead of creating false semantics."""
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash").model_copy(
+        update={
+            "temperature": 0.5,
+            "reasoning": reasoning,
+        }
+    )
+
+    with pytest.raises(ModelProviderError, match="temperature") as caught:
+        await provider.generate(request)
+    await client.aclose()
+
+    assert caught.value.error_type == "invalid_request"
+
+
+async def test_deepseek_disabled_reasoning_allows_temperature() -> None:
+    """Verify non-thinking DeepSeek requests retain supported sampling controls."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert disabled thinking and temperature are both represented explicitly."""
+
+        body = json.loads(request.content)
+        assert body["thinking"] == {"type": "disabled"}
+        assert body["temperature"] == 0.5
+        assert "reasoning_effort" not in body
+        return httpx.Response(
+            200,
+            json={
+                "id": "deepseek-response",
+                "choices": [{"message": {"content": "answer"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash").model_copy(
+        update={
+            "temperature": 0.5,
+            "reasoning": ReasoningConfiguration(enabled=False),
+        }
+    )
+
+    await provider.generate(request)
+    await client.aclose()
+
+
+async def test_deepseek_stream_requires_done_and_retains_reasoning_evidence() -> None:
+    """Verify completed streams retain private reasoning evidence only after a DONE marker."""
+
+    sse_body = (
+        'data: {"id":"chat-1","choices":[{"delta":{"reasoning_content":"plan"},'
+        '"finish_reason":null}]}\n\n'
+        'data: {"id":"chat-1","choices":[{"delta":{"content":"answer"},'
+        '"finish_reason":"stop"}]}\n\n'
+        'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Return a complete DeepSeek reasoning stream."""
+
+        return httpx.Response(
+            200,
+            content=sse_body.encode(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash")
+        )
+    ]
+    await client.aclose()
+
+    assert [event.type.value for event in events] == [
+        "response.started",
+        "response.text.delta",
+        "response.usage",
+        "response.completed",
+    ]
+    raw_response = events[-1].data["response"]["raw_response"]
+    assert raw_response["reasoning_content"] == "plan"
+    assert events[-1].data["response"]["text"] == "answer"
+
+
+async def test_deepseek_stream_without_done_fails() -> None:
+    """Verify a truncated DeepSeek stream never becomes a successful completed response."""
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Return a stream that closes without the required DONE marker."""
+
+        return httpx.Response(
+            200,
+            content=(
+                'data: {"id":"chat-1","choices":[{"delta":{"content":"partial"},'
+                '"finish_reason":"stop"}]}\n\n'
+            ).encode(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+
+    with pytest.raises(ModelProviderError, match="DONE") as caught:
+        _events = [
+            event
+            async for event in provider.stream(
+                model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash")
+            )
+        ]
+    await client.aclose()
+
+    assert caught.value.error_type == "response_parse_error"
+
+
+async def test_deepseek_rejects_strict_tools_before_network() -> None:
+    """Verify undeclared DeepSeek strict-tool support cannot reach the normal endpoint."""
+
+    request_count = 0
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Record an unexpected request made before strict-tool capability validation."""
+
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash").model_copy(
+        update={
+            "tools": [
+                ToolDefinition(
+                    name="lookup",
+                    description="Look up one record.",
+                    input_schema={"type": "object"},
+                    strict=True,
+                )
+            ]
+        }
+    )
+
+    with pytest.raises(ModelProviderError, match="strict tool") as caught:
+        await provider.generate(request)
+    await client.aclose()
+
+    assert caught.value.error_type == "unsupported_capability"
+    assert request_count == 0
+
+
+async def test_other_providers_reject_unimplemented_reasoning_configuration() -> None:
+    """Verify a portable reasoning request is never silently ignored by another adapter."""
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
+    transport = HttpTransport(client, max_retries=0)
+    providers = [
+        (
+            OpenAIResponsesProvider(
+                transport,
+                base_url="https://api.openai.com/v1",
+                api_key="test-key",
+            ),
+            ProviderName.OPENAI,
+        ),
+        (
+            AnthropicMessagesProvider(
+                transport,
+                base_url="https://api.anthropic.com/v1",
+                api_key="test-key",
+            ),
+            ProviderName.ANTHROPIC,
+        ),
+        (
+            GeminiGenerateContentProvider(
+                transport,
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+                api_key="test-key",
+            ),
+            ProviderName.GEMINI,
+        ),
+    ]
+
+    for provider, provider_name in providers:
+        request = model_request(provider_name).model_copy(
+            update={"reasoning": ReasoningConfiguration(enabled=True)}
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            await provider.generate(request)
+        assert caught.value.error_type == "unsupported_capability"
+    await client.aclose()
 
 
 async def test_openai_responses_codec_parses_text_tools_and_usage() -> None:

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 import pytest_asyncio
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -84,6 +85,30 @@ class FakeObjectStorage:
             content_type=content_type,
         )
 
+    async def delete_object(self, storage_uri: str) -> None:
+        """Remove one stored test object and ignore already-missing keys."""
+
+        self.objects.pop(storage_uri, None)
+
+    async def list_objects(self, prefix: str) -> list[str]:
+        """Return stored object names under one deterministic prefix."""
+
+        return [
+            uri[len("memory://test/"):]
+            for uri in self.objects
+            if uri.startswith(f"memory://test/{prefix}")
+        ]
+
+    async def verify_object(self, storage_uri: str, expected_hash: str) -> bool:
+        """Return True when stored bytes hash to the expected value."""
+
+        import hashlib
+
+        stored_object_entry = self.objects.get(storage_uri)
+        if stored_object_entry is None:
+            return False
+        return hashlib.sha256(stored_object_entry[0]).hexdigest() == expected_hash
+
 
 class FakeProvider:
     """Return deterministic provider-neutral responses without external network access."""
@@ -158,6 +183,15 @@ async def test_database_session_factory(
     """Yield a database session factory backed by a fresh database and dispose it afterward."""
 
     test_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+
+    @event.listens_for(test_engine.sync_engine, "connect")
+    def enable_sqlite_foreign_keys(dbapi_connection: object, _connection_record: object) -> None:
+        """Enable SQLite foreign keys so fast tests detect production insert-order defects."""
+
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
     async with test_engine.begin() as connection:
