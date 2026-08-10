@@ -12,6 +12,12 @@ engine = create_async_engine(settings.database_url, pool_pre_ping=True)
 database_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
+def get_database_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the factory used when work must outlive a request-scoped session."""
+
+    return database_session_factory
+
+
 async def get_database_session() -> AsyncIterator[AsyncSession]:
     """Yield one request database session, roll back failures, and always close it."""
 

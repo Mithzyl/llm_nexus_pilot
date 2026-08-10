@@ -54,17 +54,36 @@ class ModelInvocationService:
 
         request = payload.to_model_request()
         model_attempt = await self._start_model_attempt(payload)
+        provider_dispatch_may_have_started = False
         try:
             provider = self.registry.resolve(request.provider, request.model)
-            response = await provider.generate(request)
+            # The platform deadline remains authoritative even when a provider
+            # adapter or custom transport fails to enforce its own timeout.
+            provider_dispatch_may_have_started = True
+            async with asyncio.timeout(payload.timeout_seconds):
+                response = await provider.generate(request)
             response = self._apply_price(response, request.provider, request.model)
-            await self._complete_model_attempt(model_attempt, response)
+            await self._complete_model_attempt_resiliently(model_attempt, response)
             return self._to_result(
                 model_attempt.attempt_id,
                 request.provider,
                 request.model,
                 response,
             )
+        except TimeoutError as exc:
+            error = ModelProviderError(
+                "timeout",
+                "Model provider request timed out.",
+                retryable=True,
+            )
+            await self._fail_model_attempt(model_attempt, error)
+            raise error from exc
+        except asyncio.CancelledError:
+            if provider_dispatch_may_have_started:
+                await self._mark_model_attempt_outcome_unknown(model_attempt)
+            else:
+                await self._cancel_model_attempt(model_attempt)
+            raise
         except ModelProviderError as error:
             await self._fail_model_attempt(model_attempt, error)
             raise
@@ -79,8 +98,10 @@ class ModelInvocationService:
         request = payload.to_model_request()
         model_attempt = await self._start_model_attempt(payload)
         sequence = 1
+        provider_dispatch_may_have_started = False
         try:
             provider = self.registry.resolve(request.provider, request.model)
+            provider_dispatch_may_have_started = True
             async for event in provider.stream(request):
                 event_data = {**event.data, "attempt_id": model_attempt.attempt_id}
                 if event.type is StreamEventType.COMPLETED:
@@ -92,7 +113,7 @@ class ModelInvocationService:
                         )
                     response = ModelResponse.model_validate(response_data)
                     response = self._apply_price(response, request.provider, request.model)
-                    await self._complete_model_attempt(model_attempt, response)
+                    await self._complete_model_attempt_resiliently(model_attempt, response)
                     event_data["response"] = self._to_result(
                         model_attempt.attempt_id,
                         request.provider,
@@ -102,26 +123,31 @@ class ModelInvocationService:
                 sequence = max(sequence, event.sequence)
                 yield event.model_copy(update={"data": event_data})
         except asyncio.CancelledError:
-            await self._cancel_model_attempt(model_attempt)
+            if provider_dispatch_may_have_started:
+                await self._mark_model_attempt_outcome_unknown(model_attempt)
+            else:
+                await self._cancel_model_attempt(model_attempt)
             raise
         except ModelProviderError as error:
+            model_attempt_id = model_attempt.attempt_id
             await self._fail_model_attempt(model_attempt, error)
             yield StreamEvent(
                 type=StreamEventType.FAILED,
                 sequence=sequence + 1,
                 data={
-                    "attempt_id": model_attempt.attempt_id,
+                    "attempt_id": model_attempt_id,
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
         except Exception:
+            model_attempt_id = model_attempt.attempt_id
             error = ModelProviderError("internal_error", "Model stream processing failed.")
             await self._fail_model_attempt(model_attempt, error)
             yield StreamEvent(
                 type=StreamEventType.FAILED,
                 sequence=sequence + 1,
                 data={
-                    "attempt_id": model_attempt.attempt_id,
+                    "attempt_id": model_attempt_id,
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
@@ -147,8 +173,7 @@ class ModelInvocationService:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
-                        "Idempotency key already belongs to model attempt "
-                        f"{existing.attempt_id}"
+                        f"Idempotency key already belongs to model attempt {existing.attempt_id}"
                     ),
                 )
         model_attempt = LlmModelAttempt(
@@ -173,6 +198,9 @@ class ModelInvocationService:
             )
             model_attempt.raw_request_uri = stored_raw_request.uri
             await self.db_session.commit()
+        except asyncio.CancelledError:
+            await self._cancel_model_attempt(model_attempt)
+            raise
         except Exception as exc:
             model_attempt.status = AttemptStatus.FAILED
             model_attempt.error_code = "object_storage_error"
@@ -192,12 +220,173 @@ class ModelInvocationService:
     ) -> None:
         """Persist raw response, physical attempts, accounting, and completed state atomically."""
 
-        stored_raw_response = await self.storage.put_bytes(
-            f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-response.json",
-            json.dumps(response.raw_response, ensure_ascii=False).encode(),
-            "application/json",
+        try:
+            stored_raw_response = await self.storage.put_bytes(
+                f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-response.json",
+                json.dumps(response.raw_response, ensure_ascii=False).encode(),
+                "application/json",
+            )
+        except Exception as exc:
+            try:
+                await self._record_response_audit_failure(model_attempt, response)
+            except Exception as persistence_error:
+                await self._record_response_persistence_unknown(
+                    model_attempt,
+                    response,
+                    raw_response_uri=None,
+                )
+                raise ModelProviderError(
+                    "response_persistence_error",
+                    "Provider responded, but its accounting state could not be confirmed.",
+                    provider_request_id=response.provider_request_id,
+                    transport_attempts=response.transport_attempts,
+                ) from persistence_error
+            raise ModelProviderError(
+                "response_audit_failed",
+                "Provider responded, but the raw response audit record could not be stored.",
+                provider_request_id=response.provider_request_id,
+                transport_attempts=response.transport_attempts,
+            ) from exc
+        try:
+            await self._persist_provider_response_state(
+                model_attempt,
+                response,
+                status=AttemptStatus.COMPLETED,
+                raw_response_uri=stored_raw_response.uri,
+            )
+        except Exception as exc:
+            durable_status = await self._record_response_persistence_unknown(
+                model_attempt,
+                response,
+                raw_response_uri=stored_raw_response.uri,
+            )
+            if durable_status == AttemptStatus.COMPLETED:
+                return
+            raise ModelProviderError(
+                "response_persistence_error",
+                "Provider responded, but its accounting state could not be confirmed.",
+                provider_request_id=response.provider_request_id,
+                transport_attempts=response.transport_attempts,
+            ) from exc
+
+    async def _complete_model_attempt_resiliently(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+    ) -> None:
+        """Finish a known provider response before propagating caller cancellation."""
+
+        completion_task = asyncio.create_task(self._complete_model_attempt(model_attempt, response))
+        try:
+            await asyncio.shield(completion_task)
+        except asyncio.CancelledError:
+            # Do not let request cancellation interrupt the accounting transaction
+            # after the provider has returned a known response. Waiting here also
+            # prevents concurrent use of this request-scoped AsyncSession.
+            try:
+                await completion_task
+            except Exception:
+                # The completion task persists its own explicit audit-failure state.
+                # Cancellation remains the caller-visible outcome.
+                pass
+            raise
+
+    async def _record_response_audit_failure(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+    ) -> None:
+        """Preserve known provider accounting when raw response storage is unavailable."""
+
+        await self._persist_provider_response_state(
+            model_attempt,
+            response,
+            status=AttemptStatus.FAILED,
+            raw_response_uri=None,
+            error_code="response_audit_failed",
+            error_message=(
+                "Provider responded, but the raw response audit record could not be stored."
+            ),
         )
-        model_attempt.status = AttemptStatus.COMPLETED
+
+    async def _persist_provider_response_state(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+        *,
+        status: AttemptStatus,
+        raw_response_uri: str | None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Commit response facts once, reconciling one ambiguous or transient failure."""
+
+        attempt_id = model_attempt.attempt_id
+        target_status = status
+        for persistence_attempt in range(2):
+            if persistence_attempt:
+                await self.db_session.rollback()
+                durable_attempt = await self.db_session.get(
+                    LlmModelAttempt,
+                    attempt_id,
+                    populate_existing=True,
+                )
+                if durable_attempt is None:
+                    raise RuntimeError("Model Attempt disappeared during response persistence")
+                if durable_attempt.status == target_status:
+                    return
+                if durable_attempt.status != AttemptStatus.STARTED:
+                    raise RuntimeError("Model Attempt reached a conflicting terminal state")
+                model_attempt = durable_attempt
+
+            self._apply_provider_response_facts(
+                model_attempt,
+                response,
+                status=target_status,
+                raw_response_uri=raw_response_uri,
+                error_code=error_code,
+                error_message=error_message,
+            )
+            self._add_provider_transport_attempts(
+                model_attempt.attempt_id,
+                response.transport_attempts,
+            )
+            if model_attempt.estimated_cost is not None:
+                await self.db_session.execute(
+                    update(LlmRun)
+                    .where(LlmRun.run_id == model_attempt.run_id)
+                    .values(cost_used=LlmRun.cost_used + model_attempt.estimated_cost)
+                )
+            try:
+                await self.db_session.commit()
+                return
+            except Exception:
+                if persistence_attempt:
+                    await self.db_session.rollback()
+                    durable_attempt = await self.db_session.get(
+                        LlmModelAttempt,
+                        attempt_id,
+                        populate_existing=True,
+                    )
+                    if durable_attempt is not None and durable_attempt.status == target_status:
+                        return
+                    raise
+
+        raise RuntimeError("Model response persistence retry was exhausted")
+
+    def _apply_provider_response_facts(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+        *,
+        status: AttemptStatus,
+        raw_response_uri: str | None,
+        error_code: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Assign normalized provider response and terminal audit fields to an Attempt."""
+
+        model_attempt.status = status
         model_attempt.input_tokens = response.input_tokens
         model_attempt.output_tokens = response.output_tokens
         model_attempt.cached_tokens = response.cached_tokens
@@ -206,20 +395,75 @@ class ModelInvocationService:
         )
         model_attempt.latency_ms = response.latency_ms
         model_attempt.provider_request_id = response.provider_request_id
-        model_attempt.raw_response_uri = stored_raw_response.uri
+        model_attempt.raw_response_uri = raw_response_uri
         model_attempt.retry_count = max(0, len(response.transport_attempts) - 1)
+        model_attempt.error_code = error_code
+        model_attempt.error_message = error_message
         model_attempt.completed_at = datetime.now(UTC)
+
+    async def _record_response_persistence_unknown(
+        self,
+        model_attempt: LlmModelAttempt,
+        response: ModelResponse,
+        *,
+        raw_response_uri: str | None,
+    ) -> AttemptStatus:
+        """Preserve provider facts when the preceding completion commit stayed uncertain."""
+
+        attempt_id = model_attempt.attempt_id
+        await self.db_session.rollback()
+        durable_attempt = await self.db_session.get(
+            LlmModelAttempt,
+            attempt_id,
+            populate_existing=True,
+        )
+        if durable_attempt is None:
+            raise RuntimeError("Model Attempt disappeared during persistence recovery")
+        if durable_attempt.status != AttemptStatus.STARTED:
+            return durable_attempt.status
+        self._apply_provider_response_facts(
+            durable_attempt,
+            response,
+            status=AttemptStatus.OUTCOME_UNKNOWN,
+            raw_response_uri=raw_response_uri,
+            error_code="response_persistence_error",
+            error_message=(
+                "Provider responded, but the final accounting transaction could not be confirmed."
+            ),
+        )
         self._add_provider_transport_attempts(
-            model_attempt.attempt_id,
+            durable_attempt.attempt_id,
             response.transport_attempts,
         )
-        if model_attempt.estimated_cost is not None:
+        if durable_attempt.estimated_cost is not None:
             await self.db_session.execute(
                 update(LlmRun)
-                .where(LlmRun.run_id == model_attempt.run_id)
-                .values(cost_used=LlmRun.cost_used + model_attempt.estimated_cost)
+                .where(LlmRun.run_id == durable_attempt.run_id)
+                .values(cost_used=LlmRun.cost_used + durable_attempt.estimated_cost)
             )
         await self.db_session.commit()
+        return AttemptStatus.OUTCOME_UNKNOWN
+
+    async def _reload_started_model_attempt(
+        self,
+        model_attempt_id: str,
+    ) -> LlmModelAttempt | None:
+        """Rollback transient state and reload an Attempt only while it is still started."""
+
+        await self.db_session.rollback()
+        durable_attempt = await self.db_session.get(
+            LlmModelAttempt,
+            model_attempt_id,
+            populate_existing=True,
+        )
+        if durable_attempt is None or durable_attempt.status != AttemptStatus.STARTED:
+            # The terminal-state probe starts a read transaction. Streaming error
+            # handling can finish after the response dependency stack has begun
+            # unwinding, so close that transaction here instead of relying on a
+            # later request-session finalizer to return the pooled connection.
+            await self.db_session.rollback()
+            return None
+        return durable_attempt
 
     async def _fail_model_attempt(
         self,
@@ -227,6 +471,10 @@ class ModelInvocationService:
         error: ModelProviderError,
     ) -> None:
         """Persist safe provider failure evidence and all completed physical HTTP attempts."""
+
+        model_attempt = await self._reload_started_model_attempt(model_attempt.attempt_id)
+        if model_attempt is None:
+            return
 
         model_attempt.status = (
             AttemptStatus.TIMED_OUT if error.error_type == "timeout" else AttemptStatus.FAILED
@@ -253,13 +501,54 @@ class ModelInvocationService:
         await self.db_session.commit()
 
     async def _cancel_model_attempt(self, model_attempt: LlmModelAttempt) -> None:
-        """Mark a client-disconnected stream as cancelled before releasing its database session."""
+        """Persist cancellation before a request or stream releases its database session."""
 
-        model_attempt.status = AttemptStatus.CANCELLED
-        model_attempt.error_code = "cancelled"
-        model_attempt.error_message = "Client disconnected before the stream completed."
-        model_attempt.completed_at = datetime.now(UTC)
+        attempt_id = model_attempt.attempt_id
+        await self.db_session.rollback()
+        await self.db_session.execute(
+            update(LlmModelAttempt)
+            .where(
+                LlmModelAttempt.attempt_id == attempt_id,
+                LlmModelAttempt.status == AttemptStatus.STARTED,
+            )
+            .values(
+                status=AttemptStatus.CANCELLED,
+                error_code="cancelled",
+                error_message="Model invocation was cancelled before completion.",
+                completed_at=datetime.now(UTC),
+            )
+            .execution_options(synchronize_session=False)
+        )
         await self.db_session.commit()
+        await self.db_session.get(LlmModelAttempt, attempt_id, populate_existing=True)
+
+    async def _mark_model_attempt_outcome_unknown(
+        self,
+        model_attempt: LlmModelAttempt,
+    ) -> None:
+        """Record that provider dispatch cannot be excluded after caller cancellation."""
+
+        attempt_id = model_attempt.attempt_id
+        await self.db_session.rollback()
+        await self.db_session.execute(
+            update(LlmModelAttempt)
+            .where(
+                LlmModelAttempt.attempt_id == attempt_id,
+                LlmModelAttempt.status == AttemptStatus.STARTED,
+            )
+            .values(
+                status=AttemptStatus.OUTCOME_UNKNOWN,
+                error_code="provider_outcome_unknown",
+                error_message=(
+                    "Model invocation was cancelled after entering the provider adapter; "
+                    "dispatch and billing outcome cannot be confirmed."
+                ),
+                completed_at=datetime.now(UTC),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        await self.db_session.commit()
+        await self.db_session.get(LlmModelAttempt, attempt_id, populate_existing=True)
 
     def _add_provider_transport_attempts(
         self,

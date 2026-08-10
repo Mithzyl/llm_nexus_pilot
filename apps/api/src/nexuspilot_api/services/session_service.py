@@ -126,8 +126,15 @@ async def create_message(
     db_session: AsyncSession,
     session_id: str,
     payload: MessageCreate,
+    *,
+    commit: bool = True,
 ) -> LlmMessage:
-    """Append an immutable message with a database-serialized session sequence."""
+    """Append an immutable message with a database-serialized Session sequence.
+
+    Set ``commit=False`` only when a caller must atomically commit the Message with
+    additional facts; that caller then owns the final commit or rollback. Missing,
+    archived, or cross-Session resources raise the existing stable API errors.
+    """
 
     conversation = await db_session.scalar(
         select(LlmSession)
@@ -160,11 +167,15 @@ async def create_message(
     )
     db_session.add(message)
     try:
-        await db_session.commit()
+        if commit:
+            await db_session.commit()
+        else:
+            await db_session.flush()
     except IntegrityError as exc:
         await db_session.rollback()
         raise ResourceConflictError("Message sequence conflict") from exc
-    await db_session.refresh(message)
+    if commit:
+        await db_session.refresh(message)
     return message
 
 

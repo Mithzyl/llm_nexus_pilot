@@ -36,12 +36,19 @@ from nexuspilot_api.features.memory.models.user_memory import (
     LlmUserMemoryProfileItem,
     LlmUserMemoryProfileSnapshot,
 )
+from nexuspilot_api.models.agent_workflow import (
+    LlmAgentWorkflowEvent,
+    LlmAgentWorkflowExecution,
+    LlmAgentWorkflowNodeExecution,
+)
 from nexuspilot_api.models.base import Base, TimestampMixin, new_id
 from nexuspilot_api.models.context import LlmContextBuild, LlmContextSource
 from nexuspilot_api.models.enums import (
     AgentRunStatus,
     AgentTurnStatus,
     AgentTurnType,
+    AgentWorkflowNodeStatus,
+    AgentWorkflowStatus,
     AgentWorkingStateStatus,
     ApprovalMethod,
     AttemptStatus,
@@ -108,6 +115,8 @@ __all__ = [
     "AgentRunStatus",
     "AgentTurnStatus",
     "AgentTurnType",
+    "AgentWorkflowNodeStatus",
+    "AgentWorkflowStatus",
     "AgentWorkingStateStatus",
     "ApprovalMethod",
     "AttemptStatus",
@@ -125,6 +134,9 @@ __all__ = [
     "LlmAgentRun",
     "LlmAgentTurn",
     "LlmAgentWorkingStateVersion",
+    "LlmAgentWorkflowEvent",
+    "LlmAgentWorkflowExecution",
+    "LlmAgentWorkflowNodeExecution",
     "LlmContextBuild",
     "LlmContextSource",
     "LlmEvaluationRule",

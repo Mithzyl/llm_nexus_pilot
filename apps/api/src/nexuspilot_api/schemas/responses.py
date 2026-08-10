@@ -22,7 +22,7 @@ class ResponsesRequest(BaseModel):
     run_id: str
     task_id: str | None = None
     provider: ProviderName
-    model: str = Field(min_length=1, max_length=256)
+    model: str = Field(min_length=1, max_length=128)
     input: str | list[Message]
     instructions: str | None = Field(default=None, max_length=100_000)
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)

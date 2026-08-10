@@ -1,0 +1,1149 @@
+"""Phase 5 model-only Agent workflow API and persistence contract tests."""
+
+import asyncio
+import json
+
+import httpx
+import pytest
+from nexuspilot_models.contracts import (
+    ModelRequest,
+    ModelResponse,
+    ProviderName,
+    TransportAttempt,
+)
+from nexuspilot_models.registry import ProviderRegistry
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from test_api import create_test_run
+
+from nexuspilot_api.core.dependencies import get_provider_registry
+from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+    AgentWorkflowNodeResultRead,
+)
+from nexuspilot_api.main import app
+from nexuspilot_api.models import (
+    AgentRunStatus,
+    AgentTurnStatus,
+    AgentWorkflowNodeStatus,
+    AgentWorkflowStatus,
+    AttemptStatus,
+    LlmAgentHandoff,
+    LlmAgentRun,
+    LlmAgentTurn,
+    LlmAgentWorkflowExecution,
+    LlmAgentWorkflowNodeExecution,
+    LlmMessage,
+    LlmModelAttempt,
+    LlmRun,
+    LlmTask,
+    LlmTaskEvaluation,
+    MessageRole,
+    TaskStatus,
+)
+
+INTERNAL_HEADERS = {"X-Internal-API-Key": "test-internal-key-long-enough"}
+
+
+class ScriptedAgentProvider:
+    """Return node-specific structured outputs for deterministic workflow tests."""
+
+    name = ProviderName.OPENAI
+
+    def __init__(
+        self,
+        *,
+        forbidden_plan: bool = False,
+        multi_task_plan: bool = False,
+        invalid_worker_output: bool = False,
+        reviewer_verdict: str = "pass",
+        reviewer_requires_retry: bool = False,
+        reviewer_error_finding: bool = False,
+        oversized_final_output: bool = False,
+        plan_review_policy: str | None = None,
+        finish_reason: str = "stop",
+    ) -> None:
+        """Configure plan, output, review, and completion fixtures for one test."""
+
+        self.forbidden_plan = forbidden_plan
+        self.multi_task_plan = multi_task_plan
+        self.invalid_worker_output = invalid_worker_output
+        self.reviewer_verdict = reviewer_verdict
+        self.reviewer_requires_retry = reviewer_requires_retry
+        self.reviewer_error_finding = reviewer_error_finding
+        self.oversized_final_output = oversized_final_output
+        self.plan_review_policy = plan_review_policy
+        self.finish_reason = finish_reason
+        self.requests: list[ModelRequest] = []
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Return the typed fixture selected by the workflow node metadata."""
+
+        self.requests.append(request)
+        node_key = request.metadata["agent_node_key"]
+        structured_output = self._node_output(node_key, request)
+        return ModelResponse(
+            text=json.dumps(structured_output),
+            structured_output=structured_output,
+            finish_reason=self.finish_reason,
+            input_tokens=100,
+            output_tokens=20,
+            cached_tokens=10,
+            latency_ms=5,
+            provider_request_id=f"provider-{node_key}",
+            raw_response={"node_key": node_key, "output": structured_output},
+            transport_attempts=[TransportAttempt(attempt_index=1, status_code=200, latency_ms=5)],
+        )
+
+    async def stream(self, _request: ModelRequest):
+        """Reject direct provider streaming because workflow SSE replays business events."""
+
+        raise AssertionError("Agent workflow must not stream directly from the provider")
+        yield
+
+    def _node_output(self, node_key: str, request: ModelRequest) -> dict:
+        """Build one complete structured output without hidden reasoning fields."""
+
+        if node_key == "controller_planning":
+            requested_review_policy = json.loads(request.messages[-1].content)["review_policy"]
+            plan_review_policy = self.plan_review_policy or requested_review_policy
+            if self.multi_task_plan:
+                return {
+                    "decision_summary": "Research first, then plan from that handoff.",
+                    # Deliberately return the dependent Task first. The runtime
+                    # must not use model-authored list order as dependency order.
+                    "tasks": [
+                        {
+                            "task_key": "plan-1",
+                            "task_type": "planning",
+                            "title": "Plan from research",
+                            "objective": "Use the research handoff to form a plan.",
+                            "assigned_role": "researcher",
+                            "required_capabilities": ["model_generation"],
+                            "expected_output_type": "agent_handoff",
+                            "completion_criteria": ["Reference the research handoff"],
+                            "priority": 0,
+                            "timeout_seconds": 60,
+                            "max_model_calls": 1,
+                        },
+                        {
+                            "task_key": "research-1",
+                            "task_type": "analysis",
+                            "title": "Research supplied text",
+                            "objective": "Produce the upstream research marker.",
+                            "assigned_role": "researcher",
+                            "required_capabilities": ["model_generation"],
+                            "expected_output_type": "agent_handoff",
+                            "completion_criteria": ["Return the upstream marker"],
+                            "priority": 0,
+                            "timeout_seconds": 60,
+                            "max_model_calls": 1,
+                        },
+                    ],
+                    "dependencies": [
+                        {
+                            "task_key": "plan-1",
+                            "depends_on_task_key": "research-1",
+                            "dependency_type": "completion",
+                        }
+                    ],
+                    "review_policy": plan_review_policy,
+                    "known_risks": [],
+                    "unknowns": [],
+                }
+            role = "implementer" if self.forbidden_plan else "researcher"
+            capabilities = ["write"] if self.forbidden_plan else ["model_generation"]
+            return {
+                "decision_summary": "Delegate the bounded analysis task.",
+                "tasks": [
+                    {
+                        "task_key": "research-1",
+                        "task_type": "analysis",
+                        "title": "Analyze the supplied request",
+                        "objective": "Produce an evidence-bounded analysis.",
+                        "assigned_role": role,
+                        "required_capabilities": capabilities,
+                        "expected_output_type": "agent_handoff",
+                        "completion_criteria": ["Return a non-empty summary"],
+                        "priority": 0,
+                        "timeout_seconds": 60,
+                        "max_model_calls": 1,
+                    }
+                ],
+                "dependencies": [],
+                "review_policy": plan_review_policy,
+                "known_risks": [],
+                "unknowns": [],
+            }
+        if node_key.startswith("worker_execution"):
+            if self.invalid_worker_output:
+                return {
+                    "confirmed_facts": [],
+                    "decisions": [],
+                    "remaining_work": [],
+                    "risks": [],
+                    "unknowns": [],
+                }
+            model_input = json.loads(request.messages[-1].content)
+            task_objective = model_input["task"]["objective"]
+            return {
+                "summary": f"completed:{task_objective}",
+                "confirmed_facts": ["Only explicit request content was used."],
+                "decisions": ["Keep tool-dependent claims unverified."],
+                "remaining_work": [],
+                "risks": [],
+                "unknowns": [],
+            }
+        if node_key == "independent_review":
+            return {
+                "verdict": self.reviewer_verdict,
+                "score": "1.00" if self.reviewer_verdict == "pass" else "0.25",
+                "findings": (
+                    [
+                        {
+                            "finding_id": "review-error-1",
+                            "severity": "error",
+                            "category": "correctness",
+                            "description": "The candidate has a blocking correctness defect.",
+                            "evidence_refs": [],
+                            "required_action": "Revise the candidate.",
+                        }
+                    ]
+                    if self.reviewer_error_finding
+                    else []
+                ),
+                "accepted_claims": ["The answer is bounded to supplied content."],
+                "rejected_claims": [],
+                "missing_evidence": [],
+                "requires_replan": False,
+                "requires_retry": (self.reviewer_requires_retry or self.reviewer_verdict != "pass"),
+                "review_summary": (
+                    "The candidate satisfies the model-only contract."
+                    if self.reviewer_verdict == "pass"
+                    else "The candidate requires revision."
+                ),
+            }
+        if node_key == "final_synthesis":
+            return {
+                "answer_type": "text",
+                "final_text": "The model-only Agent workflow completed successfully.",
+                "completed_objectives": ["Analyze the supplied request"],
+                "unresolved_items": [],
+                "warnings": (["x" * 2_000] * 40 if self.oversized_final_output else []),
+                "recommended_next_actions": [],
+            }
+        raise AssertionError(f"Unexpected Agent node {node_key}")
+
+
+class SlowWorkerProvider(ScriptedAgentProvider):
+    """Ignore transport timing for one worker so the service deadline is exercised."""
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Delay only worker generation beyond its configured one-second timeout."""
+
+        if request.metadata["agent_node_key"] == "worker_execution":
+            await asyncio.sleep(1.2)
+        return await super().generate(request)
+
+
+class BlockingWorkerProvider(ScriptedAgentProvider):
+    """Expose a controllable in-flight Worker request for cancellation tests."""
+
+    def __init__(self) -> None:
+        """Create a signal that fires after the Worker enters the provider adapter."""
+
+        super().__init__()
+        self.worker_request_started = asyncio.Event()
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Block the Worker until its owning request task is externally cancelled."""
+
+        if request.metadata["agent_node_key"] == "worker_execution":
+            self.worker_request_started.set()
+            await asyncio.Event().wait()
+        return await super().generate(request)
+
+
+def scripted_registry(provider: ScriptedAgentProvider) -> ProviderRegistry:
+    """Register one scripted provider under the existing allowed test model."""
+
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI,
+        provider,
+        allowed_models=frozenset({"test-model"}),
+    )
+    return registry
+
+
+def workflow_payload(**overrides: object) -> dict:
+    """Return one valid model-only workflow request with explicit role bindings."""
+
+    payload = {
+        "workflow_name": "model_only",
+        "workflow_version": "1.0.0",
+        "execution_profile": "model_only_v1",
+        "idempotency_key": "agent-workflow-request-0001",
+        "review_policy": "always",
+        "role_bindings": {
+            "controller": {"provider": "openai", "model": "test-model"},
+            "researcher": {"provider": "openai", "model": "test-model"},
+            "reviewer": {"provider": "openai", "model": "test-model"},
+        },
+        "stream": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def test_model_only_workflow_returns_and_persists_complete_nodes(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify the primary Agent workflow completes with queryable full node results."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "completed", result
+    assert result["execution_profile"] == "model_only_v1"
+    assert result["active_node_execution_ids"] == []
+    assert result["final_output"]["final_text"].startswith("The model-only")
+    assert [node["node_key"] for node in result["nodes"]] == [
+        "request_intake",
+        "context_assembly",
+        "controller_planning",
+        "plan_validation",
+        "agent_dispatch",
+        "worker_execution.research-1",
+        "handoff_submission.research-1",
+        "deterministic_verification",
+        "independent_review",
+        "final_synthesis",
+        "workflow_completion",
+    ]
+    assert all(
+        node["schema_version"] == "agent_workflow_node_result.v1" for node in result["nodes"]
+    )
+    assert all("input" in node and "evidence" in node for node in result["nodes"])
+    verification_node = next(
+        node for node in result["nodes"] if node["node_key"] == "deterministic_verification"
+    )
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    final_node = next(node for node in result["nodes"] if node["node_key"] == "final_synthesis")
+    assert (
+        verification_node["node_execution_id"] in review_node["input"]["source_node_execution_ids"]
+    )
+    assert {
+        verification_node["node_execution_id"],
+        review_node["node_execution_id"],
+    }.issubset(set(final_node["input"]["source_node_execution_ids"]))
+    assert "chain_of_thought" not in response.text
+    assert len(provider.requests) == 4
+    controller_request = next(
+        request
+        for request in provider.requests
+        if request.metadata.get("agent_node_execution_key") == "controller_planning"
+    )
+    assert json.loads(controller_request.messages[-1].content)["allowed_roles"] == ["researcher"]
+
+    workflow_id = result["workflow_execution_id"]
+    summary = (await client.get(f"/api/v1/agent-workflows/{workflow_id}")).json()
+    assert summary["status"] == "completed"
+    assert summary["primary_node_execution_id"] is None
+    assert summary["active_node_execution_ids"] == []
+    assert summary["snapshot_version"] == result["snapshot_version"]
+    discovered = (await client.get(f"/api/v1/runs/{run['run_id']}/agent-workflow")).json()
+    assert discovered == summary
+
+    persisted_result = (await client.get(f"/api/v1/agent-workflows/{workflow_id}/result")).json()
+    assert persisted_result == result
+
+    node_page = (await client.get(f"/api/v1/agent-workflows/{workflow_id}/nodes?limit=5")).json()
+    assert len(node_page["items"]) == 5
+    assert node_page["has_more"] is True
+    first_node_id = node_page["items"][0]["node_execution_id"]
+    node_detail = (
+        await client.get(f"/api/v1/agent-workflows/{workflow_id}/nodes/{first_node_id}")
+    ).json()
+    assert node_detail == node_page["items"][0]
+
+
+async def test_workflow_idempotency_replays_without_new_model_calls(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify exact replay returns one workflow while changed input is rejected."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    url = f"/api/v1/runs/{run['run_id']}/agent-workflows"
+    payload = workflow_payload(idempotency_key="agent-idempotency-0001")
+
+    first = await client.post(url, json=payload)
+    replay = await client.post(url, json=payload)
+    conflict = await client.post(
+        url,
+        json={**payload, "review_policy": "never"},
+    )
+    different_key = await client.post(
+        url,
+        json={**payload, "idempotency_key": "agent-idempotency-0002"},
+    )
+
+    assert first.status_code == 201
+    assert replay.status_code == 200
+    assert replay.json()["workflow_execution_id"] == first.json()["workflow_execution_id"]
+    assert len(provider.requests) == 4
+    assert conflict.status_code == 409
+    assert different_key.status_code == 409
+
+
+async def test_run_workflow_discovery_returns_not_found_before_creation(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a Run without an Agent workflow has an explicit discovery result."""
+
+    run = await create_test_run(client)
+
+    response = await client.get(f"/api/v1/runs/{run['run_id']}/agent-workflow")
+
+    assert response.status_code == 404
+
+
+async def test_model_only_workflow_rejects_tool_or_implementer_plan(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify phase 4 capabilities cannot be smuggled into the model-only profile."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(forbidden_plan=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-forbidden-plan-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_capability_unavailable"
+    validation = next(node for node in result["nodes"] if node["node_key"] == "plan_validation")
+    assert validation["output"]["is_valid"] is False
+    assert validation["output"]["capability_gaps"]
+    assert len(provider.requests) == 1
+
+
+async def test_workflow_events_are_ordered_and_replay_after_sequence(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify persisted workflow SSE supports ordered recovery after disconnection."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    created = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-events-0001"),
+    )
+    workflow_id = created.json()["workflow_execution_id"]
+
+    all_events_response = await client.get(f"/api/v1/agent-workflows/{workflow_id}/events")
+    event_ids = [
+        int(line.removeprefix("id: "))
+        for line in all_events_response.text.splitlines()
+        if line.startswith("id: ")
+    ]
+    replay_response = await client.get(
+        f"/api/v1/agent-workflows/{workflow_id}/events?after_sequence={event_ids[-2]}"
+    )
+    replay_ids = [
+        int(line.removeprefix("id: "))
+        for line in replay_response.text.splitlines()
+        if line.startswith("id: ")
+    ]
+
+    assert all_events_response.headers["content-type"].startswith("text/event-stream")
+    assert event_ids == list(range(1, len(event_ids) + 1))
+    assert replay_ids == [event_ids[-1]]
+    assert "event: agent.workflow.completed" in replay_response.text
+
+
+async def test_dependent_agent_receives_direct_handoff_and_evaluations_keep_ownership(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify dependency order also carries data and never reassigns Evaluation ownership."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(multi_task_plan=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-dependency-data-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "completed", result
+    assert all(
+        node["public_view"]["progress_current"] <= node["public_view"]["progress_total"]
+        for node in result["nodes"]
+    )
+    dependent_request = next(
+        request
+        for request in provider.requests
+        if request.metadata.get("agent_node_execution_key") == "worker_execution.plan-1"
+    )
+    dependent_input = json.loads(dependent_request.messages[-1].content)
+    assert dependent_input["dependency_results"][0]["task_key"] == "research-1"
+    assert dependent_input["dependency_results"][0]["worker_output"]["summary"].startswith(
+        "completed:Produce the upstream"
+    )
+    assert dependent_input["dependency_results"][0]["handoff"]["agent_handoff_id"]
+
+    upstream_handoff_node = next(
+        node for node in result["nodes"] if node["node_key"] == "handoff_submission.research-1"
+    )
+    dependent_worker_node = next(
+        node for node in result["nodes"] if node["node_key"] == "worker_execution.plan-1"
+    )
+    assert (
+        upstream_handoff_node["node_execution_id"]
+        in dependent_worker_node["input"]["source_node_execution_ids"]
+    )
+    assert (
+        upstream_handoff_node["output"]["agent_handoff_id"]
+        in dependent_worker_node["input"]["handoff_ids"]
+    )
+
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata.get("agent_node_execution_key") == "final_synthesis"
+    )
+    final_input = json.loads(final_request.messages[-1].content)
+    assert len(final_input["worker_results"]) == 2
+    assert any(
+        item["worker_output"]["summary"].startswith("completed:Produce the upstream")
+        for item in final_input["worker_results"]
+    )
+
+    async with test_database_session_factory() as db_session:
+        evaluations = list(
+            (
+                await db_session.scalars(
+                    select(LlmTaskEvaluation).where(LlmTaskEvaluation.run_id == run["run_id"])
+                )
+            ).all()
+        )
+        attempts = {
+            item.attempt_id: item
+            for item in (
+                await db_session.scalars(
+                    select(LlmModelAttempt).where(LlmModelAttempt.run_id == run["run_id"])
+                )
+            ).all()
+        }
+        handoffs = {
+            item.agent_handoff_id: item
+            for item in (
+                await db_session.scalars(
+                    select(LlmAgentHandoff).where(LlmAgentHandoff.run_id == run["run_id"])
+                )
+            ).all()
+        }
+
+    worker_evaluations = [
+        item
+        for item in evaluations
+        if item.evaluation_type in {"agent_deterministic_verification", "agent_independent_review"}
+    ]
+    assert len(worker_evaluations) == 4
+    for evaluation in worker_evaluations:
+        candidate_attempt = attempts[evaluation.candidate_attempt_id]
+        assert evaluation.task_id == candidate_attempt.task_id
+        handoff_id = evaluation.findings_json.get("handoff_id")
+        if handoff_id is not None:
+            assert handoffs[handoff_id].task_id == evaluation.task_id
+
+
+async def test_invalid_worker_output_finalizes_all_started_facts_and_keeps_attempt_evidence(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify a paid but contract-invalid model response leaves no false running state."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(invalid_worker_output=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-invalid-worker-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    failed_worker_node = next(
+        node for node in result["nodes"] if node["node_key"].startswith("worker_execution")
+    )
+    assert failed_worker_node["status"] == "failed"
+    assert failed_worker_node["evidence"]["model_attempt_ids"]
+    assert failed_worker_node["usage"]["model_call_count"] == 1
+
+    async with test_database_session_factory() as db_session:
+        tasks = list(
+            (await db_session.scalars(select(LlmTask).where(LlmTask.run_id == run["run_id"]))).all()
+        )
+        agent_runs = list(
+            (
+                await db_session.scalars(
+                    select(LlmAgentRun).where(LlmAgentRun.run_id == run["run_id"])
+                )
+            ).all()
+        )
+        agent_turns = list((await db_session.scalars(select(LlmAgentTurn))).all())
+        nodes = list(
+            (
+                await db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.run_id == run["run_id"]
+                    )
+                )
+            ).all()
+        )
+        attempts = list(
+            (
+                await db_session.scalars(
+                    select(LlmModelAttempt).where(LlmModelAttempt.run_id == run["run_id"])
+                )
+            ).all()
+        )
+
+    assert tasks and all(task.status == TaskStatus.FAILED for task in tasks)
+    assert agent_runs and all(item.status == AgentRunStatus.FAILED for item in agent_runs)
+    assert agent_turns and all(item.status == AgentTurnStatus.FAILED for item in agent_turns)
+    assert all(item.status != AgentWorkflowNodeStatus.RUNNING for item in nodes)
+    invalid_attempt = next(
+        item
+        for item in attempts
+        if item.attempt_id in failed_worker_node["evidence"]["model_attempt_ids"]
+    )
+    assert invalid_attempt.status == AttemptStatus.COMPLETED
+    assert agent_turns[0].model_attempt_id == invalid_attempt.attempt_id
+
+
+async def test_stream_creation_returns_committed_workflow_events(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify POST SSE emits the committed start, node, and terminal workflow sequence."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-live-stream-0001", stream=True),
+    )
+
+    event_ids = [
+        int(line.removeprefix("id: "))
+        for line in response.text.splitlines()
+        if line.startswith("id: ")
+    ]
+    assert response.status_code == 201
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert event_ids == list(range(1, len(event_ids) + 1))
+    assert "event: agent.workflow.started" in response.text
+    assert "event: agent.node.started" in response.text
+    assert "event: agent.workflow.completed" in response.text
+
+
+async def test_conditional_review_requires_reviewer_binding(client: httpx.AsyncClient) -> None:
+    """Verify a request cannot defer a required Reviewer binding until runtime failure."""
+
+    run = await create_test_run(client)
+    payload = workflow_payload(review_policy="on_verification_failure")
+    payload["role_bindings"].pop("reviewer")
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
+async def test_review_policy_rejects_insufficient_model_call_budget_before_provider(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify required review work cannot exhaust the budget after a paid Controller call."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(max_model_calls=3),
+    )
+
+    assert response.status_code == 422
+    assert provider.requests == []
+
+
+async def test_exhausted_run_budget_returns_stable_workflow_error_before_provider(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify an exhausted monetary budget is not mislabeled as invalid node output."""
+
+    run = await create_test_run(client)
+    async with test_database_session_factory() as db_session:
+        durable_run = await db_session.get(LlmRun, run["run_id"])
+        assert durable_run is not None
+        durable_run.budget_limit = 0
+        await db_session.commit()
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-exhausted-budget-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_budget_exhausted"
+    assert provider.requests == []
+
+
+async def test_controller_cannot_change_request_review_policy(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a model-authored review policy cannot override the caller's workflow policy."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(plan_review_policy="always")
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(
+            idempotency_key="agent-review-policy-mismatch-0001",
+            review_policy="never",
+        ),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_review_policy_mismatch"
+    assert len(provider.requests) == 1
+
+
+async def test_conditional_review_skips_reviewer_after_successful_verification(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify on-failure review proceeds directly to synthesis when checks pass."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(
+            idempotency_key="agent-conditional-review-0001",
+            review_policy="on_verification_failure",
+        ),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "completed"
+    assert not any(node["node_key"] == "independent_review" for node in result["nodes"])
+    verification_node = next(
+        node for node in result["nodes"] if node["node_key"] == "deterministic_verification"
+    )
+    assert verification_node["output"]["requires_independent_review"] is False
+    assert verification_node["transition"]["selected_transition"] == "synthesize"
+    assert len(provider.requests) == 3
+
+
+async def test_reviewer_rejection_stops_before_final_synthesis(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify an explicit Reviewer rejection cannot become a successful final answer."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(reviewer_verdict="needs_revision")
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-review-reject-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_review_rejected"
+    assert result["final_output"] is None
+    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    assert review_node["output"]["verdict"] == "needs_revision"
+    assert review_node["output"]["evaluation_ids"]
+
+
+async def test_reviewer_retry_request_uses_reject_transition(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a nominal pass that still requests retry cannot advertise synthesis."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(reviewer_requires_retry=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-review-retry-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_review_rejected"
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    assert review_node["output"]["verdict"] == "pass"
+    assert review_node["output"]["requires_retry"] is True
+    assert review_node["transition"]["selected_transition"] == "reject"
+    assert review_node["transition"]["next_node_keys"] == []
+    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+
+
+async def test_reviewer_pass_with_error_finding_is_rejected_as_invalid_output(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a blocking Reviewer finding cannot coexist with a passing verdict."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(reviewer_error_finding=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-review-error-finding-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "node_output_invalid"
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    assert review_node["status"] == "failed"
+    assert review_node["evidence"]["model_attempt_ids"]
+    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+
+
+async def test_incomplete_finish_reason_fails_with_attempt_evidence(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify schema-valid but truncated provider output is not accepted as complete."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(finish_reason="length")
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-length-finish-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    controller_node = next(
+        node for node in result["nodes"] if node["node_key"] == "controller_planning"
+    )
+    assert result["status"] == "failed"
+    assert controller_node["status"] == "failed"
+    assert controller_node["evidence"]["model_attempt_ids"]
+    assert controller_node["usage"]["model_call_count"] == 1
+
+
+async def test_final_message_rolls_back_when_final_node_cannot_be_persisted(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify a failed final node cannot leave a misleading committed Assistant message."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(oversized_final_output=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-final-message-rollback-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["final_output"] is None
+    final_node = next(node for node in result["nodes"] if node["node_key"] == "final_synthesis")
+    assert final_node["status"] == "failed"
+    async with test_database_session_factory() as db_session:
+        assistant_messages = list(
+            (
+                await db_session.scalars(
+                    select(LlmMessage).where(
+                        LlmMessage.run_id == run["run_id"],
+                        LlmMessage.role == MessageRole.ASSISTANT,
+                    )
+                )
+            ).all()
+        )
+    assert assistant_messages == []
+
+
+async def test_worker_timeout_marks_unknown_outcome_and_finalizes_agent_state(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify the platform deadline stops a slow provider and removes false running facts."""
+
+    run = await create_test_run(client)
+    provider = SlowWorkerProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-worker-timeout-0001")
+    payload["role_bindings"]["researcher"]["timeout_seconds"] = 1
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "outcome_unknown"
+    assert result["error"]["error_code"] == "timeout"
+    assert result["error"]["is_retryable"] is False
+    worker_node = next(
+        node for node in result["nodes"] if node["node_key"].startswith("worker_execution")
+    )
+    assert worker_node["status"] == "outcome_unknown"
+    assert worker_node["public_view"]["status_label"] == "Node outcome unknown"
+    async with test_database_session_factory() as db_session:
+        attempts = list(
+            (
+                await db_session.scalars(
+                    select(LlmModelAttempt).where(LlmModelAttempt.run_id == run["run_id"])
+                )
+            ).all()
+        )
+        agent_runs = list(
+            (
+                await db_session.scalars(
+                    select(LlmAgentRun).where(LlmAgentRun.run_id == run["run_id"])
+                )
+            ).all()
+        )
+        turns = list((await db_session.scalars(select(LlmAgentTurn))).all())
+
+    assert any(item.status == AttemptStatus.TIMED_OUT for item in attempts)
+    assert all(item.status == AgentRunStatus.FAILED for item in agent_runs)
+    assert all(item.status == AgentTurnStatus.FAILED for item in turns)
+
+
+async def test_in_flight_provider_cancellation_marks_attempt_and_workflow_outcome_unknown(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify cancellation inside the provider boundary never claims a known outcome."""
+
+    run = await create_test_run(client)
+    provider = BlockingWorkerProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    request_task = asyncio.create_task(
+        client.post(
+            f"/api/v1/runs/{run['run_id']}/agent-workflows",
+            json=workflow_payload(idempotency_key="agent-provider-cancelled-0001"),
+        )
+    )
+    await asyncio.wait_for(provider.worker_request_started.wait(), timeout=2)
+    request_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    async with test_database_session_factory() as db_session:
+        workflow = await db_session.scalar(
+            select(LlmAgentWorkflowExecution).where(
+                LlmAgentWorkflowExecution.run_id == run["run_id"]
+            )
+        )
+        attempts = list(
+            (
+                await db_session.scalars(
+                    select(LlmModelAttempt).where(LlmModelAttempt.run_id == run["run_id"])
+                )
+            ).all()
+        )
+        nodes = list(
+            (
+                await db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.run_id == run["run_id"]
+                    )
+                )
+            ).all()
+        )
+
+    assert workflow is not None
+    assert workflow.status == AgentWorkflowStatus.OUTCOME_UNKNOWN
+    assert workflow.error_json["is_retryable"] is False
+    worker_attempt = next(item for item in attempts if item.task_id is not None)
+    assert worker_attempt.status == AttemptStatus.OUTCOME_UNKNOWN
+    worker_node = next(item for item in nodes if item.node_key.startswith("worker_execution"))
+    assert worker_node.status == AgentWorkflowNodeStatus.OUTCOME_UNKNOWN
+
+
+async def test_invalid_last_event_id_is_rejected(client: httpx.AsyncClient) -> None:
+    """Verify malformed SSE recovery state cannot silently trigger a full replay."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    created = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-invalid-event-id-0001"),
+    )
+
+    response = await client.get(
+        f"/api/v1/agent-workflows/{created.json()['workflow_execution_id']}/events",
+        headers={"Last-Event-ID": "not-a-sequence"},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_workflow_openapi_declares_json_and_sse_response_contracts(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify generated API docs expose create/replay media and replay status codes."""
+
+    openapi = (await client.get("/openapi.json")).json()
+    create_operation = openapi["paths"]["/api/v1/runs/{run_id}/agent-workflows"]["post"]
+    for status_code in ["200", "201"]:
+        content = create_operation["responses"][status_code]["content"]
+        assert "application/json" in content
+        assert "text/event-stream" in content
+    event_operation = openapi["paths"]["/api/v1/agent-workflows/{workflow_execution_id}/events"][
+        "get"
+    ]
+    event_content = event_operation["responses"]["200"]["content"]
+    assert "text/event-stream" in event_content
+    assert "application/json" not in event_content
+    output_schema = openapi["components"]["schemas"]["AgentWorkflowNodeResultRead"]["properties"][
+        "output"
+    ]
+    output_references = {item.get("$ref") for item in output_schema["anyOf"] if "$ref" in item}
+    assert "#/components/schemas/RequestIntakeOutput" in output_references
+    assert "#/components/schemas/WorkflowCompletionOutput" in output_references
+    dispatch_properties = openapi["components"]["schemas"]["AgentDispatchOutput"]["properties"]
+    assert dispatch_properties["created_tasks"]["items"]["$ref"] == (
+        "#/components/schemas/DispatchedAgentTask"
+    )
+    assert dispatch_properties["created_agent_runs"]["items"]["$ref"] == (
+        "#/components/schemas/DispatchedAgentRun"
+    )
+
+
+async def test_node_result_rejects_unregistered_output_schema_version(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify node type and output schema version form one validated public contract."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    result = (
+        await client.post(
+            f"/api/v1/runs/{run['run_id']}/agent-workflows",
+            json=workflow_payload(idempotency_key="agent-output-version-0001"),
+        )
+    ).json()
+    intake_node = dict(result["nodes"][0])
+    intake_node["output_schema_version"] = "request_intake_output.v999"
+
+    with pytest.raises(ValueError, match="output_schema_version"):
+        AgentWorkflowNodeResultRead.model_validate(intake_node)
+
+
+async def test_handoff_rejects_task_different_from_agent_run(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify one Agent cannot attach its Handoff to another task in the same Run."""
+
+    run = await create_test_run(client)
+    first_task = (
+        await client.post(
+            f"/api/v1/runs/{run['run_id']}/tasks",
+            json={"task_type": "analysis", "title": "A", "objective": "Analyze A"},
+        )
+    ).json()
+    second_task = (
+        await client.post(
+            f"/api/v1/runs/{run['run_id']}/tasks",
+            json={"task_type": "analysis", "title": "B", "objective": "Analyze B"},
+        )
+    ).json()
+    agent_run = await client.post(
+        "/api/v1/internal/agent-runs",
+        json={
+            "run_id": run["run_id"],
+            "task_id": first_task["task_id"],
+            "agent_role": "researcher",
+        },
+        headers=INTERNAL_HEADERS,
+    )
+
+    response = await client.post(
+        f"/api/v1/internal/runs/{run['run_id']}/agent-handoffs",
+        json={
+            "agent_run_id": agent_run.json()["agent_run_id"],
+            "task_id": second_task["task_id"],
+            "schema_version": "agent_handoff.v1",
+            "status": "completed",
+            "handoff_json": {
+                "objective": "Analyze A",
+                "status": "completed",
+                "confirmed_facts": [],
+                "decisions": [],
+                "files_read": [],
+                "files_changed": [],
+                "artifacts": [],
+                "tests": [],
+                "remaining_work": [],
+                "risks": [],
+                "unknowns": [],
+                "invariants_for_next_agent": [],
+            },
+            "idempotency_key": "wrong-task-handoff-0001",
+        },
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 409

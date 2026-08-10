@@ -1,10 +1,19 @@
 # 第三阶段：RabbitMQ 任务执行需求讨论与功能规划
 
-**文档日期：** 2026 年 8 月 3 日
-**文档状态：** 规划中（阶段2已完成；阶段3尚未修改运行代码，等待执行合同确认）
+**文档日期：** 2026 年 8 月 7 日
+**文档状态：** 暂停（当前没有消息队列优先需求；尚未修改 RabbitMQ、Publisher 或 Worker 运行代码）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
-> 阶段2稳定能力已完成。阶段3现在只进行需求、状态机、消息合同和故障恢复规划；执行规格确认前不实现 RabbitMQ、Publisher 或 Worker。
+> 阶段2稳定能力已完成。根据 2026 年 8 月 7 日优先级决定，当前同步调用和内部开发不需要消息队列，阶段3暂停并保留原规划；阶段4可以在不依赖 RabbitMQ 的前提下规划同步工具运行能力。
+
+## 暂停决定与重新启用条件
+
+- 当前没有必须脱离 HTTP/SSE 生命周期继续运行的长任务，没有多 Worker 横向扩展，也没有需要持久延迟重试和流量削峰的生产负载。
+- 不使用 FastAPI `BackgroundTasks` 代替可靠队列；暂停意味着明确不承诺 API 重启后恢复、请求断开后继续或跨进程调度。
+- `llm_outbox_events` 和本规划继续保留，但不启动 Publisher、不连接 Broker、不写入假消息，也不把预留表描述为异步能力。
+- 阶段4工具运行采用同步内部 Service、严格超时和资源上限；阶段5 Agent 若在阶段3恢复前实施，也必须保持同步、有界和不可恢复的明确限制。
+
+满足任一条件时重新评估阶段3：单次任务经常超过 HTTP/SSE 可接受时长；要求页面刷新或服务重启后继续；需要多个 Worker 并行；Agent 调查/审核/工具任务需要后台并发；外部限流需要持久延迟重试；模型执行需要削峰；或任务必须在 API 进程退出后可靠保留。
 
 ## 目标
 
@@ -21,6 +30,7 @@
 - 当前 `ModelInvocationService` 可以执行统一模型调用，但 `llm_tasks` 尚未定义足以让 Worker 重建模型请求的稳定执行载荷。
 - 阶段2的 Model Gateway、Context、Prompt/Model Catalog 和 Evaluation 已完成快速测试、真实 MySQL/MinIO、迁移循环和静态检查，可作为 Worker handler 的已验证依赖。
 - 当前仍没有 RabbitMQ 依赖、拓扑声明、发布循环、消费去重表或 Worker 进程，不能声称阶段3已经实施。
+- 阶段3测试不依赖最终用户登录、个人 API Key 或用户供应商凭据接口。测试 User/Run/Task 由 fixture 或受控 seed 创建，可靠性测试使用假 Provider；真实供应商冒烟仍只读取服务端环境凭据。
 
 ## 可靠性结论
 
@@ -28,6 +38,7 @@
 - 发布方使用 publisher confirms，并对不可路由消息启用 `mandatory` 失败处理。
 - 消费方使用 manual acknowledgement；只有业务事务提交成功后才能 ack。
 - 消费者必须幂等。发布确认可能在网络中丢失，发布方重发会产生重复消息；Worker 提交结果后、ack 前崩溃也会产生重复投递。
+- RabbitMQ 幂等不能保证外部模型请求“恰好执行一次”。模型供应商已接收请求、但 Worker 尚未保存响应时崩溃，恢复器只能标记结果未知；除非该 Provider 支持经过验证的幂等请求键，否则不得自动重发并声称不会重复计费。
 - 临时失败使用有限次数的延迟重试；不得使用立即 `nack(requeue=True)` 形成热循环。
 - 永久失败和超过上限的任务进入死信队列，同时在 MySQL 中记录最终失败事实。
 - 关键长期队列优先评估 quorum queue；是否在本地开发环境使用单节点 classic queue，不改变应用层幂等要求。
@@ -57,7 +68,7 @@
 | 执行规格 | `execution_spec_json` 使用带 `schema_version` 的判别联合 | 未知版本、未知任务类型和超限输入在写 outbox 前拒绝 |
 | 自动入队 | 只为状态可进入 `ready` 且依赖已完成的可执行任务，在同一事务写 `task.ready` | task 写入失败或 outbox 写入失败时整个事务回滚 |
 | 取消 | 协作式取消 | 未领取任务不执行；运行中任务只在安全点停止，不承诺撤销已产生的模型费用 |
-| 交付语义 | 至少一次 | 重复发布、重复消费和 ack 丢失均不重复产生模型调用或终态结果 |
+| 交付语义 | 至少一次 | 已提交终态的消息重投不再执行；外部模型调用结果未知时停止自动重试并留下可查询事实，不承诺跨供应商“恰好一次” |
 
 ### 状态机合同
 
@@ -117,6 +128,7 @@ pending → publishing → published
 - Worker 必须从 MySQL 重新读取任务及执行规格，不信任消息中的业务状态。
 - 未知 `schema_version`、未知事件类型、缺失 ID 和非法 attempt 属于永久失败，不能无限重试。
 - 消息不得携带 API Key、完整用户文件、完整模型结果或任意可执行命令。
+- 版本化执行规格只允许保存不含 secret 的 `credential_reference`。阶段3第一版使用 `source=deployment_config`；后续阶段10启用用户供应商凭据后才允许 `source=user_provider_credential` 与 `credential_id`。Worker 必须从 Task → Run → User 重新校验归属，不能只相信执行规格中的 ID。
 
 ## 拟议数据调整
 
@@ -219,6 +231,7 @@ ack RabbitMQ delivery
 | broker 已接收、confirm 丢失 | publisher 可重发；同一 `message_id` 不重复产生业务副作用 |
 | 消息不可路由 | mandatory return 视为发布失败，outbox 不标记成功 |
 | Worker 收到消息后崩溃 | 未 ack 消息重新投递；过期任务租约允许重新领取 |
+| Provider 已接收请求、Worker 保存响应前崩溃 | Attempt 标记为结果未知，不自动重新调用不支持幂等键的 Provider；显式重试必须提示可能重复计费 |
 | 业务事务已提交、ack 丢失 | 重投时读取 delivery/任务终态并安全 ack，不再次执行模型 |
 | 临时网络或供应商故障 | 写失败证据并进入有限延迟重试 |
 | 参数错误或不支持的任务类型 | 不重试，写最终失败并进入死信 |
@@ -239,7 +252,7 @@ ack RabbitMQ delivery
 
 | 步骤 | 修改对象 | 预期结果 | 验证方式 |
 |---|---|---|---|
-| 1 | 版本化任务与消息 schema | 非法或未知版本在边界拒绝 | Pydantic 参数化单元测试 |
+| 1 | 版本化任务、消息和凭据引用 schema | 非法或未知版本在边界拒绝；只接受已登记凭据来源和 ID 组合，任何 secret/环境变量名不进入 Task 或消息 | Pydantic 参数化测试、序列化扫描和日志脱敏测试 |
 | 2 | 状态机和数据库迁移 | 只允许合法转换；并发领取只有一个成功 | 状态表测试、并发数据库测试、`alembic check` |
 | 3 | task + outbox 原子创建 | 任意事务失败都不会只留下其中一方 | 事务故障注入测试 |
 | 4 | outbox publisher | confirm 后才标记成功；不可路由和超时可恢复 | fake channel 单元测试、RabbitMQ 集成测试 |
@@ -255,6 +268,7 @@ ack RabbitMQ delivery
 - 数据库集成：outbox 原子性、并发领取、租约过期、唯一 message ID、终态保护。
 - RabbitMQ 集成：publisher confirm、mandatory return、manual ack、重投、retry、DLQ、断线重连。
 - 端到端：API 创建任务，Worker 完成一个 fake Provider 的 `model_response`，最终结果可按 `run_id` 查询。
+- 身份与凭据：fixture 创建唯一测试 User；公共/内部测试 key 每次运行生成且不同；任务、outbox、RabbitMQ delivery、日志和错误中扫描不到完整测试 key 或供应商 secret。
 - 故障注入：在 publish 前后、业务 commit 前后和 ack 前主动终止进程，验证恢复结果。
 - 真实供应商模型不作为 RabbitMQ 可靠性测试前提，避免测试费用和外部波动掩盖消息问题。
 
@@ -274,6 +288,7 @@ ack RabbitMQ delivery
 - 消费幂等表或等价唯一约束未实现时，不启用自动重投。
 - 没有真实 RabbitMQ 集成测试环境时，可以完成单元实现，但阶段状态仍为“进行中”。
 - 发现业务任务包含不可安全重试的外部副作用时，必须为该 handler 单独设计幂等键与补偿方式。
+- 执行规格或 RabbitMQ 消息需要携带供应商 secret、部署环境变量名或可跨用户复用的凭据时，停止实现并改为凭据引用；详细边界见 [`phase-10-platform-identity-credentials.md`](phase-10-platform-identity-credentials.md)。
 
 ## 完成标准
 

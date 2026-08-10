@@ -1,8 +1,8 @@
 # NexusPilot LLM Platform 总体规划
 
-**文档日期：** 2026 年 8 月 3 日
+**文档日期：** 2026 年 8 月 10 日
 **文档状态：** 当前总体规划（权威入口）
-**当前实施焦点：** 阶段1、阶段2已完成；阶段3进入需求与可靠性规划，尚未实施；阶段9前端第一版工程与核心对话外壳已开始实施
+**当前实施焦点：** 阶段1、阶段2已完成；阶段3消息队列和阶段4工具规划暂停；阶段5 `model_only_v1` 主工作流与核心接口已实现，剩余可靠性能力继续实施；阶段8可观测性提高优先级但尚未开始独立规划；阶段9前端第一版继续实施；阶段10身份与凭据已完成规划但尚未实现
 
 ## 目标
 
@@ -33,13 +33,18 @@
 | Memory 设计与实验性准备代码 | 规划中 | 已固定 L0～L4 边界并存在同步接口和快速测试；本轮不继续扩展，不接入实际 `/responses` 调用链，也不作为阶段2运行能力验收 |
 | Conversation Context、Prompt、模型能力目录、Evaluation 单元 | 已完成 | 已通过行为、失败、幂等、历史快照、MySQL 并发和迁移门禁；保持可独立调用，不隐式拼接 Memory |
 | Knowledge 知识库 | 暂停 | Knowledge 属于独立知识库能力；现有结构代码仅作实验性准备，需求、数据来源、解析、检索和权限将在后续单独规划，不计入阶段2 |
-| RabbitMQ、Publisher、Worker | 规划中 | 阶段3已开始需求与故障模型规划，尚未修改运行代码 |
-| Agent、工具、MCP、OpenTelemetry、Web | Web 第一版进行中，其余未实施 | 阶段9 Web 已有第一版工程与 UI 基线；Agent、工具、MCP、OpenTelemetry 不能以规划或空目录视为完成 |
+| RabbitMQ、Publisher、Worker | 暂停 | 当前同步调用和内部开发没有持久异步执行需求；保留阶段3规划，达到长任务、恢复或多 Worker 触发条件后再继续 |
+| Agent、工具、MCP、OpenTelemetry、Web | Agent 主工作流实施进行中、可观测性优先级提高、工具暂停、Web 第一版进行中 | 阶段5已实现 `model_only_v1` 同步协调器、完整节点结果、持久事件、核心查询与实时 POST SSE；并行、取消/恢复、崩溃恢复、Artifact 降级和真实基础设施验收尚未完成；阶段8尚未开始独立规划 |
+| 最终用户认证与凭据管理 | 规划中 | 当前只有部署级受信调用方密钥；登录、当前用户、个人 API Key 和用户供应商凭据尚未实现，详见阶段10 |
 
 ## 总体结构
 
 ```text
-业务调用方 / 后续 Web
+受信业务调用方 / 后续最终用户 Web
+          │
+          ▼
+身份、授权与凭据层
+登录会话 / 当前主体 / 个人 API Key / 供应商凭据
           │
           ▼
 API 与控制平面
@@ -72,19 +77,21 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 |---|---|---|---|
 | 阶段1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | 已完成 | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、受信调用方权限边界和脱敏门禁 |
 | 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 已完成 | 运行能力可脱离 Agent 单独调用、测试和观测；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
-| 阶段3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | 规划中 | 阶段2稳定能力完成；任务执行规格确认；故障窗口验证通过后才能标记完成 |
-| 阶段4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 未开始 | 禁止目录与高风险操作无法绕过；所有调用可审计 |
-| 阶段5：Agent Runtime 与工作流 | 单 Agent 循环、总控与工作模型、并行只读任务、写任务隔离、独立审核 | 未开始 | 只组合已完成单元；上下文完整；循环和成本有边界 |
+| 阶段3：异步任务执行 | Transactional outbox、RabbitMQ、Worker、幂等、重试、死信和恢复 | 暂停 | 当前没有消息队列需求；出现长任务恢复、多 Worker、削峰或持久重试需求后再继续原规划 |
+| 阶段4：工具能力 | 工具契约、权限、Workspace、文件、搜索、隔离命令、Git 和调用证据 | 暂停 | 已固定规划但当前不继续；阶段5首版不得绕过该阶段执行工具；详见 [`phase-4-tool-runtime-plan.md`](../implementation/phase-4-tool-runtime-plan.md) |
+| 阶段5：Agent Runtime 与工作流 | 完整节点结果、Controller/工作模型、确定性验证、独立审核；工具恢复后增加循环和写隔离 | 进行中 | `model_only_v1` 主流程、数据库事实、核心 HTTP/SSE 和失败收敛已实现并通过快速测试；并行、外部取消/恢复、崩溃恢复、Artifact 降级、遥测及真实基础设施门禁仍待完成；详见 [`phase-5-agent-workflow-plan.md`](../implementation/phase-5-agent-workflow-plan.md) |
 | 阶段6：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 结果包含稳定文件位置、定义引用和可复核证据 |
 | 阶段7：MCP Client | 连接、能力发现、工具、资源、认证、超时和权限 | 未开始 | 外部调用受控且完整记录，不绕过工具权限层 |
-| 阶段8：可观测性 | API、模型、消息、Worker 和工具链路关联 | 未开始 | 不记录密钥或完整敏感内容；MySQL 仍是事实源 |
+| 阶段8：可观测性 | API、工作流节点、模型、未来消息/Worker/工具的 trace、metrics 和关联 | 未开始 | 优先级已提高；阶段5先固定 ID、span 层级和敏感字段边界，阶段8仍需独立规划；MySQL 始终是事实源 |
 | 阶段9：Web 前端 | 建设类似 ChatGPT 交互方式的对话平台，并逐步展示 Run、Agent、模型与工具执行过程 | 进行中 | 第一版工程与核心对话外壳已实现；初始界面只消费已验证 API；后续 Agent/Tool 状态必须来自稳定事件，不伪造执行进度；详见 [`docs/frontend/phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md) |
+| 阶段10：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 规划中 | Cookie/Bearer 身份、撤销、scope、跨用户隔离、凭据加密/轮换/验证及 Worker 撤权测试通过；详见 [`phase-10-platform-identity-credentials.md`](../implementation/phase-10-platform-identity-credentials.md) |
 
 ## 阶段1与阶段2的关系
 
 - 阶段1解决“数据是否可管理、可查询、可组合事务、可追溯”。
 - 阶段2解决“LLM 能力是否可以作为独立模块使用”。
-- 阶段3以后解决“这些稳定单元如何可靠异步执行与组合”。
+- 阶段3原计划解决可靠异步执行，当前没有消息队列需求，继续暂停。阶段4工具规划也暂停；阶段5先实施 `model_only_v1` 同步工作流，工具节点、Implementer 和代码修改明确不可用。阶段5需要后台恢复或工具时必须分别恢复阶段3或阶段4，不能在 Agent Runtime 内复制这些能力。
+- 阶段10不回退阶段1、阶段2在受信调用方边界内的完成状态。阶段9当前内部开发界面可以继续使用服务端部署级 key；任何最终用户公开发布、用户自带供应商密钥、L3/L4 Memory 或多用户 Project 都必须先通过阶段10。
 - Memory 不是 Agent 工作流中的一个临时字典，而是 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 五层设计。当前只保留边界、数据合同和实验性管理接口，不继续扩展，不由 `/responses` 自动读取；Context Preview 中现存的可选候选分支应在阶段2验收前禁用或移出稳定合同。未来启用前必须重新确认形成策略、权限、删除语义和评估门禁。
 - MySQL 保存五层 Memory 的事实、状态、版本和当前指针；L1～L4 使用 MinIO 不可变 JSON/Markdown 快照，L0 只保存有界 MySQL 检查点。现有 `llm_memories` 继续承担细粒度长期事实，不用一个通用状态对象代替所有层级。
 - Project Memory 默认关闭，只服务显式绑定的 Session/Run；它是最小记忆 scope，不建设看板、排期或项目管理业务。多用户共享必须等待最终用户认证与 Membership 权限模型。
@@ -92,6 +99,20 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 - L0 数据合同在规划中固定，自动检查点和崩溃恢复由阶段5 Agent Runtime 重新评估；L0 不能复制 Run/Task 状态、Model Attempt、Tool Call 或 L2 Handoff。
 - Knowledge 明确从阶段2移出。它属于独立知识库能力，后续先确定资料导入、版本、解析器、引用、检索质量、权限和删除恢复，再决定实施阶段；现有实验性代码不代表稳定接口。
 - 阶段1公共认证是受信调用方级 API Key；任何核心资源直接面向最终用户前，必须另行完成可验证的用户认证授权。
+
+## 阶段2～6的身份与凭据前置关系
+
+阶段2～6的内部开发不等待完整最终用户认证。测试使用事务 fixture/受控 seed 创建 User，平台测试 key 每次运行生成，供应商普通测试使用假 Provider；不得增加公开测试登录端点、固定后门用户或仓库内密钥。
+
+| 阶段 | 当前是否需要阶段10接口 | 当前必须固定的边界 |
+|---|---|---|
+| 阶段2 | 不需要；已在受信调用方边界完成 | 测试 User 独立创建；真实供应商冒烟仅从显式环境变量读取密钥 |
+| 阶段3 | 不需要登录/个人 key/用户凭据 CRUD | Task 执行规格只保存凭据引用；RabbitMQ 消息不含 secret；Worker 从 Run 重新确认 owner |
+| 阶段4 | 不需要 | 工具权限使用内部执行上下文与 Run/Task owner，不信任工具输入中的 `user_id` |
+| 阶段5 | 内部 Agent 测试不需要；用户自带密钥启用前需要 | Agent、Handoff 和 Working Memory 只能携带凭据 ID，不得复制 secret |
+| 阶段6 | 不需要 | 测试用户与 workspace 强绑定；代码搜索结果不得跨 fixture owner 或路径范围 |
+
+完整测试供给、接口优先级和凭据引用合同以 [`phase-10-platform-identity-credentials.md`](../implementation/phase-10-platform-identity-credentials.md) 为准。
 
 ## 质量原则
 
@@ -104,7 +125,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 7. LLM 基础单元必须可独立测试，不以 Agent 工作流跑通代替单元完成。
 8. 外部副作用必须有幂等键、超时、有限重试、权限和可查询结果。
 9. 程序验证优先于模型自评；重要结果才增加独立审核。
-10. 未通过阶段门禁时不开始下一阶段，不以空实现或预留表声称完成。
+10. 有直接依赖的后续能力必须等待前置门禁；经依赖分析确认独立的阶段可以调整实施顺序，但必须记录限制，不能以跳过消息队列声称具备异步恢复能力。
 
 ## 通用完成标准
 
@@ -120,7 +141,15 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 - 阶段1已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
 - 阶段2已完成：Model Gateway、Context、Prompt/模型能力目录和 Evaluation 已通过快速测试、真实基础设施与迁移门禁。Memory 当前只保留规划和实验性准备代码，不进入实际模型响应链路；Knowledge 已移出本阶段，等待独立规划。
-- 阶段3进入规划中：当前只修订需求、状态机、消息合同、故障窗口和验收门禁，不实现 RabbitMQ、Publisher 或 Worker 代码。
+- 阶段3暂停：当前同步模型调用和内部开发没有 RabbitMQ 的必要收益；原规划保留，等待长任务恢复、多 Worker、削峰或持久重试等真实触发条件。
+- 阶段4暂停：规划已固定但不继续实施；阶段5首版不得绕过工具权限和隔离边界。
+- 阶段5进行中：同步 `model_only_v1` 编排、完整节点返回参数、业务事件、预算硬边界、审核门禁和核心查询接口已经实现；工作 Agent 当前串行，且取消/恢复、崩溃恢复、Artifact 降级、遥测与真实基础设施验收仍未完成。完整阶段完成继续保留工具门禁。
+- 阶段8未开始：优先级已提高，阶段5先固定 trace/span 关联和敏感信息边界；阶段8仍需单独规划遥测装配、采样、指标和导出，遥测不替代 MySQL 业务事实。
+- 阶段10进入规划中：阶段2～6继续使用隔离测试身份、动态测试 key、假 Provider 和可选环境凭据；最终用户公开 API、个人 API Key 和用户供应商凭据尚未实现。
 - 阶段1详见 [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)。
 - 阶段2详见 [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)。
+- 阶段3保留规划详见 [`phase-3-rabbitmq-task-execution-plan.md`](../implementation/phase-3-rabbitmq-task-execution-plan.md)。
+- 阶段4工具运行详见 [`phase-4-tool-runtime-plan.md`](../implementation/phase-4-tool-runtime-plan.md)。
+- 阶段5 Agent 工作流详见 [`phase-5-agent-workflow-plan.md`](../implementation/phase-5-agent-workflow-plan.md)。
 - 阶段9前端详见 [`phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md)。
+- 阶段10身份与凭据详见 [`phase-10-platform-identity-credentials.md`](../implementation/phase-10-platform-identity-credentials.md)。

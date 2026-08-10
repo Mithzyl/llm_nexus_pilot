@@ -1,19 +1,77 @@
 """ASGI integration tests for the provider-neutral Responses facade."""
 
+import asyncio
 import json
 
 import httpx
+import pytest
 from nexuspilot_models.contracts import ProviderName
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_api import create_test_run
 
 from nexuspilot_api.core.config import Settings
 from nexuspilot_api.core.dependencies import get_provider_registry
+from nexuspilot_api.infrastructure.object_storage import (
+    ObjectStorageError,
+    StoredObject,
+    get_object_storage,
+)
 from nexuspilot_api.infrastructure.provider_registry import create_provider_registry
 from nexuspilot_api.main import app
+from nexuspilot_api.models import AttemptStatus, LlmModelAttempt
 from nexuspilot_api.schemas.responses import ResponsesRequest
+
+
+class RawResponseFailingObjectStorage:
+    """Persist raw requests but fail the post-provider raw-response audit write."""
+
+    async def put_bytes(
+        self,
+        object_name: str,
+        content: bytes,
+        content_type: str,
+    ) -> StoredObject:
+        """Return request metadata and reject only raw-response object writes."""
+
+        del content, content_type
+        if object_name.endswith("/raw-response.json"):
+            raise ObjectStorageError("raw response storage unavailable")
+        return StoredObject(
+            uri=f"memory://test/{object_name}",
+            content_hash="request-content-hash",
+            size_bytes=1,
+        )
+
+
+class BlockingRawResponseObjectStorage:
+    """Pause a raw-response write so request cancellation can hit audit finalization."""
+
+    def __init__(self) -> None:
+        """Create signals for observing and releasing the response write."""
+
+        self.response_write_started = asyncio.Event()
+        self.allow_response_write = asyncio.Event()
+
+    async def put_bytes(
+        self,
+        object_name: str,
+        content: bytes,
+        content_type: str,
+    ) -> StoredObject:
+        """Block only the response object and return stable in-memory metadata."""
+
+        del content, content_type
+        if object_name.endswith("/raw-response.json"):
+            self.response_write_started.set()
+            await self.allow_response_write.wait()
+        return StoredObject(
+            uri=f"memory://test/{object_name}",
+            content_hash="stored-content-hash",
+            size_bytes=1,
+        )
 
 
 def create_deepseek_stream_registry(
@@ -157,6 +215,174 @@ async def test_non_streaming_response_persists_attempt_and_cost(
     assert attempt["retries"][0]["status_code"] == 200
 
 
+async def test_raw_response_storage_failure_preserves_provider_accounting(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a known provider response keeps billing facts when raw audit storage fails."""
+
+    app.dependency_overrides[get_object_storage] = RawResponseFailingObjectStorage
+    run = await create_test_run(client)
+    payload = {
+        "run_id": run["run_id"],
+        "provider": "openai",
+        "model": "test-model",
+        "input": "Hello",
+        "idempotency_key": "request-raw-response-failure-0001",
+    }
+
+    response = await client.post("/api/v1/responses", json=payload)
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "response_audit_failed"
+    assert response.json()["error"]["retryable"] is False
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "failed"
+    assert attempt["input_tokens"] == 100
+    assert attempt["output_tokens"] == 20
+    assert attempt["cached_tokens"] == 10
+    assert attempt["estimated_cost"] == "0.001520"
+    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["raw_response_uri"] is None
+    assert attempt["error_code"] == "response_audit_failed"
+    assert len(attempt["retries"]) == 1
+    assert detail["cost_used"] == "0.001520"
+    assert (await client.post("/api/v1/responses", json=payload)).status_code == 409
+    replay_detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert len(replay_detail["attempts"]) == 1
+    assert replay_detail["cost_used"] == "0.001520"
+
+
+async def test_cancellation_during_response_audit_still_finalizes_known_provider_response(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify caller cancellation cannot strand a known response in started state."""
+
+    storage = BlockingRawResponseObjectStorage()
+    app.dependency_overrides[get_object_storage] = lambda: storage
+    run = await create_test_run(client)
+    request_task = asyncio.create_task(
+        client.post(
+            "/api/v1/responses",
+            json={
+                "run_id": run["run_id"],
+                "provider": "openai",
+                "model": "test-model",
+                "input": "Hello",
+                "idempotency_key": "request-cancel-during-audit-0001",
+            },
+        )
+    )
+    await asyncio.wait_for(storage.response_write_started.wait(), timeout=2)
+    request_task.cancel()
+    storage.allow_response_write.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert len(detail["attempts"]) == 1
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "completed"
+    assert attempt["input_tokens"] == 100
+    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["raw_response_uri"].endswith("/raw-response.json")
+    assert detail["cost_used"] == "0.001520"
+
+
+async def test_transient_response_commit_failure_reconciles_without_duplicate_cost(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify a failed completion commit is reloaded and safely retried once."""
+
+    original_commit = AsyncSession.commit
+    completion_commit_failed = False
+
+    async def fail_first_completion_commit(db_session: AsyncSession) -> None:
+        """Raise before the first commit containing a completed model Attempt."""
+
+        nonlocal completion_commit_failed
+        contains_completed_attempt = any(
+            isinstance(item, LlmModelAttempt) and item.status == AttemptStatus.COMPLETED
+            for item in db_session.identity_map.values()
+        )
+        if contains_completed_attempt and not completion_commit_failed:
+            completion_commit_failed = True
+            raise RuntimeError("simulated transient commit failure")
+        await original_commit(db_session)
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_first_completion_commit)
+    run = await create_test_run(client)
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "Hello",
+            "idempotency_key": "request-transient-commit-0001",
+        },
+    )
+
+    assert completion_commit_failed is True
+    assert response.status_code == 200
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert len(detail["attempts"]) == 1
+    assert detail["attempts"][0]["status"] == "completed"
+    assert len(detail["attempts"][0]["retries"]) == 1
+    assert detail["cost_used"] == "0.001520"
+
+
+async def test_repeated_response_commit_failure_preserves_usage_as_outcome_unknown(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify exhausted completion retries retain accounting instead of staying started."""
+
+    original_commit = AsyncSession.commit
+    completion_commit_failure_count = 0
+
+    async def fail_two_completion_commits(db_session: AsyncSession) -> None:
+        """Fail both completed-state commits before allowing unknown-state recovery."""
+
+        nonlocal completion_commit_failure_count
+        contains_completed_attempt = any(
+            isinstance(item, LlmModelAttempt) and item.status == AttemptStatus.COMPLETED
+            for item in db_session.identity_map.values()
+        )
+        if contains_completed_attempt and completion_commit_failure_count < 2:
+            completion_commit_failure_count += 1
+            raise RuntimeError("simulated repeated commit failure")
+        await original_commit(db_session)
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_two_completion_commits)
+    run = await create_test_run(client)
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "Hello",
+            "idempotency_key": "request-repeated-commit-0001",
+        },
+    )
+
+    assert completion_commit_failure_count == 2
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "response_persistence_error"
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert len(detail["attempts"]) == 1
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "outcome_unknown"
+    assert attempt["input_tokens"] == 100
+    assert attempt["estimated_cost"] == "0.001520"
+    assert attempt["provider_request_id"] == "provider-request-1"
+    assert len(attempt["retries"]) == 1
+    assert detail["cost_used"] == "0.001520"
+
+
 async def test_response_rejects_duplicate_idempotency_key(client: httpx.AsyncClient) -> None:
     """Verify a repeated logical request key cannot trigger duplicate provider billing."""
 
@@ -170,6 +396,27 @@ async def test_response_rejects_duplicate_idempotency_key(client: httpx.AsyncCli
     }
     assert (await client.post("/api/v1/responses", json=payload)).status_code == 200
     assert (await client.post("/api/v1/responses", json=payload)).status_code == 409
+
+
+async def test_response_rejects_model_name_longer_than_attempt_storage_column(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify HTTP validation rejects a model name that MySQL cannot persist."""
+
+    run = await create_test_run(client)
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "m" * 129,
+            "input": "Hello",
+        },
+    )
+
+    assert response.status_code == 422
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert detail["attempts"] == []
 
 
 async def test_streaming_response_uses_stable_sse_events(client: httpx.AsyncClient) -> None:
@@ -200,15 +447,54 @@ async def test_streaming_response_uses_stable_sse_events(client: httpx.AsyncClie
     assert events[-1]["data"]["response"]["output_text"] == "streamed answer"
 
 
+async def test_stream_raw_response_storage_failure_emits_failure_and_keeps_accounting(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify SSE audit failure is terminal, billed, and releases its database connection."""
+
+    app.dependency_overrides[get_object_storage] = RawResponseFailingObjectStorage
+    run = await create_test_run(client)
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "Hello",
+            "stream": True,
+        },
+    )
+
+    data_lines = [line[6:] for line in response.text.splitlines() if line.startswith("data: ")]
+    events = [json.loads(line) for line in data_lines]
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    attempt = detail["attempts"][0]
+
+    assert response.status_code == 200
+    assert [event["type"] for event in events] == [
+        "response.started",
+        "response.text.delta",
+        "response.failed",
+    ]
+    assert events[-1]["data"]["error"]["type"] == "response_audit_failed"
+    assert attempt["status"] == "failed"
+    assert attempt["input_tokens"] == 100
+    assert attempt["estimated_cost"] == "0.001520"
+    assert attempt["provider_request_id"] == "provider-request-1"
+    assert len(attempt["retries"]) == 1
+    assert detail["cost_used"] == "0.001520"
+    database_engine = test_database_session_factory.kw["bind"]
+    assert database_engine.sync_engine.pool.checkedout() == 0
+
+
 async def test_deepseek_stream_hides_reasoning_and_completes_attempt(
     client: httpx.AsyncClient,
 ) -> None:
     """Verify DeepSeek reasoning stays in raw evidence and never enters public SSE."""
 
     run = await create_test_run(client)
-    registry, provider_http_client = create_deepseek_stream_registry(
-        include_done_marker=True
-    )
+    registry, provider_http_client = create_deepseek_stream_registry(include_done_marker=True)
     app.dependency_overrides[get_provider_registry] = lambda: registry
     try:
         response = await client.post(
@@ -246,9 +532,7 @@ async def test_deepseek_stream_without_done_fails_attempt(
     """Verify a truncated DeepSeek stream emits failure and persists a failed Attempt."""
 
     run = await create_test_run(client)
-    registry, provider_http_client = create_deepseek_stream_registry(
-        include_done_marker=False
-    )
+    registry, provider_http_client = create_deepseek_stream_registry(include_done_marker=False)
     app.dependency_overrides[get_provider_registry] = lambda: registry
     try:
         response = await client.post(

@@ -1,9 +1,12 @@
 """Regression tests for the backend MVC-style module boundaries."""
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from nexuspilot_api.features.agent_runtime.routers import agent_workflows
 from nexuspilot_api.routers import (
     context_builds,
     evaluations,
@@ -27,6 +30,7 @@ from nexuspilot_api.routers import (
 )
 
 PACKAGE_ROOT = Path(__file__).parents[1] / "src" / "nexuspilot_api"
+AGENT_RUNTIME_FEATURE_ROOT = PACKAGE_ROOT / "features" / "agent_runtime"
 MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
 
 
@@ -184,6 +188,18 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                 "/internal/evaluation-rule-sets/{rule_set_id}/status",
             },
         ),
+        (
+            agent_workflows.router,
+            {
+                "/runs/{run_id}/agent-workflows",
+                "/runs/{run_id}/agent-workflow",
+                "/agent-workflows/{workflow_execution_id}",
+                "/agent-workflows/{workflow_execution_id}/result",
+                "/agent-workflows/{workflow_execution_id}/nodes",
+                "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}",
+                "/agent-workflows/{workflow_execution_id}/events",
+            },
+        ),
     ],
 )
 def test_each_resource_owns_its_routes(router: object, expected_paths: set[str]) -> None:
@@ -198,6 +214,7 @@ def test_resource_routers_do_not_import_persistence_models() -> None:
 
     router_directories = [
         PACKAGE_ROOT / "routers",
+        AGENT_RUNTIME_FEATURE_ROOT / "routers",
         MEMORY_FEATURE_ROOT / "routers",
     ]
     for router_directory in router_directories:
@@ -207,6 +224,26 @@ def test_resource_routers_do_not_import_persistence_models() -> None:
             source = path.read_text()
             assert "nexuspilot_api.models" not in source
             assert "from sqlalchemy" not in source
+
+
+def test_agent_workflow_orm_module_can_be_imported_directly() -> None:
+    """Verify feature-model imports do not depend on a lucky application import order."""
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from nexuspilot_api.features.agent_runtime.models.agent_workflow "
+                "import LlmAgentWorkflowExecution"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_memory_feature_keeps_mvc_layers_together() -> None:

@@ -47,6 +47,13 @@ class LlmAgentRun(Base):
     )
 
     agent_run_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workflow_execution_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "llm_agent_workflow_executions.workflow_execution_id",
+            ondelete="SET NULL",
+        ),
+        index=True,
+    )
     run_id: Mapped[str] = mapped_column(
         ForeignKey("llm_runs.run_id", ondelete="CASCADE"),
         index=True,
@@ -89,6 +96,13 @@ class LlmAgentTurn(Base):
     )
 
     agent_turn_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    node_execution_id: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "llm_agent_workflow_node_executions.node_execution_id",
+            ondelete="SET NULL",
+        ),
+        index=True,
+    )
     agent_run_id: Mapped[str] = mapped_column(
         ForeignKey("llm_agent_runs.agent_run_id", ondelete="CASCADE"),
         index=True,

@@ -93,6 +93,8 @@ async def submit_handoff(
             raise ResourceNotFoundError("Task")
         if task.run_id != run_id:
             raise ResourceConflictError("Task does not belong to the Run")
+        if task.task_id != agent_run.task_id:
+            raise ResourceConflictError("Handoff Task does not belong to the Agent Run")
     else:
         task_id = agent_run.task_id
     request_hash = hash_memory_request(payload.model_dump(mode="json"))

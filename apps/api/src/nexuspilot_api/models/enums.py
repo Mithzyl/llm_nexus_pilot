@@ -38,6 +38,7 @@ class AttemptStatus(str, enum.Enum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     CANCELLED = "cancelled"
+    OUTCOME_UNKNOWN = "outcome_unknown"
 
 
 class SessionStatus(str, enum.Enum):
@@ -153,6 +154,31 @@ class AgentTurnStatus(str, enum.Enum):
     STARTED = "started"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class AgentWorkflowStatus(str, enum.Enum):
+    """Lifecycle states for one version-pinned Agent workflow execution."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING_FOR_INPUT = "waiting_for_input"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+
+
+class AgentWorkflowNodeStatus(str, enum.Enum):
+    """Lifecycle states for one durable Agent workflow node execution."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    OUTCOME_UNKNOWN = "outcome_unknown"
 
 
 class AgentWorkingStateStatus(str, enum.Enum):

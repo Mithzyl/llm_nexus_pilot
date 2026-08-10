@@ -804,6 +804,7 @@ metadata
 约束：
 
 - `provider` 使用受控枚举，不允许将任意 URL 当作供应商地址。
+- HTTP `model` 最长 128 个字符，与 `llm_attempts.model` 的 MySQL 列宽一致；超长名称在创建 Attempt 前返回 `422`。
 - `messages`、工具结构和输出结构在进入适配器前完成 Pydantic 校验。
 - `timeout_seconds` 受平台最小值和最大值限制，调用方不能无限延长请求。
 - `metadata` 只保存可检索的非敏感标识，不保存 API Key、完整私人文件或未脱敏凭据。
@@ -843,7 +844,7 @@ response.completed
 response.failed
 ```
 
-每个事件至少携带 `attempt_id` 和单调递增的 `sequence`。正常结束、供应商错误、超时、客户端断开都必须结束或更新对应 `llm_attempts`，不能长期保留无法解释的 `started` 状态。
+每个事件至少携带 `attempt_id` 和单调递增的 `sequence`。正常结束、供应商错误、超时、客户端断开都必须结束或更新对应 `llm_attempts`，不能长期保留无法解释的 `started` 状态。进入 Provider 适配器后发生取消且无法确认是否已经发出请求时，Attempt 使用 `outcome_unknown`，不得自动重新计费调用；Provider 响应已经返回时，响应审计终结会先完成再传播调用方取消。
 
 ## Model Gateway 实施范围（原有基线已完成）
 
@@ -934,6 +935,8 @@ provider_unavailable
 timeout
 network_error
 response_parse_error
+response_audit_failed
+response_persistence_error
 cancelled
 internal_error
 ```
@@ -941,6 +944,7 @@ internal_error
 - 认证失败、请求无效、不支持能力和响应结构确定性错误默认不重试。
 - 限流、网络中断和供应商暂时不可用可以在总超时内按指数退避重试。
 - 每次物理供应商请求仍应有独立证据。若继续复用一个 `attempt_id`，必须新增可查询的 retry 明细；不能只覆盖最后一次错误。
+- Provider 已返回但 MinIO 原始响应保存失败时，统一调用返回 `response_audit_failed`，Attempt 记为 `failed`，但 token、费用、延迟、供应商请求编号和物理请求证据必须一并保存。完成事务出现一次暂时或不明确失败时先按持久化状态重新读取并安全重试；仍无法确认时记为 `outcome_unknown`，保留已知计费事实，不能再次调用 Provider。
 - 日志、错误文本、原始请求和原始响应在持久化前必须移除 Authorization、API Key 和供应商凭据。
 - 未配置某供应商凭据时，启动可以继续，但调用该供应商必须返回明确配置错误。
 

@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from nexuspilot_api.core.security import require_api_key
+from nexuspilot_api.features.agent_runtime.routers import agent_workflows
 from nexuspilot_api.features.memory.routers import (
     internal_agent_working_memory,
     internal_collaboration_memory,
@@ -48,5 +49,6 @@ api_router.include_router(prompt_catalog.router)
 api_router.include_router(evaluations.router)
 api_router.include_router(internal_agent_working_memory.router)
 api_router.include_router(internal_collaboration_memory.router)
+api_router.include_router(agent_workflows.router)
 
 __all__ = ["api_router"]

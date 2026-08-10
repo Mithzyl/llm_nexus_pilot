@@ -1,5 +1,6 @@
 """Shared isolated database and HTTP fixtures for API tests."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -32,7 +33,10 @@ from nexuspilot_api.core.dependencies import (  # noqa: E402
     get_price_catalog,
     get_provider_registry,
 )
-from nexuspilot_api.infrastructure.database import get_database_session  # noqa: E402
+from nexuspilot_api.infrastructure.database import (  # noqa: E402
+    get_database_session,
+    get_database_session_factory,
+)
 from nexuspilot_api.infrastructure.object_storage import (  # noqa: E402
     ObjectContent,
     ObjectStorageIntegrityError,
@@ -94,7 +98,7 @@ class FakeObjectStorage:
         """Return stored object names under one deterministic prefix."""
 
         return [
-            uri[len("memory://test/"):]
+            uri[len("memory://test/") :]
             for uri in self.objects
             if uri.startswith(f"memory://test/{prefix}")
         ]
@@ -210,10 +214,15 @@ async def client(
         """Yield an isolated database session connected to this test database."""
 
         async with test_database_session_factory() as db_session:
-            yield db_session
+            try:
+                yield db_session
+            except (Exception, asyncio.CancelledError):
+                await db_session.rollback()
+                raise
 
     fake_object_storage = FakeObjectStorage()
     app.dependency_overrides[get_database_session] = override_database_session
+    app.dependency_overrides[get_database_session_factory] = lambda: test_database_session_factory
     app.dependency_overrides[get_object_storage] = lambda: fake_object_storage
     app.dependency_overrides[get_provider_registry] = fake_provider_registry
     app.dependency_overrides[get_price_catalog] = fake_price_catalog
