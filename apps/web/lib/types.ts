@@ -45,6 +45,11 @@ export type MessageSummary = {
   created_at: string;
 };
 
+export type Message = Omit<MessageSummary, "content_preview"> & {
+  content_text: string | null;
+  metadata_json: Record<string, unknown> | null;
+};
+
 export type Run = {
   run_id: string;
   user_id: string;

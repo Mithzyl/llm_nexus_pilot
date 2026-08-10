@@ -4,14 +4,18 @@ import {
   createMessage,
   createRun,
   createSession,
+  DEVELOPMENT_USER_ID,
   ensureDevelopmentUser,
+  getLatestRun,
   getRun,
-  listMessages,
+  listLatestMessagePage,
   listProviders,
   listSessions,
+  NexusApiError,
   nexusFetch,
 } from "../lib/api";
 import type {
+  Message,
   MessageRole,
   MessageSummary,
   ProviderName,
@@ -20,16 +24,18 @@ import type {
   Session,
 } from "../lib/types";
 import { readStreamEvents } from "../lib/sse";
+import { hasSavedAssistantForLatestTurn } from "../lib/history";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
-const DEVELOPMENT_USER_ID = "nexuspilot-web";
 const DEFAULT_MODEL = "deepseek-v4-flash";
 
 type LocalMessage = MessageSummary & {
   local_id: string;
   content: string;
   pending?: boolean;
+  saving?: boolean;
+  saveFailed?: boolean;
   failed?: boolean;
   cancelled?: boolean;
 };
@@ -55,14 +61,21 @@ function formatDuration(run: Run | RunDetail | null): string {
   return `${Math.max(0, duration) / 1000} 秒`;
 }
 
+/** Format restored token usage without inventing values when an attempt is incomplete. */
+function formatTokenTotal(usage: { input: number | null; output: number | null } | null): string {
+  if (!usage || usage.input === null || usage.output === null) return "—";
+  return String(usage.input + usage.output);
+}
+
 /**
- * Convert the bounded API message preview into a renderable local message.
+ * Convert the full persisted API message into a renderable local message.
  */
-function messageFromSummary(summary: MessageSummary): LocalMessage {
+function messageFromMessage(message: Message): LocalMessage {
   return {
-    ...summary,
-    local_id: summary.message_id,
-    content: summary.content_preview ?? "",
+    ...message,
+    local_id: message.message_id,
+    content_preview: message.content_text?.slice(0, 160) ?? null,
+    content: message.content_text ?? "内容已保存为外部产物，请从运行详情查看。",
   };
 }
 
@@ -106,12 +119,17 @@ export default function Home() {
   const [draft, setDraft] = useState("");
   const [run, setRun] = useState<Run | RunDetail | null>(null);
   const [attemptId, setAttemptId] = useState<string | null>(null);
-  const [runUsage, setRunUsage] = useState<{ input: number; output: number; cost: string } | null>(null);
+  const [runUsage, setRunUsage] = useState<{ input: number | null; output: number | null; cost: string } | null>(null);
+  const [messageCursor, setMessageCursor] = useState<string | null>(null);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [responseCompleted, setResponseCompleted] = useState(false);
+  const [assistantSaved, setAssistantSaved] = useState(false);
+  const [assistantSaveFailed, setAssistantSaveFailed] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("checking");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -128,6 +146,16 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem("nexuspilot-theme", isDark ? "dark" : "light");
   }, [isDark]);
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia("(max-width: 880px)");
+    /** Keep the detail overlay closed on narrow screens while preserving desktop visibility. */
+    const syncInspectorVisibility = () => setIsInspectorOpen(!mobileQuery.matches);
+    // The media query is the source of truth for the initial responsive panel state.
+    syncInspectorVisibility();
+    mobileQuery.addEventListener("change", syncInspectorVisibility);
+    return () => mobileQuery.removeEventListener("change", syncInspectorVisibility);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -158,6 +186,29 @@ export default function Home() {
   const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
   const lastAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
 
+  /** Restore the inspector from the newest persisted attempt rather than local defaults. */
+  function restoreRunFacts(runDetail: RunDetail | null) {
+    setRun(runDetail);
+    const latestAttempt = runDetail?.attempts.at(-1);
+    setAttemptId(latestAttempt?.attempt_id ?? null);
+    if (latestAttempt) {
+      setRunUsage({
+        input: latestAttempt.input_tokens,
+        output: latestAttempt.output_tokens,
+        cost: String(latestAttempt.estimated_cost ?? runDetail?.cost_used ?? "—"),
+      });
+      setSelectedModel(latestAttempt.model);
+      setProviders((current) =>
+        current.includes(latestAttempt.provider) ? current : [latestAttempt.provider, ...current],
+      );
+      setSelectedProvider(latestAttempt.provider as ProviderName);
+    } else if (runDetail) {
+      setRunUsage({ input: null, output: null, cost: String(runDetail.cost_used ?? "—") });
+    } else {
+      setRunUsage(null);
+    }
+  }
+
   /**
    * Load one immutable conversation history and close the mobile navigation overlay.
    */
@@ -167,18 +218,51 @@ export default function Home() {
     setIsSidebarOpen(false);
     setRun(null);
     setResponseCompleted(false);
+    setAssistantSaved(false);
+    setAssistantSaveFailed(false);
     setRunUsage(null);
     setAttemptId(null);
+    setMessageCursor(null);
+    setHasMoreMessages(false);
     try {
-      const page = await listMessages(sessionId);
-      setMessages(page.items.map(messageFromSummary));
-      const runId = page.items.findLast((message) => message.run_id)?.run_id;
-      if (runId) {
-        setRun(await getRun(runId));
-      }
+      const [page, latestRun] = await Promise.all([
+        listLatestMessagePage(sessionId),
+        getLatestRun(sessionId).catch((error: unknown) => {
+          if (error instanceof NexusApiError && error.status === 404) return null;
+          throw error;
+        }),
+      ]);
+      setMessages(page.items.map(messageFromMessage));
+      setMessageCursor(page.next_cursor);
+      setHasMoreMessages(page.has_more);
+      restoreRunFacts(latestRun);
+      const hasPersistedAssistant = hasSavedAssistantForLatestTurn(page.items);
+      setResponseCompleted(hasPersistedAssistant);
+      setAssistantSaved(hasPersistedAssistant);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "无法读取会话消息");
       setMessages([]);
+      setMessageCursor(null);
+      setHasMoreMessages(false);
+    }
+  }
+
+  /**
+   * Continue the explicit cursor pagination instead of silently dropping
+   * messages after the first server page.
+   */
+  async function handleLoadMoreMessages() {
+    if (!activeSessionId || !messageCursor || isLoadingMoreMessages) return;
+    setIsLoadingMoreMessages(true);
+    try {
+      const page = await listLatestMessagePage(activeSessionId, messageCursor);
+      setMessages((current) => [...page.items.map(messageFromMessage), ...current]);
+      setMessageCursor(page.next_cursor);
+      setHasMoreMessages(page.has_more);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法继续读取会话消息");
+    } finally {
+      setIsLoadingMoreMessages(false);
     }
   }
 
@@ -192,6 +276,10 @@ export default function Home() {
     setAttemptId(null);
     setRunUsage(null);
     setResponseCompleted(false);
+    setAssistantSaved(false);
+    setAssistantSaveFailed(false);
+    setMessageCursor(null);
+    setHasMoreMessages(false);
     setErrorMessage(null);
     setDraft("");
     setIsSidebarOpen(false);
@@ -223,6 +311,8 @@ export default function Home() {
     setIsSending(true);
     setErrorMessage(null);
     setResponseCompleted(false);
+    setAssistantSaved(false);
+    setAssistantSaveFailed(false);
     latestAssistantText.current = "";
     const userMessage = createLocalMessage("user", input);
     setMessages((current) => [...current, userMessage]);
@@ -279,10 +369,7 @@ export default function Home() {
         throw new Error(body?.detail ?? `模型请求失败（${response.status}）`);
       }
 
-      const seenSequences = new Set<number>();
       await readStreamEvents(response, async (event) => {
-        if (seenSequences.has(event.sequence)) return;
-        seenSequences.add(event.sequence);
         const data = event.data;
         if (data.attempt_id) setAttemptId(data.attempt_id);
         if (event.type === "response.text.delta" && data.delta) {
@@ -311,7 +398,7 @@ export default function Home() {
           setMessages((current) =>
             current.map((message) =>
               message.local_id === assistantMessage.local_id
-                ? { ...message, content: completedText, content_preview: completedText, pending: false }
+                ? { ...message, content: completedText, content_preview: completedText, pending: false, saving: true }
                 : message,
             ),
           );
@@ -320,21 +407,45 @@ export default function Home() {
             output: responseResult?.usage.output_tokens ?? 0,
             cost: responseResult?.usage.estimated_cost ?? "—",
           });
-          if (completedText) {
+          try {
+            if (!completedText) throw new Error("响应没有可保存的文本。");
             await createMessage(session.session_id, {
               role: "assistant",
               content_text: completedText,
               run_id: createdRun.run_id,
             });
+            setAssistantSaved(true);
+            setMessages((current) =>
+              current.map((message) =>
+                message.local_id === assistantMessage.local_id ? { ...message, saving: false } : message,
+              ),
+            );
+          } catch (error) {
+            setAssistantSaveFailed(true);
+            setErrorMessage(
+              `响应已生成，但会话保存失败：${error instanceof Error ? error.message : "请稍后重试。"}`,
+            );
+            setMessages((current) =>
+              current.map((message) =>
+                message.local_id === assistantMessage.local_id
+                  ? { ...message, saving: false, saveFailed: true }
+                  : message,
+              ),
+            );
           }
           setRun(await getRun(createdRun.run_id));
         }
         if (event.type === "response.failed") {
           const message = data.error?.message ?? "模型生成失败，已保留已收到的部分文本。";
           setErrorMessage(message);
+          setResponseCompleted(false);
+          setAssistantSaved(false);
+          setAssistantSaveFailed(false);
           setMessages((current) =>
             current.map((item) =>
-              item.local_id === assistantMessage.local_id ? { ...item, pending: false, failed: true } : item,
+              item.local_id === assistantMessage.local_id
+                ? { ...item, pending: false, saving: false, failed: true }
+                : item,
             ),
           );
         }
@@ -354,6 +465,8 @@ export default function Home() {
                 failed: !(activeRequestController.current?.signal.aborted),
                 cancelled: Boolean(activeRequestController.current?.signal.aborted),
               }
+            : item.saving
+              ? { ...item, saving: false, saveFailed: true, failed: true }
             : item,
         ),
       );
@@ -373,7 +486,17 @@ export default function Home() {
     }
   }
 
-  const statusLabel = isSending ? "生成中" : responseCompleted ? "已完成" : run?.status === "failed" ? "失败" : "等待运行";
+  const statusLabel = isSending
+    ? "生成中"
+    : assistantSaveFailed
+      ? "保存失败"
+      : assistantSaved
+        ? "已保存"
+        : responseCompleted
+          ? "已生成，待保存"
+          : run?.status === "failed"
+            ? "失败"
+            : "等待运行";
 
   return (
     <main className={`app-shell ${isDark ? "theme-dark" : ""}`}>
@@ -429,16 +552,6 @@ export default function Home() {
             <h1>{activeSession?.title ?? "新对话"}</h1>
           </div>
           <div className="topbar-actions">
-            <label className="model-picker" aria-label="选择 Provider 和模型">
-              <span className="provider-orb" aria-hidden="true" />
-              <span className="model-fields">
-                <select className="provider-select" value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as ProviderName | "")} aria-label="Provider">
-                  <option value="">未连接</option>
-                  {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
-                </select>
-                <input value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="模型名称" />
-              </span>
-            </label>
             <button className="icon-button" onClick={() => setIsDark((current) => !current)} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
             <button className={`detail-toggle ${isInspectorOpen ? "active" : ""}`} onClick={() => setIsInspectorOpen((current) => !current)}>
               <span className="status-dot" />运行详情
@@ -460,8 +573,15 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-            ) : messages.map((message) => (
-              <article className={`message ${message.role === "user" ? "user-message" : "assistant-message"}`} key={message.local_id}>
+            ) : (
+              <>
+                {hasMoreMessages && (
+                  <button className="history-more" onClick={() => void handleLoadMoreMessages()} disabled={isLoadingMoreMessages}>
+                    {isLoadingMoreMessages ? "正在加载消息…" : "加载更多消息"}
+                  </button>
+                )}
+                {messages.map((message) => (
+                  <article className={`message ${message.role === "user" ? "user-message" : "assistant-message"}`} key={message.local_id}>
                 {message.role === "user" ? (
                   <>
                     <div className="message-meta"><span>你</span><time>{formatTime(message.created_at)}</time></div>
@@ -473,15 +593,17 @@ export default function Home() {
                       <div className="assistant-avatar"><span /></div>
                       <div>
                         <strong>NexusPilot</strong>
-                        <small><i className={message.failed || message.cancelled ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.failed ? "生成失败" : message.pending ? "生成中 · 状态来自服务端事件" : "已完成"}</small>
+                        <small><i className={message.failed || message.cancelled || message.saveFailed ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? "生成失败" : message.pending ? "生成中 · 状态来自服务端事件" : message.saving ? "已生成 · 正在保存" : "已完成"}</small>
                       </div>
                     </div>
                     <div className="assistant-content">
                       {message.content ? <p className="assistant-text">{message.content}</p> : <p className="typing-line"><span /> <span /> <span /></p>}
                       {message.pending && <p className="stream-note">正在接收增量响应，不会把部分文本标记为完成。</p>}
+                      {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
+                      {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
                       {(message.failed || message.cancelled) && <p className="stream-note error-note">已保留收到的部分文本，请从运行详情查看服务端状态。</p>}
                     </div>
-                    {!message.pending && (
+                    {!message.pending && !message.saving && (
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => setDraft(lastUserMessage?.content ?? "")}>重新生成</button>
@@ -490,16 +612,30 @@ export default function Home() {
                     )}
                   </>
                 )}
-              </article>
-            ))}
+                  </article>
+                ))}
+              </>
+            )}
           </div>
 
           <div className="composer-wrap">
             <div className="composer">
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder="继续对话…" aria-label="消息内容" rows={1} />
               <div className="composer-tools">
-                <div><span className="context-lock" aria-hidden="true">⌁</span><span>上下文仅来自当前输入与已保存消息</span></div>
-                <button className="send-button" disabled={!draft.trim() && !isSending || !selectedProvider} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>上下文仅来自当前输入与已保存消息</span></div>
+                <div className="composer-actions">
+                  <label className="composer-model-picker" aria-label="选择 Provider 和模型">
+                    <span className="provider-orb" aria-hidden="true" />
+                    <span className="model-fields">
+                      <select className="provider-select" value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as ProviderName | "")} aria-label="Provider">
+                        <option value="">未连接</option>
+                        {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
+                      </select>
+                      <input value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="模型名称" />
+                    </span>
+                  </label>
+                  <button className="send-button" disabled={!draft.trim() && !isSending || !selectedProvider} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                </div>
               </div>
             </div>
             <p className="composer-note">Enter 发送 · Shift + Enter 换行 · 运行状态来自后端事实</p>
@@ -515,13 +651,13 @@ export default function Home() {
 
         <div className="run-state">
           <div className={`status-emblem ${run?.status === "failed" ? "is-failed" : ""}`}>{run?.status === "failed" ? "!" : run ? "✓" : "·"}</div>
-          <div><strong>{isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : responseCompleted ? "响应已完成" : run ? "运行已创建" : "等待首次运行"}</strong><p>状态仅来自服务端响应与运行记录</p></div>
+          <div><strong>{isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>状态仅来自服务端响应与运行记录</p></div>
           <time>{run ? formatTime(run.updated_at) : "—"}</time>
         </div>
 
         <div className="metric-grid">
           <div><span>总耗时</span><strong>{run ? formatDuration(run) : "—"}</strong></div>
-          <div><span>总 Token</span><strong>{runUsage ? runUsage.input + runUsage.output : "—"}</strong></div>
+          <div><span>总 Token</span><strong>{formatTokenTotal(runUsage)}</strong></div>
           <div><span>预估费用</span><strong>{runUsage?.cost ?? "—"}</strong></div>
           <div><span>Attempt</span><strong>{attemptId ? "已记录" : "—"}</strong></div>
         </div>
@@ -542,14 +678,15 @@ export default function Home() {
           <ol className="timeline">
             <li className={run ? "complete" : "pending"}><i /><div><strong>请求已接收</strong><small>{run ? formatTime(run.created_at) : "等待"}</small></div></li>
             <li className={isSending ? "complete" : "pending"}><i /><div><strong>模型生成</strong><small>{isSending ? "正在流式接收" : "等待"}</small></div></li>
-            <li className={runUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong><small>{runUsage ? `${runUsage.input + runUsage.output} tokens` : "等待"}</small></div></li>
-            <li className={responseCompleted ? "complete" : "pending"}><i /><div><strong>响应已保存</strong><small>{responseCompleted ? "已完成" : "等待"}</small></div></li>
+            <li className={runUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong><small>{runUsage ? `${formatTokenTotal(runUsage)} tokens` : "等待"}</small></div></li>
+            <li className={responseCompleted ? "complete" : "pending"}><i /><div><strong>模型响应完成</strong><small>{responseCompleted ? "已完成" : "等待"}</small></div></li>
+            <li className={assistantSaveFailed ? "failed" : assistantSaved ? "complete" : "pending"}><i /><div><strong>{assistantSaveFailed ? "响应保存失败" : "响应已保存"}</strong><small>{assistantSaveFailed ? "需要重试" : assistantSaved ? "已完成" : "等待"}</small></div></li>
           </ol>
         </section>
 
         <div className="future-note"><span>预留</span><p><strong>Agent 与工具执行轨迹</strong>正式事件合同完成后显示；当前界面不会伪造执行状态。</p></div>
         {errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
-        {lastAssistantMessage && !lastAssistantMessage.pending && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
+        {lastAssistantMessage && !lastAssistantMessage.pending && !lastAssistantMessage.saving && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
       </aside>
     </main>
   );

@@ -178,6 +178,70 @@ async def test_messages_are_immutable_and_sequence_paginated(
     assert mutation.status_code == 405
 
 
+async def test_full_message_pages_return_latest_window_and_complete_bodies(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify one full-body page restores the newest window and older cursor pages."""
+
+    await create_user(client, "latest-message-owner")
+    conversation = await create_session(client, "latest-message-owner")
+    for index in range(105):
+        await append_message(client, conversation["session_id"], f"message-{index}")
+
+    latest = await client.get(
+        f"/api/v1/sessions/{conversation['session_id']}/messages/latest",
+        params={"limit": 100},
+    )
+    older = await client.get(
+        f"/api/v1/sessions/{conversation['session_id']}/messages/latest",
+        params={"limit": 100, "cursor": latest.json()["next_cursor"]},
+    )
+
+    assert latest.status_code == 200
+    assert [item["sequence"] for item in latest.json()["items"]] == list(range(6, 106))
+    assert latest.json()["items"][0]["content_text"] == "message-5"
+    assert "content_preview" not in latest.json()["items"][0]
+    assert older.status_code == 200
+    assert [item["sequence"] for item in older.json()["items"]] == list(range(1, 6))
+    assert older.json()["has_more"] is False
+
+
+async def test_latest_run_detail_restores_the_newest_session_run(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify the session restore endpoint returns the newest run fact set."""
+
+    await create_user(client, "latest-run-owner")
+    conversation = await create_session(client, "latest-run-owner")
+    first = await client.post(
+        "/api/v1/runs",
+        json={
+            "user_id": "latest-run-owner",
+            "session_id": conversation["session_id"],
+            "user_request": "first",
+        },
+    )
+    second = await client.post(
+        "/api/v1/runs",
+        json={
+            "user_id": "latest-run-owner",
+            "session_id": conversation["session_id"],
+            "user_request": "second",
+        },
+    )
+
+    latest = await client.get(
+        f"/api/v1/sessions/{conversation['session_id']}/latest-run",
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert latest.status_code == 200
+    assert latest.json()["run_id"] == second.json()["run_id"]
+    assert "attempts" in latest.json()
+    assert "cost_used" in latest.json()
+
+
 async def test_message_cursor_is_bound_to_its_session(client: httpx.AsyncClient) -> None:
     """Verify a sequence cursor cannot silently skip rows in another conversation."""
 

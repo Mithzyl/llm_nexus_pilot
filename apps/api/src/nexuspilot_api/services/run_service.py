@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.errors import (
@@ -176,6 +176,23 @@ async def get_run_detail(db_session: AsyncSession, run_id: str) -> dict:
         "attempts_has_more": attempts_has_more,
         "artifacts_has_more": artifacts_has_more,
     }
+
+
+async def get_latest_run_detail_for_session(
+    db_session: AsyncSession,
+    session_id: str,
+) -> dict:
+    """Return the newest bounded run detail for one session."""
+
+    run = await db_session.scalar(
+        select(LlmRun)
+        .where(LlmRun.session_id == session_id)
+        .order_by(desc(LlmRun.created_at), desc(LlmRun.run_id))
+        .limit(1)
+    )
+    if run is None:
+        raise ResourceNotFoundError("Run")
+    return await get_run_detail(db_session, run.run_id)
 
 
 async def list_runs(

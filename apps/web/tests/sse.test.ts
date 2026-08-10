@@ -44,3 +44,16 @@ test("propagates a stream read failure instead of converting it into success", a
     /connection lost/,
   );
 });
+
+test("rejects clean EOF when no terminal response event was received", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: response.text.delta\ndata: {"sequence":1,"data":{"delta":"partial"}}\n\n'));
+      controller.close();
+    },
+  });
+  await assert.rejects(
+    readStreamEvents(new Response(body), () => undefined),
+    /终止事件前结束/,
+  );
+});

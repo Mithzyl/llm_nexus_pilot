@@ -22,6 +22,7 @@ from nexuspilot_api.models import LlmMessage, LlmRun, LlmSession, SessionStatus,
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.schemas.sessions import (
     MessageCreate,
+    MessageRead,
     MessageSummary,
     SessionCreate,
     SessionRead,
@@ -230,6 +231,74 @@ async def list_messages(
             )
             for item in page.items
         ],
+        next_cursor=next_cursor,
+        has_more=next_cursor is not None,
+        limit=limit,
+    )
+
+
+async def list_message_details(
+    db_session: AsyncSession,
+    session_id: str,
+    *,
+    codec: CursorCodec,
+    cursor: str | None,
+    limit: int,
+) -> CursorPage[MessageRead]:
+    """Return one bounded cursor page with complete immutable message bodies."""
+
+    await get_session(db_session, session_id)
+    after_database_key = codec.decode_sequence(cursor) if cursor else None
+    if after_database_key and after_database_key.scope_id != session_id:
+        raise InvalidCursorError
+    page = await _query_message_database_page(
+        db_session,
+        session_id=session_id,
+        after_database_key=after_database_key,
+        limit=limit,
+    )
+    next_cursor = (
+        codec.encode_sequence(page.next_database_key)
+        if page.next_database_key
+        else None
+    )
+    return CursorPage[MessageRead](
+        items=[MessageRead.model_validate(item) for item in page.items],
+        next_cursor=next_cursor,
+        has_more=next_cursor is not None,
+        limit=limit,
+    )
+
+
+async def list_latest_message_details(
+    db_session: AsyncSession,
+    session_id: str,
+    *,
+    codec: CursorCodec,
+    cursor: str | None,
+    limit: int,
+) -> CursorPage[MessageRead]:
+    """Return the newest message window and a cursor for loading older rows."""
+
+    await get_session(db_session, session_id)
+    before_database_key = codec.decode_sequence(cursor) if cursor else None
+    if before_database_key and before_database_key.scope_id != session_id:
+        raise InvalidCursorError
+
+    statement = select(LlmMessage).where(LlmMessage.session_id == session_id)
+    if before_database_key is not None:
+        statement = statement.where(LlmMessage.sequence < before_database_key.sequence)
+    statement = statement.order_by(LlmMessage.sequence.desc()).limit(limit + 1)
+    messages = list((await db_session.scalars(statement)).all())
+    has_more = len(messages) > limit
+    items = list(reversed(messages[:limit]))
+    next_cursor = None
+    if has_more and items:
+        next_cursor = codec.encode_sequence(
+            DatabaseSequencePaginationKey(scope_id=session_id, sequence=items[0].sequence),
+        )
+    return CursorPage[MessageRead](
+        items=[MessageRead.model_validate(item) for item in items],
         next_cursor=next_cursor,
         has_more=next_cursor is not None,
         limit=limit,

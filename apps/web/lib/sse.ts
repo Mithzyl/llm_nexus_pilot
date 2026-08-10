@@ -13,6 +13,8 @@ export function parseSseBlock(block: string): StreamEvent | null {
 
 /**
  * Read normalized SSE events, preserving order and ignoring duplicate sequence numbers.
+ * A clean stream must contain a terminal completed or failed event; otherwise
+ * callers receive an interruption error instead of mistaking EOF for success.
  */
 export async function readStreamEvents(
   response: Response,
@@ -22,6 +24,7 @@ export async function readStreamEvents(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const seenSequences = new Set<number>();
+  let hasTerminalEvent = false;
   let buffer = "";
 
   while (true) {
@@ -34,8 +37,14 @@ export async function readStreamEvents(
       const event = parseSseBlock(block);
       if (!event || seenSequences.has(event.sequence)) continue;
       seenSequences.add(event.sequence);
+      if (event.type === "response.completed" || event.type === "response.failed") {
+        hasTerminalEvent = true;
+      }
       await onEvent(event);
     }
-    if (done) break;
+    if (done) {
+      if (!hasTerminalEvent) throw new Error("SSE 流在收到终止事件前结束。");
+      break;
+    }
   }
 }

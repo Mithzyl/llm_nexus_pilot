@@ -43,10 +43,13 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
         (
             sessions.router,
             {
-                "/sessions",
-                "/sessions/{session_id}",
-                "/sessions/{session_id}/messages",
-                "/messages/{message_id}",
+                    "/sessions",
+                    "/sessions/{session_id}",
+                    "/sessions/{session_id}/latest-run",
+                    "/sessions/{session_id}/messages",
+                    "/sessions/{session_id}/messages/full",
+                    "/sessions/{session_id}/messages/latest",
+                    "/messages/{message_id}",
             },
         ),
         (runs.router, {"/runs", "/runs/{run_id}", "/runs/{run_id}/cancel"}),

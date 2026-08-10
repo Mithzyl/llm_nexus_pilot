@@ -67,6 +67,9 @@ PATCH /api/v1/sessions/{session_id}
 
 POST  /api/v1/sessions/{session_id}/messages
 GET   /api/v1/sessions/{session_id}/messages
+GET   /api/v1/sessions/{session_id}/messages/full
+GET   /api/v1/sessions/{session_id}/messages/latest
+GET   /api/v1/sessions/{session_id}/latest-run
 GET   /api/v1/messages/{message_id}
 ```
 
@@ -86,7 +89,7 @@ metadata_json
 created_at
 ```
 
-完整大内容写入 MinIO；列表接口只返回摘要和 URI。
+默认列表接口只返回摘要和 URI；前端恢复使用有界的 `messages/latest` 完整正文窗口，继续加载更早消息时使用其游标，避免单条消息的 N+1 查询。完整大内容仍写入 MinIO；`latest-run` 返回最新 RunDetail 的有界 Attempt/Task/Artifact 快照。
 
 ### Run
 

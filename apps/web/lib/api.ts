@@ -1,10 +1,13 @@
 import type {
   CursorPage,
-  MessageSummary,
+  Message,
   Run,
   RunDetail,
   Session,
 } from "./types";
+
+export const DEVELOPMENT_USER_ID = "nexuspilot-web";
+export const MESSAGE_PAGE_SIZE = 100;
 
 export class NexusApiError extends Error {
   status: number;
@@ -48,7 +51,9 @@ export async function nexusFetch<T>(path: string, init?: RequestInit): Promise<T
  * Load the first bounded page of conversations for the sidebar.
  */
 export function listSessions(): Promise<CursorPage<Session>> {
-  return nexusFetch<CursorPage<Session>>("sessions?limit=50");
+  return nexusFetch<CursorPage<Session>>(
+    `sessions?user_id=${encodeURIComponent(DEVELOPMENT_USER_ID)}&limit=50`,
+  );
 }
 
 /**
@@ -79,12 +84,38 @@ export function createSession(userId: string, title: string): Promise<Session> {
 }
 
 /**
- * Load immutable message summaries in sequence order for one conversation.
+ * Load one bounded newest-message page with complete bodies in a single
+ * upstream request. The cursor returned by the API points to older rows.
  */
-export function listMessages(sessionId: string): Promise<CursorPage<MessageSummary>> {
-  return nexusFetch<CursorPage<MessageSummary>>(
-    `sessions/${encodeURIComponent(sessionId)}/messages?limit=100`,
+export function listLatestMessagePage(
+  sessionId: string,
+  cursor?: string | null,
+): Promise<CursorPage<Message>> {
+  const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+  return nexusFetch<CursorPage<Message>>(
+    `sessions/${encodeURIComponent(sessionId)}/messages/latest?limit=${MESSAGE_PAGE_SIZE}${cursorQuery}`,
   );
+}
+
+/**
+ * Load one complete message page in sequence order for callers that need to
+ * replay the history from its beginning.
+ */
+export function listMessagePage(
+  sessionId: string,
+  cursor?: string | null,
+): Promise<CursorPage<Message>> {
+  const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+  return nexusFetch<CursorPage<Message>>(
+    `sessions/${encodeURIComponent(sessionId)}/messages/full?limit=${MESSAGE_PAGE_SIZE}${cursorQuery}`,
+  );
+}
+
+/**
+ * Restore the newest run detail, including the latest bounded attempt facts.
+ */
+export function getLatestRun(sessionId: string): Promise<RunDetail> {
+  return nexusFetch<RunDetail>(`sessions/${encodeURIComponent(sessionId)}/latest-run`);
 }
 
 /**
@@ -118,8 +149,8 @@ export function createMessage(
     content_text: string;
     run_id?: string;
   },
-): Promise<MessageSummary> {
-  return nexusFetch<MessageSummary>(`sessions/${encodeURIComponent(sessionId)}/messages`, {
+): Promise<Message> {
+  return nexusFetch<Message>(`sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
     body: JSON.stringify({ content_type: "text", ...payload }),
   });
