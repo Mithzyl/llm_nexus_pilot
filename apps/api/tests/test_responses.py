@@ -135,12 +135,15 @@ def create_deepseek_stream_registry(
 async def test_registered_provider_endpoint_reflects_dependency_registry(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify callers can discover only adapters configured in the active application."""
+    """Verify callers can discover configured adapters and their selectable models."""
 
     response = await client.get("/api/v1/providers")
 
     assert response.status_code == 200
-    assert response.json() == {"providers": ["openai"]}
+    assert response.json() == {
+        "providers": ["openai"],
+        "models_by_provider": {"openai": ["test-model"]},
+    }
 
 
 async def test_registry_uses_dedicated_deepseek_chat_provider() -> None:
