@@ -6,29 +6,66 @@ import {
   createSession,
   DEVELOPMENT_USER_ID,
   ensureDevelopmentUser,
+  getAgentWorkflowNode,
+  getAgentWorkflowResult,
+  getAgentWorkflowSummary,
   getLatestRun,
   getRun,
+  getRunAgentWorkflow,
   listLatestMessagePage,
   listProviders,
   listSessions,
   NexusApiError,
   nexusFetch,
+  openAgentWorkflowStream,
+  replayAgentWorkflowEvents,
 } from "../lib/api";
 import type {
+  AgentWorkflowEvent,
+  AgentWorkflowNodeResult,
+  AgentWorkflowResult,
+  AgentWorkflowSummary,
   Message,
   MessageRole,
   MessageSummary,
+  ProviderCatalog,
   ProviderName,
   Run,
   RunDetail,
   Session,
 } from "../lib/types";
 import { readStreamEvents } from "../lib/sse";
+import {
+  agentStructuredOutputMode,
+  appendAgentWorkflowEvent,
+  readAgentWorkflowEventStream,
+  type AgentWorkflowEventState,
+} from "../lib/agent-workflow";
 import { hasSavedAssistantForLatestTurn } from "../lib/history";
+import {
+  AgentWorkflowPanel,
+  agentWorkflowStatusLabel,
+} from "../components/agent-workflow/AgentWorkflowPanel";
+import { ModelPicker } from "../components/model-picker/ModelPicker";
+import {
+  isModelSelectionAllowed,
+  resolveInitialModelSelection,
+} from "../lib/model-catalog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
-const DEFAULT_MODEL = "deepseek-v4-flash";
+const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
+  providers: [],
+  models_by_provider: {},
+};
+const EMPTY_AGENT_EVENT_STATE: AgentWorkflowEventState = {
+  events: [],
+  lastSequence: 0,
+  hasGap: false,
+};
+
+type ExecutionMode = "response" | "agent";
+type ReviewPolicy = "always" | "on_verification_failure" | "never";
 
 type LocalMessage = MessageSummary & {
   local_id: string;
@@ -38,6 +75,7 @@ type LocalMessage = MessageSummary & {
   saveFailed?: boolean;
   failed?: boolean;
   cancelled?: boolean;
+  agentWorkflow?: boolean;
 };
 
 type ConnectionState = "checking" | "connected" | "unavailable";
@@ -113,11 +151,25 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
-  const [providers, setProviders] = useState<string[]>([]);
+  const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
+    EMPTY_PROVIDER_CATALOG,
+  );
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
+    null,
+  );
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
+  const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
   const [draft, setDraft] = useState("");
   const [run, setRun] = useState<Run | RunDetail | null>(null);
+  const [agentWorkflow, setAgentWorkflow] = useState<
+    AgentWorkflowSummary | AgentWorkflowResult | null
+  >(null);
+  const [agentWorkflowNodes, setAgentWorkflowNodes] = useState<AgentWorkflowNodeResult[]>([]);
+  const [agentEventState, setAgentEventState] = useState<AgentWorkflowEventState>(
+    EMPTY_AGENT_EVENT_STATE,
+  );
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [runUsage, setRunUsage] = useState<{ input: number | null; output: number | null; cost: string } | null>(null);
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
@@ -160,11 +212,13 @@ export default function Home() {
   useEffect(() => {
     let isMounted = true;
     void Promise.all([listSessions(), listProviders()])
-      .then(([sessionPage, providerPayload]) => {
+      .then(([sessionPage, catalog]) => {
         if (!isMounted) return;
         setSessions(sessionPage.items.filter((session) => session.status === "active"));
-        setProviders(providerPayload.providers);
-        setSelectedProvider((providerPayload.providers[0] as ProviderName | undefined) ?? "");
+        setProviderCatalog(catalog);
+        const initialSelection = resolveInitialModelSelection(catalog);
+        setSelectedProvider(initialSelection.provider);
+        setSelectedModel(initialSelection.model);
         setConnectionState("connected");
       })
       .catch((error: unknown) => {
@@ -197,16 +251,198 @@ export default function Home() {
         output: latestAttempt.output_tokens,
         cost: String(latestAttempt.estimated_cost ?? runDetail?.cost_used ?? "—"),
       });
-      setSelectedModel(latestAttempt.model);
-      setProviders((current) =>
-        current.includes(latestAttempt.provider) ? current : [latestAttempt.provider, ...current],
-      );
-      setSelectedProvider(latestAttempt.provider as ProviderName);
+      setRunModelFacts({ provider: latestAttempt.provider, model: latestAttempt.model });
     } else if (runDetail) {
       setRunUsage({ input: null, output: null, cost: String(runDetail.cost_used ?? "—") });
+      setRunModelFacts(null);
     } else {
       setRunUsage(null);
+      setRunModelFacts(null);
     }
+  }
+
+  /** Clear Agent Workflow projections without changing the selected conversation or Run. */
+  function resetAgentWorkflowFacts() {
+    setAgentWorkflow(null);
+    setAgentWorkflowNodes([]);
+    setAgentEventState(EMPTY_AGENT_EVENT_STATE);
+  }
+
+  /** Insert or replace one complete node while preserving durable node-sequence order. */
+  function mergeAgentWorkflowNode(node: AgentWorkflowNodeResult) {
+    setAgentWorkflowNodes((current) =>
+      [...current.filter((item) => item.node_execution_id !== node.node_execution_id), node].sort(
+        (left, right) => left.node_sequence - right.node_sequence,
+      ),
+    );
+  }
+
+  /** Apply one authoritative workflow snapshot to metrics and the optional local answer. */
+  function applyAgentWorkflowResult(result: AgentWorkflowResult, assistantLocalId?: string) {
+    setAgentWorkflow((current) =>
+      current && current.snapshot_version > result.snapshot_version ? current : result,
+    );
+    setAgentWorkflowNodes(result.nodes);
+    setRunUsage({
+      input: result.aggregate_usage.input_tokens,
+      output: result.aggregate_usage.output_tokens,
+      cost: String(result.aggregate_usage.estimated_cost),
+    });
+    setAttemptId(result.completion?.model_attempt_ids.at(-1) ?? null);
+
+    if (!assistantLocalId) return;
+    if (["pending", "running", "waiting_for_input"].includes(result.status)) return;
+    const finalText = result.final_output?.final_text ?? "";
+    const isCompleted = result.status === "completed" && finalText.length > 0;
+    setResponseCompleted(isCompleted);
+    setAssistantSaved(Boolean(result.final_output?.assistant_message_id));
+    setAssistantSaveFailed(isCompleted && !result.final_output?.assistant_message_id);
+    setMessages((current) =>
+      current.map((message) =>
+        message.local_id === assistantLocalId
+          ? {
+              ...message,
+              content: finalText || message.content || "工作流没有生成可用的最终回答。",
+              content_preview: finalText || message.content_preview,
+              pending: false,
+              saving: false,
+              failed: result.status === "failed" || result.status === "outcome_unknown",
+              cancelled: result.status === "cancelled",
+              saveFailed: isCompleted && !result.final_output?.assistant_message_id,
+            }
+          : message,
+      ),
+    );
+    if (result.error) setErrorMessage(result.error.public_message);
+  }
+
+  /** Restore Workflow events and the latest bounded result for one persisted Run. */
+  async function restoreAgentWorkflowForRun(runId: string, assistantLocalId?: string) {
+    resetAgentWorkflowFacts();
+    let summary: AgentWorkflowSummary;
+    try {
+      summary = await getRunAgentWorkflow(runId);
+    } catch (error) {
+      if (error instanceof NexusApiError && error.status === 404) return;
+      setErrorMessage(error instanceof Error ? error.message : "无法读取 Agent Workflow。");
+      return;
+    }
+
+    setExecutionMode("agent");
+    setAgentWorkflow(summary);
+    let restoredEvents = EMPTY_AGENT_EVENT_STATE;
+    try {
+      const replay = await replayAgentWorkflowEvents(summary.workflow_execution_id, 0);
+      await readAgentWorkflowEventStream(
+        replay,
+        (event) => {
+          restoredEvents = appendAgentWorkflowEvent(restoredEvents, event);
+        },
+        { requireTerminalEvent: false },
+      );
+      setAgentEventState(restoredEvents);
+    } catch (error) {
+      setErrorMessage(
+        `工作流事件回放不可用，当前以查询快照为准：${error instanceof Error ? error.message : "未知错误"}`,
+      );
+    }
+
+    try {
+      const result = await getAgentWorkflowResult(summary.workflow_execution_id);
+      applyAgentWorkflowResult(result, assistantLocalId);
+    } catch (error) {
+      setErrorMessage(
+        `工作流摘要已恢复，但完整节点暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
+      );
+    }
+  }
+
+  /** Execute the current Run through the model-only workflow without duplicating its final Message. */
+  async function executeAgentWorkflow(createdRun: Run, assistantMessage: LocalMessage) {
+    resetAgentWorkflowFacts();
+    const binding = {
+      provider: selectedProvider as ProviderName,
+      model: selectedModel,
+      structured_output_mode: agentStructuredOutputMode(selectedProvider as ProviderName),
+      timeout_seconds: 60,
+      max_output_tokens: 4_096,
+    };
+    const controller = new AbortController();
+    activeRequestController.current = controller;
+    const response = await openAgentWorkflowStream(
+      createdRun.run_id,
+      {
+        workflow_name: "model_only",
+        workflow_version: "1.0.0",
+        execution_profile: "model_only_v1",
+        idempotency_key: crypto.randomUUID(),
+        role_bindings: {
+          controller: binding,
+          planner: binding,
+          ...(reviewPolicy === "never" ? {} : { reviewer: binding }),
+        },
+        review_policy: reviewPolicy,
+        max_nodes: 32,
+        max_model_calls: 16,
+        max_parallel_agents: 1,
+        wall_time_limit_ms: 600_000,
+        stream: true,
+      },
+      controller.signal,
+    );
+
+    await readAgentWorkflowEventStream(
+      response,
+      async (event: AgentWorkflowEvent) => {
+        setAgentEventState((current) => appendAgentWorkflowEvent(current, event));
+        if (event.event_type === "agent.workflow.started") {
+          try {
+            setAgentWorkflow(await getAgentWorkflowSummary(event.workflow_execution_id));
+          } catch (error) {
+            setErrorMessage(
+              `工作流已启动，但摘要暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
+            );
+          }
+        } else {
+          setAgentWorkflow((current) =>
+            current
+              ? {
+                  ...current,
+                  status: event.workflow_status,
+                  current_stage:
+                    typeof event.public_payload.node_key === "string"
+                      ? event.public_payload.node_key
+                      : current.current_stage,
+                }
+              : current,
+          );
+        }
+
+        if (
+          event.node_execution_id &&
+          event.event_type !== "agent.node.started"
+        ) {
+          try {
+            mergeAgentWorkflowNode(
+              await getAgentWorkflowNode(
+                event.workflow_execution_id,
+                event.node_execution_id,
+              ),
+            );
+          } catch (error) {
+            setErrorMessage(
+              `工作流仍在运行，但节点证据暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
+            );
+          }
+        }
+      },
+      { requireTerminalEvent: true },
+    );
+
+    const summary = await getRunAgentWorkflow(createdRun.run_id);
+    const result = await getAgentWorkflowResult(summary.workflow_execution_id);
+    applyAgentWorkflowResult(result, assistantMessage.local_id);
+    setRun(await getRun(createdRun.run_id));
   }
 
   /**
@@ -217,10 +453,12 @@ export default function Home() {
     setActiveSessionId(sessionId);
     setIsSidebarOpen(false);
     setRun(null);
+    resetAgentWorkflowFacts();
     setResponseCompleted(false);
     setAssistantSaved(false);
     setAssistantSaveFailed(false);
     setRunUsage(null);
+    setRunModelFacts(null);
     setAttemptId(null);
     setMessageCursor(null);
     setHasMoreMessages(false);
@@ -236,6 +474,7 @@ export default function Home() {
       setMessageCursor(page.next_cursor);
       setHasMoreMessages(page.has_more);
       restoreRunFacts(latestRun);
+      if (latestRun) await restoreAgentWorkflowForRun(latestRun.run_id);
       const hasPersistedAssistant = hasSavedAssistantForLatestTurn(page.items);
       setResponseCompleted(hasPersistedAssistant);
       setAssistantSaved(hasPersistedAssistant);
@@ -273,8 +512,10 @@ export default function Home() {
     setActiveSessionId(null);
     setMessages([]);
     setRun(null);
+    resetAgentWorkflowFacts();
     setAttemptId(null);
     setRunUsage(null);
+    setRunModelFacts(null);
     setResponseCompleted(false);
     setAssistantSaved(false);
     setAssistantSaveFailed(false);
@@ -306,13 +547,21 @@ export default function Home() {
    */
   async function handleSend() {
     const input = draft.trim();
-    if (!input || isSending || !selectedProvider) return;
+    if (
+      !input ||
+      isSending ||
+      !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
+    ) return;
+    const submittedMode = executionMode;
+    let submittedRunId: string | null = null;
+    let submittedAssistantLocalId: string | null = null;
 
     setIsSending(true);
     setErrorMessage(null);
     setResponseCompleted(false);
     setAssistantSaved(false);
     setAssistantSaveFailed(false);
+    resetAgentWorkflowFacts();
     latestAssistantText.current = "";
     const userMessage = createLocalMessage("user", input);
     setMessages((current) => [...current, userMessage]);
@@ -342,11 +591,20 @@ export default function Home() {
         session_id: session.session_id,
         user_request: input,
       });
+      submittedRunId = createdRun.run_id;
       setRun(createdRun);
+      setRunModelFacts({ provider: selectedProvider, model: selectedModel });
 
       const assistantMessage = createLocalMessage("assistant", "", createdRun.run_id);
+      submittedAssistantLocalId = assistantMessage.local_id;
       assistantMessage.pending = true;
+      assistantMessage.agentWorkflow = submittedMode === "agent";
       setMessages((current) => [...current, assistantMessage]);
+
+      if (submittedMode === "agent") {
+        await executeAgentWorkflow(createdRun, assistantMessage);
+        return;
+      }
 
       const response = await fetch("/api/nexus/responses", {
         method: "POST",
@@ -470,6 +728,12 @@ export default function Home() {
             : item,
         ),
       );
+      if (submittedMode === "agent" && submittedRunId) {
+        await restoreAgentWorkflowForRun(
+          submittedRunId,
+          submittedAssistantLocalId ?? undefined,
+        );
+      }
     } finally {
       activeRequestController.current = null;
       setIsSending(false);
@@ -486,17 +750,19 @@ export default function Home() {
     }
   }
 
-  const statusLabel = isSending
-    ? "生成中"
-    : assistantSaveFailed
-      ? "保存失败"
-      : assistantSaved
-        ? "已保存"
-        : responseCompleted
-          ? "已生成，待保存"
-          : run?.status === "failed"
-            ? "失败"
-            : "等待运行";
+  const statusLabel = agentWorkflow
+    ? agentWorkflowStatusLabel(agentWorkflow.status)
+    : isSending
+      ? "生成中"
+      : assistantSaveFailed
+        ? "保存失败"
+        : assistantSaved
+          ? "已保存"
+          : responseCompleted
+            ? "已生成，待保存"
+            : run?.status === "failed"
+              ? "失败"
+              : "等待运行";
 
   return (
     <main className={`app-shell ${isDark ? "theme-dark" : ""}`}>
@@ -593,7 +859,7 @@ export default function Home() {
                       <div className="assistant-avatar"><span /></div>
                       <div>
                         <strong>NexusPilot</strong>
-                        <small><i className={message.failed || message.cancelled || message.saveFailed ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? "生成失败" : message.pending ? "生成中 · 状态来自服务端事件" : message.saving ? "已生成 · 正在保存" : "已完成"}</small>
+                        <small><i className={message.failed || message.cancelled || message.saveFailed ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
                       </div>
                     </div>
                     <div className="assistant-content">
@@ -620,25 +886,60 @@ export default function Home() {
 
           <div className="composer-wrap">
             <div className="composer">
+              <div className="composer-mode-row" aria-label="执行模式">
+                <button
+                  className={executionMode === "response" ? "active" : ""}
+                  disabled={isSending}
+                  onClick={() => setExecutionMode("response")}
+                >
+                  快速回复
+                </button>
+                <button
+                  className={executionMode === "agent" ? "active" : ""}
+                  disabled={isSending}
+                  onClick={() => setExecutionMode("agent")}
+                >
+                  Agent Workflow
+                </button>
+              </div>
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder="继续对话…" aria-label="消息内容" rows={1} />
-              <div className="composer-tools">
-                <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>上下文仅来自当前输入与已保存消息</span></div>
-                <div className="composer-actions">
-                  <label className="composer-model-picker" aria-label="选择 Provider 和模型">
-                    <span className="provider-orb" aria-hidden="true" />
-                    <span className="model-fields">
-                      <select className="provider-select" value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as ProviderName | "")} aria-label="Provider">
-                        <option value="">未连接</option>
-                        {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
-                      </select>
-                      <input value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="模型名称" />
-                    </span>
+              {executionMode === "agent" && (
+                <div className="agent-composer-options">
+                  <strong>串行 · Controller + Planner{reviewPolicy === "never" ? "" : " + Reviewer"}</strong>
+                  <span>所有角色使用当前模型</span>
+                  <label>
+                    审核
+                    <select
+                      value={reviewPolicy}
+                      onChange={(event) => setReviewPolicy(event.target.value as ReviewPolicy)}
+                      disabled={isSending}
+                      aria-label="Agent 审核策略"
+                    >
+                      <option value="always">始终审核</option>
+                      <option value="on_verification_failure">验证失败时</option>
+                      <option value="never">不审核</option>
+                    </select>
                   </label>
-                  <button className="send-button" disabled={!draft.trim() && !isSending || !selectedProvider} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                </div>
+              )}
+              <div className="composer-tools">
+                <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>{executionMode === "agent" ? "model_only_v1 · 不使用工具、Memory 或 Knowledge" : "上下文仅来自当前输入与已保存消息"}</span></div>
+                <div className="composer-actions">
+                  <ModelPicker
+                    catalog={providerCatalog}
+                    selectedProvider={selectedProvider}
+                    selectedModel={selectedModel}
+                    disabled={isSending}
+                    onChange={(provider, model) => {
+                      setSelectedProvider(provider);
+                      setSelectedModel(model);
+                    }}
+                  />
+                  <button className="send-button" disabled={!isSending && (!draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>
-            <p className="composer-note">Enter 发送 · Shift + Enter 换行 · 运行状态来自后端事实</p>
+            <p className="composer-note">Enter 发送 · Shift + Enter 换行 · {executionMode === "agent" ? "Agent 节点来自持久化工作流事实" : "运行状态来自后端事实"}</p>
           </div>
         </div>
       </section>
@@ -650,8 +951,8 @@ export default function Home() {
         </div>
 
         <div className="run-state">
-          <div className={`status-emblem ${run?.status === "failed" ? "is-failed" : ""}`}>{run?.status === "failed" ? "!" : run ? "✓" : "·"}</div>
-          <div><strong>{isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>状态仅来自服务端响应与运行记录</p></div>
+          <div className={`status-emblem ${run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "!" : run ? "✓" : "·"}</div>
+          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段5持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
           <time>{run ? formatTime(run.updated_at) : "—"}</time>
         </div>
 
@@ -659,14 +960,23 @@ export default function Home() {
           <div><span>总耗时</span><strong>{run ? formatDuration(run) : "—"}</strong></div>
           <div><span>总 Token</span><strong>{formatTokenTotal(runUsage)}</strong></div>
           <div><span>预估费用</span><strong>{runUsage?.cost ?? "—"}</strong></div>
-          <div><span>Attempt</span><strong>{attemptId ? "已记录" : "—"}</strong></div>
+          <div><span>{agentWorkflow ? "模型调用" : "Attempt"}</span><strong>{agentWorkflow ? `${agentWorkflow.model_call_count} / ${agentWorkflow.max_model_calls}` : attemptId ? "已记录" : "—"}</strong></div>
         </div>
 
+        {agentWorkflow ? (
+          <AgentWorkflowPanel
+            workflow={agentWorkflow}
+            events={agentEventState.events}
+            nodes={agentWorkflowNodes}
+            hasEventGap={agentEventState.hasGap}
+          />
+        ) : (
+          <>
         <section className="inspector-section">
           <div className="section-title"><h3>模型调用</h3><span>{attemptId ? "已关联" : "等待"}</span></div>
           <dl className="detail-list">
-            <div><dt>Provider</dt><dd>{selectedProvider || "—"}</dd></div>
-            <div><dt>Model</dt><dd>{selectedModel || "—"}</dd></div>
+            <div><dt>Provider</dt><dd>{(runModelFacts?.provider ?? selectedProvider) || "—"}</dd></div>
+            <div><dt>Model</dt><dd>{(runModelFacts?.model ?? selectedModel) || "—"}</dd></div>
             <div><dt>输入 Token</dt><dd>{runUsage?.input ?? "—"}</dd></div>
             <div><dt>输出 Token</dt><dd>{runUsage?.output ?? "—"}</dd></div>
             <div><dt>请求状态</dt><dd className={run?.status === "failed" ? "error-text" : "success-text"}>{statusLabel}</dd></div>
@@ -684,7 +994,9 @@ export default function Home() {
           </ol>
         </section>
 
-        <div className="future-note"><span>预留</span><p><strong>Agent 与工具执行轨迹</strong>正式事件合同完成后显示；当前界面不会伪造执行状态。</p></div>
+        <div className="future-note"><span>预留</span><p><strong>Agent Workflow</strong>切换到 Agent 模式后显示真实节点；工具执行仍等待后续合同。</p></div>
+          </>
+        )}
         {errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
         {lastAssistantMessage && !lastAssistantMessage.pending && !lastAssistantMessage.saving && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
       </aside>

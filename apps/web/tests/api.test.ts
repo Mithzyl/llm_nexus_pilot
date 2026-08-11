@@ -1,9 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getLatestRun, listLatestMessagePage, listSessions } from "../lib/api";
+import {
+  getAgentWorkflowNode,
+  getAgentWorkflowResult,
+  getAgentWorkflowSummary,
+  getLatestRun,
+  getRunAgentWorkflow,
+  listAgentWorkflowNodes,
+  listLatestMessagePage,
+  listProviders,
+  listSessions,
+  openAgentWorkflowStream,
+  replayAgentWorkflowEvents,
+} from "../lib/api";
 
 const originalFetch = globalThis.fetch;
+
+test("loads provider names and their server-configured model options", async () => {
+  globalThis.fetch = (async () =>
+    Response.json({
+      providers: ["deepseek", "openai_compatible"],
+      models_by_provider: {
+        deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        openai_compatible: [],
+      },
+    })) as typeof fetch;
+
+  try {
+    const catalog = await listProviders();
+    assert.deepEqual(catalog.models_by_provider.deepseek, [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    assert.deepEqual(catalog.models_by_provider.openai_compatible, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("filters session list by the development user", async () => {
   const requests: string[] = [];
@@ -115,6 +149,70 @@ test("restores the latest run detail contract including attempt facts", async ()
     assert.equal(run.attempts[0].input_tokens, 120);
     assert.equal(run.attempts[0].output_tokens, 44);
     assert.equal(run.attempts[0].estimated_cost, "0.42");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("uses the seven Phase 5 workflow routes with bounded cursors and SSE headers", async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    requests.push({ url, init });
+    if (init?.method === "POST") {
+      return new Response("", { status: 201, headers: { "content-type": "text/event-stream" } });
+    }
+    if (url.endsWith("/events?after_sequence=7")) {
+      return new Response("", { headers: { "content-type": "text/event-stream" } });
+    }
+    if (url.includes("/nodes?")) {
+      return Response.json({ items: [], next_cursor: null, has_more: false, limit: 50 });
+    }
+    return Response.json({ workflow_execution_id: "workflow-1", run_id: "run-1" });
+  }) as typeof fetch;
+
+  try {
+    await openAgentWorkflowStream("run-1", {
+      workflow_name: "model_only",
+      workflow_version: "1.0.0",
+      execution_profile: "model_only_v1",
+      idempotency_key: "workflow-key-1",
+      role_bindings: {
+        controller: { provider: "deepseek", model: "deepseek-v4-flash" },
+        planner: { provider: "deepseek", model: "deepseek-v4-flash" },
+        reviewer: { provider: "deepseek", model: "deepseek-v4-flash" },
+      },
+      review_policy: "always",
+      max_nodes: 32,
+      max_model_calls: 16,
+      max_parallel_agents: 1,
+      wall_time_limit_ms: 600_000,
+      stream: true,
+    });
+    await getRunAgentWorkflow("run-1");
+    await getAgentWorkflowSummary("workflow-1");
+    await getAgentWorkflowResult("workflow-1");
+    await listAgentWorkflowNodes("workflow-1", "cursor-1");
+    await getAgentWorkflowNode("workflow-1", "node-1");
+    await replayAgentWorkflowEvents("workflow-1", 7);
+
+    assert.deepEqual(
+      requests.map(({ url }) => url),
+      [
+        "/api/nexus/runs/run-1/agent-workflows",
+        "/api/nexus/runs/run-1/agent-workflow",
+        "/api/nexus/agent-workflows/workflow-1",
+        "/api/nexus/agent-workflows/workflow-1/result",
+        "/api/nexus/agent-workflows/workflow-1/nodes?limit=50&cursor=cursor-1",
+        "/api/nexus/agent-workflows/workflow-1/nodes/node-1",
+        "/api/nexus/agent-workflows/workflow-1/events?after_sequence=7",
+      ],
+    );
+    assert.equal(requests[0].init?.method, "POST");
+    assert.equal(
+      new Headers(requests[0].init?.headers).get("accept"),
+      "text/event-stream",
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

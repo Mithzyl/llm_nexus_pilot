@@ -68,6 +68,28 @@ async function fetchOwnedRun(runId: string, request: NextRequest): Promise<Respo
   return run.user_id === DEVELOPMENT_USER_ID ? null : resourceNotFoundResponse();
 }
 
+/** Resolve a Workflow's Run and enforce the same fixed development-user boundary. */
+async function fetchOwnedAgentWorkflow(
+  workflowExecutionId: string,
+  request: NextRequest,
+): Promise<Response | null> {
+  const upstreamUrl = new URL(
+    `/api/v1/agent-workflows/${encodeURIComponent(workflowExecutionId)}`,
+    API_BASE_URL,
+  );
+  const upstream = await fetch(upstreamUrl, {
+    method: "GET",
+    headers: buildApiHeaders(request),
+    signal: request.signal,
+    cache: "no-store",
+  });
+  if (!upstream.ok) return copyUpstreamResponse(upstream);
+
+  const workflow = (await upstream.json()) as { run_id?: string };
+  if (!workflow.run_id) return resourceNotFoundResponse();
+  return fetchOwnedRun(workflow.run_id, request);
+}
+
 /** Resolve a message's session and verify that both objects share the owner. */
 async function fetchOwnedMessage(messageId: string, request: NextRequest): Promise<Response | null> {
   const upstreamUrl = new URL(`/api/v1/messages/${encodeURIComponent(messageId)}`, API_BASE_URL);
@@ -161,9 +183,14 @@ async function validateOwnership(
     if (messageOwnershipError) return messageOwnershipError;
   }
 
-  if (path[0] === "runs" && path.length === 2) {
+  if (path[0] === "runs" && path.length >= 2) {
     const runOwnershipError = await fetchOwnedRun(path[1], request);
     if (runOwnershipError) return runOwnershipError;
+  }
+
+  if (path[0] === "agent-workflows" && path.length >= 2) {
+    const workflowOwnershipError = await fetchOwnedAgentWorkflow(path[1], request);
+    if (workflowOwnershipError) return workflowOwnershipError;
   }
 
   const referencedRunId = typeof payload?.run_id === "string" ? payload.run_id : undefined;
@@ -224,7 +251,12 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     body = JSON.stringify(payload);
   }
 
-  if (path[0] === "runs" && request.method === "POST" && payload?.user_id !== DEVELOPMENT_USER_ID) {
+  if (
+    path[0] === "runs" &&
+    path.length === 1 &&
+    request.method === "POST" &&
+    payload?.user_id !== DEVELOPMENT_USER_ID
+  ) {
     return Response.json({ detail: "运行只能归属于当前开发用户。" }, { status: 403 });
   }
 

@@ -90,3 +90,82 @@ test("rejects an oversized declared body before reading or forwarding it", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rejects cross-user workflow creation and nested workflow reads", async () => {
+  const upstreamUrls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    upstreamUrls.push(url);
+    if (url.endsWith("/agent-workflows/foreign-workflow")) {
+      return Response.json({ run_id: "foreign-run" });
+    }
+    if (url.endsWith("/runs/foreign-run")) {
+      return Response.json({ user_id: "another-user" });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const createResponse = await POST(
+      createRequest("runs/foreign-run/agent-workflows", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idempotency_key: "workflow-key" }),
+      }),
+      createContext("runs/foreign-run/agent-workflows"),
+    );
+    const nodeResponse = await GET(
+      createRequest("agent-workflows/foreign-workflow/nodes/node-1"),
+      createContext("agent-workflows/foreign-workflow/nodes/node-1"),
+    );
+
+    assert.equal(createResponse.status, 404);
+    assert.equal(nodeResponse.status, 404);
+    assert.deepEqual(upstreamUrls, [
+      "https://nexus.test/api/v1/runs/foreign-run",
+      "https://nexus.test/api/v1/agent-workflows/foreign-workflow",
+      "https://nexus.test/api/v1/runs/foreign-run",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("forwards an owned workflow POST as SSE after Run ownership succeeds", async () => {
+  const upstreamCalls: Array<{ url: string; method: string | undefined }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamCalls.push({ url, method: init?.method });
+    if (url.endsWith("/runs/run-1") && init?.method === "GET") {
+      return Response.json({ user_id: "nexuspilot-web" });
+    }
+    if (url.endsWith("/runs/run-1/agent-workflows") && init?.method === "POST") {
+      return new Response("id: 1\nevent: agent.workflow.started\ndata: {}\n\n", {
+        status: 201,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("runs/run-1/agent-workflows", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "text/event-stream" },
+        body: JSON.stringify({ idempotency_key: "workflow-key" }),
+      }),
+      createContext("runs/run-1/agent-workflows"),
+    );
+
+    assert.equal(response.status, 201);
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+    assert.match(await response.text(), /agent\.workflow\.started/);
+    assert.deepEqual(upstreamCalls, [
+      { url: "https://nexus.test/api/v1/runs/run-1", method: "GET" },
+      { url: "https://nexus.test/api/v1/runs/run-1/agent-workflows", method: "POST" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
