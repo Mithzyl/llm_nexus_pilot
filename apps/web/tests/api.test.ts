@@ -9,12 +9,35 @@ import {
   getRunAgentWorkflow,
   listAgentWorkflowNodes,
   listLatestMessagePage,
+  listProviders,
   listSessions,
   openAgentWorkflowStream,
   replayAgentWorkflowEvents,
 } from "../lib/api";
 
 const originalFetch = globalThis.fetch;
+
+test("loads provider names and their server-configured model options", async () => {
+  globalThis.fetch = (async () =>
+    Response.json({
+      providers: ["deepseek", "openai_compatible"],
+      models_by_provider: {
+        deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        openai_compatible: [],
+      },
+    })) as typeof fetch;
+
+  try {
+    const catalog = await listProviders();
+    assert.deepEqual(catalog.models_by_provider.deepseek, [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    assert.deepEqual(catalog.models_by_provider.openai_compatible, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("filters session list by the development user", async () => {
   const requests: string[] = [];

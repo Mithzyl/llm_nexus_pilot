@@ -44,3 +44,12 @@ class ProviderRegistry:
         """Return registered provider names for readiness diagnostics."""
 
         return tuple(self._providers)
+
+    @property
+    def configured_models_by_provider(self) -> dict[ProviderName, tuple[str, ...]]:
+        """Return deterministic configured model identifiers without exposing adapters."""
+
+        return {
+            provider_name: tuple(sorted(self._allowed_models[provider_name]))
+            for provider_name in self._providers
+        }

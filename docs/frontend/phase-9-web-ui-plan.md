@@ -46,7 +46,7 @@ FastAPI
 
 | 前端用途 | 后端资源 | 前端行为 |
 |---|---|---|
-| Provider 选择 | `GET /api/v1/providers` | 只展示服务端实际注册的 Provider；模型值来自配置或后续 Model Catalog |
+| Provider/Model 选择 | `GET /api/v1/providers` | 展示服务端实际注册的 Provider 与 `models_by_provider`；列表为空表示该 Provider 允许自定义模型标识，不代表 Provider 不可用 |
 | 会话列表与详情 | Session 查询接口 | 左侧栏分页加载，cursor 与筛选条件绑定 |
 | 消息历史 | Session Message 接口 | 按不可变顺序读取，不在前端改写历史消息 |
 | 创建运行与任务 | Run、Task 接口 | 每次需要可审计模型执行时创建对应 Run；任务信息进入详情抽屉 |
@@ -611,7 +611,7 @@ apps/web/
 - Next.js 服务端转发层：浏览器通过同源 `/api/nexus/*` 访问 FastAPI，平台 API Key 只在服务端读取。
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
-- 模型调用：从后端 Provider 注册事实选择 Provider，模型名称可编辑；通过 `POST /api/v1/responses` 接收 `response.text.delta`、`response.usage`、`response.completed` 和 `response.failed`。
+- 模型调用：自定义选择器渲染后端返回的 Provider 与模型允许列表，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收 `response.text.delta`、`response.usage`、`response.completed` 和 `response.failed`。
 - 流式安全行为：按 sequence 去重；停止生成会中止浏览器请求并保留运行详情入口；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message 和 Run 归属；请求体在流式读取中受大小上限约束。
 - 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、键盘发送、移动端覆盖层和 reduced motion。
@@ -659,7 +659,7 @@ apps/web/
 以下条件只表示阶段1、阶段2和阶段9前端基础形成可验证的内部对话版本，不表示阶段3～8能力已经存在，也不表示阶段10公开发布门禁已经通过。
 
 - 用户可以创建和选择会话、查看消息历史，并通过同一界面完成普通或 SSE 流式模型调用。
-- Provider 列表来自后端注册事实；前端不硬编码供应商可用状态。
+- Provider 与模型列表来自后端注册事实；前端不硬编码供应商可用状态或可选模型。历史 Run 的 Provider/Model 只作为证据展示，不覆盖当前 Composer 选择。
 - 页面刷新后能够从 Session、Run 和 Attempt 恢复已持久化状态。
 - 失败、取消和断流不会被显示为完成，也不会自动产生第二次模型费用。
 - 平台 API Key 和内部 API Key 只存在于 Next.js 服务端配置，不进入浏览器。

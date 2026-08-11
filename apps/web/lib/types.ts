@@ -15,6 +15,11 @@ export type ProviderName =
   | "gemini"
   | "openai_compatible";
 
+export type ProviderCatalog = {
+  providers: ProviderName[];
+  models_by_provider: Partial<Record<ProviderName, string[]>>;
+};
+
 export type CursorPage<T> = {
   items: T[];
   next_cursor: string | null;

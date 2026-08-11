@@ -5,6 +5,7 @@ import type {
   AgentWorkflowSummary,
   CursorPage,
   Message,
+  ProviderCatalog,
   Run,
   RunDetail,
   Session,
@@ -63,8 +64,8 @@ export function listSessions(): Promise<CursorPage<Session>> {
 /**
  * Read provider names reported by the server-side registry.
  */
-export function listProviders(): Promise<{ providers: string[] }> {
-  return nexusFetch<{ providers: string[] }>("providers");
+export function listProviders(): Promise<ProviderCatalog> {
+  return nexusFetch<ProviderCatalog>("providers");
 }
 
 /**

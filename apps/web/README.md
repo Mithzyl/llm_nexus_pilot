@@ -17,7 +17,7 @@ npm run dev
 
 ## 设计边界
 
-- Provider 列表来自 `GET /api/v1/providers`，不在浏览器硬编码可用状态。
+- Provider 和模型选项来自 `GET /api/v1/providers` 的 `providers` 与 `models_by_provider`，不在浏览器硬编码可用状态。Composer 使用自定义可搜索选择器；某个 Provider 的模型列表为空时，按服务端合同允许输入自定义模型标识。
 - `/api/nexus/*` 不是通用 API 代理，只允许当前页面所需的 Provider、User、Session、Message、Run、Response 和七个 Agent Workflow 路径；Session、Message、Run、Workflow 和 Node 会沿所属 Run 在服务端按固定开发用户校验归属。正式多用户部署前必须替换为登录身份和资源授权。
 - 发送消息前创建或复用用户、Session 和 Run；响应通过 `POST /api/v1/responses` 的 SSE 事件增量渲染。
 - 浏览器不保存 `X-API-Key`、供应商凭据、内部对象 URI 或原始供应商响应。

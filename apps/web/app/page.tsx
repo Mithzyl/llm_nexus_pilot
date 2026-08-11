@@ -28,6 +28,7 @@ import type {
   Message,
   MessageRole,
   MessageSummary,
+  ProviderCatalog,
   ProviderName,
   Run,
   RunDetail,
@@ -45,10 +46,18 @@ import {
   AgentWorkflowPanel,
   agentWorkflowStatusLabel,
 } from "../components/agent-workflow/AgentWorkflowPanel";
+import { ModelPicker } from "../components/model-picker/ModelPicker";
+import {
+  isModelSelectionAllowed,
+  resolveInitialModelSelection,
+} from "../lib/model-catalog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
-const DEFAULT_MODEL = "deepseek-v4-flash";
+const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
+  providers: [],
+  models_by_provider: {},
+};
 const EMPTY_AGENT_EVENT_STATE: AgentWorkflowEventState = {
   events: [],
   lastSequence: 0,
@@ -142,9 +151,14 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
-  const [providers, setProviders] = useState<string[]>([]);
+  const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
+    EMPTY_PROVIDER_CATALOG,
+  );
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
-  const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
+    null,
+  );
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
   const [draft, setDraft] = useState("");
@@ -198,11 +212,13 @@ export default function Home() {
   useEffect(() => {
     let isMounted = true;
     void Promise.all([listSessions(), listProviders()])
-      .then(([sessionPage, providerPayload]) => {
+      .then(([sessionPage, catalog]) => {
         if (!isMounted) return;
         setSessions(sessionPage.items.filter((session) => session.status === "active"));
-        setProviders(providerPayload.providers);
-        setSelectedProvider((providerPayload.providers[0] as ProviderName | undefined) ?? "");
+        setProviderCatalog(catalog);
+        const initialSelection = resolveInitialModelSelection(catalog);
+        setSelectedProvider(initialSelection.provider);
+        setSelectedModel(initialSelection.model);
         setConnectionState("connected");
       })
       .catch((error: unknown) => {
@@ -235,15 +251,13 @@ export default function Home() {
         output: latestAttempt.output_tokens,
         cost: String(latestAttempt.estimated_cost ?? runDetail?.cost_used ?? "—"),
       });
-      setSelectedModel(latestAttempt.model);
-      setProviders((current) =>
-        current.includes(latestAttempt.provider) ? current : [latestAttempt.provider, ...current],
-      );
-      setSelectedProvider(latestAttempt.provider as ProviderName);
+      setRunModelFacts({ provider: latestAttempt.provider, model: latestAttempt.model });
     } else if (runDetail) {
       setRunUsage({ input: null, output: null, cost: String(runDetail.cost_used ?? "—") });
+      setRunModelFacts(null);
     } else {
       setRunUsage(null);
+      setRunModelFacts(null);
     }
   }
 
@@ -444,6 +458,7 @@ export default function Home() {
     setAssistantSaved(false);
     setAssistantSaveFailed(false);
     setRunUsage(null);
+    setRunModelFacts(null);
     setAttemptId(null);
     setMessageCursor(null);
     setHasMoreMessages(false);
@@ -500,6 +515,7 @@ export default function Home() {
     resetAgentWorkflowFacts();
     setAttemptId(null);
     setRunUsage(null);
+    setRunModelFacts(null);
     setResponseCompleted(false);
     setAssistantSaved(false);
     setAssistantSaveFailed(false);
@@ -531,7 +547,11 @@ export default function Home() {
    */
   async function handleSend() {
     const input = draft.trim();
-    if (!input || isSending || !selectedProvider) return;
+    if (
+      !input ||
+      isSending ||
+      !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
+    ) return;
     const submittedMode = executionMode;
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
@@ -573,6 +593,7 @@ export default function Home() {
       });
       submittedRunId = createdRun.run_id;
       setRun(createdRun);
+      setRunModelFacts({ provider: selectedProvider, model: selectedModel });
 
       const assistantMessage = createLocalMessage("assistant", "", createdRun.run_id);
       submittedAssistantLocalId = assistantMessage.local_id;
@@ -904,17 +925,17 @@ export default function Home() {
               <div className="composer-tools">
                 <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>{executionMode === "agent" ? "model_only_v1 · 不使用工具、Memory 或 Knowledge" : "上下文仅来自当前输入与已保存消息"}</span></div>
                 <div className="composer-actions">
-                  <label className="composer-model-picker" aria-label="选择 Provider 和模型">
-                    <span className="provider-orb" aria-hidden="true" />
-                    <span className="model-fields">
-                      <select className="provider-select" value={selectedProvider} onChange={(event) => setSelectedProvider(event.target.value as ProviderName | "")} aria-label="Provider">
-                        <option value="">未连接</option>
-                        {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
-                      </select>
-                      <input value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)} aria-label="模型名称" />
-                    </span>
-                  </label>
-                  <button className="send-button" disabled={!draft.trim() && !isSending || !selectedProvider} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <ModelPicker
+                    catalog={providerCatalog}
+                    selectedProvider={selectedProvider}
+                    selectedModel={selectedModel}
+                    disabled={isSending}
+                    onChange={(provider, model) => {
+                      setSelectedProvider(provider);
+                      setSelectedModel(model);
+                    }}
+                  />
+                  <button className="send-button" disabled={!isSending && (!draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>
@@ -954,8 +975,8 @@ export default function Home() {
         <section className="inspector-section">
           <div className="section-title"><h3>模型调用</h3><span>{attemptId ? "已关联" : "等待"}</span></div>
           <dl className="detail-list">
-            <div><dt>Provider</dt><dd>{selectedProvider || "—"}</dd></div>
-            <div><dt>Model</dt><dd>{selectedModel || "—"}</dd></div>
+            <div><dt>Provider</dt><dd>{(runModelFacts?.provider ?? selectedProvider) || "—"}</dd></div>
+            <div><dt>Model</dt><dd>{(runModelFacts?.model ?? selectedModel) || "—"}</dd></div>
             <div><dt>输入 Token</dt><dd>{runUsage?.input ?? "—"}</dd></div>
             <div><dt>输出 Token</dt><dd>{runUsage?.output ?? "—"}</dd></div>
             <div><dt>请求状态</dt><dd className={run?.status === "failed" ? "error-text" : "success-text"}>{statusLabel}</dd></div>
