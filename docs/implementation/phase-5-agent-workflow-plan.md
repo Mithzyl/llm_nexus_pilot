@@ -1,6 +1,6 @@
 # 阶段5：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 10 日
+**文档日期：** 2026 年 8 月 11 日
 **文档状态：** 进行中（`model_only_v1` 主工作流及核心接口已实现，阶段5完整验收尚未完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md)
@@ -54,7 +54,7 @@
 - 费用只在每次调用前检查当前已使用金额，没有费用预留；一次调用仍可能超过剩余金额上限。
 - 超过内联上限的节点输出当前明确失败，尚未自动写入 MinIO Artifact。
 - POST SSE 是运行中的实时事件流；GET `/events` 只回放查询时已经提交的事件，尚未实现持续订阅。
-- Agent Runtime 已按 Router、Schema、查询、执行和策略分层，但协调器仍集中在一个较大的执行服务中；接入工具循环前需要按节点执行、状态持久化和模型调用职责继续拆分，不能继续向单文件堆叠。
+- Agent Runtime 已完成执行服务第一轮拆分：Provider 调用和类型化输出校验进入 `agent_model_node_service.py`，Workflow/Node/Event、预算、Task/Agent Run/Turn 等核心状态进入 `workflow_execution_state_service.py`。高层 `model_only_v1` 流程、审核和终态收敛仍在执行门面中；加入并行、工具循环或恢复前必须继续抽取 orchestrator，不能继续向执行门面堆叠。
 - Workflow Completion 节点完成事件与 Workflow/Run 最终状态事件当前仍是两个连续事务；进程恰好在两者之间退出时需要后续启动审计识别并收敛。
 - 尚未装配 OpenTelemetry，也未运行阶段5的真实 MySQL、MinIO 或真实供应商冒烟测试。
 
@@ -915,7 +915,7 @@ apps/api/src/nexuspilot_api/features/agent_runtime/
 
 ### 大协调器拆分前置条件
 
-截至本文核对，`workflow_execution_service.py` 约 2,300 行，包含 43 个类方法和 12 个显式 `commit()` 检查点。当前 `model_only_v1` 仍可测试和维护，因此不因文件大小阻止本轮串行功能交付；但在加入并行 Agent、阶段4工具循环、等待/恢复或启动审计之前，必须先拆分，不能继续把新状态分支和事务检查点堆入同一类。
+拆分前 `workflow_execution_service.py` 为 2,335 行。2026 年 8 月 11 日第一轮以委托方式抽取后，执行门面为 1,839 行；新增状态服务和模型节点服务分别承担已提交状态与 Provider 边界。当前高层流程仍在执行门面中，因此在加入并行 Agent、阶段4工具循环、等待/恢复或启动审计之前，必须完成 orchestrator 抽取并继续迁移剩余终态事务，不能把新状态分支堆回执行门面。
 
 最小拆分边界：
 
@@ -939,7 +939,7 @@ model_only_workflow_orchestrator.py       # 普通 Python 的高层节点顺序�
 - 当前执行 Service 为请求/执行级对象，因此其可变 `event_sink` 尚不会跨请求共享；拆分后仍必须把它作为每次执行的构造参数或执行上下文，禁止提升为单例或让并行 Workflow 相互覆盖。此项必须在提高并行度前完成。
 - `workflow_execution_state_service.py` 不依赖模型节点服务或 orchestrator；`agent_model_node_service.py` 可以调用状态端口，但状态组件不得反向调用 Provider。
 
-建议迁移顺序：先保留当前 24 项 API 回归测试，并补充事件“提交后通知”和 Provider“开始事件提交后调用”的特征测试；再以委托方式抽取状态服务；随后抽取模型节点服务；最后移动高层流程到 orchestrator。每一步均运行 Agent Workflow 测试、完整 API 测试和 Ruff。不得一次性重写全部流程，也不为每个薄节点创建一个 Service 文件。
+迁移顺序保持增量委托：现有 26 项 API 回归测试已经包含事件“提交后通知”和 Provider“开始事件提交后调用”的特征测试；状态服务与模型节点服务已完成第一轮抽取。下一步继续迁移剩余终态事务，随后把高层流程移动到 orchestrator。每一步均运行 Agent Workflow 测试、完整 API 测试和 Ruff。不得一次性重写全部流程，也不为每个薄节点创建一个 Service 文件。
 
 ## 测试设计
 
@@ -947,9 +947,9 @@ model_only_workflow_orchestrator.py       # 普通 Python 的高层节点顺序�
 
 ### 当前已验证
 
-2026 年 8 月 10 日已在 `apps/api` 目录运行 `.venv/bin/pytest tests/test_agent_workflows.py -q`，结果为 `24 passed`。当前 API 集成测试覆盖：完整串行主流程和持久化节点、Run 到 Workflow 发现、幂等回放与冲突、能力拒绝、调用前预算耗尽拒绝、有序事件回放、依赖 Handoff、Evaluation 归属、非法 Worker 输出清理、实时 SSE、Reviewer 绑定/跳过/拒绝/重试、完成原因校验、最终消息事务回滚、Provider 超时与请求中取消的未知结果、非法事件游标、OpenAPI JSON/SSE 合同、未注册输出版本和 Handoff 所属 Task 校验。
+2026 年 8 月 11 日已在 `apps/api` 目录运行 `.venv/bin/pytest tests/test_agent_workflows.py -q`，结果为 `26 passed`。当前 API 集成测试覆盖：完整串行主流程和持久化节点、Run 到 Workflow 发现、幂等回放与冲突、能力拒绝、调用前预算耗尽拒绝、有序事件回放、依赖 Handoff、Evaluation 归属、非法 Worker 输出清理、实时 SSE、Reviewer 绑定/跳过/拒绝/重试、完成原因校验、最终消息事务回滚、Provider 超时与请求中取消的未知结果、非法事件游标、OpenAPI JSON/SSE 合同、未注册输出版本、Handoff 所属 Task 校验，以及节点开始/事件事实先提交后调用 Provider 或通知 SSE observer 的事务顺序。
 
-同日运行完整后端测试为 `197 passed, 4 skipped`；4 项跳过项是需要真实 MySQL/MinIO 的基础设施测试。`ruff check src tests migrations` 与本阶段相关文件的 `ruff format --check` 均通过；Alembic 当前唯一 head 为 `20260810_0010`，面向 MySQL 的 `alembic upgrade head --sql` 离线迁移生成通过。真实 MySQL/MinIO 升级和运行验证仍是独立验收缺口，不能由 SQLite 与离线 SQL 代替。
+同日运行完整后端测试为 `201 passed, 4 skipped`；4 项跳过项是需要真实 MySQL/MinIO 的基础设施测试。`ruff check src tests migrations` 与本阶段修改文件的 `ruff format --check` 均通过；全仓格式检查仍会报告 27 个本次未修改的历史文件，不在本次拆分中机械格式化。Alembic 当前唯一 head 为 `20260810_0010`，面向 MySQL 的 `alembic upgrade head --sql` 离线迁移生成通过。真实 MySQL/MinIO 升级和运行验证仍是独立验收缺口，不能由 SQLite 与离线 SQL 代替。
 
 以下各节包含阶段5完整目标所需的剩余测试，不能据此推断当前已经全部覆盖。
 
@@ -999,7 +999,7 @@ model_only_workflow_orchestrator.py       # 普通 Python 的高层节点顺序�
 |---|---|---|---|---|
 | 1 | Node Result、各节点 Output 和 Workflow Result 合同测试 | 已实现核心合同 | 类型化输出、未注册版本拒绝、API 序列化和大小限制已验证；仍需为所有 Output 补齐逐字段参数化边界测试 | Pydantic、API 序列化和大小限制测试 |
 | 2 | 工作流/节点/事件状态与迁移设计 | 已实现，真实 MySQL 待验证 | 状态、唯一性、引用和版本约束可执行 | Alembic head、MySQL 离线 SQL、SQLite 集成测试；仍需真实 MySQL 升级 |
-| 3 | Registry、预算和 orchestrator 骨架 | 进行中 | 普通 Python 协调器及预算已实现；版本化 Registry 与进一步职责拆分未实现 | 架构依赖、工作流测试和 Ruff |
+| 3 | Registry、预算和 orchestrator 骨架 | 进行中 | 状态服务与模型节点服务已完成第一轮抽取；高层 orchestrator、剩余终态事务迁移和版本化 Registry 未实现 | 架构依赖、工作流测试和 Ruff |
 | 4 | 请求、上下文、Controller plan 和 plan validation | 已实现当前固定路径 | 当前统一进入复杂任务拆解并校验 DAG 与能力缺口；简单任务直达尚未实现 | 假 Provider、任务图、能力和预算测试 |
 | 5 | Task/Agent Run 分派与 model-only 工作 Agent | 进行中 | 串行执行与 Attempt 关联已实现；有界并行及独立会话未实现 | 分派、依赖输入、Attempt 和后续并发测试 |
 | 6 | Handoff、确定性验证和 Reviewer | 已实现首版 | 下游只消费有效证据，审核独立且可阻断汇总 | Handoff/Evaluation 归属、审核拒绝和错误收敛测试 |
@@ -1041,7 +1041,7 @@ model_only_workflow_orchestrator.py       # 普通 Python 的高层节点顺序�
 
 ### `model_only_v1` 里程碑
 
-当前状态：进行中。24 项 Agent Workflow API 集成测试已验证主流程、完整节点合同的核心路径、核心 HTTP/SSE、幂等、预算耗尽拒绝、审核门禁、最终消息回滚、超时、取消传播和未知结果；并行、等待输入、外部取消/恢复、Artifact 降级、阶段8遥测装配及真实基础设施验收尚未完成，因此不能标记为“已完成”。
+当前状态：进行中。26 项 Agent Workflow API 集成测试已验证主流程、完整节点合同的核心路径、核心 HTTP/SSE、幂等、预算耗尽拒绝、审核门禁、最终消息回滚、提交时序、超时、取消传播和未知结果；并行、等待输入、外部取消/恢复、Artifact 降级、阶段8遥测装配及真实基础设施验收尚未完成，因此不能标记为“已完成”。
 
 - Controller、Planner/Researcher、确定性验证、Reviewer 和最终汇总可在同步请求内完成。
 - 每个执行节点返回完整 `AgentWorkflowNodeResult`，所有节点特有输出通过判别联合校验。

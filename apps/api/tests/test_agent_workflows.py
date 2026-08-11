@@ -16,10 +16,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_api import create_test_run
 
-from nexuspilot_api.core.dependencies import get_provider_registry
+from nexuspilot_api.core.dependencies import get_price_catalog, get_provider_registry
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+    AgentWorkflowCreate,
     AgentWorkflowNodeResultRead,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_execution_service import (
+    AgentWorkflowExecutionService,
+)
+from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
 from nexuspilot_api.models import (
     AgentRunStatus,
@@ -30,6 +35,7 @@ from nexuspilot_api.models import (
     LlmAgentHandoff,
     LlmAgentRun,
     LlmAgentTurn,
+    LlmAgentWorkflowEvent,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
     LlmMessage,
@@ -263,6 +269,35 @@ class BlockingWorkerProvider(ScriptedAgentProvider):
         return await super().generate(request)
 
 
+class CommittedNodeCheckingProvider(ScriptedAgentProvider):
+    """Verify every billable model request starts after its node fact is committed."""
+
+    def __init__(self, db_session_factory: async_sessionmaker[AsyncSession]) -> None:
+        """Bind an independent session factory used to observe committed node facts."""
+
+        super().__init__()
+        self.db_session_factory = db_session_factory
+        self.committed_node_execution_ids: list[str] = []
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Reject a provider call when its running node or started event is not durable."""
+
+        node_execution_id = request.metadata["node_execution_id"]
+        async with self.db_session_factory() as db_session:
+            node = await db_session.get(LlmAgentWorkflowNodeExecution, node_execution_id)
+            started_event = await db_session.scalar(
+                select(LlmAgentWorkflowEvent).where(
+                    LlmAgentWorkflowEvent.node_execution_id == node_execution_id,
+                    LlmAgentWorkflowEvent.event_type == "agent.node.started",
+                )
+            )
+        assert node is not None
+        assert node.status == AgentWorkflowNodeStatus.RUNNING
+        assert started_event is not None
+        self.committed_node_execution_ids.append(node_execution_id)
+        return await super().generate(request)
+
+
 def scripted_registry(provider: ScriptedAgentProvider) -> ProviderRegistry:
     """Register one scripted provider under the existing allowed test model."""
 
@@ -293,6 +328,64 @@ def workflow_payload(**overrides: object) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+async def test_provider_is_called_only_after_node_started_fact_is_committed(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify independent sessions can read node start facts before Provider entry."""
+
+    run = await create_test_run(client)
+    provider = CommittedNodeCheckingProvider(test_database_session_factory)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-provider-after-commit-0001"),
+    )
+
+    assert response.status_code == 201
+    assert len(provider.committed_node_execution_ids) == 4
+
+
+async def test_workflow_event_sink_observes_only_committed_events(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify live observers are notified only after the same event is queryable."""
+
+    run = await create_test_run(client)
+    observed_event_ids: list[str] = []
+
+    async def record_committed_event(event) -> None:
+        """Assert a newly notified event is visible through an independent session."""
+
+        async with test_database_session_factory() as observer_session:
+            durable_event = await observer_session.get(LlmAgentWorkflowEvent, event.event_id)
+        assert durable_event is not None
+        assert durable_event.event_sequence == event.event_sequence
+        observed_event_ids.append(event.event_id)
+
+    async with test_database_session_factory() as db_session:
+        service = AgentWorkflowExecutionService(
+            registry=scripted_registry(ScriptedAgentProvider()),
+            prices=app.dependency_overrides[get_price_catalog](),
+            db_session=db_session,
+            db_session_factory=test_database_session_factory,
+            storage=app.dependency_overrides[get_object_storage](),
+        )
+        workflow, replayed = await service.prepare_workflow(
+            run["run_id"],
+            AgentWorkflowCreate.model_validate(
+                workflow_payload(idempotency_key="agent-event-after-commit-0001")
+            ),
+            event_sink=record_committed_event,
+        )
+
+    assert replayed is False
+    assert workflow.event_count == 1
+    assert len(observed_event_ids) == 1
 
 
 async def test_model_only_workflow_returns_and_persists_complete_nodes(
