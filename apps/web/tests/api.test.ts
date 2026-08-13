@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cancelAgentWorkflow,
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
@@ -154,11 +155,18 @@ test("restores the latest run detail contract including attempt facts", async ()
   }
 });
 
-test("uses the seven Phase 5 workflow routes with bounded cursors and SSE headers", async () => {
+test("uses the eight Phase 5 workflow routes with bounded cursors and SSE headers", async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     requests.push({ url, init });
+    if (url.endsWith("/cancel") && init?.method === "POST") {
+      return Response.json({
+        workflow_execution_id: "workflow-1",
+        run_id: "run-1",
+        status: "cancelled",
+      });
+    }
     if (init?.method === "POST") {
       return new Response("", { status: 201, headers: { "content-type": "text/event-stream" } });
     }
@@ -195,6 +203,7 @@ test("uses the seven Phase 5 workflow routes with bounded cursors and SSE header
     await listAgentWorkflowNodes("workflow-1", "cursor-1");
     await getAgentWorkflowNode("workflow-1", "node-1");
     await replayAgentWorkflowEvents("workflow-1", 7);
+    const cancelled = await cancelAgentWorkflow("workflow-1");
 
     assert.deepEqual(
       requests.map(({ url }) => url),
@@ -206,13 +215,17 @@ test("uses the seven Phase 5 workflow routes with bounded cursors and SSE header
         "/api/nexus/agent-workflows/workflow-1/nodes?limit=50&cursor=cursor-1",
         "/api/nexus/agent-workflows/workflow-1/nodes/node-1",
         "/api/nexus/agent-workflows/workflow-1/events?after_sequence=7",
+        "/api/nexus/agent-workflows/workflow-1/cancel",
       ],
     );
+    assert.equal(cancelled.status, "cancelled");
     assert.equal(requests[0].init?.method, "POST");
     assert.equal(
       new Headers(requests[0].init?.headers).get("accept"),
       "text/event-stream",
     );
+    assert.equal(requests.at(-1)?.init?.method, "POST");
+    assert.equal(requests.at(-1)?.init?.body, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }

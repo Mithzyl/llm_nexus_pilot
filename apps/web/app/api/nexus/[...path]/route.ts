@@ -208,6 +208,12 @@ async function validateOwnership(
   return null;
 }
 
+/** Determine whether an allow-listed mutation carries JSON; Workflow cancellation is bodyless. */
+function requiresJsonRequestBody(method: string, path: readonly string[]): boolean {
+  if (["GET", "HEAD"].includes(method)) return false;
+  return !(method === "POST" && path.length === 3 && path[0] === "agent-workflows" && path[2] === "cancel");
+}
+
 /**
  * Forward only the UI's explicitly allow-listed resources and force every
  * browser request into the current development user's ownership boundary.
@@ -227,7 +233,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     return Response.json({ detail: "该资源或请求方法未开放给前端。" }, { status: 404 });
   }
 
-  const isBodyRequest = !["GET", "HEAD"].includes(request.method);
+  const isBodyRequest = requiresJsonRequestBody(request.method, path);
   let body: string | undefined;
   let payload: JsonObject | undefined;
   if (isBodyRequest) {

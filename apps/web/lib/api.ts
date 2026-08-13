@@ -209,6 +209,16 @@ export function getAgentWorkflowSummary(
   );
 }
 
+/** Durably cancel future nodes for one owned running Agent Workflow. */
+export function cancelAgentWorkflow(
+  workflowExecutionId: string,
+): Promise<AgentWorkflowSummary> {
+  return nexusFetch<AgentWorkflowSummary>(
+    `agent-workflows/${encodeURIComponent(workflowExecutionId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
 /** Read the authoritative bounded result snapshot for one Agent Workflow. */
 export function getAgentWorkflowResult(
   workflowExecutionId: string,

@@ -28,6 +28,7 @@ const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "POST", pattern: ["runs", ":id", "agent-workflows"] },
   { method: "GET", pattern: ["runs", ":id", "agent-workflow"] },
   { method: "GET", pattern: ["agent-workflows", ":id"] },
+  { method: "POST", pattern: ["agent-workflows", ":id", "cancel"] },
   { method: "GET", pattern: ["agent-workflows", ":id", "result"] },
   { method: "GET", pattern: ["agent-workflows", ":id", "nodes"] },
   { method: "GET", pattern: ["agent-workflows", ":id", "nodes", ":id"] },
