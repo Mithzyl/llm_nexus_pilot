@@ -1,7 +1,7 @@
 """Explicit versionable model-price configuration and decimal cost estimation."""
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 
 from nexuspilot_models.contracts import ProviderName
 
@@ -18,9 +18,7 @@ class ModelPrice:
 class PriceCatalog:
     """Estimate costs only for explicitly configured provider/model combinations."""
 
-    def __init__(
-        self, prices: dict[tuple[ProviderName, str], ModelPrice] | None = None
-    ) -> None:
+    def __init__(self, prices: dict[tuple[ProviderName, str], ModelPrice] | None = None) -> None:
         """Create a catalog whose unknown models intentionally have no estimated cost."""
 
         self._prices = prices or {}
@@ -46,5 +44,28 @@ class PriceCatalog:
             Decimal(uncached) * price.input_per_million
             + Decimal(cached) * cached_rate
             + Decimal(output_tokens) * price.output_per_million
+        ) / Decimal(1_000_000)
+        return cost.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+    def estimate_maximum(
+        self,
+        provider: ProviderName,
+        model: str,
+        *,
+        input_tokens_upper_bound: int,
+        output_tokens_upper_bound: int,
+    ) -> Decimal | None:
+        """Estimate a conservative call cost from explicit input and output token bounds."""
+
+        price = self._prices.get((provider, model))
+        if price is None:
+            return None
+        input_rate = max(
+            price.input_per_million,
+            price.cached_input_per_million or price.input_per_million,
+        )
+        cost = (
+            Decimal(input_tokens_upper_bound) * input_rate
+            + Decimal(output_tokens_upper_bound) * price.output_per_million
         ) / Decimal(1_000_000)
         return cost.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)

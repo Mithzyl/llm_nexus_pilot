@@ -71,6 +71,7 @@ class LlmAgentWorkflowExecution(Base):
     max_parallel_agents: Mapped[int] = mapped_column(Integer, default=1)
     wall_time_limit_ms: Mapped[int] = mapped_column(Integer, default=600_000)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
     total_estimated_cost: Mapped[Decimal] = mapped_column(Numeric(12, 6), default=Decimal("0"))
     trace_id: Mapped[str | None] = mapped_column(String(32))
     error_code: Mapped[str | None] = mapped_column(String(128))

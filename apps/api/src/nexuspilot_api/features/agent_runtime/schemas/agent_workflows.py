@@ -40,7 +40,7 @@ class AgentWorkflowCreate(StrictContract):
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     max_nodes: int = Field(default=32, ge=10, le=32)
     max_model_calls: int = Field(default=16, ge=3, le=16)
-    max_parallel_agents: Literal[1] = 1
+    max_parallel_agents: int = Field(default=1, ge=1, le=2)
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
     stream: bool = False
 
@@ -131,6 +131,7 @@ class NodeBudgetRead(StrictContract):
     cost_used_before: Decimal = Decimal("0")
     cost_used_after: Decimal = Decimal("0")
     remaining_cost: Decimal | None = None
+    reserved_estimated_cost: Decimal = Decimal("0")
     remaining_model_calls: int = Field(ge=0)
     remaining_nodes: int = Field(ge=0)
     remaining_wall_time_ms: int = Field(ge=0)
@@ -281,7 +282,7 @@ class AgentDispatchGroup(StrictContract):
 
     group_id: str = Field(min_length=1, max_length=128)
     agent_run_ids: list[str] = Field(min_length=1, max_length=8)
-    concurrency_limit: Literal[1] = 1
+    concurrency_limit: int = Field(ge=1, le=2)
 
 
 class BlockedAgentTask(StrictContract):

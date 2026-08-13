@@ -65,7 +65,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - 当前只有平台 API Key，没有最终用户登录和资源授权。公开部署前必须补齐认证；开发版只能由服务端持有密钥。
 - 当前 `/responses` SSE 可以传输模型生成状态，但没有跨刷新恢复游标。第一版刷新后以 Model Attempt 最终状态为准；阶段5 Agent Workflow 另有持久化事件序号和有限回放，两种 SSE 合同不能混用。
 - 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
-- 阶段5当前没有独立取消、恢复、等待用户输入、进程重启恢复、并行 Agent、费用预留或大型节点结果 Artifact 降级接口。前端不能提前显示这些动作，也不能把有限事件回放描述为持续订阅。
+- 阶段5后端当前提供显式取消、最多两个无依赖工作 Agent 并行和费用预留；前端尚未完成这些新能力的交互适配。恢复、等待用户输入、进程重启恢复和大型节点结果 Artifact 降级仍不存在，前端不能显示这些动作，也不能把有限事件回放描述为持续订阅。
 
 ## 后端阶段检查点驱动的前端交付设计
 
@@ -88,7 +88,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 | 阶段2：LLM 核心能力 | Provider、Responses、SSE、Context Preview、Prompt/Model Catalog、Evaluation | 模型选择、普通/流式生成、上下文与评估证据开发视图 | Composer、模型选择器、证据抽屉 | 终止事件、用量、错误、能力目录和证据字段稳定；Memory/Knowledge 不进入调用链 | 进行中 |
 | 阶段3：异步任务执行 | Outbox、RabbitMQ、Worker、幂等、有限重试、死信和恢复 | 排队任务状态、Worker 执行时间线、取消、重试和刷新恢复 | 任务时间线、运行详情、失败恢复操作 | Task 状态机、允许动作、公开事件和恢复 cursor 完成并通过故障窗口测试 | 未开始 |
 | 阶段4：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 工具提议、批准、执行结果、失败和 Artifact 展示 | Assistant 执行过程、批准对话框、工具详情 | 工具执行事实、风险等级、批准合同和脱敏结果稳定 | 未开始 |
-| 阶段5：Agent Runtime 与工作流 | 当前已实现 `model_only_v1` 串行模型工作流、完整节点合同和持久化事件；并行、工具、外部取消/恢复仍未实现 | 当前先交付 Agent 分工、节点结果、Handoff、验证、审核和预算只读证据；后续再增加动作与工具 | Run 下的 Agent 时间线和工作流详情 | 当前查询/事件合同可开始内部接入；取消/恢复、并行、工具和公开发布分别等待对应后端门禁 | 未开始 |
+| 阶段5：Agent Runtime 与工作流 | 后端已完成 `model_only_v1`、完整节点合同、持久事件、最多两个无依赖工作 Agent 并行、费用预留和显式取消；工具与恢复不属于当前配置 | 展示 Agent 分工、节点结果、Handoff、验证、审核和预算证据，并适配取消与并行组 | Run 下的 Agent 时间线和工作流详情 | 当前查询/事件合同已经接入；取消动作和并行组显示仍需前端验证，工具另等阶段4 | 进行中 |
 | 阶段6：代码搜索增强 | 文件索引、ripgrep、Tree-sitter 和可选语言服务器协议（LSP）证据 | 文件/行引用、定义与引用关系、索引新鲜度 | 代码证据抽屉、搜索结果视图 | workspace 归属、安全路径、稳定定位和有界结果合同通过 | 未开始 |
 | 阶段7：MCP Client | 连接、能力发现、工具、资源、认证、超时和权限 | MCP 连接管理、能力目录、资源选择和受控调用 | MCP 设置页、能力面板、调用详情 | 连接身份、权限、超时、撤销和审计合同稳定 | 未开始 |
 | 阶段8：可观测性 | API、模型、消息、Worker、工具和 Agent 的关联链路 | 关联标识、耗时分解、健康状态和内部诊断 | 运行诊断页、内部运维视图 | 公开/内部字段分层完成；追踪不含密钥和完整敏感内容 | 未开始 |
@@ -180,15 +180,15 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 
 ### 阶段5检查点：Agent Runtime 与工作流
 
-阶段5前端交付分成“当前已实现”和“后端补齐后启用”两个范围。当前代码已包含 `model_only_v1` 的串行模型工作流、完整节点结果、持久化事件及第一版前端消费；阶段5总体仍是进行中，尚未实现的动作和执行配置不得提前出现。
+阶段5后端已经完成 `model_only_v1`。当前前端已消费串行主路径、完整节点结果和持久化事件；本节剩余工作是适配显式取消、费用预留字段和最多两个工作 Agent 的执行组显示，不改变阶段5后端状态。
 
 #### 当前可实施能力
 
 - 在已有 `/runs/[runId]` 页面增加“Agent 工作流”页签，不创建独立的 Agent 管理页面。Run 与 Workflow 是一对一关系，先按 Run 发现 Workflow，再读取摘要、结果和节点。
 - 在对话 Composer 增加受内部功能门禁保护的“Agent 工作流”提交模式；普通 `/responses` 模式保持不变，不能静默改用 Agent Workflow。
 - 展示 Controller 规划、工作 Agent、Task、Agent Run、Agent Turn、Handoff、确定性验证、可选 Reviewer、最终汇总和完成节点；所有显示内容来自节点完整合同或事件公共投影。
-- 展示节点累计 token、估算费用、模型调用次数、节点数、剩余模型调用、剩余节点和剩余总时长。费用字段是后端已记录事实，但当前没有费用预留，界面不得写成“保证不会超出预算”。
-- 工作 Agent 当前按拓扑顺序串行执行；界面使用纵向时间线，不展示并行泳道。`max_parallel_agents` 固定显示为 `1`，不提供可编辑并发控件。
+- 展示节点累计 token、估算费用、模型调用次数、节点数、剩余模型调用、剩余节点、剩余总时长和当前保守费用预留。界面区分 `cost_used` 与 `reserved_estimated_cost`，不能把临时预留显示成已经消费。
+- 工作 Agent 按依赖分组执行，同组最多两个并行。纵向时间线继续按 `node_sequence` 保持稳定顺序；详情可以用 `dispatch_groups` 表示同组关系，不能根据事件到达时间猜测依赖。
 - `model_only_v1` 不展示 Implementer、Tool Call、文件修改、Shell、Git、网络调用、Memory 或 Knowledge；即使通用组件已有这些槽位，也保持隐藏。
 
 #### 当前接口与前端用途
@@ -202,8 +202,9 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 | `GET /api/v1/agent-workflows/{workflow_execution_id}/nodes` | 分页浏览节点 | cursor 与 Workflow 绑定；`limit` 默认 `50`、范围 `1`～`100` |
 | `GET /api/v1/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}` | 按事件引用读取单节点详情 | 必须同时校验 Node 属于路径中的 Workflow |
 | `GET /api/v1/agent-workflows/{workflow_execution_id}/events` | 按 `after_sequence` 或 `Last-Event-ID` 回放已提交事件 | 当前是有限回放，不持续等待新事件；非法游标明确失败 |
+| `POST /api/v1/agent-workflows/{workflow_execution_id}/cancel` | 显式停止后续节点 | 重复取消返回同一 `cancelled` 摘要；已进入供应商边界的调用会先完成事实收敛，不能写成网络请求一定被撤回 |
 
-当前没有可调用的 `/cancel` 和 `/resume`，也没有提交等待用户输入的接口。前端只能在初始 POST SSE 仍连接时提供“停止本次流式请求”；该动作取消传输并等待后端收敛状态，不能描述为独立、可跨刷新恢复的取消命令。
+当前没有 `/resume`，也没有提交等待用户输入的接口。前端“取消工作流”调用独立 `/cancel`，可以跨刷新读取取消终态；单纯关闭 POST SSE 仍只表示中断当前传输，不能替代显式取消。
 
 #### 创建请求设计
 
@@ -214,7 +215,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - 每次用户明确提交生成一个 `8`～`128` 字符的 `idempotency_key`，并在该提交恢复完成前持久保存在当前页面状态中。请求超时或断线后先发现原 Workflow；不能生成新 key 自动重试模型调用。
 - `role_bindings` 只允许 `controller`、`planner`、`researcher`、`reviewer`、`verifier`。必须包含 Controller 和至少一个 Planner/Researcher；`review_policy` 不是 `never` 时必须包含 Reviewer。Verifier 当前不会创建模型节点，应隐藏在默认表单，只在开发者合同测试中保留类型支持。
 - 每个角色绑定展示 Provider、Model、结构化输出模式、超时和最大输出 token。Provider/Model 只能来自阶段2已经验证的能力事实；不支持的结构化输出模式必须在提交前禁用并说明原因。
-- `review_policy` 支持 `always`、`on_verification_failure`、`never`。`max_nodes` 按审核策略最小为 `10` 或 `11`、最大 `32`；`max_model_calls` 最小为 `3` 或 `4`、最大 `16`；`wall_time_limit_ms` 范围为 `1,000`～`600,000`；`max_parallel_agents` 固定为 `1`。
+- `review_policy` 支持 `always`、`on_verification_failure`、`never`。`max_nodes` 按审核策略最小为 `10` 或 `11`、最大 `32`；`max_model_calls` 最小为 `3` 或 `4`、最大 `16`；`wall_time_limit_ms` 范围为 `1,000`～`600,000`；`max_parallel_agents` 范围为 `1`～`2`，默认 `1`。
 - 表单使用与后端相同的范围和角色依赖校验提供即时提示，但服务端 `422` 仍是权威结果；校验失败保留用户目标、角色绑定和高级设置。
 
 #### 状态、事件与恢复模型
@@ -239,7 +240,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 | `context_assembly` | 纳入的 Message/Artifact/Handoff 引用、排除原因、字符数和是否截断 |
 | `controller_plan` | 决策摘要、Task、依赖关系、角色、完成条件、风险和未知项 |
 | `plan_validation` | 校验结论、检查项、拓扑顺序、能力缺口、依赖环和拒绝原因 |
-| `agent_dispatch` | 已创建 Task、Agent Run、串行执行组、阻塞/跳过条目和角色模型绑定 |
+| `agent_dispatch` | 已创建 Task、Agent Run、依赖执行组、组并发上限、阻塞/跳过条目和角色模型绑定 |
 | `agent_model_execution` | Agent Turn、Model Attempt、Provider/Model、用量、时长、完成原因和结构化工作摘要 |
 | `agent_handoff` | Handoff 状态、事实、决定、剩余工作、风险、未知项和后续不变量；不把它称为内部 Working Memory |
 | `deterministic_verification` | 程序化 verdict、每项检查、阻塞/非阻塞发现和证据引用 |
@@ -254,10 +255,10 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - HTTP `422` 映射到创建表单字段或整体合同错误；`404` 在 Run 发现时表示“尚无 Workflow”，在已有 ID 查询时使用统一不可用状态；`409` 先重新发现该 Run 的 Workflow，不自动改 key 创建第二个 Workflow。
 - POST 返回 `200`/`201` 后仍读取响应或终态事件中的业务 `status`。`failed`、`cancelled` 和 `outcome_unknown` 不能因 HTTP 成功显示为完成。
 - `WorkflowErrorRead` 的 `public_message` 是用户可见错误，`error_code` 用于稳定映射，`details_reference_id` 只作为受控诊断引用。页面不得显示 Provider 原始响应或内部异常正文。
-- 当前稳定错误按用户动作分组：计划/合同类包括 `node_output_invalid`、`agent_capability_unavailable`、`agent_plan_invalid`、`agent_review_policy_mismatch`、`agent_dependency_cycle`；限制类包括 `agent_budget_exhausted`、`agent_node_limit_exceeded`、`agent_model_call_limit_exceeded`、`agent_workflow_timeout`；质量门禁类包括 `agent_verification_failed`、`agent_review_rejected`；终止/系统类包括 `agent_workflow_cancelled`、`agent_provider_outcome_unknown`、`agent_workflow_internal_error`。未知 Provider 错误代码使用通用安全文案，并继续服从 `is_retryable` 和 `outcome_is_known`，不能因前端未登记就改成可重试。
+- 当前稳定错误按用户动作分组：计划/合同类包括 `node_output_invalid`、`agent_capability_unavailable`、`agent_plan_invalid`、`agent_review_policy_mismatch`、`agent_dependency_cycle`；限制类包括 `agent_budget_exhausted`、`agent_budget_price_unavailable`、`agent_node_limit_exceeded`、`agent_model_call_limit_exceeded`、`agent_workflow_timeout`；质量门禁类包括 `agent_verification_failed`、`agent_review_rejected`；终止/系统类包括 `agent_workflow_cancelled`、`agent_provider_outcome_unknown`、`agent_workflow_internal_error`。未知 Provider 错误代码使用通用安全文案，并继续服从 `is_retryable` 和 `outcome_is_known`，不能因前端未登记就改成可重试。
 - `outcome_unknown` 表示 Provider 结果是否发生无法确认。当前相应错误会强制 `is_retryable=false`；前端只提供“重新读取证据”，不提供一键重新运行。
 - `agent_budget_exhausted`、节点/模型调用上限、验证失败和审核拒绝分别显示其事实原因。当前 Reviewer 拒绝不会进入返工轮次，不能展示“正在修改”。
-- 不提供取消、恢复、批准、用户输入、返工、重排 Task、提高上限或绕过能力拒绝的动作。相应接口实现并通过状态竞争测试后再增加按钮。
+- 当前只允许显式取消；取消按钮在 Workflow 为 `running` 时出现，重复提交按幂等结果处理。恢复、批准、用户输入、返工、重排 Task、提高上限或绕过能力拒绝仍不提供。
 
 #### BFF 与授权边界
 
@@ -271,30 +272,28 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 | 工作项 | 具体任务 | 预期结果 | 验证方式 |
 |---|---|---|---|
 | 合同类型 | 从 OpenAPI 生成或手写严格类型，覆盖 Create、Summary、Result、Node、Event 和 cursor page；对 `output_type` 做穷尽映射 | 编译期能发现字段、状态和节点输出版本变化 | 合同样本测试、TypeScript 穷尽检查、OpenAPI 差异检查 |
-| BFF 代理 | 增加七个精确路由的方法/路径允许列表、Run 归属链校验、SSE 转发和大小限制 | 浏览器可安全访问接口且不能跨开发用户读取 Workflow | 允许/拒绝/缺少归属/跨用户/超限/流式代理测试 |
+| BFF 代理 | 增加八个精确路由的方法/路径允许列表、Run 归属链校验、SSE 转发和大小限制 | 浏览器可安全访问查询与取消接口，且不能跨开发用户操作 Workflow | 允许/拒绝/缺少归属/跨用户/超限/流式代理测试 |
 | 提交模式 | 增加显式 Agent 模式、Run `user_request` 关联、角色模型绑定、审核策略、限制设置和 Workflow 幂等 key；禁止重复保存最终 Assistant Message | 普通响应与 Agent Workflow 不混用；已知 Run 下的 Workflow 超时不重复计费 | Run 目标一致性、Message/Run 部分失败、最终消息单次保存、表单边界、幂等回放、`200`/`201`、`409` 恢复测试 |
 | 事件存储 | 实现 sequence 去重、缺口检测、有限回放、终态 Result 收敛和版本保护 | SSE、刷新与断线都回到同一后端事实 | 重复、乱序、缺页、非法游标、断流、终态缺失测试 |
 | Workflow 摘要 | 在 Run 详情展示阶段、活动节点、计数、耗时、聚合用量和终态错误 | 用户先看到当前事实，再按需展开节点 | 空、运行中、完成、失败、取消、未知结果组件测试 |
 | 节点时间线 | 用统一信封和 11 个 `output_type` 渲染器展示完整节点结果 | Agent 分工、Handoff、验证和审核可复核，不展示隐藏推理 | 每种输出、未知版本、长内容、警告/错误、移动端测试 |
+| 并行与取消 | 显示 `dispatch_groups`、`reserved_estimated_cost`，并代理显式取消动作 | 同组并行关系和在途预算可解释；刷新后仍能读取取消终态 | 两个并行 Agent、重复取消、供应商调用在途取消和刷新测试 |
 | 浏览器验收 | 使用真实 API 跑通新建 Run 下的 JSON 与 SSE Workflow、刷新恢复和失败状态 | 内部开发版可独立验证阶段5核心接口 | Playwright 关键流程、网络响应敏感字段扫描、性能检查 |
 
-#### 后端补齐后再启用
+#### 后续后端阶段完成后再启用
 
-- 外部取消、恢复和等待用户输入：等待幂等或状态条件接口、允许动作和刷新确认合同。
+- 恢复和等待用户输入：等待版本化工作流真正产生等待状态、幂等输入接口、允许动作和刷新确认合同。
 - 进程重启恢复：等待启动审计与遗留 `running` 状态收敛；此前不宣称崩溃可恢复。
-- 并行只读 Agent：等待每个并行节点独立数据库会话、有界并发和并发预算保护；届时再从纵向时间线升级为并列泳道。
 - Tool/Implementer/写隔离：等待阶段4恢复及新的 `tool_enabled_v1`，并复用同一节点信封增加工具输出，不能改变 `model_only_v1` 含义。
-- 严格费用边界：等待原子费用预留；此前只显示已发生的估算费用和调用前预算检查。
-- 大型节点结果：等待 Artifact 降级、hash、MIME、受控预览和内容读取合同。
-- 持续事件订阅：等待 GET `/events` 具备长连接或明确轮询协议；此前使用 POST 实时流加有限回放。
+- 大型节点结果继续服从 64 KiB 公共合同上限；只有后续独立节点类型明确采用 Artifact 输出时，前端才增加 hash、MIME、受控预览和内容读取。
 
 #### 当前前端通过条件
 
-- 七个当前接口的请求、响应、状态码、cursor、SSE ID/事件名和完整节点合同与阶段5 OpenAPI 一致。
-- 单 Workflow 串行路径、Handoff、确定性验证、Reviewer 三种策略、预算耗尽、上限终止、验证失败、审核拒绝、取消传播和未知结果都能准确显示。
+- 八个当前接口的请求、响应、状态码、cursor、SSE ID/事件名和完整节点合同与阶段5 OpenAPI 一致。
+- 单 Workflow 依赖分组路径、最多两个并行工作 Agent、Handoff、确定性验证、Reviewer 三种策略、预算预留/耗尽、上限终止、验证失败、审核拒绝、显式取消和未知结果都能准确显示。
 - 事件重复、乱序、缺页、断线和刷新不会重复节点、丢失终态或自动发起第二次模型调用。
 - BFF 的固定开发用户归属、Workflow/Node 父子关系、路径/方法允许列表、请求大小和敏感字段测试通过。
-- 时间线不展示隐藏推理、内部 Prompt、Memory、Knowledge、工具执行或尚未实现的并行/恢复动作。
+- 时间线不展示隐藏推理、内部 Prompt、Memory、Knowledge、工具执行或尚未实现的恢复动作。
 - 真实浏览器完成 JSON 与 SSE 两条关键流程，并验证窄屏、长节点结果、键盘操作和长时间运行页面性能。
 
 ### 阶段6检查点：代码搜索与可复核引用
@@ -513,7 +512,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 
 ## Agent 与工具流转的分阶段显示
 
-`model_only_v1` 接入后，每条由 Agent Workflow 产生的 Assistant 响应下方增加可折叠的“执行过程”。默认展示 Workflow 的 `current_stage` 和活动节点，展开后按 `node_sequence` 展示经过脱敏的串行时间线：
+`model_only_v1` 接入后，每条由 Agent Workflow 产生的 Assistant 响应下方增加可折叠的“执行过程”。默认展示 Workflow 的 `current_stage` 和全部活动节点，展开后按 `node_sequence` 展示经过脱敏的稳定时间线；同一 `dispatch_group` 使用组标识表达并行关系：
 
 ```text
 Controller：已形成任务计划
@@ -615,10 +614,10 @@ apps/web/
 - 流式安全行为：按 sequence 去重；停止生成会中止浏览器请求并保留运行详情入口；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message 和 Run 归属；请求体在流式读取中受大小上限约束。
 - 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、键盘发送、移动端覆盖层和 reduced motion。
-- Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、七个接口客户端、POST SSE 与有限事件回放、事件缺口检测、完整节点类型、11 类节点证据时间线和 Result 恢复；DeepSeek 根据已注册能力使用 prompted JSON。
-- Agent 代理边界：BFF 精确开放当前七个路径，以 Run 校验 Workflow 和 Node 的固定开发用户归属；嵌套 Workflow POST 不再被 Run 创建规则误判。
+- Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、七个查询/创建接口客户端、POST SSE 与有限事件回放、事件缺口检测、完整节点类型、11 类节点证据时间线和 Result 恢复；DeepSeek 根据已注册能力使用 prompted JSON。取消和并行组的前端适配仍在进行中。
+- Agent 代理边界：BFF 当前开放七个查询/创建路径，以 Run 校验 Workflow 和 Node 的固定开发用户归属；仍需加入第八个取消动作路径及相同归属校验。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task 完整状态编排、Artifact 详情页、Markdown/代码块渲染测试、Context/Prompt/Evaluation 开发视图、真实 Agent Provider 端到端验收，以及外部取消/恢复、并行和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task 完整状态编排、Artifact 详情页、Markdown/代码块渲染测试、Context/Prompt/Evaluation 开发视图、真实 Agent Provider 端到端验收，以及显式取消交互、并行组展示、恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 
@@ -631,7 +630,7 @@ apps/web/
 - 恢复测试：刷新页面、SSE 中断、保存失败和重复提交不会重复产生计费调用。
 - 阶段3测试：重复/乱序任务事件、有限重试、死信、Worker 崩溃、取消竞争和刷新恢复。
 - 阶段4测试：工具提议与执行区分、允许/拒绝、批准过期、重复批准、工具超时、部分 Artifact 和敏感输出脱敏。
-- 阶段5当前测试：七个接口合同、代理允许列表与跨用户拒绝、SSE 解析、事件顺序/重复/缺口/有限回放、DeepSeek 结构化输出模式和生产构建已覆盖；真实 Provider 下的 JSON/SSE 创建、相同幂等回放、Run 冲突、11 类节点数据、审核策略、预算耗尽、验证失败、断流取消、未知结果和刷新恢复仍需端到端验证。并行、写隔离、等待用户输入、外部取消/恢复和崩溃恢复在相应后端能力实现后再加入。
+- 阶段5当前测试：七个既有接口合同、代理允许列表与跨用户拒绝、SSE 解析、事件顺序/重复/缺口/有限回放、DeepSeek 结构化输出模式和生产构建已覆盖；仍需为第八个取消接口、并行组与费用预留字段增加前端合同和浏览器测试。真实 Provider 下的 JSON/SSE 创建、幂等回放、Run 冲突、11 类节点数据、审核策略、预算、失败/未知结果和刷新恢复继续作为端到端验证。
 - 阶段6测试：workspace 越权、路径穿越、长行、二进制文件、索引过期和部分搜索结果。
 - 阶段7测试：MCP 连接失败、认证过期、能力变化、调用超时、撤销和资源大小限制。
 - 阶段8测试：无追踪、采样、部分/乱序 span、遥测延迟和敏感属性过滤。
@@ -645,7 +644,7 @@ apps/web/
 | 阶段2 | Provider/Model、普通响应、SSE、Context/Prompt/Evaluation 开发证据 | 阶段2已完成的 LLM 核心 API | 真实 API 端到端、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
 | 阶段3 | 异步 Task 状态、Worker 时间线、有限重试、死信、取消与恢复 | 阶段3完成并提供公开状态/事件合同 | 故障窗口、乱序、重复事件和刷新恢复测试通过 | 未开始 |
 | 阶段4 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段4完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |
-| 阶段5 | 当前先接入 `model_only_v1` 创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核与预算只读证据；动作、并行和工具后置 | 当前七个接口和完整节点合同；BFF 归属保护已同步实现；工具视图另等阶段4门禁 | 合同、代理、事件恢复、完整节点 UI 和响应式已实现；真实 Provider 下的 JSON/SSE、幂等、失败/未知结果和刷新恢复端到端测试通过后完成 | 进行中 |
+| 阶段5 | 已接入 `model_only_v1` 创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证和审核；继续适配取消、并行组和费用预留 | 后端八个接口和完整节点合同；既有 BFF 归属保护，工具视图另等阶段4 | 取消代理与交互、并行组、预算字段、真实 Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
 | 阶段6 | 代码搜索、文件/行引用、定义引用和索引状态 | 阶段6完成并提供安全定位合同 | 路径、workspace、大小、索引和引用准确性测试通过 | 未开始 |
 | 阶段7 | MCP 连接、能力目录、认证状态、资源和调用证据 | 阶段7完成且调用经过阶段4权限层 | 连接、认证、撤销、超时、能力变化和资源限制测试通过 | 未开始 |
 | 阶段8 | 关联标识、耗时分解和内部诊断页 | 阶段8完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |

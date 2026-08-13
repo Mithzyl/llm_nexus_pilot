@@ -150,6 +150,19 @@ async def get_agent_workflow(
     return await get_workflow_summary(db_session, workflow_execution_id)
 
 
+@router.post(
+    "/agent-workflows/{workflow_execution_id}/cancel",
+    response_model=AgentWorkflowSummaryRead,
+)
+async def cancel_agent_workflow(
+    workflow_execution_id: str,
+    service: AgentWorkflowExecutionServiceDependency,
+) -> AgentWorkflowSummaryRead:
+    """Stop future nodes and durably cancel the workflow's active execution facts."""
+
+    return await service.cancel_workflow_execution(workflow_execution_id)
+
+
 @router.get(
     "/agent-workflows/{workflow_execution_id}/result",
     response_model=AgentWorkflowResultRead,

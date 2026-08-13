@@ -196,8 +196,9 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
             {
                 "/runs/{run_id}/agent-workflows",
                 "/runs/{run_id}/agent-workflow",
-                "/agent-workflows/{workflow_execution_id}",
-                "/agent-workflows/{workflow_execution_id}/result",
+                    "/agent-workflows/{workflow_execution_id}",
+                    "/agent-workflows/{workflow_execution_id}/cancel",
+                    "/agent-workflows/{workflow_execution_id}/result",
                 "/agent-workflows/{workflow_execution_id}/nodes",
                 "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}",
                 "/agent-workflows/{workflow_execution_id}/events",

@@ -193,9 +193,7 @@ async def test_compatible_provider_rejects_undeclared_json_schema_support() -> N
         update={"output_schema": {"type": "object"}}
     )
 
-    with pytest.raises(
-        ModelProviderError, match="does not declare JSON Schema"
-    ) as caught:
+    with pytest.raises(ModelProviderError, match="does not declare JSON Schema") as caught:
         await provider.generate(request)
     await client.aclose()
 
@@ -715,3 +713,26 @@ def test_price_catalog_uses_cached_input_rate() -> None:
     )
 
     assert cost == Decimal("36.000000")
+
+
+def test_price_catalog_maximum_estimate_uses_the_more_expensive_input_rate() -> None:
+    """Verify budget reservations remain conservative when cached input costs more."""
+
+    catalog = PriceCatalog(
+        {
+            (ProviderName.OPENAI, "priced-model"): ModelPrice(
+                input_per_million=Decimal("1"),
+                output_per_million=Decimal("3"),
+                cached_input_per_million=Decimal("2"),
+            )
+        }
+    )
+
+    cost = catalog.estimate_maximum(
+        ProviderName.OPENAI,
+        "priced-model",
+        input_tokens_upper_bound=2,
+        output_tokens_upper_bound=1,
+    )
+
+    assert cost == Decimal("0.000007")

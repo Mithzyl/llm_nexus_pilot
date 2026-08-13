@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -11,18 +12,26 @@ from nexuspilot_models.contracts import (
     ProviderName,
     TransportAttempt,
 )
+from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_api import create_test_run
 
 from nexuspilot_api.core.dependencies import get_price_catalog, get_provider_registry
+from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowCreate,
     AgentWorkflowNodeResultRead,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry import (
+    DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_execution_service import (
     AgentWorkflowExecutionService,
+)
+from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_service import (
+    WorkflowExecutionStateService,
 )
 from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
@@ -60,6 +69,7 @@ class ScriptedAgentProvider:
         *,
         forbidden_plan: bool = False,
         multi_task_plan: bool = False,
+        independent_multi_task_plan: bool = False,
         invalid_worker_output: bool = False,
         reviewer_verdict: str = "pass",
         reviewer_requires_retry: bool = False,
@@ -72,6 +82,7 @@ class ScriptedAgentProvider:
 
         self.forbidden_plan = forbidden_plan
         self.multi_task_plan = multi_task_plan
+        self.independent_multi_task_plan = independent_multi_task_plan
         self.invalid_worker_output = invalid_worker_output
         self.reviewer_verdict = reviewer_verdict
         self.reviewer_requires_retry = reviewer_requires_retry
@@ -112,9 +123,24 @@ class ScriptedAgentProvider:
         if node_key == "controller_planning":
             requested_review_policy = json.loads(request.messages[-1].content)["review_policy"]
             plan_review_policy = self.plan_review_policy or requested_review_policy
-            if self.multi_task_plan:
+            if self.multi_task_plan or self.independent_multi_task_plan:
+                dependencies = (
+                    []
+                    if self.independent_multi_task_plan
+                    else [
+                        {
+                            "task_key": "plan-1",
+                            "depends_on_task_key": "research-1",
+                            "dependency_type": "completion",
+                        }
+                    ]
+                )
                 return {
-                    "decision_summary": "Research first, then plan from that handoff.",
+                    "decision_summary": (
+                        "Run two independent analyses."
+                        if self.independent_multi_task_plan
+                        else "Research first, then plan from that handoff."
+                    ),
                     # Deliberately return the dependent Task first. The runtime
                     # must not use model-authored list order as dependency order.
                     "tasks": [
@@ -145,13 +171,7 @@ class ScriptedAgentProvider:
                             "max_model_calls": 1,
                         },
                     ],
-                    "dependencies": [
-                        {
-                            "task_key": "plan-1",
-                            "depends_on_task_key": "research-1",
-                            "dependency_type": "completion",
-                        }
-                    ],
+                    "dependencies": dependencies,
                     "review_policy": plan_review_policy,
                     "known_risks": [],
                     "unknowns": [],
@@ -269,6 +289,47 @@ class BlockingWorkerProvider(ScriptedAgentProvider):
         return await super().generate(request)
 
 
+class ConcurrentWorkerProvider(ScriptedAgentProvider):
+    """Require two independent Worker calls to overlap before either can finish."""
+
+    def __init__(self) -> None:
+        """Prepare an independent two-task plan and a shared concurrency signal."""
+
+        super().__init__(independent_multi_task_plan=True)
+        self.started_worker_node_keys: list[str] = []
+        self.all_workers_started = asyncio.Event()
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Wait for both Worker calls, proving the runtime did not serialize them."""
+
+        node_execution_key = request.metadata["agent_node_execution_key"]
+        if node_execution_key.startswith("worker_execution."):
+            self.started_worker_node_keys.append(node_execution_key)
+            if len(self.started_worker_node_keys) == 2:
+                self.all_workers_started.set()
+            await asyncio.wait_for(self.all_workers_started.wait(), timeout=2)
+        return await super().generate(request)
+
+
+class ReleasableWorkerProvider(ScriptedAgentProvider):
+    """Hold one Worker call while another request cancels its workflow."""
+
+    def __init__(self) -> None:
+        """Create start and release signals for an externally cancelled Provider call."""
+
+        super().__init__()
+        self.worker_request_started = asyncio.Event()
+        self.release_worker_request = asyncio.Event()
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Return the Worker result only after the cancellation endpoint is exercised."""
+
+        if request.metadata["agent_node_execution_key"].startswith("worker_execution."):
+            self.worker_request_started.set()
+            await self.release_worker_request.wait()
+        return await super().generate(request)
+
+
 class CommittedNodeCheckingProvider(ScriptedAgentProvider):
     """Verify every billable model request starts after its node fact is committed."""
 
@@ -345,7 +406,7 @@ async def test_provider_is_called_only_after_node_started_fact_is_committed(
         json=workflow_payload(idempotency_key="agent-provider-after-commit-0001"),
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     assert len(provider.committed_node_execution_ids) == 4
 
 
@@ -408,6 +469,7 @@ async def test_model_only_workflow_returns_and_persists_complete_nodes(
     assert result["execution_profile"] == "model_only_v1"
     assert result["active_node_execution_ids"] == []
     assert result["final_output"]["final_text"].startswith("The model-only")
+    assert all(Decimal(node["budget"]["reserved_estimated_cost"]) == 0 for node in result["nodes"])
     assert [node["node_key"] for node in result["nodes"]] == [
         "request_intake",
         "context_assembly",
@@ -1162,6 +1224,16 @@ async def test_workflow_openapi_declares_json_and_sse_response_contracts(
     assert dispatch_properties["created_agent_runs"]["items"]["$ref"] == (
         "#/components/schemas/DispatchedAgentRun"
     )
+    cancel_operation = openapi["paths"]["/api/v1/agent-workflows/{workflow_execution_id}/cancel"][
+        "post"
+    ]
+    assert cancel_operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AgentWorkflowSummaryRead"
+    }
+    workflow_create_properties = openapi["components"]["schemas"]["AgentWorkflowCreate"][
+        "properties"
+    ]
+    assert workflow_create_properties["max_parallel_agents"]["maximum"] == 2
 
 
 async def test_node_result_rejects_unregistered_output_schema_version(
@@ -1240,3 +1312,225 @@ async def test_handoff_rejects_task_different_from_agent_run(
     )
 
     assert response.status_code == 409
+
+
+async def test_independent_workers_run_concurrently_with_separate_execution_sessions(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify two dependency-free Worker calls overlap when concurrency is set to two."""
+
+    run = await create_test_run(client)
+    provider = ConcurrentWorkerProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(
+            idempotency_key="agent-parallel-workers-0001",
+            max_parallel_agents=2,
+        ),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "completed", result
+    assert sorted(provider.started_worker_node_keys) == [
+        "worker_execution.plan-1",
+        "worker_execution.research-1",
+    ]
+    dispatch_node = next(node for node in result["nodes"] if node["node_key"] == "agent_dispatch")
+    assert dispatch_node["output"]["dispatch_groups"][0]["concurrency_limit"] == 2
+    assert len(dispatch_node["output"]["dispatch_groups"][0]["agent_run_ids"]) == 2
+
+
+async def test_model_cost_reservations_prevent_concurrent_budget_oversubscription(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify only one of two reservations can consume the same remaining Run budget."""
+
+    run = await create_test_run(client)
+    async with test_database_session_factory() as setup_session:
+        service = AgentWorkflowExecutionService(
+            registry=scripted_registry(ScriptedAgentProvider()),
+            prices=app.dependency_overrides[get_price_catalog](),
+            db_session=setup_session,
+            db_session_factory=test_database_session_factory,
+            storage=app.dependency_overrides[get_object_storage](),
+        )
+        workflow, replayed = await service.prepare_workflow(
+            run["run_id"],
+            AgentWorkflowCreate.model_validate(
+                workflow_payload(idempotency_key="agent-concurrent-cost-reservation-0001")
+            ),
+        )
+        workflow_execution_id = workflow.workflow_execution_id
+    assert replayed is False
+
+    async def reserve_three_dollars() -> Exception | None:
+        """Attempt one independent durable reservation and expose expected rejection."""
+
+        async with test_database_session_factory() as reservation_session:
+            durable_workflow = await reservation_session.get(
+                LlmAgentWorkflowExecution,
+                workflow_execution_id,
+            )
+            assert durable_workflow is not None
+            state_service = WorkflowExecutionStateService(
+                db_session=reservation_session,
+                workflow_definitions=DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
+            )
+            try:
+                await state_service.reserve_model_call(
+                    durable_workflow,
+                    reserved_estimated_cost=Decimal("3.000000"),
+                )
+            except InvalidRequestError as error:
+                return error
+            return None
+
+    reservation_results = await asyncio.gather(
+        reserve_three_dollars(),
+        reserve_three_dollars(),
+    )
+    assert sum(result is None for result in reservation_results) == 1
+    rejected_reservation = next(result for result in reservation_results if result is not None)
+    assert isinstance(rejected_reservation, InvalidRequestError)
+    assert "budget" in str(rejected_reservation).lower()
+
+    async with test_database_session_factory() as verification_session:
+        durable_workflow = await verification_session.get(
+            LlmAgentWorkflowExecution,
+            workflow_execution_id,
+        )
+        durable_run = await verification_session.get(LlmRun, run["run_id"])
+        assert durable_workflow is not None
+        assert durable_run is not None
+        assert durable_workflow.model_call_count == 1
+        assert durable_workflow.reserved_estimated_cost == Decimal("3.000000")
+        assert durable_run.cost_used == Decimal("0.000000")
+        state_service = WorkflowExecutionStateService(
+            db_session=verification_session,
+            workflow_definitions=DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
+        )
+        await state_service.release_model_cost_reservation(
+            durable_workflow,
+            reserved_estimated_cost=Decimal("3.000000"),
+        )
+        await verification_session.refresh(durable_workflow)
+        assert durable_workflow.reserved_estimated_cost == Decimal("0.000000")
+
+
+async def test_budgeted_workflow_rejects_unknown_model_price_before_provider(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a Run budget is enforceable only when its selected model has explicit prices."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    app.dependency_overrides[get_price_catalog] = lambda: PriceCatalog()
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-unknown-price-budget-0001"),
+    )
+
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_budget_price_unavailable"
+    assert provider.requests == []
+
+
+async def test_external_cancel_stops_workflow_before_another_node_starts(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify the cancel action is durable while an already-dispatched Provider call finishes."""
+
+    run = await create_test_run(client)
+    provider = ReleasableWorkerProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    execution_request = asyncio.create_task(
+        client.post(
+            f"/api/v1/runs/{run['run_id']}/agent-workflows",
+            json=workflow_payload(idempotency_key="agent-external-cancel-0001"),
+        )
+    )
+    await asyncio.wait_for(provider.worker_request_started.wait(), timeout=2)
+    workflow_summary = (await client.get(f"/api/v1/runs/{run['run_id']}/agent-workflow")).json()
+
+    cancellation_response = await client.post(
+        f"/api/v1/agent-workflows/{workflow_summary['workflow_execution_id']}/cancel"
+    )
+    provider.release_worker_request.set()
+    execution_response = await asyncio.wait_for(execution_request, timeout=2)
+    repeated_cancellation_response = await client.post(
+        f"/api/v1/agent-workflows/{workflow_summary['workflow_execution_id']}/cancel"
+    )
+
+    assert cancellation_response.status_code == 200
+    assert cancellation_response.json()["status"] == "cancelled"
+    assert execution_response.status_code == 201
+    assert execution_response.json()["status"] == "cancelled"
+    assert repeated_cancellation_response.status_code == 200
+    assert repeated_cancellation_response.json()["status"] == "cancelled"
+    assert not any(
+        request.metadata["agent_node_key"] in {"independent_review", "final_synthesis"}
+        for request in provider.requests
+    )
+
+
+async def test_completion_node_and_workflow_terminal_events_share_one_commit(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify observers never see a completed aggregation node on a running workflow."""
+
+    run = await create_test_run(client)
+    observed_atomic_completion = False
+
+    async def verify_terminal_commit(event) -> None:
+        """Check both terminal facts when the completion-node event becomes visible."""
+
+        nonlocal observed_atomic_completion
+        if not (
+            event.event_type == "agent.node.completed"
+            and event.public_payload.get("node_key") == "workflow_completion"
+        ):
+            return
+        async with test_database_session_factory() as observer_session:
+            workflow = await observer_session.get(
+                LlmAgentWorkflowExecution,
+                event.workflow_execution_id,
+            )
+            terminal_event = await observer_session.scalar(
+                select(LlmAgentWorkflowEvent).where(
+                    LlmAgentWorkflowEvent.workflow_execution_id == event.workflow_execution_id,
+                    LlmAgentWorkflowEvent.event_type == "agent.workflow.completed",
+                )
+            )
+        assert workflow is not None
+        assert workflow.status == AgentWorkflowStatus.COMPLETED
+        assert terminal_event is not None
+        observed_atomic_completion = True
+
+    async with test_database_session_factory() as execution_session:
+        service = AgentWorkflowExecutionService(
+            registry=scripted_registry(ScriptedAgentProvider()),
+            prices=app.dependency_overrides[get_price_catalog](),
+            db_session=execution_session,
+            db_session_factory=test_database_session_factory,
+            storage=app.dependency_overrides[get_object_storage](),
+        )
+        result, replayed = await service.create_and_execute(
+            run["run_id"],
+            AgentWorkflowCreate.model_validate(
+                workflow_payload(idempotency_key="agent-atomic-completion-0001")
+            ),
+            event_sink=verify_terminal_commit,
+        )
+
+    assert replayed is False
+    assert result.status == AgentWorkflowStatus.COMPLETED
+    assert observed_atomic_completion is True

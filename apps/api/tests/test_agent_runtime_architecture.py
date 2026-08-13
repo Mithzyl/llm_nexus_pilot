@@ -30,3 +30,38 @@ def test_agent_model_node_service_uses_state_port_without_importing_execution_se
     assert "AgentModelNodeStatePort" in model_node_service_source
     assert "workflow_execution_service" not in model_node_service_source
     assert "FastAPI" not in model_node_service_source
+
+
+def test_terminal_workflow_state_is_owned_by_state_service() -> None:
+    """Keep failed and cancelled child-state cleanup out of the node-order service."""
+
+    execution_service_source = (
+        AGENT_RUNTIME_FEATURE_ROOT / "services" / "workflow_execution_service.py"
+    ).read_text()
+    state_service_source = (
+        AGENT_RUNTIME_FEATURE_ROOT / "services" / "workflow_execution_state_service.py"
+    ).read_text()
+
+    assert "async def complete_workflow" in state_service_source
+    assert "async def fail_workflow" in state_service_source
+    assert "async def cancel_workflow" in state_service_source
+    assert "async def _finalize_active_nodes" not in execution_service_source
+    assert "async def _finalize_child_execution_facts" not in execution_service_source
+
+
+def test_node_order_and_review_branch_are_owned_by_model_only_orchestrator() -> None:
+    """Keep request/session handling separate from model-only node order and branches."""
+
+    execution_service_source = (
+        AGENT_RUNTIME_FEATURE_ROOT / "services" / "workflow_execution_service.py"
+    ).read_text()
+    orchestrator_source = (
+        AGENT_RUNTIME_FEATURE_ROOT / "services" / "model_only_workflow_orchestrator.py"
+    ).read_text()
+
+    assert "async def _execute" not in execution_service_source
+    assert "ControllerPlanOutput" not in execution_service_source
+    assert "async def execute" in orchestrator_source
+    assert 'node_key="controller_planning"' in orchestrator_source
+    assert 'node_key="independent_review"' in orchestrator_source
+    assert "FastAPI" not in orchestrator_source
