@@ -5,6 +5,11 @@ import type {
   AgentWorkflowStatus,
   AgentWorkflowSummary,
 } from "../../lib/types";
+import {
+  agentDispatchGroupSummary,
+  agentNodeBudgetSummary,
+  isAgentWorkflowCancellable,
+} from "../../lib/agent-workflow-view";
 
 const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   request_intake: "请求归一化",
@@ -76,7 +81,7 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
       return [
         ["Task", `${node.output.created_tasks.length} 个`],
         ["Agent Run", `${node.output.created_agent_runs.length} 个`],
-        ["并发上限", String(node.output.dispatch_groups[0]?.concurrency_limit ?? 1)],
+        ["执行组", agentDispatchGroupSummary(node.output.dispatch_groups)],
         ["角色模型", node.output.role_model_bindings.map((item) => `${item.agent_role} · ${item.model}`).join("；")],
       ];
     case "agent_model_execution":
@@ -130,11 +135,15 @@ export function AgentWorkflowPanel({
   events,
   nodes: liveNodes,
   hasEventGap,
+  isCancelling = false,
+  onCancel,
 }: {
   workflow: AgentWorkflowSummary | AgentWorkflowResult;
   events: AgentWorkflowEvent[];
   nodes: AgentWorkflowNodeResult[];
   hasEventGap: boolean;
+  isCancelling?: boolean;
+  onCancel?: () => void;
 }) {
   const nodes = "nodes" in workflow ? workflow.nodes : liveNodes;
   const workflowResult = "nodes" in workflow ? workflow : null;
@@ -155,6 +164,15 @@ export function AgentWorkflowPanel({
         <div><dt>活动节点</dt><dd>{workflow.active_node_execution_ids.length}</dd></div>
         <div><dt>快照</dt><dd>v{workflow.snapshot_version}</dd></div>
       </dl>
+
+      {onCancel && isAgentWorkflowCancellable(workflow.status) && (
+        <div className="agent-cancel-action">
+          <p>取消只停止后续节点；已经开始的模型调用仍会完成事实收敛。</p>
+          <button type="button" disabled={isCancelling} onClick={onCancel}>
+            {isCancelling ? "正在取消…" : "取消工作流"}
+          </button>
+        </div>
+      )}
 
       {hasEventGap && (
         <p className="agent-evidence-warning" role="status">
@@ -190,6 +208,9 @@ export function AgentWorkflowPanel({
                 <div className="agent-node-details">
                   <dl>
                     {nodeOutputFacts(node).map(([label, value]) => (
+                      <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+                    ))}
+                    {agentNodeBudgetSummary(node.budget).map(([label, value]) => (
                       <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
                     ))}
                   </dl>

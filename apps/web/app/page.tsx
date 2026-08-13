@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  cancelAgentWorkflow,
   createMessage,
   createRun,
   createSession,
@@ -41,6 +42,7 @@ import {
   readAgentWorkflowEventStream,
   type AgentWorkflowEventState,
 } from "../lib/agent-workflow";
+import { isAgentWorkflowCancellable } from "../lib/agent-workflow-view";
 import { hasSavedAssistantForLatestTurn } from "../lib/history";
 import {
   AgentWorkflowPanel,
@@ -66,6 +68,7 @@ const EMPTY_AGENT_EVENT_STATE: AgentWorkflowEventState = {
 
 type ExecutionMode = "response" | "agent";
 type ReviewPolicy = "always" | "on_verification_failure" | "never";
+type AgentParallelism = 1 | 2;
 
 type LocalMessage = MessageSummary & {
   local_id: string;
@@ -161,6 +164,7 @@ export default function Home() {
   );
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
+  const [maxParallelAgents, setMaxParallelAgents] = useState<AgentParallelism>(1);
   const [draft, setDraft] = useState("");
   const [run, setRun] = useState<Run | RunDetail | null>(null);
   const [agentWorkflow, setAgentWorkflow] = useState<
@@ -179,6 +183,7 @@ export default function Home() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isCancellingWorkflow, setIsCancellingWorkflow] = useState(false);
   const [responseCompleted, setResponseCompleted] = useState(false);
   const [assistantSaved, setAssistantSaved] = useState(false);
   const [assistantSaveFailed, setAssistantSaveFailed] = useState(false);
@@ -384,7 +389,7 @@ export default function Home() {
         review_policy: reviewPolicy,
         max_nodes: 32,
         max_model_calls: 16,
-        max_parallel_agents: 1,
+        max_parallel_agents: maxParallelAgents,
         wall_time_limit_ms: 600_000,
         stream: true,
       },
@@ -535,10 +540,57 @@ export default function Home() {
     window.setTimeout(() => setCopiedMessageId(null), 1400);
   }
 
-  /**
-   * Abort the active browser stream and leave the run available for server-side inspection.
-   */
+  /** Durably cancel future Agent nodes while keeping any active Provider call auditable. */
+  async function handleCancelAgentWorkflow() {
+    if (!run || isCancellingWorkflow) return;
+    const workflowRunId = run.run_id;
+    setIsCancellingWorkflow(true);
+    setErrorMessage(null);
+    try {
+      const currentWorkflow = agentWorkflow ?? await getRunAgentWorkflow(workflowRunId);
+      setAgentWorkflow((current) =>
+        current?.run_id && current.run_id !== workflowRunId ? current : currentWorkflow,
+      );
+      if (!isAgentWorkflowCancellable(currentWorkflow.status)) return;
+
+      const cancelledWorkflow = await cancelAgentWorkflow(
+        currentWorkflow.workflow_execution_id,
+      );
+      setAgentWorkflow((current) =>
+        current?.run_id && current.run_id !== workflowRunId ? current : cancelledWorkflow,
+      );
+      setMessages((current) =>
+        current.map((message) =>
+          message.run_id === workflowRunId && message.agentWorkflow && message.pending
+            ? {
+                ...message,
+                content: message.content || "工作流已取消，未生成最终回答。",
+                content_preview: message.content_preview || "工作流已取消，未生成最终回答。",
+                pending: false,
+                cancelled: true,
+              }
+          : message,
+        ),
+      );
+      const refreshedRun = await getRun(workflowRunId);
+      setRun((current) =>
+        current?.run_id === workflowRunId ? refreshedRun : current,
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "无法取消 Agent Workflow。",
+      );
+    } finally {
+      setIsCancellingWorkflow(false);
+    }
+  }
+
+  /** Cancel an Agent Workflow explicitly, or abort only the ordinary Response stream. */
   function handleStop() {
+    if (executionMode === "agent" && run) {
+      void handleCancelAgentWorkflow();
+      return;
+    }
     activeRequestController.current?.abort();
   }
 
@@ -905,21 +957,35 @@ export default function Home() {
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder="继续对话…" aria-label="消息内容" rows={1} />
               {executionMode === "agent" && (
                 <div className="agent-composer-options">
-                  <strong>串行 · Controller + Planner{reviewPolicy === "never" ? "" : " + Reviewer"}</strong>
+                  <strong>{maxParallelAgents === 1 ? "串行" : "最多 2 个工作 Agent 并行"} · Controller + Planner{reviewPolicy === "never" ? "" : " + Reviewer"}</strong>
                   <span>所有角色使用当前模型</span>
-                  <label>
-                    审核
-                    <select
-                      value={reviewPolicy}
-                      onChange={(event) => setReviewPolicy(event.target.value as ReviewPolicy)}
-                      disabled={isSending}
-                      aria-label="Agent 审核策略"
-                    >
-                      <option value="always">始终审核</option>
-                      <option value="on_verification_failure">验证失败时</option>
-                      <option value="never">不审核</option>
-                    </select>
-                  </label>
+                  <div className="agent-option-controls">
+                    <label>
+                      工作 Agent
+                      <select
+                        value={maxParallelAgents}
+                        onChange={(event) => setMaxParallelAgents(Number(event.target.value) === 2 ? 2 : 1)}
+                        disabled={isSending}
+                        aria-label="工作 Agent 最大并行数"
+                      >
+                        <option value={1}>串行</option>
+                        <option value={2}>最多并行 2 个</option>
+                      </select>
+                    </label>
+                    <label>
+                      审核
+                      <select
+                        value={reviewPolicy}
+                        onChange={(event) => setReviewPolicy(event.target.value as ReviewPolicy)}
+                        disabled={isSending}
+                        aria-label="Agent 审核策略"
+                      >
+                        <option value="always">始终审核</option>
+                        <option value="on_verification_failure">验证失败时</option>
+                        <option value="never">不审核</option>
+                      </select>
+                    </label>
+                  </div>
                 </div>
               )}
               <div className="composer-tools">
@@ -935,7 +1001,7 @@ export default function Home() {
                       setSelectedModel(model);
                     }}
                   />
-                  <button className="send-button" disabled={!isSending && (!draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (!draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>
@@ -969,6 +1035,8 @@ export default function Home() {
             events={agentEventState.events}
             nodes={agentWorkflowNodes}
             hasEventGap={agentEventState.hasGap}
+            isCancelling={isCancellingWorkflow}
+            onCancel={() => void handleCancelAgentWorkflow()}
           />
         ) : (
           <>

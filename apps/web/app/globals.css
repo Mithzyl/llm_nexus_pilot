@@ -207,7 +207,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .composer-mode-row button:disabled { cursor: wait; opacity: .55; }
 .agent-composer-options { display: flex; align-items: center; gap: 9px; margin: 9px 0 2px; padding-top: 9px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
 .agent-composer-options strong { color: var(--text); font-size: 9px; }
-.agent-composer-options label { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+.agent-option-controls { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.agent-composer-options label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .agent-composer-options select { border: 0; outline: 0; background: transparent; color: var(--text); font-size: 9px; }
 .composer-tools { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
 .composer-tools > div { display: flex; align-items: center; gap: 9px; min-width: 0; }
@@ -313,6 +314,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .agent-workflow-metrics div:nth-child(even) { padding-left: 10px; border-left: 1px solid var(--line); }
 .agent-workflow-metrics dt { color: var(--muted); font-size: 8px; }
 .agent-workflow-metrics dd { margin-left: auto; font: 600 9px var(--font-geist-mono); }
+.agent-cancel-action { display: flex; align-items: center; gap: 12px; margin: -3px 0 17px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.agent-cancel-action p { margin: 0; color: var(--muted); font-size: 8px; line-height: 1.5; }
+.agent-cancel-action button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid var(--text); border-radius: 8px; background: var(--text); color: var(--accent-contrast); font-size: 8px; cursor: pointer; }
+.agent-cancel-action button:disabled { cursor: wait; opacity: .45; }
 .agent-evidence-warning { margin: 0 0 14px; padding: 9px 0; border-top: 1px solid var(--text); border-bottom: 1px solid var(--text); color: var(--text); font-size: 9px; line-height: 1.55; }
 .agent-workflow-error { display: grid; gap: 4px; margin-bottom: 15px; padding: 10px 0; border-top: 1px solid var(--text); border-bottom: 1px solid var(--text); }
 .agent-workflow-error strong { font-size: 10px; line-height: 1.5; }
@@ -398,7 +403,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .composer-wrap { padding: 22px 12px max(10px, env(safe-area-inset-bottom)); }
   .composer { width: 100%; }
   .agent-composer-options { align-items: flex-start; flex-wrap: wrap; }
-  .agent-composer-options label { width: 100%; margin-left: 0; }
+  .agent-option-controls { width: 100%; justify-content: space-between; margin-left: 0; }
   .recommendation-row { grid-template-columns: 29px 1fr; }
   .empty-state { margin-top: 5vh; }
 }

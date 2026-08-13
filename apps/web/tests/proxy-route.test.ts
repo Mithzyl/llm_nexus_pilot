@@ -169,3 +169,68 @@ test("forwards an owned workflow POST as SSE after Run ownership succeeds", asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+test("forwards an empty-body cancel only after Workflow and Run ownership succeed", async () => {
+  const upstreamCalls: Array<{ url: string; method: string | undefined; body: BodyInit | null | undefined }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamCalls.push({ url, method: init?.method, body: init?.body });
+    if (url.endsWith("/agent-workflows/workflow-1") && init?.method === "GET") {
+      return Response.json({ run_id: "run-1" });
+    }
+    if (url.endsWith("/runs/run-1") && init?.method === "GET") {
+      return Response.json({ user_id: "nexuspilot-web" });
+    }
+    if (url.endsWith("/agent-workflows/workflow-1/cancel") && init?.method === "POST") {
+      return Response.json({ workflow_execution_id: "workflow-1", run_id: "run-1", status: "cancelled" });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("agent-workflows/workflow-1/cancel", { method: "POST" }),
+      createContext("agent-workflows/workflow-1/cancel"),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "cancelled");
+    assert.deepEqual(upstreamCalls, [
+      { url: "https://nexus.test/api/v1/agent-workflows/workflow-1", method: "GET", body: undefined },
+      { url: "https://nexus.test/api/v1/runs/run-1", method: "GET", body: undefined },
+      { url: "https://nexus.test/api/v1/agent-workflows/workflow-1/cancel", method: "POST", body: undefined },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects cross-user Workflow cancellation before the mutation is forwarded", async () => {
+  const upstreamUrls: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamUrls.push(url);
+    if (url.endsWith("/agent-workflows/foreign-workflow") && init?.method === "GET") {
+      return Response.json({ run_id: "foreign-run" });
+    }
+    if (url.endsWith("/runs/foreign-run") && init?.method === "GET") {
+      return Response.json({ user_id: "another-user" });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("agent-workflows/foreign-workflow/cancel", { method: "POST" }),
+      createContext("agent-workflows/foreign-workflow/cancel"),
+    );
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(upstreamUrls, [
+      "https://nexus.test/api/v1/agent-workflows/foreign-workflow",
+      "https://nexus.test/api/v1/runs/foreign-run",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

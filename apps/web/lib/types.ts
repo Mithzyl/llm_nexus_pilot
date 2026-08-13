@@ -183,7 +183,7 @@ export type AgentWorkflowCreate = {
   review_policy: "always" | "on_verification_failure" | "never";
   max_nodes: number;
   max_model_calls: number;
-  max_parallel_agents: 1;
+  max_parallel_agents: 1 | 2;
   wall_time_limit_ms: number;
   stream: boolean;
 };
@@ -318,7 +318,7 @@ export type AgentWorkflowNodeOutputMap = {
       model: string;
       status: string;
     }>;
-    dispatch_groups: Array<{ group_id: string; agent_run_ids: string[]; concurrency_limit: 1 }>;
+    dispatch_groups: Array<{ group_id: string; agent_run_ids: string[]; concurrency_limit: 1 | 2 }>;
     blocked_tasks: Array<{
       task_key: string;
       task_id: string | null;
@@ -495,6 +495,7 @@ type AgentWorkflowNodeBase = {
     cost_limit: string | number | null;
     cost_used_before: string | number;
     cost_used_after: string | number;
+    reserved_estimated_cost: string | number;
     remaining_model_calls: number;
     remaining_nodes: number;
     remaining_wall_time_ms: number;
