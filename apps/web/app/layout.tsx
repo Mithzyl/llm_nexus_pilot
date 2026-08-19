@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "NexusPilot · 对话工作台",
-  description: "NexusPilot 阶段 9 第一版对话式 Web 前端。",
+  description: "NexusPilot 阶段4对话式 Web 前端。",
 };
 
 /**

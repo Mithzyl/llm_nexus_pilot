@@ -155,7 +155,7 @@ test("restores the latest run detail contract including attempt facts", async ()
   }
 });
 
-test("uses the eight Phase 5 workflow routes with bounded cursors and SSE headers", async () => {
+test("uses the eight Phase 3 workflow routes with bounded cursors and SSE headers", async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   globalThis.fetch = (async (input, init) => {
     const url = String(input);

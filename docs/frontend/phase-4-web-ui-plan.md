@@ -614,6 +614,7 @@ apps/web/
 - Next.js 服务端转发层：浏览器通过同源 `/api/nexus/*` 访问 FastAPI，平台 API Key 只在服务端读取。
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
+- 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；刷新和浏览器历史导航会重新读取持久化事实，运行路由按 URL 中的 Run 标识恢复，不替换为会话最新 Run。
 - 模型调用：自定义选择器渲染后端返回的 Provider 与模型允许列表，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收 `response.text.delta`、`response.usage`、`response.completed` 和 `response.failed`。
 - 流式安全行为：按 sequence 去重；停止生成会中止浏览器请求并保留运行详情入口；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message 和 Run 归属；请求体在流式读取中受大小上限约束。
@@ -621,9 +622,9 @@ apps/web/
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
 - Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
-2026 年 8 月 19 日事实审计确认：当前 Web 的 28 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均通过；这只证明现有模块和构建门禁健康，不等于浏览器端到端验收完成。当前 App Router 只有 `/` 与同源 API 代理，没有 `/c/[sessionId]`、`/runs/[runId]` 或设置页；刷新不会通过稳定 URL 保留当前会话选择。Assistant 正文仍按纯文本渲染，运行检查器只投影最新 Attempt 摘要，没有完整 Task/Attempt/Retry/Artifact 视图。路线图重排后，界面说明和一项测试名称还各有一处“阶段5”旧编号残留，应在下一次 Web 修改中改为阶段3。
+2026 年 8 月 19 日事实审计确认：当前 Web 的 30 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均通过，App Router 已提供 `/`、`/c/[sessionId]`、`/runs/[runId]` 与同源 API 代理；使用生产构建和符合当前 BFF 合同的浏览器模拟响应，已验证会话/指定 Run 刷新恢复以及前进后退导航。该验证不等于真实后端或真实 Provider 端到端验收完成。设置页仍未实现，Assistant 正文仍按纯文本渲染，运行检查器只投影最新 Attempt 摘要，没有完整 Task/Attempt/Retry/Artifact 视图。路线图重排后的两处 Web 旧编号残留已改为阶段3。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、会话与 Run 深链接及刷新恢复、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、Markdown/代码块渲染及测试、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、Markdown/代码块渲染及测试、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 

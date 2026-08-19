@@ -53,6 +53,14 @@ import {
   isModelSelectionAllowed,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
+import {
+  conversationPath,
+  resolveWorkspaceRoute,
+  runPath,
+  workspaceRouteKey,
+  type NexusWorkspaceRoute,
+} from "../lib/routes";
+import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
@@ -151,6 +159,10 @@ function createLocalMessage(
  * Render the first NexusPilot conversation workspace and coordinate its durable API flow.
  */
 export default function Home() {
+  const router = useRouter();
+  const routeParams = useParams<{ sessionId?: string; runId?: string }>();
+  const workspaceRoute = resolveWorkspaceRoute(routeParams);
+  const currentRouteKey = workspaceRouteKey(workspaceRoute);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -192,6 +204,7 @@ export default function Home() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const latestAssistantText = useRef("");
   const activeRequestController = useRef<AbortController | null>(null);
+  const restoredRouteKey = useRef<string | null>(null);
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("nexuspilot-theme");
@@ -451,9 +464,9 @@ export default function Home() {
   }
 
   /**
-   * Load one immutable conversation history and close the mobile navigation overlay.
+   * Load one immutable conversation history and either its latest or explicitly requested Run.
    */
-  async function handleSelectSession(sessionId: string) {
+  async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
     setErrorMessage(null);
     setActiveSessionId(sessionId);
     setIsSidebarOpen(false);
@@ -470,10 +483,12 @@ export default function Home() {
     try {
       const [page, latestRun] = await Promise.all([
         listLatestMessagePage(sessionId),
-        getLatestRun(sessionId).catch((error: unknown) => {
-          if (error instanceof NexusApiError && error.status === 404) return null;
-          throw error;
-        }),
+        requestedRun !== undefined
+          ? Promise.resolve(requestedRun)
+          : getLatestRun(sessionId).catch((error: unknown) => {
+              if (error instanceof NexusApiError && error.status === 404) return null;
+              throw error;
+            }),
       ]);
       setMessages(page.items.map(messageFromMessage));
       setMessageCursor(page.next_cursor);
@@ -488,6 +503,38 @@ export default function Home() {
       setMessages([]);
       setMessageCursor(null);
       setHasMoreMessages(false);
+      if (requestedRun !== undefined) restoreRunFacts(requestedRun);
+    }
+  }
+
+  /** Navigate to and restore one owned conversation from its stable URL. */
+  async function handleSelectSession(sessionId: string) {
+    restoredRouteKey.current = workspaceRouteKey({ kind: "conversation", sessionId });
+    router.push(conversationPath(sessionId));
+    await restoreSession(sessionId);
+  }
+
+  /** Restore an exact owned Run and its conversation rather than substituting the latest Run. */
+  async function restoreRunRoute(runId: string) {
+    setErrorMessage(null);
+    setIsInspectorOpen(true);
+    setActiveSessionId(null);
+    setMessages([]);
+    setMessageCursor(null);
+    setHasMoreMessages(false);
+    restoreRunFacts(null);
+    resetAgentWorkflowFacts();
+    try {
+      const runDetail = await getRun(runId);
+      if (runDetail.session_id) {
+        await restoreSession(runDetail.session_id, runDetail);
+        return;
+      }
+
+      restoreRunFacts(runDetail);
+      await restoreAgentWorkflowForRun(runDetail.run_id);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法读取运行详情");
     }
   }
 
@@ -513,7 +560,7 @@ export default function Home() {
   /**
    * Reset the local conversation view without deleting any persisted session.
    */
-  function handleNewConversation() {
+  function resetConversationView() {
     setActiveSessionId(null);
     setMessages([]);
     setRun(null);
@@ -529,6 +576,43 @@ export default function Home() {
     setErrorMessage(null);
     setDraft("");
     setIsSidebarOpen(false);
+  }
+
+  /** Navigate to the stable empty-workspace route without deleting persisted data. */
+  function handleNewConversation() {
+    restoredRouteKey.current = "home";
+    router.push("/");
+    resetConversationView();
+  }
+
+  /** Keep browser history navigation synchronized with persisted Session and Run facts. */
+  useEffect(() => {
+    const restoreFrame = window.requestAnimationFrame(() => {
+      if (restoredRouteKey.current === currentRouteKey) return;
+      restoredRouteKey.current = currentRouteKey;
+
+      if (workspaceRoute.kind === "home") {
+        resetConversationView();
+        return;
+      }
+      if (workspaceRoute.kind === "conversation") {
+        void restoreSession(workspaceRoute.sessionId);
+        return;
+      }
+      void restoreRunRoute(workspaceRoute.runId);
+    });
+    return () => window.cancelAnimationFrame(restoreFrame);
+    // The stable route key is the intended reload trigger; state setters and helpers are local.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentRouteKey]);
+
+  /** Open the current persisted Run at a shareable route while retaining loaded evidence. */
+  function handleOpenRunEvidence() {
+    setIsInspectorOpen(true);
+    if (!run) return;
+    const route: NexusWorkspaceRoute = { kind: "run", runId: run.run_id };
+    restoredRouteKey.current = workspaceRouteKey(route);
+    router.push(runPath(run.run_id));
   }
 
   /**
@@ -633,6 +717,12 @@ export default function Home() {
         setSessions((current) => [session as Session, ...current]);
         setActiveSessionId(session.session_id);
       }
+
+      restoredRouteKey.current = workspaceRouteKey({
+        kind: "conversation",
+        sessionId: session.session_id,
+      });
+      router.replace(conversationPath(session.session_id));
 
       await createMessage(session.session_id, {
         role: "user",
@@ -925,7 +1015,7 @@ export default function Home() {
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => setDraft(lastUserMessage?.content ?? "")}>重新生成</button>
-                        <button onClick={() => setIsInspectorOpen(true)}>查看运行证据 ↗</button>
+                        <button onClick={handleOpenRunEvidence}>查看运行证据 ↗</button>
                       </div>
                     )}
                   </>
@@ -1018,7 +1108,7 @@ export default function Home() {
 
         <div className="run-state">
           <div className={`status-emblem ${run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "!" : run ? "✓" : "·"}</div>
-          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段5持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
+          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
           <time>{run ? formatTime(run.updated_at) : "—"}</time>
         </div>
 
