@@ -31,7 +31,7 @@
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
 - 阶段10 RabbitMQ 和阶段7 Tool Runtime 均已暂停。阶段3第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
-- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配仍在进行中，真实 Provider 端到端验收和工具视图仍未完成。
+- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成，真实 Provider 端到端验收仍未完成，工具视图等待阶段7稳定合同。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
 ## 当前实施结果（2026 年 8 月 13 日）

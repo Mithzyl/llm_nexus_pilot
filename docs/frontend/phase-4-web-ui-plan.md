@@ -621,7 +621,9 @@ apps/web/
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
 - Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task 完整状态编排、Artifact 详情页、Markdown/代码块渲染测试、Context/Prompt/Evaluation 开发视图、真实 Agent Provider 端到端验收，以及 Agent 恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+2026 年 8 月 19 日事实审计确认：当前 Web 的 28 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均通过；这只证明现有模块和构建门禁健康，不等于浏览器端到端验收完成。当前 App Router 只有 `/` 与同源 API 代理，没有 `/c/[sessionId]`、`/runs/[runId]` 或设置页；刷新不会通过稳定 URL 保留当前会话选择。Assistant 正文仍按纯文本渲染，运行检查器只投影最新 Attempt 摘要，没有完整 Task/Attempt/Retry/Artifact 视图。路线图重排后，界面说明和一项测试名称还各有一处“阶段5”旧编号残留，应在下一次 Web 修改中改为阶段3。
+
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、会话与 Run 深链接及刷新恢复、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、Markdown/代码块渲染及测试、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 
