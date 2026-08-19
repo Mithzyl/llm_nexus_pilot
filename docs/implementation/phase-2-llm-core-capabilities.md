@@ -44,7 +44,7 @@
 - 阶段2所有资源必须在 Service 和数据库查询中校验 User、Project、Session、Run、Task、Agent Run 的关系，防止受信调用方误把一个用户或项目的资源关联到另一个 scope。
 - 直接面向最终用户的身份认证和授权不在阶段2实现范围。现有实验性 Memory/Knowledge 接口不得被前端视为最终用户能力；正式开放前必须先确定认证主体、权限声明和越权响应。
 - 内部评估、规则管理和模型目录写入接口继续要求公共 API Key 与内部 API Key，不能仅依赖公共密钥。
-- 阶段2的测试 User 由测试 fixture 在独立事务中创建，平台测试 key 在测试运行时注入；Provider 单元与契约测试使用假传输，真实供应商冒烟只在显式开启时从进程环境读取密钥。阶段2不需要也不得增加 `/auth/test-login`、固定后门用户或仓库内供应商密钥。完整最终用户接口进入独立的[阶段10身份与凭据规划](phase-10-platform-identity-credentials.md)，不改变阶段2完成状态。
+- 阶段2的测试 User 由测试 fixture 在独立事务中创建，平台测试 key 在测试运行时注入；Provider 单元与契约测试使用假传输，真实供应商冒烟只在显式开启时从进程环境读取密钥。阶段2不需要也不得增加 `/auth/test-login`、固定后门用户或仓库内供应商密钥。完整最终用户接口进入独立的[阶段5身份与凭据规划](phase-5-platform-identity-credentials.md)，不改变阶段2完成状态。
 
 ### 删除与保留
 
@@ -229,7 +229,7 @@ candidate | active | rejected | superseded -> deleted
 3. 先实现供应商中立 Embedding 契约和调用证据，明确 provider、model、revision、dimension、distance metric、content hash、费用、超时、有限重试和不可重试错误；同时确定哪些 Memory/查询文本允许发送给哪个供应商、脱敏和保留规则，禁止默认外发敏感长期记忆。
 4. 增加 `embedding_profiles` 与 `memory_vector_projections` 等可重建投影事实。前者至少记录 profile、供应商、模型修订、维度、距离度量和状态；后者以 `(memory_version_id, profile_id)` 唯一，记录确定性 point ID、内容哈希、投影代次、`pending | indexed | delete_pending | deleted | failed`、尝试次数、下次重试、最后错误和完成时间。MySQL 仍是唯一事实源，向量库只是可丢弃重建的派生投影。
 5. 验证 owner/scope 前置过滤和返回后二次校验、重建、模型换代、重复投递、删除墓碑、索引落后和外部服务不可用；降级时响应必须明示实际使用的检索策略，不能静默改变语义。
-6. 阶段3的 Outbox Publisher、RabbitMQ 和可重放投影 Worker 已经可用，并复用阶段1的 `llm_outbox_events` 事实表；Memory API 事务只提交事实、期望投影状态和 outbox 事件，绝不在数据库事务内同步调用 Embedding 服务或向量库。
+6. 阶段10的 Outbox Publisher、RabbitMQ 和可重放投影 Worker 已经可用，并复用阶段1的 `llm_outbox_events` 事实表；Memory API 事务只提交事实、期望投影状态和 outbox 事件，绝不在数据库事务内同步调用 Embedding 服务或向量库。
 
 未来只投影“当前版本、`active`、未过期且正文未擦除”的 Memory；`candidate/rejected/superseded/deleted` 和历史版本禁止进入投影。Worker 每次 upsert 前重新读取 MySQL，目标失效时只执行 delete。向量库只保存确定性 point ID、Memory/版本/Profile 标识、owner/scope 过滤字段、内容哈希、代次和过期时间，不复制 `content_text`，但向量本身仍按敏感派生数据保护。查询先在向量库按 owner/scope 过滤，再回 MySQL 批量复核 owner、范围、状态、当前版本、过期时间和内容哈希，正文始终只从 MySQL 读取。
 
@@ -314,7 +314,7 @@ memory/v1/{memory_layer}/{scope_id}/{object_type}/{yyyy}/{mm}/{dd}/
 
 #### L0 Agent Working Memory
 
-Agent Working Memory 是单个 Agent Run 的可恢复操作状态，不是对话历史，也不是提供给其他 Agent 的交接结果。当前仓库已有最小 `llm_agent_runs`、`llm_agent_turns`、检查点模型和内部接口，用于验证版本、恢复和终止边界；它们不构成 Agent Runtime，实际自动写入、工具状态复核和执行循环仍由阶段5实现。
+Agent Working Memory 是单个 Agent Run 的可恢复操作状态，不是对话历史，也不是提供给其他 Agent 的交接结果。当前仓库已有最小 `llm_agent_runs`、`llm_agent_turns`、检查点模型和内部接口，用于验证版本、恢复和终止边界；它们不构成 Agent Runtime，实际自动写入、工具状态复核和执行循环仍由阶段3实现。
 
 不能只使用 L1 Session Memory：同一 Session 中可以并行存在 Controller、多个 Researcher、Planner 和 Reviewer，它们具有不同目标、文件读取进度、待处理工具和预算。如果共用一份 Session State，并发检查点会互相覆盖，Reviewer 还可能看到实现 Agent 尚未验证的临时发现。L1 只保存用户会话共享事实；每个 Agent 使用独立 L0，完成后再通过 L2 Handoff 发布可依赖结果。
 
@@ -702,12 +702,12 @@ M1～M5 编号仅作为既有设计引用保留。它们不再属于阶段2实�
 
 | 工作项 | 需要修改或新增的实际对象 | 测试与验证 | 完成条件 | 状态 |
 |---|---|---|---|---|
-| Agent Working Memory | `features/memory` 中已有最小 Agent Run、Turn、`agent_working_state.v1`、预算和内部检查点实验代码 | 已有部分快速测试；等待恢复、工具事实复核和定时擦除未验证 | 正式启用前重新确认与阶段5 Agent Runtime 的边界 | 暂停 |
+| Agent Working Memory | `features/memory` 中已有最小 Agent Run、Turn、`agent_working_state.v1`、预算和内部检查点实验代码 | 已有部分快速测试；等待恢复、工具事实复核和定时擦除未验证 | 正式启用前重新确认与阶段3 Agent Runtime 的边界 | 暂停 |
 | M1 Session Memory | 已有 State/Summary、版本指针、MinIO JSON/Markdown 快照实验代码 | 已有部分快速测试；真实 MySQL/MinIO 部分失败与孤儿清理未验证 | 正式启用前重新确认摘要形成、保留和失败恢复策略 | 暂停 |
 | Project Memory | 已有最小 Project scope、策略、Workspace、候选和显式 Profile rebuild 实验代码 | 跨 Project、真实并发和双存储失败矩阵未验证 | 正式启用前重新确认 Project 权限和 Profile 生命周期 | 暂停 |
 | M2 User Memory | 已有候选审批/拒绝、信任过滤、凭据拒绝和 Profile rebuild 实验代码 | 纠正后并发 rebuild、删除语义和真实存储失败未验证 | 正式启用前先确定最终用户认证、敏感信息和删除策略 | 暂停 |
 | M3 Collaboration Memory | 已有 Handoff、Run Snapshot 实验代码；Packet 没有创建流程 | Packet 固定版本、并发指针和真实存储失败未验证 | 与 Agent Runtime 一起重新规划，不接入当前 Model Gateway | 暂停 |
-| M4 后台形成与压缩 | 尚无正式实施安排 | 重复消息、乱序、崩溃重投、永久失败和状态恢复 | 只有 Memory 正式启用且阶段3 Worker 可用后才能排期 | 暂停 |
+| M4 后台形成与压缩 | 尚无正式实施安排 | 重复消息、乱序、崩溃重投、永久失败和状态恢复 | 只有 Memory 正式启用且阶段10 Worker 可用后才能排期 | 暂停 |
 | M5 语义检索评估 | 固定中英文评估集、Embedding Provider 契约、Outbox 投影、候选向量库适配器；仅门禁通过后实施 | recall@k、精确率、延迟、费用、删除一致性、降级、重建和数据出境 | 评估证明相对词法基线有必要收益，且权限/删除/重建测试全部通过；否则保持不实施 | 暂停 |
 
 当前实验性 Memory 迁移为 `20260803_0008_phase2_memory_layers.py`。该迁移已经在全新 MySQL 8.4 数据库完成 `0001 → 0009` 升级、`0009 → 0007` 降级、重新升级和 `alembic check`，真实 MySQL/MinIO 基础设施测试也已通过；这证明当前迁移链和已覆盖的持久化约束可执行。它仍不能代表五层 Memory 已具备生产运行能力：后台形成、Memory Packet、跨存储失败补偿、孤儿对象清理、最终用户权限和完整并发恢复矩阵尚未实施或验证，因此继续作为未来正式启用前的门禁，不计入阶段2完成条件。
@@ -732,7 +732,7 @@ apps/api/src/nexuspilot_api/features/memory/
 
 当前决定是停止扩展 Memory，只维护规划和已经存在的实验性准备代码。可审计事实账本、L0 手动检查点、L1 State/Summary、L2 Handoff/Run Snapshot、L3/L4 候选和 Profile 都不进入实际模型响应链路；Memory Packet 不在阶段2创建，也不绑定 Context Builder 或 Model Attempt。
 
-暂不继续实现：自动记忆形成、定时压缩/擦除、Agent Runtime 自动检查点、Embedding、Vector Store、Mem0、知识图谱、后台 Profile 刷新和自动 Lesson 提升。它们分别依赖阶段3 Worker、阶段5 Agent Runtime 或固定检索评估门禁；现在加入只会扩大状态机和双存储恢复面，不能提高当前同步接口的可靠性。
+暂不继续实现：自动记忆形成、定时压缩/擦除、Agent Runtime 自动检查点、Embedding、Vector Store、Mem0、知识图谱、后台 Profile 刷新和自动 Lesson 提升。它们分别依赖阶段10 Worker、阶段3 Agent Runtime 或固定检索评估门禁；现在加入只会扩大状态机和双存储恢复面，不能提高当前同步接口的可靠性。
 
 ### Knowledge：移出阶段2
 
@@ -1070,7 +1070,7 @@ internal_error
 | 检索证据与隐私 | 证据详情重读、幂等重放、token 预算排除项、删除后历史证据 | 分数、版本、选中状态和排除原因不变；响应不泄露跨 User、不可用或已擦除正文 |
 | 数据库与迁移 | SQLite 快速契约、MySQL 唯一约束/行锁并发、空库与阶段1升级、`alembic check` | 测试与生产数据库差异被显式验证，迁移无漂移 |
 
-L0 Agent Working Memory 在未来与阶段5 Agent Runtime 集成前必须建立以下测试：
+L0 Agent Working Memory 在未来与阶段3 Agent Runtime 集成前必须建立以下测试：
 
 | 场景 | 通过条件 |
 |---|---|
@@ -1156,7 +1156,7 @@ M3 Collaboration Memory 必须先建立以下测试：
 - Evaluation 与 Guardrail 可以脱离 Agent 单独执行；未知规则安全失败，同键异请求返回冲突，执行状态与 verdict 分离，敏感输入不进入公开证据。
 - `/responses` 继续只使用调用方显式请求内容，不读取 Memory、不创建 Memory Packet、不读取 Knowledge，也不隐式使用 Context Preview。
 - Memory 只保留规划和实验性准备代码，不以现有路由、表或快速测试声称已成为模型运行时能力；它的真实 MySQL/MinIO、形成、删除、Packet 和 Agent 集成留到未来正式启用规划。
-- Knowledge 不属于阶段2，现有实验性接口不作为稳定合同，也不进入阶段2或阶段9前端第一版。
+- Knowledge 不属于阶段2，现有实验性接口不作为稳定合同，也不进入阶段2或阶段4前端第一版。
 - 阶段2范围内能力通过单元测试、数据库集成、鉴权、并发、OpenAPI 和敏感信息测试；未运行验证必须明确记录。
 - 当前文档、迁移、Schema、环境配置和运行说明与代码事实一致，不保留相互冲突的阶段状态。
 - 以上条件未满足前，阶段2状态保持“进行中”。

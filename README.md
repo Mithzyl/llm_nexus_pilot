@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力已经完成；阶段3消息队列和阶段4工具运行暂停；阶段5 `model_only_v1` 主工作流与核心接口已实现，阶段整体仍在进行中。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；当前优先实施阶段4 Web，先形成稳定可用的服务界面，再完成阶段5身份凭据和阶段6可观测性。阶段7工具、阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
 
 ## 当前能力
 
@@ -30,7 +30,7 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - Memory Retrieval 使用有界的中英文词法候选、版本化整数评分、整条内容 token 预算和持久化检索证据，不返回跨 User、范围不匹配、非有效或已过期内容。
 - L0 手动 Agent Working State、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile 和 L4 User Profile 已有实验性同步接口；这些接口不属于当前模型响应链，Memory Packet 不在阶段2创建或绑定 Model Attempt。
 
-当前 Agent 工作流只允许模型生成和确定性程序节点，工作 Agent 串行执行。工具、Implementer、文件/命令/网络副作用、外部取消与恢复、进程重启恢复以及 OpenTelemetry 尚未实现；GET `/events` 只回放查询时已经提交的事件，运行中的实时事件由创建接口的 SSE 响应提供。
+当前 Agent 工作流只允许模型生成和确定性程序节点；无依赖工作 Agent 同组最多两个并行。工具、Implementer、文件/命令/网络副作用、请求结束后的恢复、进程重启恢复以及 OpenTelemetry 尚未实现；显式工作流取消已经可用。GET `/events` 只回放查询时已经提交的事件，运行中的实时事件由创建接口的 SSE 响应提供。
 
 当前 Memory 只作为规划与实验性准备代码保留，不继续扩展，也不接入 `/responses`。Context Preview 的稳定合同已移除 Memory/Knowledge 候选字段，只选择显式 instruction、安全 instruction 和 Session Message，并使用 Model Catalog 与不可变来源快照。Knowledge 属于后续独立知识库规划；现有 Knowledge 结构代码不是稳定能力。Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail 已通过阶段2行为与基础设施验收。默认不引入 Vector Store 或 Mem0。
 
@@ -193,12 +193,15 @@ apps/api/.venv/bin/pytest -q apps/api/tests/test_real_infrastructure.py
 
 - 阶段1数据与控制平面：[`phase-1-foundation.md`](docs/implementation/phase-1-foundation.md)
 - 阶段2 LLM 核心能力：[`phase-2-llm-core-capabilities.md`](docs/implementation/phase-2-llm-core-capabilities.md)
-- 阶段3 RabbitMQ 规划（规划中，尚未实施）：[`phase-3-rabbitmq-task-execution-plan.md`](docs/implementation/phase-3-rabbitmq-task-execution-plan.md)
-- 阶段9 Web 前端规划：[`phase-9-web-ui-plan.md`](docs/frontend/phase-9-web-ui-plan.md)
+- 阶段3 Agent 工作流：[`phase-3-agent-workflow-plan.md`](docs/implementation/phase-3-agent-workflow-plan.md)
+- 阶段4 Web 前端规划：[`phase-4-web-ui-plan.md`](docs/frontend/phase-4-web-ui-plan.md)
+- 阶段5身份与凭据规划：[`phase-5-platform-identity-credentials.md`](docs/implementation/phase-5-platform-identity-credentials.md)
+- 阶段7工具运行规划：[`phase-7-tool-runtime-plan.md`](docs/implementation/phase-7-tool-runtime-plan.md)
+- 阶段10 RabbitMQ 规划（按需触发，尚未实施）：[`phase-10-rabbitmq-task-execution-plan.md`](docs/implementation/phase-10-rabbitmq-task-execution-plan.md)
 
 ## Web 前端本地启动
 
-阶段9第一版前端位于 `apps/web`，采用 Next.js 服务端转发层连接 FastAPI。浏览器不直接持有平台 API Key：
+阶段4第一版前端位于 `apps/web`，采用 Next.js 服务端转发层连接 FastAPI。浏览器不直接持有平台 API Key：
 
 ```bash
 cd apps/web
@@ -208,4 +211,4 @@ NEXUSPILOT_API_KEY=local-development-key-change-me \
 npm run dev
 ```
 
-打开 `http://localhost:3000`。界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。具体行为边界见 [`phase-9-web-ui-plan.md`](docs/frontend/phase-9-web-ui-plan.md)。
+打开 `http://localhost:3000`。界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。具体行为边界见 [`phase-4-web-ui-plan.md`](docs/frontend/phase-4-web-ui-plan.md)。

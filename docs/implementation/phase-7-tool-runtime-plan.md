@@ -1,16 +1,18 @@
-# 阶段4：受控工具运行能力规划
+# 阶段7：受控工具运行能力规划
 
-**文档日期：** 2026 年 8 月 7 日
-**文档状态：** 暂停，规划已固定但当前不继续实施
+**文档日期：** 2026 年 8 月 19 日
+**文档状态：** 暂停，规划已固定；等待阶段4～6服务可用闭环后恢复
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
-> 本文固定阶段4的工具合同、权限、工作目录、执行隔离、审计和失败语义。本轮不新增依赖、数据库迁移、工具代码、执行接口或容器镜像。
+> 本文固定阶段7的工具合同、权限、工作目录、执行隔离、审计和失败语义。本轮不新增依赖、数据库迁移、工具代码、执行接口或容器镜像。
 
-> 2026 年 8 月 7 日优先级调整：阶段4暂停，先规划阶段5 `model_only_v1` Agent 工作流和阶段8可观测性。阶段5不得因此绕过本规划执行文件、Shell、Git、MCP 或外部工具；需要工具时重新评估并恢复阶段4。
+> 2026 年 8 月 7 日优先级调整：当时的工具规划（现阶段7）暂停，先实施 Agent `model_only_v1`（现阶段3）并提高可观测性（现阶段6）优先级。阶段3不得因此绕过本规划执行文件、Shell、Git、MCP 或外部工具；需要工具时重新评估并恢复阶段7。
+
+> 2026 年 8 月 19 日路线图重排：本能力由原阶段4调整为阶段7。恢复前先完成阶段4 Web 的真实服务验收、阶段5最终用户授权边界和阶段6可观测性；只读工具可以在边界清晰的内部验证中先行，但不能据此提前宣称阶段7完成。
 
 ## 目标
 
-- 要实现的结果：为阶段5 Agent Runtime 提供可独立测试、同步执行、权限受控且完整审计的工具运行能力。
+- 要实现的结果：为阶段3 Agent Runtime 提供可独立测试、同步执行、权限受控且完整审计的工具运行能力。
 - 要实现的结果：模型只能调用注册工具；工具输入由明确 Schema 校验；文件、命令和 Git 操作只能发生在绑定的隔离 Workspace 内。
 - 要实现的结果：超时、取消、输出过大、路径越界、权限拒绝、进程异常和结果保存失败都有稳定错误和审计事实。
 - 明确不处理：RabbitMQ、后台 Worker、多 Agent 编排、模型工具循环、MCP、最终用户审批界面、网络访问和外部系统副作用。
@@ -21,35 +23,35 @@
 - `packages/models` 已有 Provider 无关的 `ToolDefinition`、`ToolCall` 和 Tool Message 合同；它们只表达“模型请求调用什么”，不负责执行、权限和审计。
 - `llm_tool_calls` 已能保存 `attempt_id`、工具名称、单一风险等级、输入、状态、权限结论、结果 URI 和错误，但尚无写入执行流程、稳定状态枚举、幂等键、工具版本、输出摘要或执行时长。
 - `GET /api/v1/internal/tool-calls` 及详情接口已经提供脱敏只读审计查询；当前没有工具注册表、权限判定器、Workspace 边界或执行 Service。
-- 当前只有同步 `/responses`，阶段3 RabbitMQ 已降低优先级并暂停。因此阶段4采用同步调用，不承诺请求断开或 API 重启后继续执行。
-- 当前最终用户身份尚未实现。阶段4只服务受信内部调用和后续 Agent 进程，不提供普通用户可直接提交 `run_command` 的 HTTP 接口。
-- 待确认事项：生产隔离执行服务的部署方式、允许的基础镜像、镜像来源和签名策略、每类项目的命令允许列表，以及阶段5何时创建 Git worktree。
+- 当前只有同步 `/responses`，阶段10 RabbitMQ 已降低优先级并暂停。因此阶段7采用同步调用，不承诺请求断开或 API 重启后继续执行。
+- 当前最终用户身份尚未实现。阶段7只服务受信内部调用和后续 Agent 进程，不提供普通用户可直接提交 `run_command` 的 HTTP 接口。
+- 待确认事项：生产隔离执行服务的部署方式、允许的基础镜像、镜像来源和签名策略、每类项目的命令允许列表，以及阶段3何时创建 Git worktree。
 
-## 与阶段3、阶段5的边界
+## 与阶段10、阶段3的边界
 
 ```text
 阶段2 Model Gateway
   └── 生成标准 ToolCall，但不执行
 
-阶段4 Tool Runtime
+阶段7 Tool Runtime
   ├── 注册工具
   ├── 校验参数
   ├── 判断权限
   ├── 在受控 Workspace 执行
   └── 保存 Tool Call 证据并返回 ToolExecutionResult
 
-阶段5 Agent Runtime
+阶段3 Agent Runtime
   ├── 决定何时把哪些工具提供给模型
   ├── 接收 ToolCall
-  ├── 调用阶段4 Tool Runtime
+  ├── 调用阶段7 Tool Runtime
   ├── 把结果转换为 Tool Message
   └── 控制循环次数、token、费用和最终回答
 ```
 
-- 阶段4不读取 RabbitMQ，也不要求 `apps/worker` 存在。
-- 阶段4不自行再次请求模型；同一次模型调用后是否继续由阶段5决定。
-- 阶段4执行 Service 设计为传输无关的异步 Python 接口，未来可由同步 API 进程或 Worker 复用。
-- 阶段4完成不代表代码修改任务已经安全；阶段5仍需为每个写任务创建独立 Git worktree，并把该 Workspace 明确绑定到执行上下文。
+- 阶段7不读取 RabbitMQ，也不要求 `apps/worker` 存在。
+- 阶段7不自行再次请求模型；同一次模型调用后是否继续由阶段3决定。
+- 阶段7执行 Service 设计为传输无关的异步 Python 接口，未来可由同步 API 进程或 Worker 复用。
+- 阶段7完成不代表代码修改任务已经安全；阶段3仍需为每个写任务创建独立 Git worktree，并把该 Workspace 明确绑定到执行上下文。
 
 ## 核心合同
 
@@ -120,11 +122,11 @@ error_message
 - `output` 必须符合工具输出模型，并具有总字节上限。
 - 大输出保存为 Artifact，模型只接收有界摘要和 `artifact_id`，不接收 MinIO URI。
 - stdout、stderr 和异常文本先脱敏再保存；凭据、Authorization、Cookie 和环境变量值不进入模型上下文。
-- Tool Runtime 返回事实，不生成自然语言解释；如何向模型表达由阶段5统一处理。
+- Tool Runtime 返回事实，不生成自然语言解释；如何向模型表达由阶段3统一处理。
 
 ## 工具目录和实施顺序
 
-阶段4仍是一个阶段，不拆成新的阶段编号。按风险从低到高逐项启用：
+阶段7仍是一个阶段，不拆成新的阶段编号。按风险从低到高逐项启用：
 
 | 工具 | 含义 | 初始能力 | 并发规则 | 主要限制 |
 |---|---|---|---|---|
@@ -172,7 +174,7 @@ whether an isolated backend is available
 
 模型输入中的 `risk_level`、`allowed_paths`、`requires_approval` 或类似字段一律不可信。
 
-### 阶段4默认规则
+### 阶段7默认规则
 
 | 操作 | 默认决定 |
 |---|---|
@@ -185,9 +187,9 @@ whether an isolated backend is available
 | 网络访问 | 拒绝 |
 | 外部副作用 | 拒绝 |
 | 读取密钥、系统目录或 Workspace 外路径 | 拒绝 |
-| 需要用户批准的操作 | 记录 `approval_required` 后停止，不在阶段4伪造批准 |
+| 需要用户批准的操作 | 记录 `approval_required` 后停止，不在阶段7伪造批准 |
 
-最终用户批准依赖阶段10当前用户身份和阶段9交互界面。在这些能力完成前，策略要求批准的调用只能停止，不能由内部 API Key 自动代替用户同意。
+最终用户批准依赖阶段5当前用户身份和阶段4交互界面。在这些能力完成前，策略要求批准的调用只能停止，不能由内部 API Key 自动代替用户同意。
 
 ## Workspace 与路径安全
 
@@ -222,12 +224,12 @@ stdin_text（可选且有界）
 
 生产执行后端至少满足：非 root 用户、只挂载指定 Workspace、根文件系统只读、禁止 privileged/host PID/host network、删除额外 Linux capabilities、`no-new-privileges`、默认无网络、进程/CPU/内存限制、受控临时目录、确定超时和容器清理。Docker 官方说明容器默认没有 CPU/内存限制，因此这些限制必须显式配置。
 
-Docker daemon 或 socket 本身具有高权限。API 进程不能把 socket 暴露给模型生成的命令；实施时优先将隔离执行适配器放在权限更小的独立执行边界。若只能让 API 进程直接访问 Docker daemon，必须在风险评审后才能启用 `run_command`，阶段4状态继续保持“进行中”。
+Docker daemon 或 socket 本身具有高权限。API 进程不能把 socket 暴露给模型生成的命令；实施时优先将隔离执行适配器放在权限更小的独立执行边界。若只能让 API 进程直接访问 Docker daemon，必须在风险评审后才能启用 `run_command`，阶段7状态继续保持“进行中”。
 
 ## 同步执行和事务边界
 
 ```text
-阶段5或内部测试提交 ToolExecutionRequest
+阶段3或内部测试提交 ToolExecutionRequest
   ↓
 Registry 查找固定版本 + Pydantic 参数校验
   ↓
@@ -247,7 +249,7 @@ ExecutionBackend 执行（不持有数据库事务）
 - 权限事实无法提交时不执行工具，避免无审计副作用。
 - 工具执行期间不持有请求数据库事务或连接。
 - 只读工具在结果保存失败后可以使用相同幂等键安全重建；写入和执行工具不能盲目重试。
-- 写入或命令已经产生副作用，但结果保存失败时标记 `outcome_unknown`，交给阶段5决定重新调查或请求用户确认。
+- 写入或命令已经产生副作用，但结果保存失败时标记 `outcome_unknown`，交给阶段3决定重新调查或请求用户确认。
 - 同一 `(model_attempt_id, provider_tool_call_id)` 只能创建一个逻辑 Tool Call；重复收到时返回已有终态，运行中或未知状态不重复执行。
 - 当前同步模式下请求取消会传播到执行后端，但只能在安全点终止；已经完成的文件写入或命令副作用不会自动回滚。
 
@@ -315,7 +317,7 @@ updated_at
 
 约束建议：
 
-- `(attempt_id, provider_tool_call_id)` 唯一；若供应商没有稳定 ID，阶段5生成并持久化确定性 ID。
+- `(attempt_id, provider_tool_call_id)` 唯一；若供应商没有稳定 ID，阶段3生成并持久化确定性 ID。
 - `result_artifact_id` 引用现有 Artifact；`result_uri` 暂时保留兼容读取，确认无调用方后再迁移，不能直接删除。
 - `input_json` 与输出摘要写入前进行递归脱敏和大小限制；大型结果只保存 Artifact。
 - 风险和状态改为应用枚举并由数据库约束；旧字符串数据迁移必须有映射和未知值停止条件。
@@ -350,14 +352,14 @@ apps/api/src/nexuspilot_api/features/tool_runtime/
 - `packages/tools` 不依赖 FastAPI、SQLAlchemy、MySQL 或具体模型 Provider。
 - API feature 只负责数据库关系、事务、审计持久化和依赖装配，不重新实现路径或权限规则。
 - 暂不为每个工具创建独立 Service/Router；同类工具放在职责明确的文件中，避免产生大量只有一个薄函数的文件。
-- 阶段5只依赖 `ToolExecutionService`，不直接导入具体工具实现。
+- 阶段3只依赖 `ToolExecutionService`，不直接导入具体工具实现。
 
 ## HTTP 接口边界
 
-- 阶段4不增加普通用户 `POST /tools/execute`，尤其不公开 `run_command`。
+- 阶段7不增加普通用户 `POST /tools/execute`，尤其不公开 `run_command`。
 - 现有 `GET /api/v1/internal/tool-calls` 与详情继续作为审计读取入口，并按新增状态和错误字段扩展脱敏响应。
 - 可以增加只读 `GET /api/v1/internal/tools`，用于开发和运维查看当前 Registry、版本、能力和启用状态；它不是模型授权来源。
-- 工具实际执行通过内部 Python Service 调用。若未来 Worker 跨进程部署需要 RPC，再根据真实部署边界单独规划认证、超时和幂等，不在阶段4预建空接口。
+- 工具实际执行通过内部 Python Service 调用。若未来 Worker 跨进程部署需要 RPC，再根据真实部署边界单独规划认证、超时和幂等，不在阶段7预建空接口。
 
 ## 初始资源上限建议
 
@@ -434,14 +436,14 @@ apps/api/src/nexuspilot_api/features/tool_runtime/
 - 写入工具采用单 Workspace 互斥和原子文件替换；多文件补丁在预检全部目标后执行，执行中异常必须报告已修改文件，不能声称全部回滚。
 - 命令调用不自动重试。只有错误发生在进程启动前且确定没有执行时，调用方才可使用同一逻辑 Tool Call 重新尝试。
 - 同步请求断开后主动取消在途工具；若无法确认副作用，记录 `outcome_unknown`。
-- API 重启不会自动恢复阶段4 Tool Call；运行中遗留记录由启动审计标记为未知结果，等待阶段5重新调查或人工处理。
+- API 重启不会自动恢复阶段7 Tool Call；运行中遗留记录由启动审计标记为未知结果，等待阶段3重新调查或人工处理。
 
 ## 风险与停止条件
 
-- 没有隔离执行后端时，可以完成只读与受控文件工具，但不能启用 `run_command`，阶段4不能标记“已完成”。
+- 没有隔离执行后端时，可以完成只读与受控文件工具，但不能启用 `run_command`，阶段7不能标记“已完成”。
 - 无法可靠约束 Workspace root 或符号链接时，停止文件写入和命令执行，只保留安全的合同/Registry 工作。
-- 需要网络或外部副作用时，停止并单独确定域名、凭据、幂等和用户批准；阶段4默认拒绝。
-- 要求从普通用户 HTTP 请求直接执行命令时，停止并先完成阶段10身份、授权、限流以及部署隔离评审。
+- 需要网络或外部副作用时，停止并单独确定域名、凭据、幂等和用户批准；阶段7默认拒绝。
+- 要求从普通用户 HTTP 请求直接执行命令时，停止并先完成阶段5身份、授权、限流以及部署隔离评审。
 - Docker 只能以 privileged、host network、host PID 或挂载 Docker Socket 到执行容器的方式运行时，拒绝启用命令工具。
 
 ## 完成标准
@@ -452,7 +454,7 @@ apps/api/src/nexuspilot_api/features/tool_runtime/
 - 写入和命令执行只在通过真实验证的隔离环境运行；超时、资源和输出均有硬上限。
 - 每次允许、拒绝、失败、超时、取消和未知结果都形成可查询、脱敏的 `llm_tool_calls` 事实。
 - 重复 Tool Call 不重复产生副作用；无法确认结果时不会自动重试或伪造失败/成功。
-- 阶段4能力可由同步内部 Service 独立调用，不依赖 RabbitMQ、Worker 或 Agent 循环。
+- 阶段7能力可由同步内部 Service 独立调用，不依赖 RabbitMQ、Worker 或 Agent 循环。
 - 快速测试、真实 MySQL/MinIO、ripgrep/Git 进程测试和 Docker 隔离测试全部通过后，阶段状态才能改为“已完成”。
 
 ## 官方依据
@@ -460,8 +462,8 @@ apps/api/src/nexuspilot_api/features/tool_runtime/
 - [Python asyncio subprocess](https://docs.python.org/3/library/asyncio-subprocess.html)：确认参数化异步进程接口、超时需要由 `asyncio.wait_for()` 控制，以及管道输出必须持续读取以避免死锁。
 - [Python subprocess security considerations](https://docs.python.org/3/library/subprocess.html#security-considerations)：确认 Shell 调用的转义责任；本阶段因此默认使用参数数组和 `shell=False`。
 - [Docker Engine security](https://docs.docker.com/engine/security/)：确认 daemon 权限边界、非特权用户、Linux capabilities 和容器隔离风险。
-- [Docker resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)：确认容器默认没有 CPU/内存限制，阶段4必须显式设置资源上限。
+- [Docker resource constraints](https://docs.docker.com/engine/containers/resource_constraints/)：确认容器默认没有 CPU/内存限制，阶段7必须显式设置资源上限。
 - [Docker user namespace isolation](https://docs.docker.com/engine/security/userns-remap/)：确认非特权用户和 user namespace 的隔离作用及 daemon 仍可能具有高权限的边界。
 - [ripgrep User Guide](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md)：确认默认忽略、符号链接和 `--no-config` 等搜索行为。
 - [Git status Porcelain v2](https://git-scm.com/docs/git-status.html#_porcelain_format_version_2)：确认供程序解析的稳定状态格式。
-- [Git diff](https://git-scm.com/docs/git-diff)：确认差异命令能力；阶段4只开放固定参数子集并禁用外部 diff 驱动。
+- [Git diff](https://git-scm.com/docs/git-diff)：确认差异命令能力；阶段7只开放固定参数子集并禁用外部 diff 驱动。

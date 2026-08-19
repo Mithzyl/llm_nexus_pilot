@@ -1,16 +1,18 @@
-# 阶段5：Agent Runtime 与完整工作流节点结果规划
+# 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 13 日
+**文档日期：** 2026 年 8 月 19 日
 **文档状态：** 已完成（`model_only_v1` 同步 Agent Runtime 已实现并通过自动化验证）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
-**前端事件依据：** [`phase-9-web-ui-plan.md`](../frontend/phase-9-web-ui-plan.md)
+**前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 
-> 本文记录阶段5的最终实施事实。`model_only_v1` 已具备同步执行、最多两个无依赖工作 Agent 并行、显式取消、费用预留、实时服务器发送事件（SSE）、持久化事件回放和完整节点查询。工具循环属于阶段4恢复后的新执行配置，跨进程恢复属于阶段3，遥测装配属于阶段8，不再作为阶段5完成条件。
+> 本文记录阶段3的最终实施事实。`model_only_v1` 已具备同步执行、最多两个无依赖工作 Agent 并行、显式取消、费用预留、实时服务器发送事件（SSE）、持久化事件回放和完整节点查询。工具循环属于阶段7恢复后的新执行配置，跨进程恢复属于阶段10，遥测装配属于阶段6，不再作为阶段3完成条件。
+
+> 2026 年 8 月 19 日路线图重排：本能力由原阶段5调整为阶段3；实现范围和完成状态不变。
 
 本文统一使用以下口径：
 
 - **当前实现**：以 2026 年 8 月 13 日的 Schema、迁移、Service、Router 和自动化测试为依据，说明现在可调用、可持久化和已验证的行为。
-- **目标态**：阶段5完整验收或后续 `tool_enabled_v1` 需要增加的行为；目标态字段和接口不得被描述为当前已可用。
+- **目标态**：阶段3完整验收或后续 `tool_enabled_v1` 需要增加的行为；目标态字段和接口不得被描述为当前已可用。
 
 ## 目标
 
@@ -26,11 +28,11 @@
 
 - 阶段2 Model Gateway、Context Builder、Prompt/Model Catalog 和 Evaluation 可以独立调用。当前工作流已复用 Model Gateway 的 `ModelInvocationService`、Model Attempt 与费用事实，但上下文节点尚未调用 Context Builder 或 Prompt Catalog，Evaluation 也由工作流直接写入现有表。
 - `llm_runs`、`llm_tasks`、`llm_attempts`、`llm_evaluations` 和 `llm_artifacts` 已保存主要业务事实。
-- Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段5已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
+- Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
-- 阶段3 RabbitMQ 和阶段4 Tool Runtime 均已暂停。阶段5第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
-- 阶段9已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配仍在进行中，真实 Provider 端到端验收和工具视图仍未完成。
-- 阶段8 OpenTelemetry 尚未实施，但优先级已提高。阶段5必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
+- 阶段10 RabbitMQ 和阶段7 Tool Runtime 均已暂停。阶段3第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
+- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配仍在进行中，真实 Provider 端到端验收和工具视图仍未完成。
+- 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
 ## 当前实施结果（2026 年 8 月 13 日）
 
@@ -47,21 +49,21 @@
 | 资源限制 | 已实现 | Run 请求最长 100,000 字符；节点数、模型调用数、工作流总时长、单次模型超时和单节点输出大小均有限制；`max_parallel_agents` 范围为 `1`～`2`；并发调用使用原子费用预留避免超卖 |
 | 工具、Memory 与 Knowledge | 明确禁用 | `implementer`、工具、文件写入、命令、网络及外部副作用在 `model_only_v1` 计划校验时被拒绝；Memory 和 Knowledge 不自动注入 |
 
-阶段5边界说明：
+阶段3边界说明：
 
 - `POST /agent-workflows/{workflow_execution_id}/cancel` 是协作式取消：立即持久化取消事实并阻止后续节点；已经进入供应商网络边界的请求不会伪装成从未发送，返回后只做事实收敛。
-- `model_only_v1` 没有等待用户输入的分支，因此不提供没有实际状态来源的 `resume` 接口。需要请求结束后继续、进程重启恢复或跨进程执行时恢复阶段3。
+- `model_only_v1` 没有等待用户输入的分支，因此不提供没有实际状态来源的 `resume` 接口。需要请求结束后继续、进程重启恢复或跨进程执行时恢复阶段10。
 - 类型化节点公共结果保持 64 KiB 硬上限，超限明确失败。模型网关已经把原始供应商请求和响应保存到 MinIO；不会把公共节点合同静默改成另一种 Artifact 形状。
 - POST SSE 用于当前请求的实时事件；GET `/events` 按设计提供有限、可重复的持久化回放，前端刷新后再读取 Summary/Result，不增加第二套持续订阅协议。
 - Agent Runtime 已完成执行职责划分：`workflow_execution_service.py` 负责创建工作流、管理同步或 SSE 使用的数据库会话并返回结果；`model_only_workflow_orchestrator.py` 决定 `model_only_v1` 的节点执行顺序和审核分支；Provider 调用和类型化输出校验由 `agent_model_node_service.py` 负责；Workflow、Node、Event、预算、Task、Agent Run 和 Agent Turn 的状态写入，以及成功、失败、取消时的相关状态收尾，均由 `workflow_execution_state_service.py` 负责。
 - Workflow Completion 节点、Workflow/Run 成功终态及两个完成事件使用同一数据库事务；实时观察者只能在该事务提交后收到这两个事件。
-- OpenTelemetry 仍由阶段8装配；阶段5只保留稳定关联字段。真实供应商冒烟测试需要部署环境密钥，是可选验证，不作为离线自动化完成条件。
+- OpenTelemetry 仍由阶段6装配；阶段3只保留稳定关联字段。真实供应商冒烟测试需要部署环境密钥，是可选验证，不作为离线自动化完成条件。
 
-## 阶段5首版能力边界
+## 阶段3首版能力边界
 
 ### `model_only_v1` 执行配置
 
-阶段4暂停期间，阶段5先交付不依赖工具的完整工作流：
+阶段7暂停期间，阶段3先交付不依赖工具的完整工作流：
 
 ```text
 用户请求
@@ -98,11 +100,11 @@ Controller 最终汇总
 | `researcher` | 分析请求中明确提供的文本、Artifact 摘要和证据 | 无代码搜索工具，不允许生成虚假文件证据 |
 | `reviewer` | 独立读取目标、候选结果、确定性检查和证据引用 | 不继承实现模型隐藏上下文，不修改结果 |
 | `verifier` | 预留角色，当前不创建模型节点 | 首版由确定性程序节点直接验证 Handoff 和持久化引用，不把程序检查交给模型 |
-| `implementer` | 不启用 | 阶段4写入、命令、Git 和隔离 Workspace 恢复前拒绝创建该角色任务 |
+| `implementer` | 不启用 | 阶段7写入、命令、Git 和隔离 Workspace 恢复前拒绝创建该角色任务 |
 
 - Controller 输出包含工具或代码修改要求时，计划校验当前返回 `agent_capability_unavailable` 并使工作流失败；未来实现等待输入后才允许进入 `waiting_for_input`。不能创建一个假 Implementer 后返回空成功。
-- 阶段4恢复后新增 `tool_enabled_v1` 工作流定义，复用相同节点结果信封，并增加工具节点输出；不能在 `model_only_v1` 中静默改变行为。
-- 阶段5以 `model_only_v1` 作为可独立交付能力。阶段4恢复后新增 `tool_enabled_v1` 并完成工具循环、写隔离与程序测试集成；该新增能力不回退阶段5的完成状态。
+- 阶段7恢复后新增 `tool_enabled_v1` 工作流定义，复用相同节点结果信封，并增加工具节点输出；不能在 `model_only_v1` 中静默改变行为。
+- 阶段3以 `model_only_v1` 作为可独立交付能力。阶段7恢复后新增 `tool_enabled_v1` 并完成工具循环、写隔离与程序测试集成；该新增能力不回退阶段3的完成状态。
 
 ## 核心实体边界
 
@@ -114,7 +116,7 @@ Run
     │   ├── AgentRun（一个角色执行一个 Task）
     │   │   └── AgentTurn（模型/工具循环步骤）
     │   │       ├── ModelAttempt
-    │   │       └── ToolCall（阶段4恢复后）
+    │   │       └── ToolCall（阶段7恢复后）
     │   ├── AgentHandoff（跨 Agent 可依赖结果）
     │   ├── Evaluation（审核或确定性检查事实）
     │   └── Artifact（大型输出或证据）
@@ -124,8 +126,8 @@ Run
 - `AgentWorkflowExecution` 是一次 Run 使用某个版本化工作流定义的执行事实，不代替 Run。
 - `AgentWorkflowNodeExecution` 记录编排步骤的输入引用、完整类型化输出、分支和生命周期，不代替 Agent Turn、Attempt、Tool Call 或 Evaluation。
 - `AgentRun`、`AgentTurn` 的表和含义继续保留，但代码职责应从 Memory 实验目录迁移到 Agent Runtime；L0 Working State 仍由 Memory 模块引用，不复制表或创建第二套状态。
-- Handoff 继续是不可变的 L2 协作事实。阶段5可以显式把依赖 Task 的 Handoff 作为下一节点输入，但不启用 Memory Packet，也不自动注入 L1、L3、L4 Memory。
-- 用户可见事件属于 MySQL 业务事实；OpenTelemetry span 属于阶段8遥测。两者通过 ID 关联，但任何一方都不替代另一方。
+- Handoff 继续是不可变的 L2 协作事实。阶段3可以显式把依赖 Task 的 Handoff 作为下一节点输入，但不启用 Memory Packet，也不自动注入 L1、L3、L4 Memory。
+- 用户可见事件属于 MySQL 业务事实；OpenTelemetry span 属于阶段6遥测。两者通过 ID 关联，但任何一方都不替代另一方。
 
 ## 工作流定义
 
@@ -508,9 +510,9 @@ errors[]
 
 该节点只聚合既有节点证据和使用量，不重新生成业务内容。当前 Schema 不包含 `remaining_budget`，只返回 `remaining_model_calls`；费用剩余量由节点 `budget` 投影表达。目标态需增加聚合值与 Attempt 明细的独立一致性检查。
 
-### 阶段4恢复后的 `tool_execution`
+### 阶段7恢复后的 `tool_execution`
 
-未来节点的 `output` 必须直接采用阶段4 `ToolExecutionResult`：工具名/版本、权限决定、状态、结构化输出、Artifact、stdout/stderr 摘要、退出码、耗时、截断和稳定错误。阶段5不复制工具权限或执行实现。
+未来节点的 `output` 必须直接采用阶段7 `ToolExecutionResult`：工具名/版本、权限决定、状态、结构化输出、Artifact、stdout/stderr 摘要、退出码、耗时、截断和稳定错误。阶段3不复制工具权限或执行实现。
 
 ## 工作流级返回合同
 
@@ -743,7 +745,7 @@ stream
 - 新建 Workflow 的 POST 返回 HTTP `201`，即使业务结果是 `failed` 或 `outcome_unknown`；完全相同的幂等回放返回 `200`，请求校验、资源不存在和冲突分别沿用 `422`、`404` 和 `409`。
 - `stream` 是传输选择，不参与请求 hash；相同幂等 key 可以在 JSON 与 SSE 表现之间回放同一个持久化 Workflow，不会再次调用模型。
 - 创建请求超时后不能无条件自动创建新请求；调用方应使用原 idempotency key 重试或通过 Run 发现接口查询原 Workflow。
-- 当前最终用户身份未完成，接口仍处于受信调用方边界；阶段10完成后必须从 principal 派生 Run owner。
+- 当前最终用户身份未完成，接口仍处于受信调用方边界；阶段5完成后必须从 principal 派生 Run owner。
 
 ### 事件枚举
 
@@ -870,26 +872,26 @@ agent_result_persistence_failed
 - Schema、能力、预算和依赖错误不可重试；Provider 临时错误只沿用 Model Gateway 的有限重试，逻辑 Agent 节点不能再套一层无界重试。
 - 模型结果已经产生但节点持久化结果无法确认时，目标态必须进入 `outcome_unknown` 并禁止自动重复计费。
 
-## 阶段8可观测性协同
+## 阶段6可观测性协同
 
-阶段8优先级已经提高，但独立阶段规划尚未开始。本阶段只提前固定不可逆的关联边界，使后续阶段8能够装配遥测而不改写业务合同；业务正确性不等待 exporter：
+阶段6优先级已经提高，但独立阶段规划尚未开始。本阶段只提前固定不可逆的关联边界，使后续阶段6能够装配遥测而不改写业务合同；业务正确性不等待 exporter：
 
 ```text
 agent.workflow              # 根 span
 ├── agent.node              # 每个 Node Execution
 │   ├── model.generate      # Model Attempt
 │   ├── evaluation.execute
-│   └── tool.execute        # 阶段4恢复后
+│   └── tool.execute        # 阶段7恢复后
 └── mysql.* / object_store.*
 ```
 
 - `workflow_execution_id`、`node_execution_id`、`run_id`、`task_id`、`agent_run_id`、`attempt_id` 作为低风险关联标识；完整 Prompt、Node output、工具参数、Handoff 和用户文件不进入 span attribute。
 - trace/span ID 写入节点事实仅用于跳转关联，不作为状态、顺序或恢复依据。
-- OpenTelemetry Generative AI 语义约定仍可能变化；阶段8必须固定所采用的语义约定版本，并用平台稳定字段映射，不能把实验性属性名变成数据库公共合同。
-- 当前代码尚未提供 `WorkflowTelemetry` 或等价端口，只有可空的 trace/span 关联字段。目标态先抽象无操作遥测端口，再由阶段8装配 SDK、exporter、采样、指标和跨服务传播。
+- OpenTelemetry Generative AI 语义约定仍可能变化；阶段6必须固定所采用的语义约定版本，并用平台稳定字段映射，不能把实验性属性名变成数据库公共合同。
+- 当前代码尚未提供 `WorkflowTelemetry` 或等价端口，只有可空的 trace/span 关联字段。目标态先抽象无操作遥测端口，再由阶段6装配 SDK、exporter、采样、指标和跨服务传播。
 - 关键指标规划：工作流/节点数量与耗时、各状态数量、模型调用和 token/费用、预算终止、等待输入、审核拒绝、未知结果和事件恢复缺口。
 
-OpenTelemetry 官方将 traces、metrics、logs 作为不同信号，并说明 Python traces/metrics 稳定而 logs 仍在开发；阶段8首批优先 trace 和 metrics。Generative AI 语义属性包含潜在敏感内容警告，因此阶段5节点正文只留在受控业务存储。
+OpenTelemetry 官方将 traces、metrics、logs 作为不同信号，并说明 Python traces/metrics 稳定而 logs 仍在开发；阶段6首批优先 trace 和 metrics。Generative AI 语义属性包含潜在敏感内容警告，因此阶段3节点正文只留在受控业务存储。
 
 ## 项目目录现状与后续调整
 
@@ -918,7 +920,7 @@ apps/api/src/nexuspilot_api/features/agent_runtime/
 
 ### 工作流执行职责调整结果
 
-调整前 `workflow_execution_service.py` 为 2,335 行。2026 年 8 月 13 日完成职责调整后，该文件为 178 行，只负责工作流创建、请求或 SSE 数据库会话以及结果读取；`model_only_workflow_orchestrator.py` 负责当前模型工作流的节点顺序、各节点业务动作和审核分支。状态服务负责提交工作流状态以及成功、失败和取消时的相关状态收尾，模型节点服务负责 Provider 调用和类型化输出校验。阶段4恢复后的工具工作流必须使用独立执行配置，不能把工具循环继续写入 `model_only_workflow_orchestrator.py`。
+调整前 `workflow_execution_service.py` 为 2,335 行。2026 年 8 月 13 日完成职责调整后，该文件为 178 行，只负责工作流创建、请求或 SSE 数据库会话以及结果读取；`model_only_workflow_orchestrator.py` 负责当前模型工作流的节点顺序、各节点业务动作和审核分支。状态服务负责提交工作流状态以及成功、失败和取消时的相关状态收尾，模型节点服务负责 Provider 调用和类型化输出校验。阶段7恢复后的工具工作流必须使用独立执行配置，不能把工具循环继续写入 `model_only_workflow_orchestrator.py`。
 
 最小拆分边界：
 
@@ -942,7 +944,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 当前执行 Service 为请求/执行级对象，因此其可变 `event_sink` 尚不会跨请求共享；拆分后仍必须把它作为每次执行的构造参数或执行上下文，禁止提升为单例或让并行 Workflow 相互覆盖。此项必须在提高并行度前完成。
 - `workflow_execution_state_service.py` 不依赖模型节点服务或工作流编排服务；`agent_model_node_service.py` 可以调用状态服务，但状态服务不得反向调用 Provider。
 
-调整过程保持小步验证：阶段5定向测试已经包含事件“提交后通知”、Provider“开始事件提交后调用”、终态事务可见性、原子费用预留、并行数据库会话和显式取消；状态写入、工作流结束时的状态收尾、模型调用、版本化工作流定义登记、运行时节点连接检查、节点顺序和审核分支均已具有明确负责文件。后续扩展新工作流定义时继续运行 Agent Workflow 测试、完整 API 测试和 Ruff，不为每个只包含一次简单调用的节点创建一个 Service 文件。
+调整过程保持小步验证：阶段3定向测试已经包含事件“提交后通知”、Provider“开始事件提交后调用”、终态事务可见性、原子费用预留、并行数据库会话和显式取消；状态写入、工作流结束时的状态收尾、模型调用、版本化工作流定义登记、运行时节点连接检查、节点顺序和审核分支均已具有明确负责文件。后续扩展新工作流定义时继续运行 Agent Workflow 测试、完整 API 测试和 Ruff，不为每个只包含一次简单调用的节点创建一个 Service 文件。
 
 ## 测试设计
 
@@ -956,7 +958,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 2026 年 8 月 13 日运行完整后端测试为 `212 passed, 4 skipped`，Model Provider 包测试为 `28 passed`；4 项跳过项是需要真实 MySQL/MinIO 环境变量的基础设施测试。`ruff check` 与本阶段修改文件的格式检查均通过。Alembic 当前唯一 head 为 `20260813_0011`，面向 MySQL 的 `alembic upgrade head --sql` 离线迁移生成通过，并包含工作流费用预留字段。真实供应商调用需要部署环境密钥，保持为可选冒烟验证，不把外部供应商可用性作为离线自动化完成条件。
 
-以下各节保留阶段5回归边界和后续执行配置扩展时需要补充的测试方向；阶段3的进程恢复、阶段4的工具执行、阶段8的遥测装配和阶段10的用户权限测试不属于阶段5未完成项。
+以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 
 ### 节点合同
 
@@ -990,7 +992,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 同步返回所有完整节点；节点 sequence 稳定；结果快照版本一致。
 - SSE 乱序、重复、断开、事件过大降级为查询引用、最终事件缺失和 after-sequence 恢复。
 - 浏览器刷新后从 MySQL 事件和 result 恢复，不从计时器猜测进度。
-- 当前只验证 Workflow、Node、Task 与 Handoff 的资源归属关系；用户身份尚未实现。阶段10接入 principal 后再增加跨用户查询和创建拒绝测试。
+- 当前只验证 Workflow、Node、Task 与 Handoff 的资源归属关系；用户身份尚未实现。阶段5接入 principal 后再增加跨用户查询和创建拒绝测试。
 
 ### 可观测性
 
@@ -1010,9 +1012,9 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 6 | Handoff、确定性验证和 Reviewer | 已完成 | 下游只消费有效证据，审核独立且可阻断汇总 | Handoff/Evaluation 归属、审核拒绝和错误收敛测试 |
 | 7 | Final synthesis、completion 和 Assistant Message | 已完成 | 最终消息与汇总节点一致提交；完成节点、Workflow/Run 终态和两个完成事件使用一个事务；全量聚合可查询 | 消息回滚、终态原子可见性和汇总查询测试 |
 | 8 | HTTP/SSE、result 快照和恢复事件 | 已完成 | POST 实时事件、完整结果、持久事件回放和幂等显式取消可用；当前工作流没有等待状态，因此不提供空 `resume` 动作 | ASGI、SSE sequence、实时流、游标、非法游标、取消竞争与 OpenAPI 合同测试 |
-| 9 | 阶段8遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段8装配 | Schema 和持久化字段检查 |
+| 9 | 阶段6遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段6装配 | Schema 和持久化字段检查 |
 | 10 | `model_only_v1` 基础设施与供应商验证 | 已完成离线门禁 | 快速测试、迁移链和 MySQL 离线 SQL 可验证；真实供应商调用必须使用部署环境密钥，保持可选 | 完整后端测试、Alembic 检查、可选供应商冒烟 |
-| 11 | 阶段4恢复后的 Tool Runtime 集成 | 不属于阶段5完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段4工具循环、写隔离、取消和未知结果测试 |
+| 11 | 阶段7恢复后的 Tool Runtime 集成 | 不属于阶段3完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段7工具循环、写隔离、取消和未知结果测试 |
 
 ## 失败与恢复设计
 
@@ -1023,7 +1025,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 节点输出校验失败、计划拒绝、验证失败和 Reviewer 拒绝会终止当前 Workflow，不继续最终汇总。
 - SSE observer 在事件提交后收到通知；当前 `event_sink` 仍是执行服务上的可变字段，通知自身失败还没有独立隔离合同。
 - Final synthesis 的 Assistant Message 与最终汇总节点完成事件共用事务；测试已验证最终节点无法持久化时不会遗留成功消息。
-- 当前没有跨请求继续、等待输入、resume 或启动审计。同步请求所在进程意外退出仍可能留下 `running` 事实；该问题需要阶段3的可靠执行与恢复机制，不能由 API 进程内后台任务安全解决。
+- 当前没有跨请求继续、等待输入、resume 或启动审计。同步请求所在进程意外退出仍可能留下 `running` 事实；该问题需要阶段10的可靠执行与恢复机制，不能由 API 进程内后台任务安全解决。
 
 ### 目标态
 
@@ -1031,20 +1033,20 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 并行组部分失败时，已进入供应商边界的调用分别收敛；成功结果先保存 Attempt、Node 与 Handoff，随后由失败节点终止工作流。父级验证不会在必要子节点结束前开始。
 - Context、Prompt、Evaluation 或 Artifact 服务接入后不可用时，返回明确依赖错误，不用空数据伪装完整上下文。
 - 未来版本若新增等待用户输入，必须同时定义 `expected_workflow_version`、输入幂等 key 和恢复测试；当前版本不预留一个没有运行语义的接口。
-- 阶段3恢复后，启动审计必须识别进程中断遗留的 `running` 节点，并依据是否存在不可确认外部调用决定失败、取消或未知结果；不得伪造恢复完成。
+- 阶段10恢复后，启动审计必须识别进程中断遗留的 `running` 节点，并依据是否存在不可确认外部调用决定失败、取消或未知结果；不得伪造恢复完成。
 
 ## 风险与停止条件
 
 - 节点返回合同若仍允许任意自由 `dict`、省略公共字段或把大型文本无限内联，停止实现并先修正 Schema。
 - 要求展示模型隐藏思维链、系统 Prompt、完整 Provider 原始响应或敏感工具参数时拒绝实施；改为可公开决定摘要和证据引用。
-- 阶段4暂停期间要求 Implementer、文件修改、Shell、Git 或 MCP 时，返回能力不可用，不能在 API 进程临时执行命令绕过工具层。
+- 阶段7暂停期间要求 Implementer、文件修改、Shell、Git 或 MCP 时，返回能力不可用，不能在 API 进程临时执行命令绕过工具层。
 - 共享一个 `AsyncSession` 给并行 Agent、在模型 HTTP 调用期间持有数据库事务或允许并行超卖预算时，停止实现。
-- 需要请求结束后继续、自动崩溃恢复或跨进程 Agent 时，必须重新评估阶段3，不使用 `BackgroundTasks` 假装可靠执行。
-- OpenTelemetry 实验性 GenAI 属性发生变化时，只调整阶段8映射，不改变节点数据库合同。
+- 需要请求结束后继续、自动崩溃恢复或跨进程 Agent 时，必须重新评估阶段10，不使用 `BackgroundTasks` 假装可靠执行。
+- OpenTelemetry 实验性 GenAI 属性发生变化时，只调整阶段6映射，不改变节点数据库合同。
 
 ## 完成标准
 
-### `model_only_v1` 与阶段5
+### `model_only_v1` 与阶段3
 
 当前状态：已完成。自动化测试已经验证主流程、完整节点合同、核心 HTTP/SSE、幂等、有界并行、原子费用预留、显式取消、审核门禁、最终消息回滚、终态一致提交、超时和未知结果。
 
@@ -1053,14 +1055,14 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - POST、节点详情和 result 查询返回一致的完整节点合同；SSE 返回可恢复公共投影和权威详情路径；result 可以返回该工作流全部节点参数。
 - 计划、并行、预算、固定单轮 Worker 限制、取消、失败和未知结果通过测试；当前定义没有等待输入或恢复分支。
 - 不读取 Memory Packet/Knowledge，不执行工具，不伪造文件、测试或外部证据。
-- 业务事件保存在 MySQL，trace/span 关联字段已经预留；阶段8装配 exporter 时必须验证故障不影响运行。
-- 两个无依赖模型工作 Agent 可以有界并行。写任务、工具调用和独立 Workspace 仍明确不可用，等待阶段4以新的版本化执行配置实现。
-- Model Attempt、Handoff、Evaluation 和 Node Result 均能从 `run_id` 查询并相互关联；阶段4加入 Tool Call、Artifact 和程序测试证据时沿用同一引用方式。
+- 业务事件保存在 MySQL，trace/span 关联字段已经预留；阶段6装配 exporter 时必须验证故障不影响运行。
+- 两个无依赖模型工作 Agent 可以有界并行。写任务、工具调用和独立 Workspace 仍明确不可用，等待阶段7以新的版本化执行配置实现。
+- Model Attempt、Handoff、Evaluation 和 Node Result 均能从 `run_id` 查询并相互关联；阶段7加入 Tool Call、Artifact 和程序测试证据时沿用同一引用方式。
 
 ## 官方依据
 
-- [OpenTelemetry Signals](https://opentelemetry.io/docs/concepts/signals/)：区分 traces、metrics、logs 和 baggage，阶段5据此不把业务事件与遥测混为一体。
-- [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/)：当前 Python traces 和 metrics 稳定，logs 仍在开发，阶段8首批优先 traces/metrics。
+- [OpenTelemetry Signals](https://opentelemetry.io/docs/concepts/signals/)：区分 traces、metrics、logs 和 baggage，阶段3据此不把业务事件与遥测混为一体。
+- [OpenTelemetry Python](https://opentelemetry.io/docs/languages/python/)：当前 Python traces 和 metrics 稳定，logs 仍在开发，阶段6首批优先 traces/metrics。
 - [OpenTelemetry Python instrumentation](https://opentelemetry.io/docs/languages/python/instrumentation/)：确认手工创建嵌套 span、属性、事件、错误和指标的装配方式。
 - [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/)：语义约定提供公共命名，但实验性约定可能变化，数据库合同不能直接依赖不稳定字段名。
 - [OpenTelemetry GenAI attributes](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/)：工具参数和结果等属性可能包含敏感信息，不默认写入 span。

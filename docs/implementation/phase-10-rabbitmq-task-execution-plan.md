@@ -1,19 +1,21 @@
-# 第三阶段：RabbitMQ 任务执行需求讨论与功能规划
+# 阶段10：RabbitMQ 任务执行需求讨论与功能规划
 
-**文档日期：** 2026 年 8 月 7 日
+**文档日期：** 2026 年 8 月 19 日
 **文档状态：** 暂停（当前没有消息队列优先需求；尚未修改 RabbitMQ、Publisher 或 Worker 运行代码）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
-> 阶段2稳定能力已完成。根据 2026 年 8 月 7 日优先级决定，当前同步调用和内部开发不需要消息队列，阶段3暂停并保留原规划；阶段4可以在不依赖 RabbitMQ 的前提下规划同步工具运行能力。
+> 阶段2稳定能力已完成。根据 2026 年 8 月 7 日优先级决定，当时的异步任务规划（现阶段10）暂停并保留；当前同步调用和内部开发不需要消息队列，阶段7可以在不依赖 RabbitMQ 的前提下规划同步工具运行能力。
+
+> 2026 年 8 月 19 日路线图重排：本能力由原阶段3调整为阶段10，明确改为真实可靠后台执行需求触发，而不是阶段4～9的默认前置。
 
 ## 暂停决定与重新启用条件
 
 - 当前没有必须脱离 HTTP/SSE 生命周期继续运行的长任务，没有多 Worker 横向扩展，也没有需要持久延迟重试和流量削峰的生产负载。
 - 不使用 FastAPI `BackgroundTasks` 代替可靠队列；暂停意味着明确不承诺 API 重启后恢复、请求断开后继续或跨进程调度。
 - `llm_outbox_events` 和本规划继续保留，但不启动 Publisher、不连接 Broker、不写入假消息，也不把预留表描述为异步能力。
-- 阶段4工具运行采用同步内部 Service、严格超时和资源上限；阶段5 Agent 若在阶段3恢复前实施，也必须保持同步、有界和不可恢复的明确限制。
+- 阶段7工具运行采用同步内部 Service、严格超时和资源上限；阶段3 Agent 若在阶段10恢复前实施，也必须保持同步、有界和不可恢复的明确限制。
 
-满足任一条件时重新评估阶段3：单次任务经常超过 HTTP/SSE 可接受时长；要求页面刷新或服务重启后继续；需要多个 Worker 并行；Agent 调查/审核/工具任务需要后台并发；外部限流需要持久延迟重试；模型执行需要削峰；或任务必须在 API 进程退出后可靠保留。
+满足任一条件时重新评估阶段10：单次任务经常超过 HTTP/SSE 可接受时长；要求页面刷新或服务重启后继续；需要多个 Worker 并行；Agent 调查/审核/工具任务需要后台并发；外部限流需要持久延迟重试；模型执行需要削峰；或任务必须在 API 进程退出后可靠保留。
 
 ## 目标
 
@@ -29,8 +31,8 @@
 - 当前 API 创建任务时不会写 outbox，也没有 RabbitMQ 依赖、发布器或 Worker。
 - 当前 `ModelInvocationService` 可以执行统一模型调用，但 `llm_tasks` 尚未定义足以让 Worker 重建模型请求的稳定执行载荷。
 - 阶段2的 Model Gateway、Context、Prompt/Model Catalog 和 Evaluation 已完成快速测试、真实 MySQL/MinIO、迁移循环和静态检查，可作为 Worker handler 的已验证依赖。
-- 当前仍没有 RabbitMQ 依赖、拓扑声明、发布循环、消费去重表或 Worker 进程，不能声称阶段3已经实施。
-- 阶段3测试不依赖最终用户登录、个人 API Key 或用户供应商凭据接口。测试 User/Run/Task 由 fixture 或受控 seed 创建，可靠性测试使用假 Provider；真实供应商冒烟仍只读取服务端环境凭据。
+- 当前仍没有 RabbitMQ 依赖、拓扑声明、发布循环、消费去重表或 Worker 进程，不能声称阶段10已经实施。
+- 阶段10测试不依赖最终用户登录、个人 API Key 或用户供应商凭据接口。测试 User/Run/Task 由 fixture 或受控 seed 创建，可靠性测试使用假 Provider；真实供应商冒烟仍只读取服务端环境凭据。
 
 ## 可靠性结论
 
@@ -60,7 +62,7 @@
 
 ## 规划结论与编码前决定
 
-本轮把阶段3边界收敛为一个可独立交付能力，不拆成额外阶段。编码前需要确认以下决定；未确认时只允许继续文档和测试设计：
+本轮把阶段10边界收敛为一个可独立交付能力，不拆成额外阶段。编码前需要确认以下决定；未确认时只允许继续文档和测试设计：
 
 | 决定 | 当前建议 | 通过条件 |
 |---|---|---|
@@ -72,7 +74,7 @@
 
 ### 状态机合同
 
-任务状态继续使用已有 `TaskStatus`，阶段3只增加受控转换，不创建第二套 Worker 状态：
+任务状态继续使用已有 `TaskStatus`，阶段10只增加受控转换，不创建第二套 Worker 状态：
 
 ```text
 pending / waiting_for_dependency
@@ -128,7 +130,7 @@ pending → publishing → published
 - Worker 必须从 MySQL 重新读取任务及执行规格，不信任消息中的业务状态。
 - 未知 `schema_version`、未知事件类型、缺失 ID 和非法 attempt 属于永久失败，不能无限重试。
 - 消息不得携带 API Key、完整用户文件、完整模型结果或任意可执行命令。
-- 版本化执行规格只允许保存不含 secret 的 `credential_reference`。阶段3第一版使用 `source=deployment_config`；后续阶段10启用用户供应商凭据后才允许 `source=user_provider_credential` 与 `credential_id`。Worker 必须从 Task → Run → User 重新校验归属，不能只相信执行规格中的 ID。
+- 版本化执行规格只允许保存不含 secret 的 `credential_reference`。阶段10第一版使用 `source=deployment_config`；后续阶段5启用用户供应商凭据后才允许 `source=user_provider_credential` 与 `credential_id`。Worker 必须从 Task → Run → User 重新校验归属，不能只相信执行规格中的 ID。
 
 ## 拟议数据调整
 
@@ -288,7 +290,7 @@ ack RabbitMQ delivery
 - 消费幂等表或等价唯一约束未实现时，不启用自动重投。
 - 没有真实 RabbitMQ 集成测试环境时，可以完成单元实现，但阶段状态仍为“进行中”。
 - 发现业务任务包含不可安全重试的外部副作用时，必须为该 handler 单独设计幂等键与补偿方式。
-- 执行规格或 RabbitMQ 消息需要携带供应商 secret、部署环境变量名或可跨用户复用的凭据时，停止实现并改为凭据引用；详细边界见 [`phase-10-platform-identity-credentials.md`](phase-10-platform-identity-credentials.md)。
+- 执行规格或 RabbitMQ 消息需要携带供应商 secret、部署环境变量名或可跨用户复用的凭据时，停止实现并改为凭据引用；详细边界见 [`phase-5-platform-identity-credentials.md`](phase-5-platform-identity-credentials.md)。
 
 ## 完成标准
 
