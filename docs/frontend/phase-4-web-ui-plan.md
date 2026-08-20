@@ -147,6 +147,33 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - Context、Prompt、Model Catalog 和 Evaluation 视图只显示后端证据，历史版本和未知能力行为与阶段2合同一致。
 - 长响应按批次刷新，不能每个 token 重新解析全部 Markdown；生成期间页面交互和滚动保持可用。
 
+#### 思考程度选择与跨 Provider 对齐（新增规划）
+
+当前 `ResponsesRequest.reasoning` 已具有 `enabled` 和 `effort`，DeepSeek 与 OpenAI 适配器也已实现部分映射，但 Web 只提供“推理展示”策略，用户不能控制模型是否思考或思考程度。展示策略只决定哪些 Provider 已返回的推理证据可以公开，思考程度才影响模型调用；二者必须作为两个独立控件和两个独立合同保存。
+
+统一交互采用“模型默认、关闭、最小、低、中、高、极高、最大”的候选集合，但页面只展示当前 Provider/Model 能力目录明确声明的选项：
+
+- “模型默认”表示整个 `reasoning` 字段缺省，让 Provider 使用该模型的原生默认值；它不等于关闭，也不应被前端展开成一个猜测值。
+- “关闭”映射为 `reasoning: {enabled: false}`，只在模型明确支持关闭时显示。不能关闭的模型不显示该选项，手工构造的非法请求由后端拒绝。
+- 选择具体程度时发送 `reasoning: {enabled: true, effort: <level>}`。统一程度枚举扩展为 `minimal | low | medium | high | xhigh | max`；不把一个 Provider 不支持的程度静默向上或向下取整。
+- 用户切换模型后，如果原选择不在新模型的允许集合中，Composer 回到“模型默认”并给出可访问提示；不能保留一个会在提交时才失败的隐藏非法值。
+- 第一版为整个请求选择一个程度。快速回复直接写入 `/responses`；Agent Workflow 将同一选择复制到本次工作流的各个 `role_bindings`，节点和 Attempt 保存实际请求程度。角色级单独调节留待有评测依据后再设计。
+
+后端 `ModelReasoningCapabilities` 需要在现有展示、流式、续接和 token 统计能力之外增加控制能力：`supports_reasoning_control`、`supports_disable`、有序 `supported_efforts`、可空 `default_effort` 和稳定 `profile_version`。Provider Catalog 是前端唯一事实源；空能力表示只允许“模型默认”，不能根据模型名称前缀推断。
+
+| Provider/模型族 | 官方原生控制 | NexusPilot 对齐规则 |
+|---|---|---|
+| OpenAI Responses 推理模型 | `reasoning.effort`，实际集合按模型可能包含 `none/minimal/low/medium/high/xhigh` | `none` 通过“关闭”表达，其余同名直传；每个模型只暴露目录声明的子集，不能假设所有 OpenAI 模型能力一致 |
+| DeepSeek V4 | `thinking.type=enabled/disabled`；`reasoning_effort` 的真实等级为 `high/max`，兼容输入 `low/medium` 会被上游改写为 `high` | 目录只暴露 `high/max` 与模型实际支持的关闭能力；平台拒绝 `minimal/low/medium/xhigh`，避免把用户选择静默改写 |
+| Anthropic 自适应思考模型 | `thinking.type=adaptive` 与 `output_config.effort=low/medium/high/xhigh/max`，支持集合按模型变化 | 对同名等级直传；启用具体程度时同时使用模型声明的 adaptive thinking 模式。只支持旧式 `budget_tokens` 的模型不得套用类别映射，除非目录为该模型提供经过验证的显式预算表 |
+| Gemini 3.x | `thinkingConfig.thinkingLevel=minimal/low/medium/high`，支持集合按模型变化 | 同名直传并按模型过滤；不支持关闭的模型不显示关闭 |
+| Gemini 2.5 | 原生 `thinkingBudget`，官方兼容层给出类别到预算的模型相关映射 | 只由后端版本化能力配置转换，前端不发送 token 预算；未配置映射时只允许“模型默认” |
+| OpenAI-compatible 自定义端点 | 不可从协议名称推断 | 默认只允许“模型默认”；管理员为具体 Provider/Model 配置并验证映射后才开放其他选项 |
+
+实现顺序为：先扩展供应商中立枚举与逐模型控制能力；再完成四个官方 Provider 的精确编解码和拒绝测试；随后把 reasoning 加入 Agent binding；最后实现 Composer 选择器、模型切换归一化、快速回复与 Agent 请求透传。合同测试必须覆盖每个公开选项的原生请求体、缺省不发送、非法组合拒绝、模型切换和刷新后的 Attempt 证据；真实浏览器测试至少覆盖当前 DeepSeek Flash 的默认、高、最大和关闭（若目录声明支持）路径。
+
+官方对齐依据：[OpenAI Responses reasoning](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta)、[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Anthropic Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Anthropic Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)、[Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) 与 [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
+
 ### 阶段10检查点：异步任务与可靠恢复
 
 **前端范围：**
@@ -623,7 +650,7 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
-- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。
+- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理展示能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度的后端接口已有部分实现，但控制能力目录、完整 Provider 映射和用户选择器仍按新增规划实施。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
@@ -640,7 +667,8 @@ apps/web/
 | 会话与路由 | 创建和选择会话、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | Message、Run 与 Workflow 尚无统一事务或端到端幂等提交；首个事件前断线不能安全重发可能计费的请求 | 进行中 |
 | Provider 与模型选择 | 服务端 Provider/Model 目录、推理能力、搜索、键盘选择、自定义模型、加载/失败/空目录状态 | 最终用户自己的 Provider 凭据和设置页等待阶段5 | 进行中 |
 | Responses 流 | SSE 增量正文、序号去重、缺口拒绝、已知 Attempt 有限回放、完成/保存/失败/取消状态分离、默认不发送输出 Token 上限、`length` 截断证据持久化 | 未知 Attempt 的首事件前断线只能读取最终事实；没有统一聊天提交恢复合同；修复前的历史 Message 没有截断元数据，不进行猜测性回填 | 进行中 |
-| Reasoning | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
+| Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
+| 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
 | Markdown | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条和可选语法高亮尚未实现 | 进行中 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
 | Agent 上下文 | Controller 和 Worker 获得当前 `Run.user_request`；依赖 Worker、Reviewer 和最终汇总获得完整 Worker 结构化输出及限长 Handoff | `context_assembly` 尚未注入完整会话历史、Memory、Knowledge、Artifact 或 Memory Packet | 进行中 |

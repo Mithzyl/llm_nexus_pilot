@@ -1019,13 +1019,25 @@ internal_error
 
 - NexusPilot 只调用 DeepSeek `POST /chat/completions`。DeepSeek 的 Responses 端点只作为协议设计参考，本阶段不实现；平台自有 `POST /api/v1/responses` 门面仍由 DeepSeek Chat Completions 适配器完成转换。
 - 官方当前模型值为 `deepseek-v4-flash` 和 `deepseek-v4-pro`。平台仍保留可配置 allowlist，不把模型名散落在业务分支中；后续由 Model Catalog 记录模型能力快照。
-- 统一请求增加可选的供应商中立 `reasoning: {enabled, effort}`，其中 `effort` 只允许 `low | high | max`，且禁用 reasoning 时不允许同时传 effort。DeepSeek 适配器将其转换为顶层 `thinking: {"type": "enabled" | "disabled"}` 和顶层 `reasoning_effort`；未显式提供 `reasoning` 时不额外发送字段，由官方默认为 `thinking=enabled`、`reasoning_effort=high`。
-- `deepseek-v4-flash` 接受 `low | high | max`。`deepseek-v4-pro` 精确支持 `high | max`；虽然官方会将 `low` 映射为 `high`，平台为避免静默改变请求语义，对 `deepseek-v4-pro + low` 返回明确输入或能力错误。
+- 统一请求已经具有可选的供应商中立 `reasoning: {enabled, effort}`，当前代码中的 `effort` 只允许 `low | high | max`，且禁用 reasoning 时不允许同时传 effort。DeepSeek 适配器将其转换为顶层 `thinking: {"type": "enabled" | "disabled"}` 和顶层 `reasoning_effort`；未显式提供 `reasoning` 时不额外发送字段，由官方默认为 `thinking=enabled`、`reasoning_effort=high`。阶段4新增的用户控制规划会把统一枚举扩展为 `minimal | low | medium | high | xhigh | max`，但每个 Provider/Model 仍只接受能力目录声明的子集。
+- DeepSeek V4 官方当前真实思考等级为 `high | max`；`low | medium` 只是兼容输入并会被上游映射为 `high`，`xhigh` 会被映射为 `max`。为保持请求语义可审计，平台后续目录只公开 `high | max`，并拒绝其他等级；当前 `deepseek-v4-flash + low` 的允许行为属于待修正兼容缺口，不再作为目标合同。
 - reasoning 启用时 DeepSeek 不支持 `temperature`；平台返回 `invalid_request`，不删除参数后重试。reasoning 显式禁用时才允许传递已验证的 `temperature`。
 - DeepSeek 流式响应必须收到 `data: [DONE]` 才视为完整结束。缺失终止标记或响应提前断开都按 `response_parse_error` 处理，生成 `response.failed` 并将 attempt 结束为失败，不把已收到的部分文本伪装成成功。
 - 官方已标记 `frequency_penalty` 和 `presence_penalty` 弃用且无效，统一 HTTP Schema 不引入这两个参数，未知字段继续由 `extra="forbid"` 拒绝。官方 `user_id` 也不在本次实施范围。
 - 工具或结构化输出中的 `strict` 只能在 Model Catalog 对当前模型明确记录支持时传递。未声明或未验证时必须返回 `unsupported_capability`，不得删除 `strict`、放宽 Schema 或改用普通文本后继续请求。本计划不声称 DeepSeek beta strict 已经完成真实供应商验证。
 - 已验证新参数 Schema 边界、两个模型的参数组合、Pro/low 拒绝、reasoning/temperature 冲突、`[DONE]` 完整/缺失、展示策略裁剪、工具续接完整回放、失败 Attempt 落库、弃用字段拒绝、strict 能力失败和原有 Chat Completions 回归。`reasoning_content` 只在调用方明确选择且模型目录允许 `provider-visible` 时进入公开统一块；默认策略不会暴露。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
+
+## 跨 Provider 思考程度控制补充规划
+
+阶段2现有 `ModelReasoningCapabilities` 只描述推理内容如何展示、流式传输、续接和计量，不足以驱动用户输入。新增控制合同必须逐 Provider/Model 声明 `supports_reasoning_control`、`supports_disable`、`supported_efforts`、`default_effort` 和 `profile_version`；默认值为空表示保持 Provider 原生默认，不等于关闭。
+
+- 统一程度枚举扩展为 `minimal | low | medium | high | xhigh | max`。`none` 不作为 effort，而由 `enabled=false` 表示，继续保持“是否启用”和“启用后强度”两个正交字段。
+- OpenAI Responses 将目录允许的等级直接写入 `reasoning.effort`；DeepSeek 只允许 `high/max` 并同时维护 `thinking.type`；Anthropic 新模型使用 adaptive thinking 与 `output_config.effort`；Gemini 3.x 使用 `thinkingConfig.thinkingLevel`；Gemini 2.5 的数值预算只能来自逐模型版本化映射。
+- Provider 适配器不得把不支持的程度向最近等级取整。即使供应商兼容层会接受并改写，平台也必须在网络调用前返回稳定 `unsupported_capability`，让 Attempt 和用户选择保持一致。
+- `ProviderCatalogResponse` 返回控制能力，Web 只消费目录，不解析模型名。`ResponsesRequest` 与 Agent `role_bindings` 使用同一 `ReasoningConfiguration`；工作流节点把实际配置保存到模型 Attempt 证据中。
+- Anthropic/Gemini 当前适配器对非空 reasoning 明确返回未实现错误，这一行为在精确映射和合同测试完成前保持；不能为赶 UI 进度静默丢弃字段。
+
+跨 Provider 对齐和 UI 状态机的完整实施顺序、模型切换行为及浏览器门禁记录在 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md#思考程度选择与跨-provider-对齐新增规划)。
 
 ## 2026 年 8 月 3 日阶段2最终审查与验证结果
 
