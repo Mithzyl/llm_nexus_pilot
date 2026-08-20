@@ -452,6 +452,11 @@ class OpenAIResponsesProvider:
             raise ModelProviderError(
                 "invalid_request", "Request was routed to the wrong provider."
             )
+        if request.json_object_output:
+            raise ModelProviderError(
+                "unsupported_capability",
+                "OpenAI JSON object output is not implemented by this codec.",
+            )
         if request.reasoning and not request.reasoning.enabled:
             raise ModelProviderError(
                 "unsupported_capability",

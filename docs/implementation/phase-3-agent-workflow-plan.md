@@ -962,6 +962,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 2026 年 8 月 20 日补充回归确认：真实运行曾产生 3352 字节 Handoff，并因既有 1000 字节合同在 `handoff_submission` 节点失败。新增超长 Worker 输出回归后，工作流会保存完整 Worker 节点并生成不超过合同上限、可追溯源节点的 Handoff 投影；`tests/test_agent_workflows.py` 与 L2 Handoff 上限定向测试共 33 项通过，原有独立 Handoff 超限拒绝行为保持不变。
 
+2026 年 8 月 20 日补充回归确认：DeepSeek prompted JSON 曾仅依赖 Schema 提示词，真实 Worker 响应虽以 `finish_reason=stop` 完成，却因末尾数组缺少 `]` 而产生 `node_output_invalid`。当前 Agent 调用使用独立的 `json_object_output` 合同，DeepSeek 适配器映射为官方 `response_format: {"type":"json_object"}` 并在 Provider 边界解析；节点层继续执行原有 Pydantic Schema 校验。普通 JSON object 与原生 JSON Schema 仍是两个能力，不允许静默降级。真实浏览器回归已完成 10 个节点和 3 次模型调用，刷新后最终消息与节点事实均可恢复。
+
 以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 
 ### 节点合同

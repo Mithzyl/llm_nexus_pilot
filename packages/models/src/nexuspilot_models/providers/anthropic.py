@@ -312,6 +312,11 @@ class AnthropicMessagesProvider:
             raise ModelProviderError(
                 "invalid_request", "Request was routed to the wrong provider."
             )
+        if request.json_object_output:
+            raise ModelProviderError(
+                "unsupported_capability",
+                "Anthropic JSON object output is not implemented by this codec.",
+            )
         if request.reasoning:
             raise ModelProviderError(
                 "unsupported_capability",

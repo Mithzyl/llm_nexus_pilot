@@ -34,6 +34,7 @@ class DeepSeekChatProvider(OpenAICompatibleChatProvider):
             base_url=base_url,
             api_key=api_key,
             supports_json_schema=False,
+            supports_json_object_output=True,
             supports_reasoning_configuration=True,
             requires_done_marker=True,
         )

@@ -38,6 +38,7 @@ class OpenAICompatibleChatProvider:
         base_url: str,
         api_key: str,
         supports_json_schema: bool = True,
+        supports_json_object_output: bool = False,
         supports_reasoning_configuration: bool = False,
         requires_done_marker: bool = False,
         extra_headers: dict[str, str] | None = None,
@@ -49,6 +50,7 @@ class OpenAICompatibleChatProvider:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.supports_json_schema = supports_json_schema
+        self.supports_json_object_output = supports_json_object_output
         self.supports_reasoning_configuration = supports_reasoning_configuration
         self.requires_done_marker = requires_done_marker
         self.extra_headers = extra_headers or {}
@@ -230,7 +232,7 @@ class OpenAICompatibleChatProvider:
                 for index, value in sorted(tool_parts.items())
             ],
             structured_output=parse_structured_output(text)
-            if request.output_schema
+            if request.output_schema or request.json_object_output
             else None,
             finish_reason=self._finish_reason(finish_reason),
             input_tokens=usage.get("prompt_tokens"),
@@ -339,7 +341,9 @@ class OpenAICompatibleChatProvider:
                 }
                 for tool in request.tools
             ]
-        if request.output_schema:
+        if request.json_object_output:
+            payload["response_format"] = {"type": "json_object"}
+        elif request.output_schema:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
@@ -421,7 +425,7 @@ class OpenAICompatibleChatProvider:
             text=text,
             tool_calls=tool_calls,
             structured_output=parse_structured_output(text)
-            if request.output_schema
+            if request.output_schema or request.json_object_output
             else None,
             finish_reason=self._finish_reason(choice.get("finish_reason")),
             input_tokens=usage.get("prompt_tokens"),
@@ -456,6 +460,11 @@ class OpenAICompatibleChatProvider:
             raise ModelProviderError(
                 "unsupported_capability",
                 f"Provider '{self.name.value}' does not declare JSON Schema output support.",
+            )
+        if request.json_object_output and not self.supports_json_object_output:
+            raise ModelProviderError(
+                "unsupported_capability",
+                f"Provider '{self.name.value}' does not declare JSON object output support.",
             )
         if request.reasoning and not self.supports_reasoning_configuration:
             raise ModelProviderError(

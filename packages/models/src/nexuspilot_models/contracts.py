@@ -221,6 +221,7 @@ class ModelRequest(ContractModel):
     system_instruction: str | None = Field(default=None, max_length=100_000)
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
+    json_object_output: bool = False
     reasoning: ReasoningConfiguration | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(
@@ -234,6 +235,14 @@ class ModelRequest(ContractModel):
         default=None,
         exclude=True,
     )
+
+    @model_validator(mode="after")
+    def validate_output_contract(self) -> "ModelRequest":
+        """Keep JSON syntax enforcement distinct from native JSON Schema enforcement."""
+
+        if self.json_object_output and self.output_schema is not None:
+            raise ValueError("json_object_output cannot be combined with output_schema")
+        return self
 
 
 class ModelResponse(ContractModel):

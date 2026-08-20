@@ -700,9 +700,11 @@ apps/web/
 
 2026 年 8 月 20 日本地实际故障记录：截图会话的 Assistant Message 正文与页面 DOM 都在“校验文件类型：不能只看扩展”处结束；对应持久事件为 `response.completed`、`finish_reason=length`、`output_tokens=1200`。因此故障发生在旧前端硬编码的 `1200` 输出 Token 限制，不是 Markdown 或 CSS 漏渲染。当前快速回复和无预算 Agent Workflow 已不再发送平台输出上限；新消息仍持久化 Provider 结束原因，并在 Provider 或模型自身达到上限时显示部分回复提示。历史消息不猜测性回填缺失元数据。
 
-2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 259 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复已通过 Playwright 新建会话、即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`。MinIO、真实 Agent Provider 和完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
+2026 年 8 月 20 日本地实际故障记录：会话 `4e4932ee-68ec-4170-ab55-c438935e0527` 的 DeepSeek Agent Worker 调用以 `finish_reason=stop` 正常结束并返回 1195 字符正文，但最后一个数组缺少 `]`，因此严格 `json.loads` 在末尾失败；该错误与 Token、Handoff 和前端展示无关。Prompted JSON 现显式请求 DeepSeek 官方 `response_format: {"type":"json_object"}`，Provider 层先保证 JSON 语法，工作流仍以 Pydantic 校验完整节点 Schema，不把 JSON mode 误称为原生 JSON Schema。Playwright 使用真实 DeepSeek 完成一个包含 10 个节点、3 次模型调用的 Workflow，并在刷新后恢复最终 Message 和完整节点时间线。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、真实 Agent Provider 端到端验收、MinIO、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。多模型、多审核策略和并行 Agent 的真实 Provider 矩阵以及完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
+
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 

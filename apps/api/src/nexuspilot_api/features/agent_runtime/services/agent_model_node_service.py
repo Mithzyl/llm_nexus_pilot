@@ -130,6 +130,7 @@ class AgentModelNodeService:
                     input=serialized_model_input,
                     instructions=instructions,
                     output_schema=output_schema,
+                    json_object_output=prompted_json,
                     max_output_tokens=binding.max_output_tokens,
                     timeout_seconds=effective_timeout_seconds,
                     metadata={
@@ -155,13 +156,6 @@ class AgentModelNodeService:
                     f"Agent model node ended with incomplete finish reason {response.finish_reason}"
                 )
             raw_output: object = response.structured_output
-            if prompted_json:
-                try:
-                    raw_output = json.loads(response.output_text or "")
-                except json.JSONDecodeError as exc:
-                    raise InvalidRequestError(
-                        "Prompted JSON Agent node returned invalid JSON"
-                    ) from exc
             if not isinstance(raw_output, dict):
                 raise InvalidRequestError("Agent model node did not return a structured object")
             try:

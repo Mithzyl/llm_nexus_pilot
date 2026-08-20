@@ -30,6 +30,7 @@ class ResponsesRequest(BaseModel):
     instructions: str | None = Field(default=None, max_length=100_000)
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
+    json_object_output: bool = False
     reasoning: ReasoningConfiguration | None = None
     reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
     continuation_from_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
@@ -52,6 +53,8 @@ class ResponsesRequest(BaseModel):
             raise ValueError("input cannot be empty")
         if isinstance(self.input, list) and not self.input:
             raise ValueError("input cannot be empty")
+        if self.json_object_output and self.output_schema is not None:
+            raise ValueError("json_object_output cannot be combined with output_schema")
         return self
 
     def to_model_request(self) -> ModelRequest:
@@ -69,6 +72,7 @@ class ResponsesRequest(BaseModel):
             system_instruction=self.instructions,
             tools=self.tools,
             output_schema=self.output_schema,
+            json_object_output=self.json_object_output,
             reasoning=self.reasoning,
             temperature=self.temperature,
             max_output_tokens=self.max_output_tokens,

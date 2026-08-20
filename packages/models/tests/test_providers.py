@@ -245,6 +245,66 @@ async def test_openai_compatible_provider_forwards_an_explicit_output_allowance(
     assert len(response.transport_attempts) == 1
 
 
+async def test_deepseek_provider_uses_native_json_object_output() -> None:
+    """Verify prompted Agent JSON is syntactically enforced by DeepSeek JSON mode."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert JSON mode and return one valid object string."""
+
+        body = json.loads(request.content)
+        assert body["response_format"] == {"type": "json_object"}
+        return httpx.Response(
+            200,
+            json={
+                "id": "deepseek-json-object",
+                "choices": [
+                    {
+                        "message": {"content": '{"summary":"complete"}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash").model_copy(
+        update={"json_object_output": True}
+    )
+
+    response = await provider.generate(request)
+    await client.aclose()
+
+    assert response.structured_output == {"summary": "complete"}
+
+
+async def test_compatible_provider_rejects_undeclared_json_object_output() -> None:
+    """Verify a generic compatible endpoint cannot silently drop JSON object mode."""
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
+    provider = OpenAICompatibleChatProvider(
+        name=ProviderName.OPENAI_COMPATIBLE,
+        transport=HttpTransport(client, max_retries=0),
+        base_url="https://provider.example/v1",
+        api_key="test-key",
+        supports_json_schema=False,
+    )
+    request = model_request(ProviderName.OPENAI_COMPATIBLE).model_copy(
+        update={"json_object_output": True}
+    )
+
+    with pytest.raises(ModelProviderError) as caught:
+        await provider.generate(request)
+    await client.aclose()
+
+    assert caught.value.error_type == "unsupported_capability"
+
+
 async def test_compatible_provider_rejects_undeclared_json_schema_support() -> None:
     """Verify adapters never silently weaken JSON Schema to plain JSON mode."""
 

@@ -534,6 +534,30 @@ async def test_unbudgeted_workflow_does_not_apply_an_output_token_limit(
     assert all(request.max_output_tokens is None for request in provider.requests)
 
 
+async def test_prompted_json_workflow_requests_provider_json_object_mode(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify prompted JSON uses Provider syntax enforcement without claiming JSON Schema."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-provider-json-object-0001")
+    for binding in payload["role_bindings"].values():
+        binding["structured_output_mode"] = "prompted_json"
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    assert provider.requests
+    assert all(request.json_object_output for request in provider.requests)
+    assert all(request.output_schema is None for request in provider.requests)
+
+
 async def test_budgeted_workflow_requires_an_explicit_output_bound(
     client: httpx.AsyncClient,
 ) -> None:
