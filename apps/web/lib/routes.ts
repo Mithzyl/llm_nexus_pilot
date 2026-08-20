@@ -26,6 +26,22 @@ export function conversationPath(sessionId: string): string {
   return `/c/${encodeURIComponent(sessionId)}`;
 }
 
+/**
+ * Return a new conversation route only after its first submission can be
+ * reconstructed from durable facts, avoiding an App Router remount mid-stream.
+ */
+export function terminalConversationNavigationTarget(
+  currentRoute: NexusWorkspaceRoute,
+  sessionId: string,
+  hasRestorableTerminalFacts: boolean,
+): string | null {
+  if (!hasRestorableTerminalFacts) return null;
+  if (currentRoute.kind === "conversation" && currentRoute.sessionId === sessionId) {
+    return null;
+  }
+  return conversationPath(sessionId);
+}
+
 /** Build the stable evidence URL for one persisted Run identifier. */
 export function runPath(runId: string): string {
   return `/runs/${encodeURIComponent(runId)}`;

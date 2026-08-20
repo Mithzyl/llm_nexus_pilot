@@ -809,6 +809,7 @@ metadata
 - `messages`、工具结构和输出结构在进入适配器前完成 Pydantic 校验。
 - `timeout_seconds` 受平台最小值和最大值限制，调用方不能无限延长请求。
 - `metadata` 只保存可检索的非敏感标识，不保存 API Key、完整私人文件或未脱敏凭据。
+- `max_output_tokens` 保留为可选 Provider 参数，统一允许范围为 1～65536。调用方省略时，OpenAI、DeepSeek/OpenAI-Compatible 和 Gemini 适配器不发送该限制字段，避免平台主动缩短模型输出；Anthropic Messages 协议要求请求包含 `max_tokens`，因此省略时使用 65536 作为协议兼容值。后续若需要按模型细分上限，应通过 Model Catalog 能力合同设计，不在各业务入口散落不同阈值。
 - `output_schema` 只表示期望的 JSON Schema；适配器必须根据供应商能力决定原生结构化输出或返回明确的“不支持”错误，不得静默忽略。
 - `reasoning` 是可选的供应商中立思考参数；Provider 必须依据模型能力显式映射或返回 `unsupported_capability`，不得静默删除、改写强度或切换到另一种调用语义。
 

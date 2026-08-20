@@ -7,6 +7,9 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+MAX_PROVIDER_OUTPUT_TOKENS = 65_536
+
+
 class ContractModel(BaseModel):
     """Reject unknown fields so provider-specific parameters cannot leak into public contracts."""
 
@@ -220,7 +223,11 @@ class ModelRequest(ContractModel):
     output_schema: dict[str, Any] | None = None
     reasoning: ReasoningConfiguration | None = None
     temperature: float | None = Field(default=None, ge=0, le=2)
-    max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_PROVIDER_OUTPUT_TOKENS,
+    )
     timeout_seconds: float = Field(default=60, ge=1, le=600)
     metadata: dict[str, str] = Field(default_factory=dict)
     provider_continuation_state: ProviderContinuationState | None = Field(

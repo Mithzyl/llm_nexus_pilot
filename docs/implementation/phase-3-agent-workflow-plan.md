@@ -410,6 +410,7 @@ supersedes_handoff_id
 ```
 
 - 复用已有 `agent_handoff.v1`，不创建另一套交接 JSON。
+- `agent_handoff.v1` 保持 1000 个 UTF-8 字节上限。Worker 结构化输出超过该上限时，工作流按字段轮转生成限长 Handoff 投影，并在 `invariants_for_next_agent` 记录完整 Worker 输出所在的源节点；完整结果继续保存在 `agent_model_execution` 节点，不通过放宽 Memory 合同或静默丢弃源结果解决。
 - 首版没有工具时 `files_read`、`files_changed` 和真实测试证据通常为空；模型不能仅凭描述填入不存在的文件或测试。
 
 ### 8. `deterministic_verification` → `DeterministicVerificationOutput`
@@ -735,7 +736,7 @@ stream
 其中只有 `idempotency_key` 和 `role_bindings` 没有默认值；工作流名称、版本与执行配置当前固定为 `model_only`、`1.0.0` 和 `model_only_v1`。`review_policy` 默认为 `always`；`reviewer` 在策略不是 `never` 时必填，`verifier` 可以绑定但当前执行路径不会创建该模型节点。`max_nodes` 默认和最大值均为 `32`，按审核策略最小为 `10` 或 `11`；`max_model_calls` 默认和最大值均为 `16`，按审核策略最小为 `3` 或 `4`；`wall_time_limit_ms` 允许 `1,000`～`600,000`，默认 `600,000`。当前没有 `expected_run_version` 或通用 `budget_overrides` 字段，Run 级唯一约束阻止同一 Run 创建第二个工作流。
 
 - `idempotency_key` 长度必须为 `8`～`128`；`stream` 默认 `false`。
-- `role_bindings` 只接受 `controller`、`planner`、`researcher`、`reviewer` 和 `verifier` 键。每个绑定包含 `provider`、`model`、`structured_output_mode`、`timeout_seconds` 和 `max_output_tokens`；结构化输出模式默认为 `native_schema`，超时默认 `60` 秒且范围为 `1`～`600`，最大输出 token 默认 `4,096` 且范围为 `1`～`32,000`。
+- `role_bindings` 只接受 `controller`、`planner`、`researcher`、`reviewer` 和 `verifier` 键。每个绑定包含 `provider`、`model`、`structured_output_mode`、`timeout_seconds` 和可选的 `max_output_tokens`；结构化输出模式默认为 `native_schema`，超时默认 `60` 秒且范围为 `1`～`600`。平台不提供默认业务输出上限，字段缺省时不主动缩短输出；显式 `max_output_tokens` 的统一允许范围为 `1`～`65536`。具有费用预算的 Run 为了在 Provider 调用前完成保守费用预留，仍必须显式提供 `max_output_tokens` 和模型价格；无预算 Run 可以保持缺省。
 
 - `stream=false` 已在同一 HTTP 生命周期同步运行并返回完整 `AgentWorkflowResult`。
 - `stream=true` 已使用 SSE 实时发送提交后的业务事件；完成事件提供权威结果查询路径，节点事件提供节点 ID、类型和详情查询路径。完整、有界 `AgentWorkflowNodeResult` 由 Node 详情或 Result 接口返回。
@@ -836,6 +837,7 @@ agent_plan_invalid
 agent_review_policy_mismatch
 agent_dependency_cycle
 agent_budget_exhausted
+agent_budget_output_limit_required
 agent_budget_price_unavailable
 agent_node_limit_exceeded
 agent_model_call_limit_exceeded
@@ -849,7 +851,7 @@ agent_workflow_internal_error
 
 - Provider 错误保留 Model Gateway 的 `error_type` 作为 `error_code`；`timeout`、`network_error`、`connection_error`、`internal_error` 和 `response_persistence_error` 当前会让 Node 与 Workflow 进入 `outcome_unknown`，并强制 `is_retryable=false`。`response_audit_failed` 表示 Provider 响应及费用事实已确认、但原始响应审计对象未保存，因此进入已知 `failed`；其他 Provider 错误也进入 `failed`。
 - Handoff 的确定性检查项可以使用 `agent_handoff_invalid`，但当前工作流终态错误代码是 `agent_verification_failed`，不能把前者描述为工作流对外终态错误。
-- Run 预算无法覆盖保守费用预留时会在 Provider 调用前返回 `agent_budget_exhausted`；模型缺少显式价格、因而不能执行预算约束时返回 `agent_budget_price_unavailable`。
+- Run 预算无法覆盖保守费用预留时会在 Provider 调用前返回 `agent_budget_exhausted`；预算 Run 没有显式 `max_output_tokens`、因而无法计算最大费用时返回 `agent_budget_output_limit_required`；模型缺少显式价格时返回 `agent_budget_price_unavailable`。三种情况都不会进入 Provider 调用。
 - 请求字面值、必填角色、范围和未知字段由 Pydantic 返回 HTTP `422`；资源不存在和幂等/Run 状态冲突沿用平台现有 HTTP `404`/`409` 错误合同，不转换为节点错误。
 - 节点输出不符合 Schema 时保留已经保存的 Attempt，并以 `node_output_invalid` 失败；不会把自由文本强制塞入结构化字段。
 
@@ -957,6 +959,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 工作流定义登记另有 4 项单元测试，覆盖固定节点和按任务生成的节点、重复工作流定义、未知输出类型、未知连接目标、运行时未知节点、节点类型不一致和非法节点连接。
 
 2026 年 8 月 13 日运行完整后端测试为 `212 passed, 4 skipped`，Model Provider 包测试为 `28 passed`；4 项跳过项是需要真实 MySQL/MinIO 环境变量的基础设施测试。`ruff check` 与本阶段修改文件的格式检查均通过。Alembic 当前唯一 head 为 `20260813_0011`，面向 MySQL 的 `alembic upgrade head --sql` 离线迁移生成通过，并包含工作流费用预留字段。真实供应商调用需要部署环境密钥，保持为可选冒烟验证，不把外部供应商可用性作为离线自动化完成条件。
+
+2026 年 8 月 20 日补充回归确认：真实运行曾产生 3352 字节 Handoff，并因既有 1000 字节合同在 `handoff_submission` 节点失败。新增超长 Worker 输出回归后，工作流会保存完整 Worker 节点并生成不超过合同上限、可追溯源节点的 Handoff 投影；`tests/test_agent_workflows.py` 与 L2 Handoff 上限定向测试共 33 项通过，原有独立 Handoff 超限拒绝行为保持不变。
 
 以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 

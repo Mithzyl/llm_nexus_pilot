@@ -41,6 +41,31 @@ def model_request(provider: ProviderName, model: str = "test-model") -> ModelReq
     )
 
 
+def test_model_request_keeps_output_limit_optional_up_to_provider_cap() -> None:
+    """Verify omission remains valid and the shared Provider cap is enforced."""
+
+    assert model_request(ProviderName.DEEPSEEK).max_output_tokens is None
+    request = ModelRequest.model_validate(
+        {
+            "provider": "deepseek",
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_output_tokens": 65_536,
+        }
+    )
+    assert request.max_output_tokens == 65_536
+
+    with pytest.raises(ValueError):
+        ModelRequest.model_validate(
+            {
+                "provider": "deepseek",
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_output_tokens": 65_537,
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("provider_name", "sse_body"),
     [
@@ -165,6 +190,7 @@ async def test_openai_compatible_provider_reuses_chat_codec(
         assert request.url.path.endswith(expected_path)
         body = json.loads(request.content)
         assert body["messages"][-1] == {"role": "user", "content": "Hello"}
+        assert "max_tokens" not in body
         return httpx.Response(200, json=response_payload)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -180,6 +206,42 @@ async def test_openai_compatible_provider_reuses_chat_codec(
 
     assert response.text == expected_text
     assert response.provider_request_id in {"chat-1", "local-1"}
+    assert len(response.transport_attempts) == 1
+
+
+async def test_openai_compatible_provider_forwards_an_explicit_output_allowance() -> None:
+    """Verify the retained optional field reaches Provider wire format when supplied."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert the explicit allowance and return one compatible completion."""
+
+        assert json.loads(request.content)["max_tokens"] == 321
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-explicit-limit",
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleChatProvider(
+        name=ProviderName.DEEPSEEK,
+        transport=HttpTransport(client, max_retries=0),
+        base_url="https://provider.example/v1",
+        api_key="test-key",
+        supports_json_schema=False,
+    )
+    request = model_request(ProviderName.DEEPSEEK).model_copy(
+        update={"max_output_tokens": 321}
+    )
+
+    response = await provider.generate(request)
+    await client.aclose()
+
+    assert response.text == "ok"
+    assert response.provider_request_id == "chat-explicit-limit"
     assert len(response.transport_attempts) == 1
 
 
@@ -783,6 +845,7 @@ async def test_openai_responses_codec_parses_text_tools_and_usage() -> None:
         """Return a representative OpenAI Responses object."""
 
         assert request.url.path == "/v1/responses"
+        assert "max_output_tokens" not in json.loads(request.content)
         return httpx.Response(
             200,
             json={
@@ -825,9 +888,10 @@ async def test_openai_responses_codec_parses_text_tools_and_usage() -> None:
 async def test_anthropic_messages_codec_parses_content_blocks() -> None:
     """Verify Anthropic text and tool_use blocks map to the common response contract."""
 
-    async def handler(_request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
         """Return a representative Anthropic Message object."""
 
+        assert json.loads(request.content)["max_tokens"] == 65_536
         return httpx.Response(
             200,
             json={
@@ -866,6 +930,9 @@ async def test_gemini_codec_parses_candidate_parts() -> None:
         """Return a representative Gemini GenerateContent response."""
 
         assert request.url.path.endswith("/models/test-model:generateContent")
+        assert "maxOutputTokens" not in json.loads(request.content).get(
+            "generationConfig", {}
+        )
         return httpx.Response(
             200,
             json={

@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
 **文档日期：** 2026 年 8 月 20 日
-**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复和 Responses 事件回放已实现并通过本地自动化验证；真实 Provider 与真实浏览器端到端验收仍待完成）
+**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复、Responses 事件回放和新会话首条回复恢复已实现；真实 DeepSeek 快速回复已通过 Playwright，完整 Agent 与浏览器门禁仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -23,7 +23,7 @@
 ## 明确不处理
 
 - 第一版不消费实验性 Memory 或 Knowledge 接口，不展示 Memory Profile、Memory Packet 或知识库检索结果。
-- 第一版不实现 RabbitMQ、Worker、Agent Runtime、工具执行、MCP 或 OpenTelemetry；只为它们保留界面扩展点。
+- 第一版已经实现当前后端提供的 `model_only_v1` Agent Runtime 展示与控制；不实现 RabbitMQ Worker、工具执行、MCP 或 OpenTelemetry，只为这些后续能力保留界面扩展点。
 - 不把模型流中的 `response.tool_call.delta` 显示成“工具正在执行”。该事件只表示模型提出了工具调用参数；只有未来后端产生正式 Tool Call 执行事件后才能显示执行进度。
 - 不在浏览器中保存平台内部 API Key、供应商 API Key、MinIO URI 或未脱敏原始供应商响应。
 - 不在阶段4顺便建设项目看板、生活管理、邮件、日历或其他超级 App 功能。
@@ -243,6 +243,8 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 #### 完整节点结果展示
 
 每个节点先使用统一信封渲染：`public_view`、状态、输入来源引用、转移结果、证据 ID、用量、剩余预算、时间、警告和安全错误。节点特定输出按 `output_type` 使用穷尽类型分支，未知 `output_type` 显示“当前前端不支持此合同版本”并保留通用信封，不能猜测字段。
+
+节点没有输出时按持久化状态说明原因：等待或运行表示尚未提交，失败、取消、阻塞和结果未知分别显示对应终态，只有 `completed` 且 `output=null` 才提示输出事实缺失，不能把所有情况统一描述为“该节点没有已提交输出”。
 
 | `output_type` | 默认展示 |
 |---|---|
@@ -620,8 +622,8 @@ apps/web/
 - Next.js 服务端转发层：浏览器通过同源 `/api/nexus/*` 访问 FastAPI，平台 API Key 只在服务端读取。
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
-- 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；刷新和浏览器历史导航会重新读取持久化事实，运行路由按 URL 中的 Run 标识恢复，不替换为会话最新 Run。
-- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。
+- 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
+- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
@@ -629,9 +631,50 @@ apps/web/
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
 - Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
-2026 年 8 月 20 日事实审计确认：当前 Web 的 44 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均已通过；统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放和安全 Markdown 已经实现。后端完整 API 套件 217 项通过、4 项真实基础设施测试按默认配置跳过，模型适配层 34 项通过；本地 MySQL 已迁移至 `20260820_0012`。MinIO、真实 Provider 和真实浏览器端到端验收仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
+### 当前能力总览
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+以下状态以当前代码、自动化验证和本地运行事实为准，不用历史计划替代实际行为：
+
+| 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
+|---|---|---|---|
+| 会话与路由 | 创建和选择会话、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | Message、Run 与 Workflow 尚无统一事务或端到端幂等提交；首个事件前断线不能安全重发可能计费的请求 | 进行中 |
+| Provider 与模型选择 | 服务端 Provider/Model 目录、推理能力、搜索、键盘选择、自定义模型、加载/失败/空目录状态 | 最终用户自己的 Provider 凭据和设置页等待阶段5 | 进行中 |
+| Responses 流 | SSE 增量正文、序号去重、缺口拒绝、已知 Attempt 有限回放、完成/保存/失败/取消状态分离、默认不发送输出 Token 上限、`length` 截断证据持久化 | 未知 Attempt 的首事件前断线只能读取最终事实；没有统一聊天提交恢复合同；修复前的历史 Message 没有截断元数据，不进行猜测性回填 | 进行中 |
+| Reasoning | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
+| Markdown | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条和可选语法高亮尚未实现 | 进行中 |
+| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
+| Agent 上下文 | Controller 和 Worker 获得当前 `Run.user_request`；依赖 Worker、Reviewer 和最终汇总获得完整 Worker 结构化输出及限长 Handoff | `context_assembly` 尚未注入完整会话历史、Memory、Knowledge、Artifact 或 Memory Packet | 进行中 |
+| 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
+| 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离 | 真实 Provider 浏览器端到端、可访问性、响应式、性能、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
+| 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
+
+### 当前故障定位索引
+
+故障先按发生边界定位，不能把所有失败统一解释为前端渲染问题：
+
+| 失败位置 | 典型原因 | 用户可见结果 | 权威检查位置 |
+|---|---|---|---|
+| 环境与 BFF | 前后端环境文件混用、API Key 不一致、FastAPI 不可达、代理路由不在允许列表 | Provider 或会话读取失败、401、404 或 502 | 浏览器 `/api/nexus/*` 请求、Next.js 终端、`apps/api/.env` 与 `apps/web/.env.local` |
+| 数据库与迁移 | MySQL 不可达或 Alembic 版本低于代码要求 | Message、latest Run、Workflow 或 Node 查询返回 500 | FastAPI 日志、Alembic 当前版本和 MySQL 表结构 |
+| 发送编排 | User Message 已创建但 Run 失败，或模型完成但 Assistant Message 保存失败 | 保留已经确认的局部事实，不自动重复调用模型 | Session Message、Run、Attempt 以及页面保存状态 |
+| Provider 与 Responses | Provider 未配置、模型不允许、超时、网络错误、能力拒绝、输出合同错误或 `finish_reason=length` | 失败事件保留已接收正文；达到输出上限时保存并明确标记为部分回复 | Model Attempt、Responses 持久事件、Message 元数据和 Provider 安全错误 |
+| SSE 与回放 | 连接中断、重复事件、序号缺口或终止事件缺失 | 已知 Attempt 时有限回放；无法恢复时不宣称完成 | Attempt 事件的 `sequence`、最终 Attempt 和 Run 状态 |
+| Agent 规划与预算 | 非法角色/能力/依赖、价格缺失、预算不足、节点/调用/时间上限耗尽 | 工作流在对应节点失败并保存稳定错误代码 | Workflow `error_json`、计划校验节点和预算字段 |
+| Worker 与结构化输出 | Provider 返回的 JSON 不符合节点 Schema、完成原因非法或 Provider 结果未知 | Worker 节点失败、取消或结果未知 | Worker Node、Model Attempt 和对应事件 |
+| Handoff | 输出超过 `agent_handoff.v1` 的 1000 UTF-8 字节上限，或 Task/Agent Run 归属冲突 | `handoff_submission` 节点失败且没有输出 | Handoff Node、源 Worker Node 和 `llm_agent_handoffs`；当前超限路径已改为限长投影，完整 Worker 输出保留在源节点 |
+| Verification 与 Reviewer | Handoff/Attempt/Task 引用不一致，或 Reviewer 拒绝、要求重试/重规划 | `agent_verification_failed` 或 `agent_review_rejected` | Verification、Reviewer、Evaluation 和 Workflow 错误 |
+| 节点结果合同 | 节点 JSON 超过 64 KiB、`output_type`/Schema 版本不匹配 | `node_output_invalid` 或安全内部错误 | Node `output_type`、`output_schema_version`、`error_json` |
+| 前端恢复与展示 | Summary、事件、节点或 Result 接口局部失败 | 正文继续可读，检查器提示对应证据暂不可用 | 浏览器 Network、页面错误栏和权威 Result 快照 |
+
+2026 年 8 月 20 日本地实际故障记录：某次工作流的前六个节点完成，第七个 `handoff_submission` 节点因待提交 Handoff 为 3352 字节而失败。当前实现会将同一内容投影为 968 字节并记录完整 Worker 输出的源节点。原失败 Workflow 继续作为不可变失败事实保留；新的 Run 使用修复后的路径。
+
+2026 年 8 月 20 日本地实际故障记录：新会话创建后立即执行 `router.replace` 会让 `/` 页面实例在流式请求期间被 `/c/[sessionId]` 页面实例替换。原实例继续完成 Responses 请求和 Assistant Message 保存，但其 React 状态更新已经不可见，因此首条回复只能在手动刷新后出现。当前实现延迟到 Assistant Message 成功保存后再替换路由；Playwright 使用真实 DeepSeek 创建新会话，确认首条回复在请求完成后立即可见，刷新同一路由后仍可见。
+
+2026 年 8 月 20 日本地实际故障记录：截图会话的 Assistant Message 正文与页面 DOM 都在“校验文件类型：不能只看扩展”处结束；对应持久事件为 `response.completed`、`finish_reason=length`、`output_tokens=1200`。因此故障发生在旧前端硬编码的 `1200` 输出 Token 限制，不是 Markdown 或 CSS 漏渲染。当前快速回复和无预算 Agent Workflow 已不再发送平台输出上限；新消息仍持久化 Provider 结束原因，并在 Provider 或模型自身达到上限时显示部分回复提示。历史消息不猜测性回填缺失元数据。
+
+2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 259 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复已通过 Playwright 新建会话、即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`。MinIO、真实 Agent Provider 和完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
+
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、真实 Agent Provider 端到端验收、MinIO、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 

@@ -223,6 +223,23 @@ def test_http_response_request_maps_reasoning_to_provider_contract() -> None:
     assert model_request.reasoning.effort.value == "max"
 
 
+def test_http_response_request_accepts_the_provider_output_cap() -> None:
+    """Verify the optional interface accepts the shared Provider output ceiling."""
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "run_id": "run-1",
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "input": "Hello",
+            "max_output_tokens": 65_536,
+        }
+    )
+
+    assert payload.max_output_tokens == 65_536
+    assert payload.to_model_request().max_output_tokens == 65_536
+
+
 async def test_non_streaming_response_persists_attempt_and_cost(
     client: httpx.AsyncClient,
 ) -> None:

@@ -21,6 +21,7 @@ from test_api import create_test_run
 from nexuspilot_api.core.dependencies import get_price_catalog, get_provider_registry
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+    AgentModelBinding,
     AgentWorkflowCreate,
     AgentWorkflowNodeResultRead,
 )
@@ -32,6 +33,9 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_service i
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_service import (
     WorkflowExecutionStateService,
+)
+from nexuspilot_api.features.memory.schemas.collaboration_memory import (
+    HANDOFF_V1_HARD_CAP_TOKENS,
 )
 from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
@@ -75,6 +79,7 @@ class ScriptedAgentProvider:
         reviewer_requires_retry: bool = False,
         reviewer_error_finding: bool = False,
         oversized_final_output: bool = False,
+        verbose_worker_output: bool = False,
         plan_review_policy: str | None = None,
         finish_reason: str = "stop",
     ) -> None:
@@ -88,6 +93,7 @@ class ScriptedAgentProvider:
         self.reviewer_requires_retry = reviewer_requires_retry
         self.reviewer_error_finding = reviewer_error_finding
         self.oversized_final_output = oversized_final_output
+        self.verbose_worker_output = verbose_worker_output
         self.plan_review_policy = plan_review_policy
         self.finish_reason = finish_reason
         self.requests: list[ModelRequest] = []
@@ -211,6 +217,16 @@ class ScriptedAgentProvider:
                 }
             model_input = json.loads(request.messages[-1].content)
             task_objective = model_input["task"]["objective"]
+            if self.verbose_worker_output:
+                verbose_fact = "A detailed evidence statement. " * 40
+                return {
+                    "summary": f"completed:{task_objective}",
+                    "confirmed_facts": [verbose_fact],
+                    "decisions": [verbose_fact],
+                    "remaining_work": [verbose_fact],
+                    "risks": [verbose_fact],
+                    "unknowns": [verbose_fact],
+                }
             return {
                 "summary": f"completed:{task_objective}",
                 "confirmed_facts": ["Only explicit request content was used."],
@@ -381,14 +397,54 @@ def workflow_payload(**overrides: object) -> dict:
         "idempotency_key": "agent-workflow-request-0001",
         "review_policy": "always",
         "role_bindings": {
-            "controller": {"provider": "openai", "model": "test-model"},
-            "researcher": {"provider": "openai", "model": "test-model"},
-            "reviewer": {"provider": "openai", "model": "test-model"},
+            "controller": {
+                "provider": "openai",
+                "model": "test-model",
+                "max_output_tokens": 4_096,
+            },
+            "researcher": {
+                "provider": "openai",
+                "model": "test-model",
+                "max_output_tokens": 4_096,
+            },
+            "reviewer": {
+                "provider": "openai",
+                "model": "test-model",
+                "max_output_tokens": 4_096,
+            },
         },
         "stream": False,
     }
     payload.update(overrides)
     return payload
+
+
+def test_agent_model_binding_keeps_output_limit_optional() -> None:
+    """Verify Agent output limits remain optional up to the Provider ceiling."""
+
+    binding = AgentModelBinding.model_validate(
+        {"provider": "openai", "model": "test-model"}
+    )
+
+    assert binding.max_output_tokens is None
+
+    explicit_binding = AgentModelBinding.model_validate(
+        {
+            "provider": "openai",
+            "model": "test-model",
+            "max_output_tokens": 65_536,
+        }
+    )
+    assert explicit_binding.max_output_tokens == 65_536
+
+    with pytest.raises(ValueError):
+        AgentModelBinding.model_validate(
+            {
+                "provider": "openai",
+                "model": "test-model",
+                "max_output_tokens": 65_537,
+            }
+        )
 
 
 async def test_provider_is_called_only_after_node_started_fact_is_committed(
@@ -447,6 +503,58 @@ async def test_workflow_event_sink_observes_only_committed_events(
     assert replayed is False
     assert workflow.event_count == 1
     assert len(observed_event_ids) == 1
+
+
+async def test_unbudgeted_workflow_does_not_apply_an_output_token_limit(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify an unbudgeted Agent workflow forwards no implicit output-token bound."""
+
+    run = await create_test_run(client)
+    async with test_database_session_factory() as db_session:
+        durable_run = await db_session.get(LlmRun, run["run_id"])
+        assert durable_run is not None
+        durable_run.budget_limit = None
+        await db_session.commit()
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-no-output-limit-0001")
+    for binding in payload["role_bindings"].values():
+        binding.pop("max_output_tokens")
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    assert provider.requests
+    assert all(request.max_output_tokens is None for request in provider.requests)
+
+
+async def test_budgeted_workflow_requires_an_explicit_output_bound(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify cost reservation fails before Provider entry when no output bound exists."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-budget-output-bound-0001")
+    for binding in payload["role_bindings"].values():
+        binding.pop("max_output_tokens")
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "failed"
+    assert response.json()["error"]["error_code"] == "agent_budget_output_limit_required"
+    assert provider.requests == []
 
 
 async def test_model_only_workflow_returns_and_persists_complete_nodes(
@@ -1234,6 +1342,50 @@ async def test_workflow_openapi_declares_json_and_sse_response_contracts(
         "properties"
     ]
     assert workflow_create_properties["max_parallel_agents"]["maximum"] == 2
+
+
+async def test_verbose_worker_output_is_compacted_into_a_valid_handoff(
+    client: httpx.AsyncClient,
+) -> None:
+    """Keep the complete Worker result while bounding its collaboration Handoff."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(verbose_worker_output=True)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-verbose-handoff-0001"),
+    )
+
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "completed", result
+    worker_node = next(
+        node for node in result["nodes"] if node["output_type"] == "agent_model_execution"
+    )
+    handoff_node = next(
+        node for node in result["nodes"] if node["output_type"] == "agent_handoff"
+    )
+    assert len(worker_node["output"]["structured_output"]["confirmed_facts"][0]) > 1_000
+    serialized_handoff = json.dumps(
+        {
+            key: value
+            for key, value in handoff_node["output"].items()
+            if key
+            not in {
+                "agent_handoff_id",
+                "schema_version",
+                "supersedes_handoff_id",
+            }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert len(serialized_handoff.encode()) <= HANDOFF_V1_HARD_CAP_TOKENS
+    assert handoff_node["output"]["invariants_for_next_agent"] == [
+        f"Complete Worker output is preserved in node {worker_node['node_execution_id']}."
+    ]
 
 
 async def test_node_result_rejects_unregistered_output_schema_version(

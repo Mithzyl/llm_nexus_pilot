@@ -36,8 +36,9 @@ class AgentModelNodeStatePort(Protocol):
         workflow: LlmAgentWorkflowExecution,
         *,
         reserved_estimated_cost: Decimal | None,
+        has_explicit_output_token_bound: bool = True,
     ) -> None:
-        """Persist one model-call and maximum-cost reservation before Provider entry."""
+        """Persist one call and its cost bound, retaining why no bound is available."""
 
     async def release_model_cost_reservation(
         self,
@@ -74,7 +75,7 @@ class AgentModelNodeService:
         model_input: dict[str, Any],
         timeout_seconds: int | None = None,
     ) -> tuple[Any, ResponsesResult]:
-        """Reserve, invoke, and validate one model node against its declared output type."""
+        """Invoke and validate a model node, reserving cost only from an explicit output bound."""
 
         prompted_json = binding.structured_output_mode == "prompted_json"
         instructions = structured_model_instructions(
@@ -92,20 +93,27 @@ class AgentModelNodeService:
         remaining_wall_time_ms = self.workflow_state.remaining_wall_time_ms(workflow)
         if remaining_wall_time_ms < 1_000:
             raise InvalidRequestError("Agent workflow wall-time limit is exhausted")
-        reserved_estimated_cost = self.model_invocation_service.prices.estimate_maximum(
-            binding.provider,
-            binding.model,
-            # UTF-8 bytes form a reproducible upper bound for tokenizer units;
-            # the fixed allowance covers message framing added by adapters.
-            input_tokens_upper_bound=len(
-                (f"{instructions}\n{serialized_model_input}\n{serialized_output_schema}").encode()
+        reserved_estimated_cost = (
+            self.model_invocation_service.prices.estimate_maximum(
+                binding.provider,
+                binding.model,
+                # UTF-8 bytes form a reproducible upper bound for tokenizer units;
+                # the fixed allowance covers message framing added by adapters.
+                input_tokens_upper_bound=len(
+                    (
+                        f"{instructions}\n{serialized_model_input}\n{serialized_output_schema}"
+                    ).encode()
+                )
+                + 256,
+                output_tokens_upper_bound=binding.max_output_tokens,
             )
-            + 256,
-            output_tokens_upper_bound=binding.max_output_tokens,
+            if binding.max_output_tokens is not None
+            else None
         )
         await self.workflow_state.reserve_model_call(
             workflow,
             reserved_estimated_cost=reserved_estimated_cost,
+            has_explicit_output_token_bound=binding.max_output_tokens is not None,
         )
         effective_timeout_seconds = min(
             float(binding.timeout_seconds),

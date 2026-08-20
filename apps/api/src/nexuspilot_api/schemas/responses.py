@@ -3,6 +3,7 @@
 from typing import Any, Literal
 
 from nexuspilot_models.contracts import (
+    MAX_PROVIDER_OUTPUT_TOKENS,
     Message,
     MessageRole,
     ModelRequest,
@@ -33,7 +34,11 @@ class ResponsesRequest(BaseModel):
     reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
     continuation_from_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
     temperature: float | None = Field(default=None, ge=0, le=2)
-    max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_PROVIDER_OUTPUT_TOKENS,
+    )
     timeout_seconds: float = Field(default=60, ge=1, le=600)
     metadata: dict[str, str] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)

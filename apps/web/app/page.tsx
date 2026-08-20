@@ -67,9 +67,15 @@ import {
   conversationPath,
   resolveWorkspaceRoute,
   runPath,
+  terminalConversationNavigationTarget,
   workspaceRouteKey,
   type NexusWorkspaceRoute,
 } from "../lib/routes";
+import {
+  isPersistedResponseOutputTruncated,
+  isResponseOutputTruncated,
+  responseMessageMetadata,
+} from "../lib/response-outcome";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
@@ -100,6 +106,7 @@ type LocalMessage = MessageSummary & {
   failed?: boolean;
   cancelled?: boolean;
   agentWorkflow?: boolean;
+  truncated?: boolean;
   reasoningBlocks: ReasoningPresentation[];
 };
 
@@ -139,6 +146,7 @@ function messageFromMessage(message: Message): LocalMessage {
     local_id: message.message_id,
     content_preview: message.content_text?.slice(0, 160) ?? null,
     content: message.content_text ?? "内容已保存为外部产物，请从运行详情查看。",
+    truncated: isPersistedResponseOutputTruncated(message.metadata_json),
     reasoningBlocks: (message.reasoning_blocks ?? []).filter((block) =>
       isReasoningPresentation(block),
     ),
@@ -550,15 +558,20 @@ export default function Home() {
     }
   }
 
-  /** Execute the current Run through the model-only workflow without duplicating its final Message. */
-  async function executeAgentWorkflow(createdRun: Run, assistantMessage: LocalMessage) {
+  /**
+   * Execute the current Run through the model-only workflow and return its
+   * terminal snapshot without duplicating the backend-created final Message.
+   */
+  async function executeAgentWorkflow(
+    createdRun: Run,
+    assistantMessage: LocalMessage,
+  ): Promise<AgentWorkflowResult> {
     resetAgentWorkflowFacts();
     const binding = {
       provider: selectedProvider as ProviderName,
       model: selectedModel,
       structured_output_mode: agentStructuredOutputMode(selectedProvider as ProviderName),
       timeout_seconds: 60,
-      max_output_tokens: 4_096,
     };
     const controller = new AbortController();
     activeRequestController.current = controller;
@@ -636,6 +649,7 @@ export default function Home() {
     const result = await getAgentWorkflowResult(summary.workflow_execution_id);
     applyAgentWorkflowResult(result, assistantMessage.local_id);
     setRun(await getRun(createdRun.run_id));
+    return result;
   }
 
   /**
@@ -875,6 +889,8 @@ export default function Home() {
     const submittedMode = executionMode;
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
+    let submittedSessionId: string | null = null;
+    let hasRestorableTerminalFacts = false;
 
     setIsSending(true);
     setErrorMessage(null);
@@ -908,12 +924,7 @@ export default function Home() {
         setSessions((current) => [session as Session, ...current]);
         setActiveSessionId(session.session_id);
       }
-
-      restoredRouteKey.current = workspaceRouteKey({
-        kind: "conversation",
-        sessionId: session.session_id,
-      });
-      router.replace(conversationPath(session.session_id));
+      submittedSessionId = session.session_id;
 
       await createMessage(session.session_id, {
         role: "user",
@@ -935,7 +946,8 @@ export default function Home() {
       setMessages((current) => [...current, assistantMessage]);
 
       if (submittedMode === "agent") {
-        await executeAgentWorkflow(createdRun, assistantMessage);
+        const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage);
+        hasRestorableTerminalFacts = Boolean(workflowResult.final_output?.assistant_message_id);
         return;
       }
 
@@ -950,7 +962,6 @@ export default function Home() {
           provider: selectedProvider,
           model: selectedModel,
           input,
-          max_output_tokens: 1200,
           timeout_seconds: 60,
           reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
@@ -994,6 +1005,7 @@ export default function Home() {
           setResponseCompleted(true);
           const responseResult = data.response;
           const completedText = responseResult?.output_text ?? latestAssistantText.current;
+          const isTruncated = isResponseOutputTruncated(responseResult?.finish_reason);
           latestAssistantText.current = completedText;
           latestReasoningBlocks.current = responseResult?.reasoning_blocks ?? latestReasoningBlocks.current;
           if (assistantProjectionFrame.current !== null) {
@@ -1011,6 +1023,7 @@ export default function Home() {
                     reasoningBlocks: latestReasoningBlocks.current,
                     pending: false,
                     saving: true,
+                    truncated: isTruncated,
                   }
                 : message,
             ),
@@ -1027,7 +1040,9 @@ export default function Home() {
               content_text: completedText,
               run_id: createdRun.run_id,
               source_model_attempt_id: responseResult?.id,
+              metadata_json: responseMessageMetadata(responseResult?.finish_reason),
             });
+            hasRestorableTerminalFacts = true;
             setAssistantSaved(true);
             setMessages((current) =>
               current.map((message) =>
@@ -1106,6 +1121,20 @@ export default function Home() {
     } finally {
       activeRequestController.current = null;
       setIsSending(false);
+      if (submittedSessionId) {
+        const navigationTarget = terminalConversationNavigationTarget(
+          workspaceRoute,
+          submittedSessionId,
+          hasRestorableTerminalFacts,
+        );
+        if (navigationTarget) {
+          restoredRouteKey.current = workspaceRouteKey({
+            kind: "conversation",
+            sessionId: submittedSessionId,
+          });
+          router.replace(navigationTarget);
+        }
+      }
     }
   }
 
@@ -1126,7 +1155,7 @@ export default function Home() {
       : assistantSaveFailed
         ? "保存失败"
         : assistantSaved
-          ? "已保存"
+          ? lastAssistantMessage?.truncated ? "已截断并保存" : "已保存"
           : responseCompleted
             ? "已生成，待保存"
             : run?.status === "failed"
@@ -1232,7 +1261,7 @@ export default function Home() {
                       <div className="assistant-avatar"><span /></div>
                       <div>
                         <strong>NexusPilot</strong>
-                        <small><i className={message.failed || message.cancelled || message.saveFailed ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
+                        <small><i className={message.failed || message.cancelled || message.saveFailed || message.truncated ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.truncated ? "达到输出上限 · 已保存部分回复" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
                       </div>
                     </div>
                     <div className="assistant-content">
@@ -1245,6 +1274,7 @@ export default function Home() {
                       {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}
                       {message.pending && <p className="stream-note">正在接收增量响应，不会把部分文本标记为完成。</p>}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
+                      {message.truncated && !message.pending && <p className="stream-note error-note">模型达到输出 Token 上限，以上是已保存的部分回复；可以要求模型继续，或重新生成更短的回答。</p>}
                       {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
                       {(message.failed || message.cancelled) && <p className="stream-note error-note">已保留收到的部分文本，请从运行详情查看服务端状态。</p>}
                     </div>
@@ -1367,7 +1397,7 @@ export default function Home() {
 
         <div className="run-state">
           <div className={`status-emblem ${run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "!" : run ? "✓" : "·"}</div>
-          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
+          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
           <time>{run ? formatTime(run.updated_at) : "—"}</time>
         </div>
 

@@ -156,6 +156,7 @@ export function createMessage(
     content_text: string;
     run_id?: string;
     source_model_attempt_id?: string;
+    metadata_json?: Record<string, unknown>;
   },
 ): Promise<Message> {
   return nexusFetch<Message>(`sessions/${encodeURIComponent(sessionId)}/messages`, {

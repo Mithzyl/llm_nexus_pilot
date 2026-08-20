@@ -10,6 +10,7 @@ import { ReasoningView } from "../reasoning/ReasoningView";
 import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
+  agentNodeMissingOutputLabel,
   isAgentWorkflowCancellable,
 } from "../../lib/agent-workflow-view";
 
@@ -48,7 +49,7 @@ function listValue(values: string[], emptyLabel = "无"): string {
 
 /** Select concise, contract-specific facts from one complete node output. */
 function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]> {
-  if (!node.output) return [["输出", "该节点没有已提交输出"]];
+  if (!node.output) return [["输出", agentNodeMissingOutputLabel(node.status)]];
 
   switch (node.output_type) {
     case "request_intake":

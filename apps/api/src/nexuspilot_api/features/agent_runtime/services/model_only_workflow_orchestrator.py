@@ -1,6 +1,7 @@
 """Decide the node order and review branches for the model_only_v1 workflow."""
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -51,7 +52,10 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
     WorkflowExecutionStopped,
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import validate_controller_plan
-from nexuspilot_api.features.memory.schemas.collaboration_memory import AgentHandoffCreate
+from nexuspilot_api.features.memory.schemas.collaboration_memory import (
+    HANDOFF_V1_HARD_CAP_TOKENS,
+    AgentHandoffCreate,
+)
 from nexuspilot_api.features.memory.services.collaboration_memory_service import submit_handoff
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import (
@@ -116,6 +120,95 @@ class WorkerModelCallOutcome:
     worker_output: AgentWorkerModelOutput | None = None
     response: ResponsesResult | None = None
     error: Exception | None = None
+
+
+WORKER_HANDOFF_OBJECTIVE_MAX_BYTES = 240
+WORKER_HANDOFF_ITEM_MAX_BYTES = 160
+
+
+def _serialized_json_size_bytes(value: dict[str, Any]) -> int:
+    """Return the exact compact UTF-8 size used by the Handoff v1 validator."""
+
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
+
+
+def _truncate_utf8_text(value: str, max_bytes: int) -> str:
+    """Truncate text without splitting a UTF-8 code point and mark omitted content."""
+
+    normalized = value.strip()
+    encoded = normalized.encode()
+    if len(encoded) <= max_bytes:
+        return normalized
+    if max_bytes <= 3:
+        return encoded[:max_bytes].decode(errors="ignore")
+    return f"{encoded[: max_bytes - 3].decode(errors='ignore').rstrip()}…"
+
+
+def _build_bounded_worker_handoff(
+    *,
+    task_objective: str,
+    worker_output: AgentWorkerModelOutput,
+    source_node_execution_id: str,
+) -> dict[str, Any]:
+    """Project a verbose Worker result into Handoff v1 while retaining its source-node link."""
+
+    complete_handoff: dict[str, Any] = {
+        "objective": task_objective,
+        "status": "completed",
+        "confirmed_facts": worker_output.confirmed_facts,
+        "decisions": worker_output.decisions,
+        "files_read": [],
+        "files_changed": [],
+        "artifacts": [],
+        "tests": [],
+        "remaining_work": worker_output.remaining_work,
+        "risks": worker_output.risks,
+        "unknowns": worker_output.unknowns,
+        "invariants_for_next_agent": [],
+    }
+    if _serialized_json_size_bytes(complete_handoff) <= HANDOFF_V1_HARD_CAP_TOKENS:
+        return complete_handoff
+
+    bounded_handoff: dict[str, Any] = {
+        **complete_handoff,
+        "objective": _truncate_utf8_text(
+            task_objective,
+            WORKER_HANDOFF_OBJECTIVE_MAX_BYTES,
+        ),
+        "confirmed_facts": [],
+        "decisions": [],
+        "remaining_work": [],
+        "risks": [],
+        "unknowns": [],
+        "invariants_for_next_agent": [
+            f"Complete Worker output is preserved in node {source_node_execution_id}."
+        ],
+    }
+    if _serialized_json_size_bytes(bounded_handoff) > HANDOFF_V1_HARD_CAP_TOKENS:
+        bounded_handoff["objective"] = _truncate_utf8_text(task_objective, 64)
+
+    candidate_fields = {
+        "confirmed_facts": worker_output.confirmed_facts,
+        "decisions": worker_output.decisions,
+        "remaining_work": worker_output.remaining_work,
+        "risks": worker_output.risks,
+        "unknowns": worker_output.unknowns,
+    }
+    max_item_count = max((len(values) for values in candidate_fields.values()), default=0)
+    for item_index in range(max_item_count):
+        for field_name, values in candidate_fields.items():
+            if item_index >= len(values):
+                continue
+            compact_item = _truncate_utf8_text(
+                values[item_index],
+                WORKER_HANDOFF_ITEM_MAX_BYTES,
+            )
+            if not compact_item:
+                continue
+            bounded_handoff[field_name].append(compact_item)
+            if _serialized_json_size_bytes(bounded_handoff) > HANDOFF_V1_HARD_CAP_TOKENS:
+                bounded_handoff[field_name].pop()
+    return bounded_handoff
 
 
 class WorkerExecutionFailure(Exception):
@@ -873,7 +966,8 @@ class ModelOnlyWorkflowOrchestrator:
             task,
             agent_run,
             outcome.worker_output,
-            node_execution_id=handoff_node.node_execution_id,
+            handoff_node_execution_id=handoff_node.node_execution_id,
+            source_node_execution_id=node.node_execution_id,
         )
         await self._complete_node(
             workflow,
@@ -1180,24 +1274,16 @@ class ModelOnlyWorkflowOrchestrator:
         agent_run: LlmAgentRun,
         worker_output: AgentWorkerModelOutput,
         *,
-        node_execution_id: str,
+        handoff_node_execution_id: str,
+        source_node_execution_id: str,
     ) -> AgentHandoffOutput:
         """Persist one model-only Handoff using the existing collaboration contract."""
 
-        handoff_json = {
-            "objective": task.objective,
-            "status": "completed",
-            "confirmed_facts": worker_output.confirmed_facts,
-            "decisions": worker_output.decisions,
-            "files_read": [],
-            "files_changed": [],
-            "artifacts": [],
-            "tests": [],
-            "remaining_work": worker_output.remaining_work,
-            "risks": worker_output.risks,
-            "unknowns": worker_output.unknowns,
-            "invariants_for_next_agent": [],
-        }
+        handoff_json = _build_bounded_worker_handoff(
+            task_objective=task.objective,
+            worker_output=worker_output,
+            source_node_execution_id=source_node_execution_id,
+        )
         result = await submit_handoff(
             self.db_session,
             self.storage,
@@ -1208,7 +1294,7 @@ class ModelOnlyWorkflowOrchestrator:
                 schema_version="agent_handoff.v1",
                 status=HandoffStatus.COMPLETED,
                 handoff_json=handoff_json,
-                idempotency_key=f"workflow:{node_execution_id}",
+                idempotency_key=f"workflow:{handoff_node_execution_id}",
             ),
         )
         return AgentHandoffOutput(
@@ -1809,7 +1895,9 @@ class ModelOnlyWorkflowOrchestrator:
         if isinstance(error, InvalidRequestError):
             message = str(error)
             lowered_message = message.lower()
-            if "price" in lowered_message:
+            if "max_output_tokens" in lowered_message:
+                code = "agent_budget_output_limit_required"
+            elif "price" in lowered_message:
                 code = "agent_budget_price_unavailable"
             elif "tool" in lowered_message:
                 code = "agent_capability_unavailable"

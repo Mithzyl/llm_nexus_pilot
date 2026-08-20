@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
+  agentNodeMissingOutputLabel,
   isAgentWorkflowCancellable,
 } from "../lib/agent-workflow-view";
 
@@ -32,4 +33,11 @@ test("offers explicit cancellation only for a running Workflow", () => {
   assert.equal(isAgentWorkflowCancellable("pending"), false);
   assert.equal(isAgentWorkflowCancellable("cancelled"), false);
   assert.equal(isAgentWorkflowCancellable("completed"), false);
+});
+
+test("explains missing node output from the durable node status", () => {
+  assert.equal(agentNodeMissingOutputLabel("running"), "节点正在运行，尚未提交输出");
+  assert.equal(agentNodeMissingOutputLabel("failed"), "节点执行失败，未生成可提交输出");
+  assert.equal(agentNodeMissingOutputLabel("cancelled"), "节点已取消，未生成可提交输出");
+  assert.equal(agentNodeMissingOutputLabel("completed"), "节点已完成，但提交的输出事实缺失");
 });

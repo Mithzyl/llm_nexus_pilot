@@ -5,6 +5,7 @@ import {
   conversationPath,
   resolveWorkspaceRoute,
   runPath,
+  terminalConversationNavigationTarget,
   workspaceRouteKey,
 } from "../lib/routes";
 
@@ -29,4 +30,23 @@ test("builds encoded stable URLs and keys for navigation deduplication", () => {
     "conversation:session-1",
   );
   assert.equal(workspaceRouteKey({ kind: "run", runId: "run-1" }), "run:run-1");
+});
+
+test("defers a new conversation route until the first submission is terminal", () => {
+  assert.equal(
+    terminalConversationNavigationTarget({ kind: "home" }, "session-1", false),
+    null,
+  );
+  assert.equal(
+    terminalConversationNavigationTarget({ kind: "home" }, "session-1", true),
+    "/c/session-1",
+  );
+  assert.equal(
+    terminalConversationNavigationTarget(
+      { kind: "conversation", sessionId: "session-1" },
+      "session-1",
+      true,
+    ),
+    null,
+  );
 });

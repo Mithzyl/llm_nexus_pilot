@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from nexuspilot_models.contracts import ProviderName
+from nexuspilot_models.contracts import MAX_PROVIDER_OUTPUT_TOKENS, ProviderName
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import AgentWorkflowNodeStatus, AgentWorkflowStatus
@@ -23,7 +23,11 @@ class AgentModelBinding(StrictContract):
     model: str = Field(min_length=1, max_length=128)
     structured_output_mode: Literal["native_schema", "prompted_json"] = "native_schema"
     timeout_seconds: int = Field(default=60, ge=1, le=600)
-    max_output_tokens: int = Field(default=4_096, ge=1, le=32_000)
+    max_output_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_PROVIDER_OUTPUT_TOKENS,
+    )
 
 
 class AgentWorkflowCreate(StrictContract):

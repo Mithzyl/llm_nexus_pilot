@@ -1,6 +1,7 @@
 import type {
   AgentWorkflowNodeOutputMap,
   AgentWorkflowNodeResult,
+  AgentWorkflowNodeStatus,
   AgentWorkflowStatus,
 } from "./types";
 
@@ -26,6 +27,21 @@ export function agentNodeBudgetSummary(
     ["已消费费用", String(budget.cost_used_after)],
     ["当前费用预留", String(budget.reserved_estimated_cost)],
   ];
+}
+
+/** Explain absent output from the persisted node lifecycle instead of implying one cause. */
+export function agentNodeMissingOutputLabel(status: AgentWorkflowNodeStatus): string {
+  const labels: Record<AgentWorkflowNodeStatus, string> = {
+    pending: "节点等待执行，尚未提交输出",
+    running: "节点正在运行，尚未提交输出",
+    completed: "节点已完成，但提交的输出事实缺失",
+    skipped: "节点已跳过，不会生成输出",
+    blocked: "节点被阻塞，未生成可提交输出",
+    failed: "节点执行失败，未生成可提交输出",
+    cancelled: "节点已取消，未生成可提交输出",
+    outcome_unknown: "节点结果未知，无法确认是否生成输出",
+  };
+  return labels[status];
 }
 
 /** Expose the cancel action only while the public Workflow status is running. */

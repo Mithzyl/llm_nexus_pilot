@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from nexuspilot_models.contracts import (
+    MAX_PROVIDER_OUTPUT_TOKENS,
     MessageRole,
     ModelRequest,
     ModelResponse,
@@ -214,7 +215,7 @@ class AnthropicMessagesProvider:
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": messages,
-            "max_tokens": request.max_output_tokens or 4096,
+            "max_tokens": request.max_output_tokens or MAX_PROVIDER_OUTPUT_TOKENS,
             "stream": stream,
         }
         if request.system_instruction:

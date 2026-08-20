@@ -924,8 +924,9 @@ class WorkflowExecutionStateService:
         workflow: LlmAgentWorkflowExecution,
         *,
         reserved_estimated_cost: Decimal | None,
+        has_explicit_output_token_bound: bool = True,
     ) -> None:
-        """Atomically reserve one call slot and its conservative maximum cost."""
+        """Reserve one call and distinguish a missing output bound from missing pricing."""
 
         reservation_cost = reserved_estimated_cost or Decimal("0")
         priced_budget_condition = select(LlmRun.run_id).where(
@@ -972,6 +973,10 @@ class WorkflowExecutionStateService:
             raise InvalidRequestError("Agent workflow reached its model-call limit")
         run = await self.require_run(workflow.run_id)
         if run.budget_limit is not None and reserved_estimated_cost is None:
+            if not has_explicit_output_token_bound:
+                raise InvalidRequestError(
+                    "Run budget requires explicit max_output_tokens before provider call"
+                )
             raise InvalidRequestError(
                 "Run budget requires a configured model price before provider call"
             )
