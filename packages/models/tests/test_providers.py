@@ -9,10 +9,15 @@ import pytest
 from nexuspilot_models.contracts import (
     Message,
     MessageRole,
+    ModelReasoningCapabilities,
     ModelRequest,
+    ProviderContinuationKind,
+    ProviderContinuationState,
     ProviderName,
+    ReasoningContinuationMode,
     ReasoningConfiguration,
     ReasoningEffort,
+    ReasoningPresentationCapability,
     ToolDefinition,
 )
 from nexuspilot_models.errors import ModelProviderError
@@ -359,13 +364,16 @@ async def test_deepseek_disabled_reasoning_allows_temperature() -> None:
 
 
 async def test_deepseek_stream_requires_done_and_retains_reasoning_evidence() -> None:
-    """Verify completed streams retain private reasoning evidence only after a DONE marker."""
+    """Verify DeepSeek exposes truthful raw reasoning candidates and private replay state."""
 
     sse_body = (
         'data: {"id":"chat-1","choices":[{"delta":{"reasoning_content":"plan"},'
         '"finish_reason":null}]}\n\n'
+        'data: {"id":"chat-1","choices":[{"delta":{"tool_calls":[{"index":0,'
+        '"id":"call-1","function":{"name":"lookup","arguments":"{\\"x\\":1}"}}]},'
+        '"finish_reason":null}]}\n\n'
         'data: {"id":"chat-1","choices":[{"delta":{"content":"answer"},'
-        '"finish_reason":"stop"}]}\n\n'
+        '"finish_reason":"tool_calls"}]}\n\n'
         'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n'
         "data: [DONE]\n\n"
     )
@@ -396,13 +404,269 @@ async def test_deepseek_stream_requires_done_and_retains_reasoning_evidence() ->
 
     assert [event.type.value for event in events] == [
         "response.started",
+        "reasoning.started",
+        "reasoning.raw.delta",
+        "response.tool_call.delta",
         "response.text.delta",
         "response.usage",
+        "reasoning.completed",
         "response.completed",
     ]
     raw_response = events[-1].data["response"]["raw_response"]
     assert raw_response["reasoning_content"] == "plan"
     assert events[-1].data["response"]["text"] == "answer"
+    assert events[-2].data["block"] == {
+        "kind": "reasoning.raw",
+        "block_id": "reasoning-0",
+        "status": "completed",
+        "text": "plan",
+        "reasoning_tokens": None,
+    }
+    private_state = events[-1].private_data["provider_continuation_state"]
+    assert private_state["kind"] == "deepseek.raw-reasoning-replay.v1"
+    assert private_state["raw_reasoning_for_tool_continuation"] == "plan"
+    assert private_state["tool_call_ids"] == ["call-1"]
+    assert private_state["tool_calls"] == [
+        {"id": "call-1", "name": "lookup", "arguments": '{"x":1}'}
+    ]
+
+
+async def test_deepseek_empty_reasoning_chunks_do_not_create_public_nodes() -> None:
+    """Verify empty provider chunks cannot create blank reasoning content nodes."""
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Return empty reasoning followed by an ordinary completed answer."""
+
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"reasoning_content":""}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model_request(ProviderName.DEEPSEEK, "deepseek-v4-flash")
+        )
+    ]
+    await client.aclose()
+
+    assert all(not event.type.value.startswith("reasoning.") for event in events)
+
+
+async def test_deepseek_tool_continuation_requires_and_replays_private_reasoning() -> None:
+    """Require backend continuation state and restore it before the matching tool output."""
+
+    tool_messages = [
+        Message(role=MessageRole.USER, content="Check weather"),
+        Message(
+            role=MessageRole.TOOL,
+            content='{"temperature": 18}',
+            tool_call_id="call-1",
+        ),
+    ]
+    request_without_continuation = model_request(
+        ProviderName.DEEPSEEK,
+        "deepseek-v4-flash",
+    ).model_copy(update={"messages": tool_messages})
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    with pytest.raises(ModelProviderError, match="continuation"):
+        await provider.generate(request_without_continuation)
+    await client.aclose()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Verify exact private reasoning and tool-call metadata precede tool output."""
+
+        messages = json.loads(request.content)["messages"]
+        assert messages[1] == {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "private reasoning",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                }
+            ],
+        }
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "call-1"
+        return httpx.Response(
+            200,
+            json={
+                "id": "deepseek-next",
+                "choices": [
+                    {"message": {"content": "18°C"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = DeepSeekChatProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+    )
+    continuation_request = request_without_continuation.model_copy(
+        update={
+            "provider_continuation_state": ProviderContinuationState(
+                kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+                raw_reasoning_for_tool_continuation="private reasoning",
+                tool_call_ids=["call-1"],
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "name": "weather",
+                        "arguments": '{"city":"Paris"}',
+                    }
+                ],
+            )
+        }
+    )
+    response = await provider.generate(continuation_request)
+    await client.aclose()
+    assert response.text == "18°C"
+
+
+async def test_openai_stream_maps_summary_and_keeps_encrypted_items_private() -> None:
+    """Verify OpenAI summary text is public while encrypted continuation data stays private."""
+
+    sse_body = (
+        'data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1",'
+        '"delta":"checked constraints"}\n\n'
+        'data: {"type":"response.completed","response":{"id":"resp-1",'
+        '"status":"completed","output":[{"id":"rs-1","type":"reasoning",'
+        '"encrypted_content":"encrypted-secret","summary":[{"type":"summary_text",'
+        '"text":"checked constraints"}]}],"usage":{"input_tokens":2,"output_tokens":4,'
+        '"output_tokens_details":{"reasoning_tokens":3}}}}\n\n'
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Return one reasoning-summary Responses stream."""
+
+        return httpx.Response(
+            200,
+            text=sse_body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAIResponsesProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+    )
+    events = [event async for event in provider.stream(model_request(ProviderName.OPENAI))]
+    await client.aclose()
+
+    assert [event.type.value for event in events] == [
+        "response.started",
+        "reasoning.started",
+        "reasoning.summary.delta",
+        "response.usage",
+        "reasoning.completed",
+        "response.completed",
+    ]
+    completed_response = events[-1].data["response"]
+    assert completed_response["reasoning_tokens"] == 3
+    assert "provider_continuation_state" not in completed_response
+    assert "encrypted-secret" not in json.dumps(completed_response)
+    assert (
+        events[-1].private_data["provider_continuation_state"]["encrypted_reasoning_items"]
+        [0]["encrypted_content"]
+        == "encrypted-secret"
+    )
+
+
+async def test_openai_encrypted_reasoning_without_summary_emits_status_only() -> None:
+    """Map private-only reasoning evidence to a text-free public lifecycle block."""
+
+    sse_body = (
+        'data: {"type":"response.completed","response":{"id":"resp-hidden",'
+        '"status":"completed","output":[{"id":"rs-hidden","type":"reasoning",'
+        '"encrypted_content":"never-public","summary":[]}],"usage":{"input_tokens":2,'
+        '"output_tokens":4,"output_tokens_details":{"reasoning_tokens":3}}}}\n\n'
+    )
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        """Return encrypted reasoning without any Provider-generated summary."""
+
+        return httpx.Response(
+            200,
+            text=sse_body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAIResponsesProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+    )
+    events = [event async for event in provider.stream(model_request(ProviderName.OPENAI))]
+    await client.aclose()
+
+    assert [event.type.value for event in events] == [
+        "response.started",
+        "response.usage",
+        "reasoning.started",
+        "reasoning.completed",
+        "response.completed",
+    ]
+    status_block = events[-2].data["block"]
+    assert status_block["kind"] == "reasoning.status"
+    assert status_block["reasoning_tokens"] == 3
+    assert "text" not in status_block or status_block["text"] is None
+    assert "never-public" not in json.dumps(events[-1].data)
+
+
+def test_registry_returns_exact_reasoning_capabilities_and_safe_default() -> None:
+    """Verify model capabilities are registered centrally and unknown profiles stay hidden."""
+
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI,
+        object(),
+        allowed_models=frozenset({"reasoning-model", "ordinary-model"}),
+        reasoning_capabilities_by_model={
+            "reasoning-model": ModelReasoningCapabilities(
+                presentation=ReasoningPresentationCapability.SUMMARY,
+                supports_streaming_presentation=True,
+                continuation=ReasoningContinuationMode.ENCRYPTED_ITEM_REPLAY,
+                supports_reasoning_tokens=True,
+            )
+        },
+    )
+
+    assert (
+        registry.reasoning_capabilities(ProviderName.OPENAI, "reasoning-model").presentation
+        is ReasoningPresentationCapability.SUMMARY
+    )
+    assert (
+        registry.reasoning_capabilities(ProviderName.OPENAI, "ordinary-model").presentation
+        is ReasoningPresentationCapability.NONE
+    )
 
 
 async def test_deepseek_stream_without_done_fails() -> None:
@@ -484,14 +748,6 @@ async def test_other_providers_reject_unimplemented_reasoning_configuration() ->
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
     transport = HttpTransport(client, max_retries=0)
     providers = [
-        (
-            OpenAIResponsesProvider(
-                transport,
-                base_url="https://api.openai.com/v1",
-                api_key="test-key",
-            ),
-            ProviderName.OPENAI,
-        ),
         (
             AnthropicMessagesProvider(
                 transport,

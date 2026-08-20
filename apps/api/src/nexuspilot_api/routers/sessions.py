@@ -109,7 +109,8 @@ async def post_message(
 ) -> MessageRead:
     """Append one immutable message to an active conversation."""
 
-    return MessageRead.model_validate(await create_message(db_session, session_id, payload))
+    message = await create_message(db_session, session_id, payload)
+    return await get_message(db_session, message.message_id)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=CursorPage[MessageSummary])
@@ -182,4 +183,4 @@ async def get_message_by_id(
 ) -> MessageRead:
     """Return one immutable conversation message by identifier."""
 
-    return MessageRead.model_validate(await get_message(db_session, message_id))
+    return await get_message(db_session, message_id)

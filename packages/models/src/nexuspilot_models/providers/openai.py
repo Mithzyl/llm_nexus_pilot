@@ -9,7 +9,12 @@ from nexuspilot_models.contracts import (
     MessageRole,
     ModelRequest,
     ModelResponse,
+    ProviderContinuationKind,
+    ProviderContinuationState,
     ProviderName,
+    ReasoningBlockStatus,
+    ReasoningPresentation,
+    ReasoningPresentationKind,
     StreamEvent,
     StreamEventType,
     ToolCall,
@@ -61,6 +66,8 @@ class OpenAIResponsesProvider:
         started = time.perf_counter()
         sequence = 1
         text_parts: list[str] = []
+        reasoning_summary_parts: list[str] = []
+        reasoning_started = False
         tool_parts: dict[str, dict[str, str]] = {}
         final_payload: dict[str, Any] | None = None
         async with self.transport.open_sse(
@@ -81,7 +88,29 @@ class OpenAIResponsesProvider:
                         transport_attempts=attempts,
                     ) from exc
                 event_type = event.get("type")
-                if event_type == "response.output_text.delta":
+                if event_type == "response.reasoning_summary_text.delta":
+                    delta = event.get("delta", "")
+                    if not isinstance(delta, str) or not delta:
+                        continue
+                    if not reasoning_started:
+                        reasoning_started = True
+                        yield StreamEvent(
+                            type=StreamEventType.REASONING_STARTED,
+                            sequence=sequence,
+                            data={
+                                "block_id": "reasoning-0",
+                                "kind": ReasoningPresentationKind.SUMMARY.value,
+                            },
+                        )
+                        sequence += 1
+                    reasoning_summary_parts.append(delta)
+                    yield StreamEvent(
+                        type=StreamEventType.REASONING_SUMMARY_DELTA,
+                        sequence=sequence,
+                        data={"block_id": "reasoning-0", "delta": delta},
+                    )
+                    sequence += 1
+                elif event_type == "response.output_text.delta":
                     delta = event.get("delta", "")
                     text_parts.append(delta)
                     yield StreamEvent(
@@ -169,16 +198,61 @@ class OpenAIResponsesProvider:
                 raw_response={"streamed": True},
                 transport_attempts=attempts,
             )
+        if reasoning_summary_parts and not response.reasoning_blocks:
+            response = response.model_copy(
+                update={
+                    "reasoning_blocks": [
+                        ReasoningPresentation(
+                            kind=ReasoningPresentationKind.SUMMARY,
+                            block_id="reasoning-0",
+                            status=ReasoningBlockStatus.COMPLETED,
+                            text="".join(reasoning_summary_parts),
+                            reasoning_tokens=response.reasoning_tokens,
+                        )
+                    ]
+                }
+            )
+        if response.reasoning_blocks:
+            if not reasoning_started:
+                reasoning_started = True
+                yield StreamEvent(
+                    type=StreamEventType.REASONING_STARTED,
+                    sequence=sequence,
+                    data={
+                        "block_id": response.reasoning_blocks[0].block_id,
+                        "kind": response.reasoning_blocks[0].kind.value,
+                    },
+                )
+                sequence += 1
+            yield StreamEvent(
+                type=StreamEventType.REASONING_COMPLETED,
+                sequence=sequence,
+                data={"block": response.reasoning_blocks[0].model_dump(mode="json")},
+            )
+            sequence += 1
         yield StreamEvent(
             type=StreamEventType.COMPLETED,
             sequence=sequence,
             data={"response": response.model_dump(mode="json")},
+            private_data={
+                "provider_continuation_state": response.provider_continuation_state.model_dump(
+                    mode="json"
+                )
+            }
+            if response.provider_continuation_state
+            else {},
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
         """Translate portable messages, functions, and JSON Schema to Responses input."""
 
         input_items: list[dict[str, Any]] = []
+        continuation_state = request.provider_continuation_state
+        if (
+            continuation_state
+            and continuation_state.kind is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS
+        ):
+            input_items.extend(continuation_state.encrypted_reasoning_items)
         for message in request.messages:
             if message.role is MessageRole.TOOL:
                 input_items.append(
@@ -224,6 +298,11 @@ class OpenAIResponsesProvider:
                     "schema": request.output_schema,
                 }
             }
+        if request.reasoning and request.reasoning.enabled:
+            payload["reasoning"] = {"summary": "auto"}
+            if request.reasoning.effort is not None:
+                payload["reasoning"]["effort"] = request.reasoning.effort.value
+            payload["include"] = ["reasoning.encrypted_content"]
         return payload
 
     def _parse_response(
@@ -238,6 +317,8 @@ class OpenAIResponsesProvider:
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        reasoning_summary_parts: list[str] = []
+        encrypted_reasoning_items: list[dict[str, Any]] = []
         for item in payload.get("output") or []:
             if item.get("type") == "message":
                 for content in item.get("content") or []:
@@ -253,9 +334,28 @@ class OpenAIResponsesProvider:
                         ),
                     )
                 )
+            elif item.get("type") == "reasoning":
+                for summary_item in item.get("summary") or []:
+                    if summary_item.get("type") == "summary_text":
+                        summary_text = summary_item.get("text")
+                        if isinstance(summary_text, str) and summary_text:
+                            reasoning_summary_parts.append(summary_text)
+                encrypted_content = item.get("encrypted_content")
+                if isinstance(encrypted_content, str) and encrypted_content:
+                    encrypted_reasoning_items.append(
+                        {
+                            "id": item.get("id"),
+                            "type": "reasoning",
+                            "encrypted_content": encrypted_content,
+                        }
+                    )
         text = "".join(text_parts) or None
         usage = payload.get("usage") or {}
         input_details = usage.get("input_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or {}
+        reasoning_tokens = output_details.get("reasoning_tokens")
+        if not isinstance(reasoning_tokens, int):
+            reasoning_tokens = None
         incomplete = payload.get("incomplete_details") or {}
         finish_reason = (
             incomplete.get("reason")
@@ -263,6 +363,37 @@ class OpenAIResponsesProvider:
             else "tool_calls"
             if tool_calls and not text
             else "stop"
+        )
+        reasoning_text = "".join(reasoning_summary_parts) or None
+        if reasoning_text:
+            reasoning_blocks = [
+                ReasoningPresentation(
+                    kind=ReasoningPresentationKind.SUMMARY,
+                    block_id="reasoning-0",
+                    status=ReasoningBlockStatus.COMPLETED,
+                    text=reasoning_text,
+                    reasoning_tokens=reasoning_tokens,
+                )
+            ]
+        elif reasoning_tokens is not None or encrypted_reasoning_items:
+            reasoning_blocks = [
+                ReasoningPresentation(
+                    kind=ReasoningPresentationKind.STATUS,
+                    block_id="reasoning-0",
+                    status=ReasoningBlockStatus.COMPLETED,
+                    reasoning_tokens=reasoning_tokens,
+                )
+            ]
+        else:
+            reasoning_blocks = []
+        provider_continuation_state = (
+            ProviderContinuationState(
+                kind=ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS,
+                provider_response_id=payload.get("id"),
+                encrypted_reasoning_items=encrypted_reasoning_items,
+            )
+            if encrypted_reasoning_items
+            else None
         )
         return ModelResponse(
             text=text,
@@ -274,9 +405,12 @@ class OpenAIResponsesProvider:
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
             cached_tokens=input_details.get("cached_tokens"),
+            reasoning_tokens=reasoning_tokens,
+            reasoning_blocks=reasoning_blocks,
+            provider_continuation_state=provider_continuation_state,
             latency_ms=latency_ms,
             provider_request_id=payload.get("id"),
-            raw_response=payload,
+            raw_response=self._sanitize_raw_response(payload),
             transport_attempts=attempts,
         )
 
@@ -289,6 +423,9 @@ class OpenAIResponsesProvider:
             "cached_tokens": (usage.get("input_tokens_details") or {}).get(
                 "cached_tokens"
             ),
+            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get(
+                "reasoning_tokens"
+            ),
         }
 
     def _headers(self) -> dict[str, str]:
@@ -299,6 +436,15 @@ class OpenAIResponsesProvider:
             "Content-Type": "application/json",
         }
 
+    def _sanitize_raw_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Remove encrypted continuation material from the ordinary audit payload."""
+
+        sanitized = json.loads(json.dumps(payload))
+        for item in sanitized.get("output") or []:
+            if isinstance(item, dict):
+                item.pop("encrypted_content", None)
+        return sanitized
+
     def _validate_request(self, request: ModelRequest) -> None:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
@@ -306,10 +452,10 @@ class OpenAIResponsesProvider:
             raise ModelProviderError(
                 "invalid_request", "Request was routed to the wrong provider."
             )
-        if request.reasoning:
+        if request.reasoning and not request.reasoning.enabled:
             raise ModelProviderError(
                 "unsupported_capability",
-                "OpenAI reasoning configuration is not implemented by this codec.",
+                "OpenAI reasoning models do not support disabling reasoning through this codec.",
             )
 
     def _elapsed_ms(self, started: float) -> int:

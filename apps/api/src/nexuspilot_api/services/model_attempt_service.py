@@ -314,7 +314,8 @@ def _model_attempt_detail(model_attempt: LlmModelAttempt) -> ModelAttemptDetail:
     return ModelAttemptDetail(
         **ModelAttemptSummary.model_validate(model_attempt).model_dump(),
         request_key=model_attempt.request_key,
-        provider_request_id=model_attempt.provider_request_id,
+        # Provider response identifiers can authorize native continuation and stay backend-only.
+        provider_request_id=None,
         error_message_preview=_error_preview(model_attempt.error_message),
         has_raw_request=model_attempt.raw_request_uri is not None,
         has_raw_response=model_attempt.raw_response_uri is not None,

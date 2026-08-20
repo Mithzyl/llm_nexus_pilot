@@ -46,7 +46,9 @@ tmp/
 node_modules/
 apps/web/node_modules/
 .next/
+.next-dev/
 apps/web/.next/
+apps/web/.next-dev/
 *.tsbuildinfo
 out/
 coverage/

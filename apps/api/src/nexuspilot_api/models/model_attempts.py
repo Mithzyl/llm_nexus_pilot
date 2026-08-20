@@ -56,6 +56,8 @@ class LlmModelAttempt(Base):
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
     cached_tokens: Mapped[int | None]
+    reasoning_tokens: Mapped[int | None]
+    reasoning_display_policy: Mapped[str] = mapped_column(String(32), default="hidden")
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     latency_ms: Mapped[int | None]
     provider_request_id: Mapped[str | None] = mapped_column(String(255))
@@ -72,6 +74,7 @@ class LlmModelAttempt(Base):
         default=utc_now,
         server_default=func.now(),
     )
+    first_visible_token_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

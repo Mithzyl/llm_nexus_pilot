@@ -11,6 +11,7 @@ import {
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
   getLatestRun,
+  getReasoningBlocks,
   getRun,
   getRunAgentWorkflow,
   listLatestMessagePage,
@@ -20,6 +21,7 @@ import {
   nexusFetch,
   openAgentWorkflowStream,
   replayAgentWorkflowEvents,
+  replayModelResponseEvents,
 } from "../lib/api";
 import type {
   AgentWorkflowEvent,
@@ -31,11 +33,17 @@ import type {
   MessageSummary,
   ProviderCatalog,
   ProviderName,
+  ReasoningPresentation,
+  ReasoningBlockSnapshot,
   Run,
   RunDetail,
   Session,
 } from "../lib/types";
-import { readStreamEvents } from "../lib/sse";
+import { readStreamEvents, replayCommittedStreamEvents } from "../lib/sse";
+import {
+  applyReasoningStreamEvent,
+  isReasoningPresentation,
+} from "../lib/reasoning-stream";
 import {
   agentStructuredOutputMode,
   appendAgentWorkflowEvent,
@@ -49,6 +57,8 @@ import {
   agentWorkflowStatusLabel,
 } from "../components/agent-workflow/AgentWorkflowPanel";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
+import { ReasoningView } from "../components/reasoning/ReasoningView";
+import { MarkdownContent } from "../components/markdown/MarkdownContent";
 import {
   isModelSelectionAllowed,
   resolveInitialModelSelection,
@@ -67,16 +77,19 @@ import type { KeyboardEvent } from "react";
 const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
   providers: [],
   models_by_provider: {},
+  reasoning_capabilities_by_provider_model: {},
 };
 const EMPTY_AGENT_EVENT_STATE: AgentWorkflowEventState = {
   events: [],
   lastSequence: 0,
   hasGap: false,
 };
+const PROVIDER_CATALOG_TIMEOUT_MS = 10_000;
 
 type ExecutionMode = "response" | "agent";
 type ReviewPolicy = "always" | "on_verification_failure" | "never";
 type AgentParallelism = 1 | 2;
+type ReasoningDisplayPolicy = "hidden" | "summary-only" | "provider-visible";
 
 type LocalMessage = MessageSummary & {
   local_id: string;
@@ -87,6 +100,7 @@ type LocalMessage = MessageSummary & {
   failed?: boolean;
   cancelled?: boolean;
   agentWorkflow?: boolean;
+  reasoningBlocks: ReasoningPresentation[];
 };
 
 type ConnectionState = "checking" | "connected" | "unavailable";
@@ -125,6 +139,9 @@ function messageFromMessage(message: Message): LocalMessage {
     local_id: message.message_id,
     content_preview: message.content_text?.slice(0, 160) ?? null,
     content: message.content_text ?? "内容已保存为外部产物，请从运行详情查看。",
+    reasoningBlocks: (message.reasoning_blocks ?? []).filter((block) =>
+      isReasoningPresentation(block),
+    ),
   };
 }
 
@@ -143,6 +160,7 @@ function createLocalMessage(
     local_id: localId,
     session_id: "local",
     run_id: runId ?? null,
+    source_model_attempt_id: null,
     parent_message_id: null,
     role,
     content_type: "text",
@@ -152,6 +170,7 @@ function createLocalMessage(
     token_count: null,
     created_at: now,
     content,
+    reasoningBlocks: [],
   };
 }
 
@@ -169,6 +188,9 @@ export default function Home() {
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
     EMPTY_PROVIDER_CATALOG,
   );
+  const [providerCatalogState, setProviderCatalogState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
   const [selectedModel, setSelectedModel] = useState("");
   const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
@@ -177,12 +199,17 @@ export default function Home() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
   const [maxParallelAgents, setMaxParallelAgents] = useState<AgentParallelism>(1);
+  const [reasoningDisplayPolicy, setReasoningDisplayPolicy] =
+    useState<ReasoningDisplayPolicy>("hidden");
   const [draft, setDraft] = useState("");
   const [run, setRun] = useState<Run | RunDetail | null>(null);
   const [agentWorkflow, setAgentWorkflow] = useState<
     AgentWorkflowSummary | AgentWorkflowResult | null
   >(null);
   const [agentWorkflowNodes, setAgentWorkflowNodes] = useState<AgentWorkflowNodeResult[]>([]);
+  const [reasoningBlocksByAttemptId, setReasoningBlocksByAttemptId] = useState<
+    Record<string, ReasoningBlockSnapshot[]>
+  >({});
   const [agentEventState, setAgentEventState] = useState<AgentWorkflowEventState>(
     EMPTY_AGENT_EVENT_STATE,
   );
@@ -203,8 +230,43 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const latestAssistantText = useRef("");
+  const latestReasoningBlocks = useRef<ReasoningPresentation[]>([]);
+  const assistantProjectionFrame = useRef<number | null>(null);
+  const conversationScroll = useRef<HTMLDivElement | null>(null);
+  const shouldAutoFollowConversation = useRef(true);
+  const activeResponseAttemptId = useRef<string | null>(null);
+  const lastResponseSequence = useRef(0);
   const activeRequestController = useRef<AbortController | null>(null);
   const restoredRouteKey = useRef<string | null>(null);
+  const providerCatalogRequestId = useRef(0);
+  const providerCatalogRequestController = useRef<AbortController | null>(null);
+
+  const selectedReasoningCapabilities =
+    selectedProvider && selectedModel
+      ? providerCatalog.reasoning_capabilities_by_provider_model?.[selectedProvider]?.[
+          selectedModel
+        ]
+      : undefined;
+
+  /** Batch text and reasoning token projections into one browser animation frame. */
+  function scheduleAssistantProjection(assistantLocalId: string) {
+    if (assistantProjectionFrame.current !== null) return;
+    assistantProjectionFrame.current = window.requestAnimationFrame(() => {
+      assistantProjectionFrame.current = null;
+      setMessages((current) =>
+        current.map((message) =>
+          message.local_id === assistantLocalId
+            ? {
+                ...message,
+                content: latestAssistantText.current,
+                content_preview: latestAssistantText.current,
+                reasoningBlocks: latestReasoningBlocks.current,
+              }
+            : message,
+        ),
+      );
+    });
+  }
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem("nexuspilot-theme");
@@ -214,8 +276,50 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    const scrollContainer = conversationScroll.current;
+    if (!scrollContainer || !shouldAutoFollowConversation.current) return;
+    scrollContainer.scrollTop = scrollContainer.scrollHeight;
+  }, [messages]);
+
+  useEffect(() => {
+    const modelAttemptIds = Array.from(
+      new Set(
+        agentWorkflowNodes.flatMap((node) => node.evidence.model_attempt_ids),
+      ),
+    );
+    if (modelAttemptIds.length === 0) return;
+    let isCurrent = true;
+    void Promise.all(
+      modelAttemptIds.map(async (modelAttemptId) => [
+        modelAttemptId,
+        (await getReasoningBlocks(modelAttemptId)).filter((block) =>
+          isReasoningPresentation(block),
+        ),
+      ] as const),
+    )
+      .then((entries) => {
+        if (isCurrent) setReasoningBlocksByAttemptId(Object.fromEntries(entries));
+      })
+      .catch(() => {
+        if (isCurrent) setReasoningBlocksByAttemptId({});
+      });
+    return () => {
+      isCurrent = false;
+    };
+  }, [agentWorkflowNodes]);
+
+  useEffect(() => {
     window.localStorage.setItem("nexuspilot-theme", isDark ? "dark" : "light");
   }, [isDark]);
+
+  useEffect(() => {
+    /** Cancel an uncommitted visual projection when the workspace unmounts. */
+    return () => {
+      if (assistantProjectionFrame.current !== null) {
+        window.cancelAnimationFrame(assistantProjectionFrame.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const mobileQuery = window.matchMedia("(max-width: 880px)");
@@ -229,14 +333,10 @@ export default function Home() {
 
   useEffect(() => {
     let isMounted = true;
-    void Promise.all([listSessions(), listProviders()])
-      .then(([sessionPage, catalog]) => {
+    void listSessions()
+      .then((sessionPage) => {
         if (!isMounted) return;
         setSessions(sessionPage.items.filter((session) => session.status === "active"));
-        setProviderCatalog(catalog);
-        const initialSelection = resolveInitialModelSelection(catalog);
-        setSelectedProvider(initialSelection.provider);
-        setSelectedModel(initialSelection.model);
         setConnectionState("connected");
       })
       .catch((error: unknown) => {
@@ -247,6 +347,80 @@ export default function Home() {
 
     return () => {
       isMounted = false;
+    };
+  }, []);
+
+  /**
+   * Start one bounded provider-catalog request and invalidate any older request.
+   * The timeout prevents a stalled upstream connection from leaving the selector
+   * in a permanent loading state.
+   */
+  function startProviderCatalogRequest() {
+    providerCatalogRequestController.current?.abort();
+    const controller = new AbortController();
+    providerCatalogRequestController.current = controller;
+    const requestId = providerCatalogRequestId.current + 1;
+    providerCatalogRequestId.current = requestId;
+    const timeoutId = window.setTimeout(
+      () => controller.abort(),
+      PROVIDER_CATALOG_TIMEOUT_MS,
+    );
+    return { controller, requestId, timeoutId };
+  }
+
+  /** Load the provider catalog independently from conversation history for an explicit retry. */
+  async function loadProviderCatalog() {
+    const { controller, requestId, timeoutId } = startProviderCatalogRequest();
+    setProviderCatalogState("loading");
+    try {
+      const catalog = await listProviders(controller.signal);
+      if (providerCatalogRequestId.current !== requestId) return;
+      setProviderCatalog(catalog);
+      const initialSelection = resolveInitialModelSelection(catalog);
+      setSelectedProvider(initialSelection.provider);
+      setSelectedModel(initialSelection.model);
+      setProviderCatalogState("ready");
+    } catch {
+      if (providerCatalogRequestId.current !== requestId) return;
+      setProviderCatalog(EMPTY_PROVIDER_CATALOG);
+      setSelectedProvider("");
+      setSelectedModel("");
+      setProviderCatalogState("error");
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (providerCatalogRequestController.current === controller) {
+        providerCatalogRequestController.current = null;
+      }
+    }
+  }
+
+  useEffect(() => {
+    const { controller, requestId, timeoutId } = startProviderCatalogRequest();
+    void listProviders(controller.signal)
+      .then((catalog) => {
+        if (providerCatalogRequestId.current !== requestId) return;
+        setProviderCatalog(catalog);
+        const initialSelection = resolveInitialModelSelection(catalog);
+        setSelectedProvider(initialSelection.provider);
+        setSelectedModel(initialSelection.model);
+        setProviderCatalogState("ready");
+      })
+      .catch(() => {
+        if (providerCatalogRequestId.current !== requestId) return;
+        setProviderCatalog(EMPTY_PROVIDER_CATALOG);
+        setSelectedProvider("");
+        setSelectedModel("");
+        setProviderCatalogState("error");
+      })
+      .finally(() => {
+        window.clearTimeout(timeoutId);
+        if (providerCatalogRequestController.current === controller) {
+          providerCatalogRequestController.current = null;
+        }
+      });
+    return () => {
+      controller.abort();
+      providerCatalogRequestId.current += 1;
     };
   }, []);
 
@@ -283,6 +457,7 @@ export default function Home() {
   function resetAgentWorkflowFacts() {
     setAgentWorkflow(null);
     setAgentWorkflowNodes([]);
+    setReasoningBlocksByAttemptId({});
     setAgentEventState(EMPTY_AGENT_EVENT_STATE);
   }
 
@@ -678,6 +853,15 @@ export default function Home() {
     activeRequestController.current?.abort();
   }
 
+  /** Follow streaming output only while the reader remains at the message-list bottom. */
+  function trackConversationBottom() {
+    const scrollContainer = conversationScroll.current;
+    if (!scrollContainer) return;
+    const remainingScrollPx =
+      scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+    shouldAutoFollowConversation.current = remainingScrollPx <= 48;
+  }
+
   /**
    * Submit one user turn through the durable user, session, run, message, and SSE flow.
    */
@@ -699,6 +883,13 @@ export default function Home() {
     setAssistantSaveFailed(false);
     resetAgentWorkflowFacts();
     latestAssistantText.current = "";
+    latestReasoningBlocks.current = [];
+    activeResponseAttemptId.current = null;
+    lastResponseSequence.current = 0;
+    if (assistantProjectionFrame.current !== null) {
+      window.cancelAnimationFrame(assistantProjectionFrame.current);
+      assistantProjectionFrame.current = null;
+    }
     const userMessage = createLocalMessage("user", input);
     setMessages((current) => [...current, userMessage]);
     setDraft("");
@@ -748,10 +939,12 @@ export default function Home() {
         return;
       }
 
+      const responseController = new AbortController();
+      activeRequestController.current = responseController;
       const response = await fetch("/api/nexus/responses", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-        signal: (activeRequestController.current = new AbortController()).signal,
+        signal: responseController.signal,
         body: JSON.stringify({
           run_id: createdRun.run_id,
           provider: selectedProvider,
@@ -759,6 +952,7 @@ export default function Home() {
           input,
           max_output_tokens: 1200,
           timeout_seconds: 60,
+          reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
           stream: true,
         }),
@@ -769,18 +963,25 @@ export default function Home() {
         throw new Error(body?.detail ?? `模型请求失败（${response.status}）`);
       }
 
-      await readStreamEvents(response, async (event) => {
+      /** Apply one live or replayed response event exactly once in sequence order. */
+      const applyResponseEvent = async (event: Parameters<typeof applyReasoningStreamEvent>[1]) => {
         const data = event.data;
-        if (data.attempt_id) setAttemptId(data.attempt_id);
+        const eventAttemptId = data.attempt_id ?? event.response_id;
+        if (eventAttemptId) {
+          activeResponseAttemptId.current = eventAttemptId;
+          setAttemptId(eventAttemptId);
+        }
+        const nextReasoningBlocks = applyReasoningStreamEvent(
+          latestReasoningBlocks.current,
+          event,
+        );
+        if (nextReasoningBlocks !== latestReasoningBlocks.current) {
+          latestReasoningBlocks.current = nextReasoningBlocks;
+          scheduleAssistantProjection(assistantMessage.local_id);
+        }
         if (event.type === "response.text.delta" && data.delta) {
           latestAssistantText.current += data.delta;
-          setMessages((current) =>
-            current.map((message) =>
-              message.local_id === assistantMessage.local_id
-                ? { ...message, content: latestAssistantText.current, content_preview: latestAssistantText.current }
-                : message,
-            ),
-          );
+          scheduleAssistantProjection(assistantMessage.local_id);
         }
         if (event.type === "response.usage" && data.usage) {
           setRunUsage({
@@ -794,11 +995,23 @@ export default function Home() {
           const responseResult = data.response;
           const completedText = responseResult?.output_text ?? latestAssistantText.current;
           latestAssistantText.current = completedText;
+          latestReasoningBlocks.current = responseResult?.reasoning_blocks ?? latestReasoningBlocks.current;
+          if (assistantProjectionFrame.current !== null) {
+            window.cancelAnimationFrame(assistantProjectionFrame.current);
+            assistantProjectionFrame.current = null;
+          }
           setAttemptId(data.attempt_id ?? responseResult?.id ?? null);
           setMessages((current) =>
             current.map((message) =>
               message.local_id === assistantMessage.local_id
-                ? { ...message, content: completedText, content_preview: completedText, pending: false, saving: true }
+                ? {
+                    ...message,
+                    content: completedText,
+                    content_preview: completedText,
+                    reasoningBlocks: latestReasoningBlocks.current,
+                    pending: false,
+                    saving: true,
+                  }
                 : message,
             ),
           );
@@ -813,6 +1026,7 @@ export default function Home() {
               role: "assistant",
               content_text: completedText,
               run_id: createdRun.run_id,
+              source_model_attempt_id: responseResult?.id,
             });
             setAssistantSaved(true);
             setMessages((current) =>
@@ -849,7 +1063,20 @@ export default function Home() {
             ),
           );
         }
-      });
+        lastResponseSequence.current = event.sequence;
+      };
+
+      try {
+        await readStreamEvents(response, applyResponseEvent);
+      } catch (streamError) {
+        const responseAttemptId = activeResponseAttemptId.current;
+        if (responseController.signal.aborted || !responseAttemptId) throw streamError;
+        await replayCommittedStreamEvents(
+          (afterSequence) => replayModelResponseEvents(responseAttemptId, afterSequence),
+          applyResponseEvent,
+          { afterSequence: lastResponseSequence.current },
+        );
+      }
     } catch (error) {
       if (activeRequestController.current?.signal.aborted) {
         setErrorMessage("已请求停止，运行详情仍以服务端最终状态为准。");
@@ -968,7 +1195,11 @@ export default function Home() {
         </header>
 
         <div className="conversation-stage">
-          <div className="conversation-scroll">
+          <div
+            className="conversation-scroll"
+            ref={conversationScroll}
+            onScroll={trackConversationBottom}
+          >
             {messages.length === 0 ? (
               <div className="empty-state">
                 <div className="empty-state-mark" aria-hidden="true">N</div>
@@ -1005,7 +1236,13 @@ export default function Home() {
                       </div>
                     </div>
                     <div className="assistant-content">
-                      {message.content ? <p className="assistant-text">{message.content}</p> : <p className="typing-line"><span /> <span /> <span /></p>}
+                      {message.reasoningBlocks.map((presentation) => (
+                        <ReasoningView
+                          key={presentation.block_id}
+                          presentation={presentation}
+                        />
+                      ))}
+                      {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}
                       {message.pending && <p className="stream-note">正在接收增量响应，不会把部分文本标记为完成。</p>}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
                       {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
@@ -1081,11 +1318,33 @@ export default function Home() {
               <div className="composer-tools">
                 <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>{executionMode === "agent" ? "model_only_v1 · 不使用工具、Memory 或 Knowledge" : "上下文仅来自当前输入与已保存消息"}</span></div>
                 <div className="composer-actions">
+                  {executionMode === "response" &&
+                    selectedReasoningCapabilities?.presentation !== "none" && (
+                      <label className="reasoning-policy-picker">
+                        <span>推理展示</span>
+                        <select
+                          value={reasoningDisplayPolicy}
+                          onChange={(event) =>
+                            setReasoningDisplayPolicy(
+                              event.target.value as ReasoningDisplayPolicy,
+                            )
+                          }
+                          disabled={isSending}
+                          aria-label="推理展示策略"
+                        >
+                          <option value="hidden">隐藏</option>
+                          <option value="summary-only">仅摘要</option>
+                          <option value="provider-visible">Provider 可见内容</option>
+                        </select>
+                      </label>
+                    )}
                   <ModelPicker
                     catalog={providerCatalog}
+                    catalogState={providerCatalogState}
                     selectedProvider={selectedProvider}
                     selectedModel={selectedModel}
                     disabled={isSending}
+                    onRetry={() => void loadProviderCatalog()}
                     onChange={(provider, model) => {
                       setSelectedProvider(provider);
                       setSelectedModel(model);
@@ -1124,6 +1383,7 @@ export default function Home() {
             workflow={agentWorkflow}
             events={agentEventState.events}
             nodes={agentWorkflowNodes}
+            reasoningBlocksByAttemptId={reasoningBlocksByAttemptId}
             hasEventGap={agentEventState.hasGap}
             isCancelling={isCancellingWorkflow}
             onCancel={() => void handleCancelAgentWorkflow()}
@@ -1139,6 +1399,13 @@ export default function Home() {
             <div><dt>输出 Token</dt><dd>{runUsage?.output ?? "—"}</dd></div>
             <div><dt>请求状态</dt><dd className={run?.status === "failed" ? "error-text" : "success-text"}>{statusLabel}</dd></div>
           </dl>
+          {lastAssistantMessage?.reasoningBlocks.map((presentation) => (
+            <ReasoningView
+              key={`trajectory-${presentation.block_id}`}
+              presentation={presentation}
+              mode="trajectory"
+            />
+          ))}
         </section>
 
         <section className="inspector-section timeline-section">

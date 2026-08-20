@@ -15,6 +15,10 @@ from nexuspilot_api.schemas.model_attempts import (
     ModelTransportAttemptDetail,
     ModelTransportAttemptSummary,
 )
+from nexuspilot_api.schemas.model_reasoning import (
+    ModelResponseEventPage,
+    ReasoningBlockRead,
+)
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.services.model_attempt_service import (
     create_model_attempt,
@@ -22,6 +26,10 @@ from nexuspilot_api.services.model_attempt_service import (
     get_model_transport_attempt,
     list_model_attempts,
     list_model_transport_attempts,
+)
+from nexuspilot_api.services.model_reasoning_service import (
+    get_reasoning_blocks,
+    list_model_response_events,
 )
 
 router = APIRouter(tags=["model-attempts"])
@@ -66,6 +74,39 @@ async def get_model_attempt_detail(
     """Return safe details for one logical model invocation."""
 
     return await get_model_attempt(db_session, attempt_id)
+
+
+@router.get(
+    "/attempts/{attempt_id}/reasoning-blocks",
+    response_model=list[ReasoningBlockRead],
+)
+async def get_model_attempt_reasoning_blocks(
+    attempt_id: str,
+    db_session: DatabaseSessionDependency,
+) -> list[ReasoningBlockRead]:
+    """Return final public reasoning blocks for one logical model invocation."""
+
+    return await get_reasoning_blocks(db_session, attempt_id)
+
+
+@router.get(
+    "/attempts/{attempt_id}/events",
+    response_model=ModelResponseEventPage,
+)
+async def get_model_attempt_response_events(
+    attempt_id: str,
+    db_session: DatabaseSessionDependency,
+    after_sequence: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> ModelResponseEventPage:
+    """Replay committed sanitized response events after one client sequence."""
+
+    return await list_model_response_events(
+        db_session,
+        attempt_id,
+        after_sequence=after_sequence,
+        limit=limit,
+    )
 
 
 @router.get(

@@ -98,6 +98,10 @@ class LlmMessage(Base):
         ForeignKey("llm_runs.run_id", ondelete="SET NULL"),
         index=True,
     )
+    source_model_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_attempts.attempt_id", ondelete="SET NULL"),
+        index=True,
+    )
     parent_message_id: Mapped[str | None] = mapped_column(
         ForeignKey("llm_messages.message_id", ondelete="SET NULL"),
         index=True,

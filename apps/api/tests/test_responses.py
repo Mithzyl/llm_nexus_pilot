@@ -5,7 +5,12 @@ import json
 
 import httpx
 import pytest
-from nexuspilot_models.contracts import ProviderName
+from nexuspilot_models.contracts import (
+    ModelReasoningCapabilities,
+    ProviderName,
+    ReasoningContinuationMode,
+    ReasoningPresentationCapability,
+)
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
@@ -74,6 +79,20 @@ class BlockingRawResponseObjectStorage:
         )
 
 
+class StallingStreamProvider:
+    """Emit a start event and then exceed the platform stream deadline."""
+
+    name = ProviderName.OPENAI
+
+    async def stream(self, _request):
+        """Yield one event before stalling so timeout finalization remains observable."""
+
+        from nexuspilot_models.contracts import StreamEvent, StreamEventType
+
+        yield StreamEvent(type=StreamEventType.STARTED, sequence=1)
+        await asyncio.sleep(2)
+
+
 def create_deepseek_stream_registry(
     *,
     include_done_marker: bool,
@@ -128,6 +147,14 @@ def create_deepseek_stream_registry(
             api_key="test-deepseek-key",
         ),
         allowed_models=frozenset({"deepseek-v4-flash"}),
+        reasoning_capabilities_by_model={
+            "deepseek-v4-flash": ModelReasoningCapabilities(
+                presentation=ReasoningPresentationCapability.RAW,
+                supports_streaming_presentation=True,
+                continuation=ReasoningContinuationMode.RAW_REASONING_REPLAY,
+                supports_reasoning_tokens=True,
+            )
+        },
     )
     return registry, provider_http_client
 
@@ -143,6 +170,16 @@ async def test_registered_provider_endpoint_reflects_dependency_registry(
     assert response.json() == {
         "providers": ["openai"],
         "models_by_provider": {"openai": ["test-model"]},
+        "reasoning_capabilities_by_provider_model": {
+            "openai": {
+                "test-model": {
+                    "presentation": "none",
+                    "supports_streaming_presentation": False,
+                    "continuation": "none",
+                    "supports_reasoning_tokens": False,
+                }
+            }
+        },
     }
 
 
@@ -245,7 +282,7 @@ async def test_raw_response_storage_failure_preserves_provider_accounting(
     assert attempt["output_tokens"] == 20
     assert attempt["cached_tokens"] == 10
     assert attempt["estimated_cost"] == "0.001520"
-    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["provider_request_id"] is None
     assert attempt["raw_response_uri"] is None
     assert attempt["error_code"] == "response_audit_failed"
     assert len(attempt["retries"]) == 1
@@ -288,7 +325,7 @@ async def test_cancellation_during_response_audit_still_finalizes_known_provider
     attempt = detail["attempts"][0]
     assert attempt["status"] == "completed"
     assert attempt["input_tokens"] == 100
-    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["provider_request_id"] is None
     assert attempt["raw_response_uri"].endswith("/raw-response.json")
     assert detail["cost_used"] == "0.001520"
 
@@ -381,7 +418,7 @@ async def test_repeated_response_commit_failure_preserves_usage_as_outcome_unkno
     assert attempt["status"] == "outcome_unknown"
     assert attempt["input_tokens"] == 100
     assert attempt["estimated_cost"] == "0.001520"
-    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["provider_request_id"] is None
     assert len(attempt["retries"]) == 1
     assert detail["cost_used"] == "0.001520"
 
@@ -484,7 +521,7 @@ async def test_stream_raw_response_storage_failure_emits_failure_and_keeps_accou
     assert attempt["status"] == "failed"
     assert attempt["input_tokens"] == 100
     assert attempt["estimated_cost"] == "0.001520"
-    assert attempt["provider_request_id"] == "provider-request-1"
+    assert attempt["provider_request_id"] is None
     assert len(attempt["retries"]) == 1
     assert detail["cost_used"] == "0.001520"
     database_engine = test_database_session_factory.kw["bind"]
@@ -494,7 +531,7 @@ async def test_stream_raw_response_storage_failure_emits_failure_and_keeps_accou
 async def test_deepseek_stream_hides_reasoning_and_completes_attempt(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify DeepSeek reasoning stays in raw evidence and never enters public SSE."""
+    """Verify default policy exposes only status while keeping raw text private."""
 
     run = await create_test_run(client)
     registry, provider_http_client = create_deepseek_stream_registry(include_done_marker=True)
@@ -520,13 +557,110 @@ async def test_deepseek_stream_hides_reasoning_and_completes_attempt(
     assert response.status_code == 200
     assert [event["type"] for event in events] == [
         "response.started",
+        "reasoning.started",
         "response.text.delta",
         "response.usage",
+        "reasoning.completed",
         "response.completed",
     ]
     assert "private reasoning must not be public" not in response.text
     assert events[-1]["data"]["response"]["output_text"] == "public answer"
+    assert events[-1]["data"]["response"]["reasoning_blocks"][0]["kind"] == "reasoning.status"
     assert run_detail["attempts"][0]["status"] == "completed"
+
+    attempt_id = run_detail["attempts"][0]["attempt_id"]
+    replay = (await client.get(f"/api/v1/attempts/{attempt_id}/events")).json()
+    snapshots = (
+        await client.get(f"/api/v1/attempts/{attempt_id}/reasoning-blocks")
+    ).json()
+    assert [item["type"] for item in replay["items"]] == [
+        event["type"] for event in events
+    ]
+    assert snapshots[0]["kind"] == "reasoning.status"
+    assert snapshots[0]["text"] is None
+
+
+async def test_deepseek_provider_visible_stream_exposes_only_authorized_raw_reasoning(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify explicit provider-visible policy exposes raw text through normalized events."""
+
+    run = await create_test_run(client)
+    registry, provider_http_client = create_deepseek_stream_registry(include_done_marker=True)
+    app.dependency_overrides[get_provider_registry] = lambda: registry
+    try:
+        response = await client.post(
+            "/api/v1/responses",
+            json={
+                "run_id": run["run_id"],
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "input": "Explain visibly",
+                "reasoning_display_policy": "provider-visible",
+                "stream": True,
+            },
+        )
+    finally:
+        await provider_http_client.aclose()
+
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event["type"] for event in events] == [
+        "response.started",
+        "reasoning.started",
+        "reasoning.raw.delta",
+        "response.text.delta",
+        "response.usage",
+        "reasoning.completed",
+        "response.completed",
+    ]
+    assert events[2]["data"]["delta"] == "private reasoning must not be public"
+    assert events[-1]["data"]["response"]["reasoning_blocks"][0]["kind"] == "reasoning.raw"
+
+    attempt_id = events[-1]["data"]["response"]["id"]
+    saved_message = await client.post(
+        f"/api/v1/sessions/{run['session_id']}/messages",
+        json={
+            "role": "assistant",
+            "content_text": "public answer",
+            "run_id": run["run_id"],
+            "source_model_attempt_id": attempt_id,
+        },
+    )
+    latest_messages = await client.get(
+        f"/api/v1/sessions/{run['session_id']}/messages/latest"
+    )
+    message_detail = await client.get(
+        f"/api/v1/messages/{saved_message.json()['message_id']}"
+    )
+    assert saved_message.status_code == 201
+    assert saved_message.json()["reasoning_blocks"][0]["kind"] == "reasoning.raw"
+    assert latest_messages.json()["items"][-1]["reasoning_blocks"][0]["text"] == (
+        "private reasoning must not be public"
+    )
+    assert message_detail.json()["source_model_attempt_id"] == attempt_id
+
+    second_run = await client.post(
+        "/api/v1/runs",
+        json={
+            "user_id": run["user_id"],
+            "session_id": run["session_id"],
+            "user_request": "another turn",
+        },
+    )
+    cross_run_message = await client.post(
+        f"/api/v1/sessions/{run['session_id']}/messages",
+        json={
+            "role": "assistant",
+            "content_text": "wrong lineage",
+            "run_id": second_run.json()["run_id"],
+            "source_model_attempt_id": attempt_id,
+        },
+    )
+    assert cross_run_message.status_code == 409
 
 
 async def test_deepseek_stream_without_done_fails_attempt(
@@ -559,13 +693,55 @@ async def test_deepseek_stream_without_done_fails_attempt(
     assert response.status_code == 200
     assert [event["type"] for event in events] == [
         "response.started",
+        "reasoning.started",
         "response.text.delta",
         "response.usage",
+        "reasoning.interrupted",
         "response.failed",
     ]
     assert events[-1]["data"]["error"]["type"] == "response_parse_error"
     assert attempt["status"] == "failed"
     assert attempt["error_code"] == "response_parse_error"
+
+
+async def test_stream_timeout_emits_failure_and_finalizes_attempt(
+    client: httpx.AsyncClient,
+) -> None:
+    """Enforce the total platform deadline even when an adapter stalls between events."""
+
+    run = await create_test_run(client)
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI,
+        StallingStreamProvider(),
+        allowed_models=frozenset({"test-model"}),
+    )
+    app.dependency_overrides[get_provider_registry] = lambda: registry
+
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "Wait forever",
+            "timeout_seconds": 1,
+            "stream": True,
+        },
+    )
+
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    run_detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert [event["type"] for event in events] == [
+        "response.started",
+        "response.failed",
+    ]
+    assert events[-1]["data"]["error"]["type"] == "timeout"
+    assert run_detail["attempts"][0]["status"] == "timed_out"
 
 
 async def test_unconfigured_provider_returns_stable_error(client: httpx.AsyncClient) -> None:

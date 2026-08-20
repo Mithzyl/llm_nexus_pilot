@@ -4,7 +4,9 @@ import type {
   AgentWorkflowResult,
   AgentWorkflowStatus,
   AgentWorkflowSummary,
+  ReasoningBlockSnapshot,
 } from "../../lib/types";
+import { ReasoningView } from "../reasoning/ReasoningView";
 import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
@@ -134,6 +136,7 @@ export function AgentWorkflowPanel({
   workflow,
   events,
   nodes: liveNodes,
+  reasoningBlocksByAttemptId = {},
   hasEventGap,
   isCancelling = false,
   onCancel,
@@ -141,6 +144,7 @@ export function AgentWorkflowPanel({
   workflow: AgentWorkflowSummary | AgentWorkflowResult;
   events: AgentWorkflowEvent[];
   nodes: AgentWorkflowNodeResult[];
+  reasoningBlocksByAttemptId?: Record<string, ReasoningBlockSnapshot[]>;
   hasEventGap: boolean;
   isCancelling?: boolean;
   onCancel?: () => void;
@@ -218,6 +222,16 @@ export function AgentWorkflowPanel({
                     {node.usage.model_call_count} 次模型调用 · {node.usage.input_tokens + node.usage.output_tokens} tokens ·
                     剩余 {node.budget.remaining_model_calls} 次调用
                   </p>
+                  {node.evidence.model_attempt_ids.flatMap(
+                    (modelAttemptId) =>
+                      reasoningBlocksByAttemptId[modelAttemptId] ?? [],
+                  ).map((presentation) => (
+                    <ReasoningView
+                      key={presentation.block_id}
+                      presentation={presentation}
+                      mode="trajectory"
+                    />
+                  ))}
                   {node.warnings.length > 0 && <p>警告：{node.warnings.join("；")}</p>}
                   {node.error && <p className="error-text">{node.error.public_message}</p>}
                 </div>

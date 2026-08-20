@@ -18,6 +18,20 @@ export type ProviderName =
 export type ProviderCatalog = {
   providers: ProviderName[];
   models_by_provider: Partial<Record<ProviderName, string[]>>;
+  reasoning_capabilities_by_provider_model?: Partial<
+    Record<ProviderName, Record<string, ModelReasoningCapabilities>>
+  >;
+};
+
+export type ModelReasoningCapabilities = {
+  presentation: "raw" | "summary" | "hidden" | "none";
+  supports_streaming_presentation: boolean;
+  continuation:
+    | "raw-reasoning-replay"
+    | "encrypted-item-replay"
+    | "response-id"
+    | "none";
+  supports_reasoning_tokens: boolean;
 };
 
 export type CursorPage<T> = {
@@ -40,6 +54,7 @@ export type MessageSummary = {
   message_id: string;
   session_id: string;
   run_id: string | null;
+  source_model_attempt_id?: string | null;
   parent_message_id: string | null;
   role: MessageRole;
   content_type: string;
@@ -53,6 +68,7 @@ export type MessageSummary = {
 export type Message = Omit<MessageSummary, "content_preview"> & {
   content_text: string | null;
   metadata_json: Record<string, unknown> | null;
+  reasoning_blocks?: ReasoningBlockSnapshot[];
 };
 
 export type Run = {
@@ -78,14 +94,23 @@ export type ModelAttempt = {
   model: string;
   request_type: string;
   retry_count: number;
-  status: "started" | "completed" | "failed" | "timed_out" | "cancelled";
+  status:
+    | "started"
+    | "completed"
+    | "failed"
+    | "timed_out"
+    | "cancelled"
+    | "outcome_unknown";
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
+  reasoning_tokens: number | null;
+  reasoning_display_policy: "hidden" | "summary-only" | "provider-visible";
   estimated_cost: string | number | null;
   latency_ms: number | null;
   error_code: string | null;
   started_at: string;
+  first_visible_token_at: string | null;
   completed_at: string | null;
 };
 
@@ -102,6 +127,7 @@ export type ResponseUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
+  reasoning_tokens: number | null;
   estimated_cost: string | null;
 };
 
@@ -115,22 +141,82 @@ export type ResponseResult = {
   tool_calls: Array<Record<string, unknown>>;
   structured_output: Record<string, unknown> | Array<unknown> | null;
   finish_reason: string;
+  reasoning_blocks: ReasoningPresentation[];
   usage: ResponseUsage;
   latency_ms: number;
   provider_request_id: string | null;
 };
 
+export type ReasoningBlockStatus = "running" | "completed" | "interrupted";
+
+type ReasoningPresentationBase = {
+  block_id: string;
+  status: ReasoningBlockStatus;
+  reasoning_tokens?: number | null;
+};
+
+export type ReasoningPresentation =
+  | (ReasoningPresentationBase & {
+      kind: "reasoning.raw";
+      text: string;
+    })
+  | (ReasoningPresentationBase & {
+      kind: "reasoning.summary";
+      text: string;
+    })
+  | (ReasoningPresentationBase & {
+      kind: "reasoning.status";
+    });
+
+export type ReasoningBlockSnapshot = ReasoningPresentation & {
+  response_id: string;
+  started_at: string;
+  first_visible_token_at: string | null;
+  completed_at: string | null;
+  final_event_sequence: number | null;
+};
+
+export type ModelResponseEventType =
+  | "response.started"
+  | "response.text.delta"
+  | "response.tool_call.delta"
+  | "response.usage"
+  | "reasoning.started"
+  | "reasoning.raw.delta"
+  | "reasoning.summary.delta"
+  | "reasoning.completed"
+  | "reasoning.interrupted"
+  | "response.completed"
+  | "response.failed";
+
 export type StreamEvent = {
-  type: string;
+  schema_version: "conversation-stream.v2" | string;
+  event_id: string;
+  response_id: string | null;
+  run_id: string | null;
+  turn_id: string | null;
+  step_id: string | null;
+  timestamp_ms: number | null;
+  type: ModelResponseEventType | string;
   sequence: number;
   data: {
     delta?: string;
     attempt_id?: string;
     response?: ResponseResult;
     usage?: ResponseUsage;
+    block_id?: string;
+    kind?: ReasoningPresentation["kind"];
+    block?: ReasoningPresentation;
     error?: { type?: string; message?: string };
     [key: string]: unknown;
   };
+};
+
+export type ModelResponseEventPage = {
+  items: StreamEvent[];
+  next_after_sequence: number | null;
+  has_more: boolean;
+  limit: number;
 };
 
 export type AgentWorkflowStatus =

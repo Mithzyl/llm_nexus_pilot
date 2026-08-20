@@ -90,6 +90,28 @@ async function fetchOwnedAgentWorkflow(
   return fetchOwnedRun(workflow.run_id, request);
 }
 
+/** Resolve a model invocation's Run and enforce the development-user boundary. */
+async function fetchOwnedModelAttempt(
+  attemptId: string,
+  request: NextRequest,
+): Promise<Response | null> {
+  const upstreamUrl = new URL(
+    `/api/v1/attempts/${encodeURIComponent(attemptId)}`,
+    API_BASE_URL,
+  );
+  const upstream = await fetch(upstreamUrl, {
+    method: "GET",
+    headers: buildApiHeaders(request),
+    signal: request.signal,
+    cache: "no-store",
+  });
+  if (!upstream.ok) return copyUpstreamResponse(upstream);
+
+  const attempt = (await upstream.json()) as { run_id?: string };
+  if (!attempt.run_id) return resourceNotFoundResponse();
+  return fetchOwnedRun(attempt.run_id, request);
+}
+
 /** Resolve a message's session and verify that both objects share the owner. */
 async function fetchOwnedMessage(messageId: string, request: NextRequest): Promise<Response | null> {
   const upstreamUrl = new URL(`/api/v1/messages/${encodeURIComponent(messageId)}`, API_BASE_URL);
@@ -191,6 +213,11 @@ async function validateOwnership(
   if (path[0] === "agent-workflows" && path.length >= 2) {
     const workflowOwnershipError = await fetchOwnedAgentWorkflow(path[1], request);
     if (workflowOwnershipError) return workflowOwnershipError;
+  }
+
+  if (path[0] === "attempts" && path.length >= 2) {
+    const attemptOwnershipError = await fetchOwnedModelAttempt(path[1], request);
+    if (attemptOwnershipError) return attemptOwnershipError;
   }
 
   const referencedRunId = typeof payload?.run_id === "string" ? payload.run_id : undefined;

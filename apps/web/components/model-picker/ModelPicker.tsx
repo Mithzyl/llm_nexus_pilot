@@ -11,10 +11,12 @@ import type { ProviderCatalog, ProviderName } from "../../lib/types";
 
 type ModelPickerProps = {
   catalog: ProviderCatalog;
+  catalogState?: "loading" | "ready" | "error";
   selectedProvider: ProviderName | "";
   selectedModel: string;
   disabled?: boolean;
   onChange: (provider: ProviderName, model: string) => void;
+  onRetry?: () => void;
 };
 
 /** Convert a provider identifier into the compact label shown in the picker. */
@@ -25,10 +27,12 @@ function providerLabel(provider: ProviderName | ""): string {
 /** Render an accessible custom Provider and model menu backed by the server catalog. */
 export function ModelPicker({
   catalog,
+  catalogState = "ready",
   selectedProvider,
   selectedModel,
   disabled = false,
   onChange,
+  onRetry,
 }: ModelPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeProvider, setActiveProvider] = useState<ProviderName | "">(
@@ -52,6 +56,21 @@ export function ModelPicker({
     selectedProvider,
     selectedModel,
   );
+  const hasProviders = catalog.providers.length > 0;
+  const isCatalogLoading = catalogState === "loading";
+  const isCatalogError = catalogState === "error";
+  const triggerStateClass = isCatalogLoading
+    ? "is-loading"
+    : isCatalogError
+      ? "is-error"
+      : hasProviders
+        ? ""
+        : "is-empty";
+  const emptySelectionLabel = isCatalogLoading
+    ? "正在读取模型"
+    : isCatalogError
+      ? "模型读取失败"
+      : "没有可用模型";
 
   useEffect(() => {
     if (!isOpen) return;
@@ -73,6 +92,10 @@ export function ModelPicker({
 
   /** Toggle the menu and synchronize its active provider with the current selection. */
   function handleTriggerClick() {
+    if (isCatalogError) {
+      onRetry?.();
+      return;
+    }
     if (isOpen) {
       setIsOpen(false);
       return;
@@ -131,17 +154,21 @@ export function ModelPicker({
     <div className="model-picker" ref={pickerRef}>
       <button
         type="button"
-        className={`model-picker-trigger ${isSelectionAllowed ? "" : "is-invalid"}`}
+        className={`model-picker-trigger ${isSelectionAllowed ? "" : "is-invalid"} ${triggerStateClass}`}
         onClick={handleTriggerClick}
-        disabled={disabled || catalog.providers.length === 0}
+        disabled={disabled || isCatalogLoading || (!isCatalogError && !hasProviders)}
         aria-haspopup="dialog"
         aria-expanded={isOpen}
-        aria-label={`选择模型，当前 ${providerLabel(selectedProvider)} ${selectedModel || "未选择"}`}
+        aria-label={
+          isCatalogError
+            ? "模型读取失败，点击重试"
+            : `选择模型，当前 ${providerLabel(selectedProvider)} ${selectedModel || "未选择"}`
+        }
       >
         <span className="provider-orb" aria-hidden="true"><i /></span>
         <span className="model-picker-current">
           <small>{providerLabel(selectedProvider)}</small>
-          <strong>{selectedModel || (catalog.providers.length === 0 ? "正在读取模型" : "选择模型")}</strong>
+          <strong>{selectedModel || (hasProviders ? "选择模型" : emptySelectionLabel)}</strong>
         </span>
         <span className="model-picker-chevron" aria-hidden="true">⌃</span>
       </button>

@@ -9,7 +9,12 @@ from nexuspilot_models.contracts import (
     MessageRole,
     ModelRequest,
     ModelResponse,
+    ProviderContinuationKind,
+    ProviderContinuationState,
     ProviderName,
+    ReasoningBlockStatus,
+    ReasoningPresentation,
+    ReasoningPresentationKind,
     StreamEvent,
     StreamEventType,
     ToolCall,
@@ -74,6 +79,7 @@ class OpenAICompatibleChatProvider:
         sequence = 1
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        reasoning_started = False
         tool_parts: dict[int, dict[str, str]] = {}
         finish_reason = "stop"
         usage: dict[str, Any] = {}
@@ -118,7 +124,24 @@ class OpenAICompatibleChatProvider:
                 delta = choice.get("delta") or {}
                 reasoning_content = delta.get("reasoning_content")
                 if isinstance(reasoning_content, str) and reasoning_content:
+                    if not reasoning_started:
+                        reasoning_started = True
+                        yield StreamEvent(
+                            type=StreamEventType.REASONING_STARTED,
+                            sequence=sequence,
+                            data={
+                                "block_id": "reasoning-0",
+                                "kind": ReasoningPresentationKind.RAW.value,
+                            },
+                        )
+                        sequence += 1
                     reasoning_parts.append(reasoning_content)
+                    yield StreamEvent(
+                        type=StreamEventType.REASONING_RAW_DELTA,
+                        sequence=sequence,
+                        data={"block_id": "reasoning-0", "delta": reasoning_content},
+                    )
+                    sequence += 1
                 content = delta.get("content")
                 if isinstance(content, str) and content:
                     text_parts.append(content)
@@ -158,6 +181,42 @@ class OpenAICompatibleChatProvider:
             )
 
         text = "".join(text_parts) or None
+        reasoning_text = "".join(reasoning_parts) or None
+        reasoning_tokens = self._reasoning_tokens(usage)
+        reasoning_blocks = (
+            [
+                ReasoningPresentation(
+                    kind=ReasoningPresentationKind.RAW,
+                    block_id="reasoning-0",
+                    status=ReasoningBlockStatus.COMPLETED,
+                    text=reasoning_text,
+                    reasoning_tokens=reasoning_tokens,
+                )
+            ]
+            if reasoning_text
+            else []
+        )
+        provider_continuation_state = (
+            ProviderContinuationState(
+                kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+                provider_response_id=request_id,
+                raw_reasoning_for_tool_continuation=reasoning_text,
+                tool_call_ids=[
+                    value["id"] or f"tool-{index}"
+                    for index, value in sorted(tool_parts.items())
+                ],
+                tool_calls=[
+                    {
+                        "id": value["id"] or f"tool-{index}",
+                        "name": value["name"],
+                        "arguments": value["arguments"],
+                    }
+                    for index, value in sorted(tool_parts.items())
+                ],
+            )
+            if self.name is ProviderName.DEEPSEEK and reasoning_text and tool_parts
+            else None
+        )
         response = ModelResponse(
             text=text,
             tool_calls=[
@@ -177,22 +236,39 @@ class OpenAICompatibleChatProvider:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             cached_tokens=self._cached_tokens(usage),
+            reasoning_tokens=reasoning_tokens,
+            reasoning_blocks=reasoning_blocks,
+            provider_continuation_state=provider_continuation_state,
             latency_ms=self._elapsed_ms(started),
             provider_request_id=request_id,
             raw_response={
                 "streamed": True,
                 "text": text,
-                "reasoning_content": "".join(reasoning_parts) or None,
+                "reasoning_content": reasoning_text,
                 "tool_calls": list(tool_parts.values()),
                 "finish_reason": finish_reason,
                 "usage": usage,
             },
             transport_attempts=attempts,
         )
+        if reasoning_blocks:
+            yield StreamEvent(
+                type=StreamEventType.REASONING_COMPLETED,
+                sequence=sequence,
+                data={"block": reasoning_blocks[0].model_dump(mode="json")},
+            )
+            sequence += 1
         yield StreamEvent(
             type=StreamEventType.COMPLETED,
             sequence=sequence,
             data={"response": response.model_dump(mode="json")},
+            private_data={
+                "provider_continuation_state": provider_continuation_state.model_dump(
+                    mode="json"
+                )
+            }
+            if provider_continuation_state
+            else {},
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
@@ -201,7 +277,37 @@ class OpenAICompatibleChatProvider:
         messages: list[dict[str, Any]] = []
         if request.system_instruction:
             messages.append({"role": "system", "content": request.system_instruction})
+        continuation_inserted = False
         for message in request.messages:
+            continuation_state = request.provider_continuation_state
+            if (
+                message.role is MessageRole.TOOL
+                and not continuation_inserted
+                and continuation_state
+                and continuation_state.kind
+                is ProviderContinuationKind.DEEPSEEK_RAW_REASONING
+            ):
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "reasoning_content": (
+                            continuation_state.raw_reasoning_for_tool_continuation
+                        ),
+                        "tool_calls": [
+                            {
+                                "id": tool_call.get("id"),
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.get("name"),
+                                    "arguments": tool_call.get("arguments", "{}"),
+                                },
+                            }
+                            for tool_call in continuation_state.tool_calls
+                        ],
+                    }
+                )
+                continuation_inserted = True
             item: dict[str, Any] = {
                 "role": message.role.value,
                 "content": message.content,
@@ -264,6 +370,9 @@ class OpenAICompatibleChatProvider:
         choice = choices[0]
         message = choice.get("message") or {}
         text = message.get("content")
+        reasoning_text = message.get("reasoning_content")
+        if not isinstance(reasoning_text, str) or not reasoning_text:
+            reasoning_text = None
         tool_calls = [
             ToolCall(
                 id=item.get("id") or f"tool-{index}",
@@ -276,6 +385,38 @@ class OpenAICompatibleChatProvider:
             for index, item in enumerate(message.get("tool_calls") or [])
         ]
         usage = payload.get("usage") or {}
+        reasoning_tokens = self._reasoning_tokens(usage)
+        reasoning_blocks = (
+            [
+                ReasoningPresentation(
+                    kind=ReasoningPresentationKind.RAW,
+                    block_id="reasoning-0",
+                    status=ReasoningBlockStatus.COMPLETED,
+                    text=reasoning_text,
+                    reasoning_tokens=reasoning_tokens,
+                )
+            ]
+            if reasoning_text
+            else []
+        )
+        provider_continuation_state = (
+            ProviderContinuationState(
+                kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+                provider_response_id=payload.get("id"),
+                raw_reasoning_for_tool_continuation=reasoning_text,
+                tool_call_ids=[tool_call.id for tool_call in tool_calls],
+                tool_calls=[
+                    {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
+                    }
+                    for tool_call in tool_calls
+                ],
+            )
+            if self.name is ProviderName.DEEPSEEK and reasoning_text and tool_calls
+            else None
+        )
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
@@ -286,6 +427,9 @@ class OpenAICompatibleChatProvider:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             cached_tokens=self._cached_tokens(usage),
+            reasoning_tokens=reasoning_tokens,
+            reasoning_blocks=reasoning_blocks,
+            provider_continuation_state=provider_continuation_state,
             latency_ms=latency_ms,
             provider_request_id=payload.get("id"),
             raw_response=payload,
@@ -301,7 +445,7 @@ class OpenAICompatibleChatProvider:
         return headers
 
     def _validate_request(self, request: ModelRequest) -> None:
-        """Reject a request routed to an adapter with a different provider identity."""
+        """Reject wrong routing, unsupported features, and unsafe tool continuation."""
 
         if request.provider is not self.name:
             raise ModelProviderError(
@@ -318,6 +462,19 @@ class OpenAICompatibleChatProvider:
                 "unsupported_capability",
                 f"Provider '{self.name.value}' does not declare reasoning configuration support.",
             )
+        if self.name is ProviderName.DEEPSEEK and any(
+            message.role is MessageRole.TOOL for message in request.messages
+        ):
+            continuation_state = request.provider_continuation_state
+            if (
+                continuation_state is None
+                or continuation_state.kind
+                is not ProviderContinuationKind.DEEPSEEK_RAW_REASONING
+            ):
+                raise ModelProviderError(
+                    "invalid_request",
+                    "DeepSeek tool continuation requires backend-preserved reasoning state.",
+                )
 
     def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         """Map compatible usage fields to public stream accounting names."""
@@ -326,6 +483,7 @@ class OpenAICompatibleChatProvider:
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
             "cached_tokens": self._cached_tokens(usage),
+            "reasoning_tokens": self._reasoning_tokens(usage),
         }
 
     def _cached_tokens(self, usage: dict[str, Any]) -> int | None:
@@ -333,6 +491,13 @@ class OpenAICompatibleChatProvider:
 
         details = usage.get("prompt_tokens_details") or {}
         return details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens")
+
+    def _reasoning_tokens(self, usage: dict[str, Any]) -> int | None:
+        """Read provider-reported reasoning-token usage without implying visible text."""
+
+        details = usage.get("completion_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens")
+        return reasoning_tokens if isinstance(reasoning_tokens, int) else None
 
     def _finish_reason(self, value: str | None) -> str:
         """Map compatible stop values to stable platform reasons."""

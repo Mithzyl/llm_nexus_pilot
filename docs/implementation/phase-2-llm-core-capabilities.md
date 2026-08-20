@@ -828,6 +828,8 @@ estimated_cost
 latency_ms
 provider_request_id
 raw_response
+reasoning_tokens
+reasoning_blocks
 ```
 
 HTTP 默认响应不直接返回无限制的 `raw_response`。完整原始内容写入 MinIO，API 返回 `attempt_id` 和必要的统一字段；只有内部受控调用才能读取原始对象。
@@ -840,12 +842,21 @@ HTTP 默认响应不直接返回无限制的 `raw_response`。完整原始内容
 response.started
 response.text.delta
 response.tool_call.delta
+reasoning.started
+reasoning.raw.delta
+reasoning.summary.delta
+reasoning.completed
+reasoning.interrupted
 response.usage
 response.completed
 response.failed
 ```
 
 每个事件至少携带 `attempt_id` 和单调递增的 `sequence`。正常结束、供应商错误、超时、客户端断开都必须结束或更新对应 `llm_attempts`，不能长期保留无法解释的 `started` 状态。进入 Provider 适配器后发生取消且无法确认是否已经发出请求时，Attempt 使用 `outcome_unknown`，不得自动重新计费调用；Provider 响应已经返回时，响应审计终结会先完成再传播调用方取消。
+
+2026 年 8 月 20 日为阶段4 Web 消费补充的兼容实现保持阶段2原完成判断不变：流事件升级为 `conversation-stream.v2`，增加全局事件标识、Attempt/Run/Step 关联、时间和公开事件持久化；`GET /attempts/{attempt_id}/events` 支持有限回放，`GET /attempts/{attempt_id}/reasoning-blocks` 返回最终公开快照。DeepSeek `reasoning_content` 只在 `provider-visible` 下映射为原始推理；OpenAI summary 始终保持摘要语义；只有加密内容或 reasoning token 时只生成无文本状态。最终 Message 通过 `source_model_attempt_id` 关联公开推理历史。
+
+Provider 工具续接与公开展示相互独立。DeepSeek 实际工具调用所需的完整推理与调用参数、OpenAI 加密输出项会使用 AES-GCM 加密后写入对象存储，元数据按父 Attempt、Run、Task、Provider 和 Model 绑定并设置过期时间；生产环境必须使用独立续接加密密钥。每次新建续接状态前会有界清理一批过期密文和元数据，对象存储暂时失败则保留记录供后续重试，不影响当前响应。该状态不会进入普通数据传输对象、SSE、消息正文或公开原始响应，Provider response ID 在公共 Attempt/Response 中保持为空。
 
 ## Model Gateway 实施范围（原有基线已完成）
 
@@ -1013,7 +1024,7 @@ internal_error
 - DeepSeek 流式响应必须收到 `data: [DONE]` 才视为完整结束。缺失终止标记或响应提前断开都按 `response_parse_error` 处理，生成 `response.failed` 并将 attempt 结束为失败，不把已收到的部分文本伪装成成功。
 - 官方已标记 `frequency_penalty` 和 `presence_penalty` 弃用且无效，统一 HTTP Schema 不引入这两个参数，未知字段继续由 `extra="forbid"` 拒绝。官方 `user_id` 也不在本次实施范围。
 - 工具或结构化输出中的 `strict` 只能在 Model Catalog 对当前模型明确记录支持时传递。未声明或未验证时必须返回 `unsupported_capability`，不得删除 `strict`、放宽 Schema 或改用普通文本后继续请求。本计划不声称 DeepSeek beta strict 已经完成真实供应商验证。
-- 已验证新参数 Schema 边界、两个模型的参数组合、Pro/low 拒绝、reasoning/temperature 冲突、`[DONE]` 完整/缺失、公开流不暴露 `reasoning_content`、失败 Attempt 落库、弃用字段拒绝、strict 能力失败和原有 Chat Completions 回归。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
+- 已验证新参数 Schema 边界、两个模型的参数组合、Pro/low 拒绝、reasoning/temperature 冲突、`[DONE]` 完整/缺失、展示策略裁剪、工具续接完整回放、失败 Attempt 落库、弃用字段拒绝、strict 能力失败和原有 Chat Completions 回归。`reasoning_content` 只在调用方明确选择且模型目录允许 `provider-visible` 时进入公开统一块；默认策略不会暴露。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
 
 ## 2026 年 8 月 3 日阶段2最终审查与验证结果
 

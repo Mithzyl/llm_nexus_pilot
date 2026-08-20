@@ -98,6 +98,11 @@ from nexuspilot_api.models.model_attempts import (
     LlmModelAttempt,
     LlmModelTransportAttempt,
 )
+from nexuspilot_api.models.model_reasoning import (
+    LlmModelResponseEvent,
+    LlmProviderContinuationState,
+    LlmReasoningBlock,
+)
 from nexuspilot_api.models.prompt_catalog import (
     LlmModelCatalogVersion,
     LlmPromptTemplate,
@@ -157,6 +162,9 @@ __all__ = [
     "LlmMemoryVersion",
     "LlmModelAttempt",
     "LlmModelTransportAttempt",
+    "LlmModelResponseEvent",
+    "LlmProviderContinuationState",
+    "LlmReasoningBlock",
     "LlmModelCatalogVersion",
     "LlmModelToolCall",
     "LlmMessage",

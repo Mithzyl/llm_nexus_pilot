@@ -18,7 +18,16 @@ from nexuspilot_api.core.pagination import (
     DatabaseSequencePaginationKey,
     database_query_fingerprint,
 )
-from nexuspilot_api.models import LlmMessage, LlmRun, LlmSession, SessionStatus, User
+from nexuspilot_api.models import (
+    LlmMessage,
+    LlmModelAttempt,
+    LlmReasoningBlock,
+    LlmRun,
+    LlmSession,
+    SessionStatus,
+    User,
+)
+from nexuspilot_api.schemas.model_reasoning import ReasoningBlockRead
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.schemas.sessions import (
     MessageCreate,
@@ -152,6 +161,15 @@ async def create_message(
             raise ResourceNotFoundError("Run")
         if run.user_id != conversation.user_id or run.session_id != session_id:
             raise ResourceConflictError("Run does not belong to session")
+    if payload.source_model_attempt_id:
+        source_attempt = await db_session.get(
+            LlmModelAttempt,
+            payload.source_model_attempt_id,
+        )
+        if source_attempt is None:
+            raise ResourceNotFoundError("Source model attempt")
+        if payload.run_id is None or source_attempt.run_id != payload.run_id:
+            raise ResourceConflictError("Source model attempt does not belong to run")
     if payload.parent_message_id:
         parent = await db_session.get(LlmMessage, payload.parent_message_id)
         if parent is None:
@@ -180,13 +198,13 @@ async def create_message(
     return message
 
 
-async def get_message(db_session: AsyncSession, message_id: str) -> LlmMessage:
-    """Return one immutable message or raise the stable not-found error."""
+async def get_message(db_session: AsyncSession, message_id: str) -> MessageRead:
+    """Return one immutable message with its authoritative reasoning snapshot."""
 
     message = await db_session.get(LlmMessage, message_id)
     if message is None:
         raise ResourceNotFoundError("Message")
-    return message
+    return (await _message_reads_with_reasoning(db_session, [message]))[0]
 
 
 async def list_messages(
@@ -220,6 +238,7 @@ async def list_messages(
                 message_id=item.message_id,
                 session_id=item.session_id,
                 run_id=item.run_id,
+                source_model_attempt_id=item.source_model_attempt_id,
                 parent_message_id=item.parent_message_id,
                 role=item.role,
                 content_type=item.content_type,
@@ -263,7 +282,7 @@ async def list_message_details(
         else None
     )
     return CursorPage[MessageRead](
-        items=[MessageRead.model_validate(item) for item in page.items],
+        items=await _message_reads_with_reasoning(db_session, page.items),
         next_cursor=next_cursor,
         has_more=next_cursor is not None,
         limit=limit,
@@ -298,11 +317,62 @@ async def list_latest_message_details(
             DatabaseSequencePaginationKey(scope_id=session_id, sequence=items[0].sequence),
         )
     return CursorPage[MessageRead](
-        items=[MessageRead.model_validate(item) for item in items],
+        items=await _message_reads_with_reasoning(db_session, items),
         next_cursor=next_cursor,
         has_more=next_cursor is not None,
         limit=limit,
     )
+
+
+async def _message_reads_with_reasoning(
+    db_session: AsyncSession,
+    messages: list[LlmMessage],
+) -> list[MessageRead]:
+    """Attach reasoning blocks to one bounded message page with a single database query."""
+
+    attempt_ids = {
+        message.source_model_attempt_id
+        for message in messages
+        if message.source_model_attempt_id is not None
+    }
+    reasoning_blocks_by_attempt: dict[str, list[ReasoningBlockRead]] = {}
+    if attempt_ids:
+        blocks = list(
+            await db_session.scalars(
+                select(LlmReasoningBlock)
+                .where(LlmReasoningBlock.attempt_id.in_(attempt_ids))
+                .order_by(
+                    LlmReasoningBlock.attempt_id,
+                    LlmReasoningBlock.block_index,
+                )
+            )
+        )
+        for block in blocks:
+            reasoning_blocks_by_attempt.setdefault(block.attempt_id, []).append(
+                ReasoningBlockRead(
+                    block_id=block.reasoning_block_id,
+                    response_id=block.attempt_id,
+                    kind=block.presentation_kind,
+                    status=block.status,
+                    text=block.visible_text,
+                    reasoning_tokens=block.reasoning_tokens,
+                    started_at=block.started_at,
+                    first_visible_token_at=block.first_visible_token_at,
+                    completed_at=block.completed_at,
+                    final_event_sequence=block.final_event_sequence,
+                )
+            )
+    return [
+        MessageRead(
+            **MessageRead.model_validate(message).model_dump(exclude={"reasoning_blocks"}),
+            reasoning_blocks=(
+                reasoning_blocks_by_attempt.get(message.source_model_attempt_id, [])
+                if message.source_model_attempt_id
+                else []
+            ),
+        )
+        for message in messages
+    ]
 
 
 async def _query_session_database_page(

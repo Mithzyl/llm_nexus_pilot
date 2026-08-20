@@ -26,7 +26,11 @@ async def post_response(
 
         async for event in service.stream(payload):
             data = event.model_dump_json()
-            yield f"event: {event.type.value}\ndata: {data}\n\n"
+            yield (
+                f"id: {event.sequence}\n"
+                f"event: {event.type.value}\n"
+                f"data: {data}\n\n"
+            )
 
     return StreamingResponse(
         event_source(),

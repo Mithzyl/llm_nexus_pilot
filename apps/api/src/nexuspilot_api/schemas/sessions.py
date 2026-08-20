@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import MessageRole, SessionStatus
 from nexuspilot_api.schemas.base import ApiModel
+from nexuspilot_api.schemas.model_reasoning import ReasoningBlockRead
 
 
 class SessionCreate(BaseModel):
@@ -56,6 +57,7 @@ class MessageCreate(BaseModel):
     content_text: str | None = Field(default=None, min_length=1, max_length=16_000)
     content_uri: str | None = Field(default=None, min_length=1, max_length=512)
     run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    source_model_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
     parent_message_id: str | None = Field(default=None, min_length=1, max_length=36)
     token_count: int | None = Field(default=None, ge=0)
     metadata_json: dict[str, Any] = Field(default_factory=dict)
@@ -75,6 +77,7 @@ class MessageRead(ApiModel):
     message_id: str
     session_id: str
     run_id: str | None
+    source_model_attempt_id: str | None
     parent_message_id: str | None
     role: MessageRole
     content_type: str
@@ -83,6 +86,7 @@ class MessageRead(ApiModel):
     sequence: int
     token_count: int | None
     metadata_json: dict[str, Any]
+    reasoning_blocks: list[ReasoningBlockRead] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -92,6 +96,7 @@ class MessageSummary(ApiModel):
     message_id: str
     session_id: str
     run_id: str | None
+    source_model_attempt_id: str | None
     parent_message_id: str | None
     role: MessageRole
     content_type: str

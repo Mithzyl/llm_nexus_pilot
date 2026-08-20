@@ -91,6 +91,40 @@ test("rejects an oversized declared body before reading or forwarding it", async
   }
 });
 
+test("checks model invocation ownership before forwarding reasoning history", async () => {
+  const upstreamUrls: string[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamUrls.push(url);
+    if (url.endsWith("/attempts/attempt-1") && init?.method === "GET") {
+      return Response.json({ attempt_id: "attempt-1", run_id: "run-1" });
+    }
+    if (url.endsWith("/runs/run-1") && init?.method === "GET") {
+      return Response.json({ run_id: "run-1", user_id: "nexuspilot-web" });
+    }
+    if (url.endsWith("/attempts/attempt-1/reasoning-blocks") && init?.method === "GET") {
+      return Response.json([]);
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await GET(
+      createRequest("attempts/attempt-1/reasoning-blocks"),
+      createContext("attempts/attempt-1/reasoning-blocks"),
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), []);
+    assert.deepEqual(upstreamUrls, [
+      "https://nexus.test/api/v1/attempts/attempt-1",
+      "https://nexus.test/api/v1/runs/run-1",
+      "https://nexus.test/api/v1/attempts/attempt-1/reasoning-blocks",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("rejects cross-user workflow creation and nested workflow reads", async () => {
   const upstreamUrls: string[] = [];
   globalThis.fetch = (async (input) => {

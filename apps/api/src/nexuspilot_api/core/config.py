@@ -1,17 +1,20 @@
 """Core application configuration loaded from environment variables."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Self
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+API_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     """Define validated runtime settings for the API and infrastructure clients."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=API_ENV_FILE,
         env_prefix="NEXUSPILOT_",
         case_sensitive=False,
         extra="ignore",
@@ -34,7 +37,15 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0, le=5)
     model_retry_backoff_seconds: float = Field(default=0.1, ge=0, le=10)
     model_pricing_json: str = "{}"
-
+    provider_continuation_encryption_key: SecretStr | None = Field(
+        default=None,
+        min_length=32,
+    )
+    provider_continuation_retention_seconds: int = Field(
+        default=86_400,
+        ge=60,
+        le=2_592_000,
+    )
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_models: str = ""
@@ -61,7 +72,21 @@ class Settings(BaseSettings):
 
         if self.api_key == self.internal_api_key.get_secret_value():
             raise ValueError("internal_api_key must differ from api_key")
+        if (
+            self.environment.lower() not in {"development", "test"}
+            and self.provider_continuation_encryption_key is None
+        ):
+            raise ValueError(
+                "provider_continuation_encryption_key is required outside development"
+            )
         return self
+
+    def continuation_encryption_secret(self) -> str:
+        """Return the dedicated secret or the development-only internal-key fallback."""
+
+        if self.provider_continuation_encryption_key is not None:
+            return self.provider_continuation_encryption_key.get_secret_value()
+        return self.internal_api_key.get_secret_value()
 
 
 @lru_cache

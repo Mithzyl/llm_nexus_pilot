@@ -80,6 +80,8 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                 "/runs/{run_id}/attempts",
                 "/attempts",
                 "/attempts/{attempt_id}",
+                "/attempts/{attempt_id}/events",
+                "/attempts/{attempt_id}/reasoning-blocks",
                 "/attempts/{attempt_id}/retries",
                 "/attempt-retries/{retry_id}",
             },

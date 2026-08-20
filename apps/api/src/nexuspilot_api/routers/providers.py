@@ -19,4 +19,7 @@ async def get_providers(registry: ProviderRegistryDependency) -> ProviderCatalog
             provider_name: list(model_names)
             for provider_name, model_names in configured_models.items()
         },
+        reasoning_capabilities_by_provider_model=(
+            registry.reasoning_capabilities_by_provider_model
+        ),
     )

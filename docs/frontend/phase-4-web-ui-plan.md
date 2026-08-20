@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 19 日
-**文档状态：** 进行中（第一版前端工程与核心对话外壳已实现；阶段3 `model_only_v1` 的八个接口、取消、最多两个工作 Agent 并行和费用预留前端适配已实现，真实 Agent API 端到端验收待完成）
+**文档日期：** 2026 年 8 月 20 日
+**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复和 Responses 事件回放已实现并通过本地自动化验证；真实 Provider 与真实浏览器端到端验收仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -53,6 +53,9 @@ FastAPI
 | 消息历史 | Session Message 接口 | 按不可变顺序读取，不在前端改写历史消息 |
 | 创建运行与任务 | Run、Task 接口 | 每次需要可审计模型执行时创建对应 Run；任务信息进入详情抽屉 |
 | 普通与流式生成 | `POST /api/v1/responses` | 发送显式输入；不请求 Memory、Knowledge 或 Context Preview 自动注入 |
+| 推理能力与展示策略 | `GET /api/v1/providers`、Responses Reasoning 事件 | 只按服务端声明的 `raw`、`summary`、`hidden`、`none` 能力和最终公开块渲染，不按 Provider 名称判断 |
+| 响应事件恢复 | `GET /api/v1/attempts/{attempt_id}/events` | 从最后确认的事件序号有限回放；重复序号忽略、缺口拒绝、最终快照替换流式临时状态 |
+| 推理历史 | `GET /api/v1/attempts/{attempt_id}/reasoning-blocks`、Message `reasoning_blocks` | Chat 恢复已保存 Assistant 的公开推理块，Trajectory 查询每次模型调用的权威快照 |
 | 调用详情 | Model Attempt 和 Retry 接口 | 展示 Provider、Model、状态、token、费用、时长与安全错误 |
 | 生成产物 | Artifact 接口 | 展示元数据并通过受控内容接口下载，不暴露 MinIO 对象键 |
 | 运行审计 | Run、Task、内部审计接口 | 仅内部开发/运维视图使用，不默认暴露给普通用户 |
@@ -65,7 +68,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - 当前 Session Message、Run 和 Task 创建接口没有统一幂等键，浏览器超时后不能安全地自动重试整条“发送消息”编排。开始实施前应增加稳定的 `client_request_id`/幂等合同，或提供一个由后端事务协调的聊天提交接口。
 - `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
 - 当前只有平台 API Key，没有最终用户登录和资源授权。公开部署前必须补齐认证；开发版只能由服务端持有密钥。
-- 当前 `/responses` SSE 可以传输模型生成状态，但没有跨刷新恢复游标。第一版刷新后以 Model Attempt 最终状态为准；阶段3 Agent Workflow 另有持久化事件序号和有限回放，两种 SSE 合同不能混用。
+- `/responses` 已使用 `conversation-stream.v2` 信封持久化公开事件，并按 Attempt 提供有限回放。浏览器收到首个事件并取得 `attempt_id` 后，断线会从最后确认的 `sequence` 继续读取；若连接在首个事件前断开，仍只能通过 Run/Attempt 最终事实恢复，不能自动重发可能计费的请求。阶段3 Agent Workflow 保留自己的事件合同，两者不能混用。
 - 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
 - 阶段3后端当前提供显式取消、最多两个无依赖工作 Agent 并行和费用预留；前端已经完成对应合同、代理和交互适配。恢复、等待用户输入、进程重启恢复和大型节点结果 Artifact 降级仍不存在，前端不能显示这些动作，也不能把有限事件回放描述为持续订阅。
 
@@ -126,18 +129,21 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 
 - Composer 从后端 Provider 和 Model Catalog 事实提供 Provider/Model 选择；未知或未验证能力明确禁用，不由前端静默删除参数或切换模型。
 - `/responses` 的普通与服务器发送事件（SSE）模式使用同一 Assistant 消息结构；`response.started`、文本增量、用量、完成和失败分别驱动界面。
+- Reasoning 使用 `reasoning.raw`、`reasoning.summary`、`reasoning.status` 可辨识联合类型；Chat 默认折叠公开文本，隐藏推理完成后不保留空状态行，Trajectory 保留不可见标记、时间和 Reasoning Token 证据。
+- 服务端按模型注册能力与当前展示策略裁剪公开数据。前端不允许把摘要提升为原始推理，也不接收 `reasoning_content`、`encrypted_content`、Provider response ID 或续接状态。
 - Context Preview、Prompt Render 和 Evaluation 进入独立开发者证据抽屉。Context Preview 只展示显式 instruction、安全 instruction 和 Session Message 来源；Evaluation 必须把执行状态与 verdict 分开。
 - Memory 和 Knowledge 不出现在模型调用开关、来源列表或默认导航中；前端不得调用实验性 Memory 接口补充上下文。
 
 **失败与恢复：**
 
 - 供应商未配置、能力不支持、输入校验失败、超时和供应商暂不可用使用不同可操作文案，但不展示原始供应商响应。
-- SSE 缺失终止事件、断线或取消时保留部分文本并标记未完成；只读取最终 Attempt 状态，不自动产生第二次计费请求。
+- SSE 缺失终止事件、断线或取消时保留部分文本并标记未完成；已知 Attempt 的断线从已提交事件回放，重复事件幂等忽略，序号缺口明确失败，不自动产生第二次计费请求。
 - 模型响应完成与 Assistant Message 保存是两个状态；保存失败保留内容并指向 Run/Attempt，不把模型成功改写成整体失败。
 
 **前端通过条件：**
 
 - 普通响应与 SSE 具有一致的完成、失败、用量和 Attempt 关联测试。
+- DeepSeek 原始推理、OpenAI 摘要或隐藏状态、推理 token、完成/中断、重复/乱序/断线回放、历史消息快照和敏感续接状态隔离均有合同测试。
 - Context、Prompt、Model Catalog 和 Evaluation 视图只显示后端证据，历史版本和未知能力行为与阶段2合同一致。
 - 长响应按批次刷新，不能每个 token 重新解析全部 Markdown；生成期间页面交互和滚动保持可用。
 
@@ -592,7 +598,7 @@ apps/web/
 |---|---|
 | Provider 未配置 | 禁用对应选项或显示明确配置错误，不回退到其他 Provider |
 | 请求校验失败 | 在输入区显示字段错误，不清空用户输入 |
-| SSE 中途断开 | 保留部分文本并标记未完成；读取 Attempt 最终状态，不自动重新计费 |
+| SSE 中途断开 | 保留部分文本；已知 Attempt 时从最后确认序号回放，未知 Attempt 时只读取 Run/Attempt 最终状态；不自动重新计费 |
 | 用户主动停止 | 取消上游请求并等待后端最终状态；不能只在前端停止渲染 |
 | Message 保存失败 | 保留响应并指向 Run/Attempt；在 Message 幂等能力完成前不自动重试保存，更不能重复调用模型 |
 | Run/Attempt 查询失败 | 正文仍可阅读，详情抽屉显示依赖暂不可用并允许手动重试 |
@@ -615,16 +621,17 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；刷新和浏览器历史导航会重新读取持久化事实，运行路由按 URL 中的 Run 标识恢复，不替换为会话最新 Run。
-- 模型调用：自定义选择器渲染后端返回的 Provider 与模型允许列表，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收 `response.text.delta`、`response.usage`、`response.completed` 和 `response.failed`。
-- 流式安全行为：按 sequence 去重；停止生成会中止浏览器请求并保留运行详情入口；部分文本不会被标记为完成。
-- 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message 和 Run 归属；请求体在流式读取中受大小上限约束。
+- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。
+- Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
+- 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
+- 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
 - 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、键盘发送、移动端覆盖层和 reduced motion。
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
 - Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
-2026 年 8 月 19 日事实审计确认：当前 Web 的 30 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均通过，App Router 已提供 `/`、`/c/[sessionId]`、`/runs/[runId]` 与同源 API 代理；使用生产构建和符合当前 BFF 合同的浏览器模拟响应，已验证会话/指定 Run 刷新恢复以及前进后退导航。该验证不等于真实后端或真实 Provider 端到端验收完成。设置页仍未实现，Assistant 正文仍按纯文本渲染，运行检查器只投影最新 Attempt 摘要，没有完整 Task/Attempt/Retry/Artifact 视图。路线图重排后的两处 Web 旧编号残留已改为阶段3。
+2026 年 8 月 20 日事实审计确认：当前 Web 的 44 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建均已通过；统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放和安全 Markdown 已经实现。后端完整 API 套件 217 项通过、4 项真实基础设施测试按默认配置跳过，模型适配层 34 项通过；本地 MySQL 已迁移至 `20260820_0012`。MinIO、真实 Provider 和真实浏览器端到端验收仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、Markdown/代码块渲染及测试、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、真实 API 与真实 Agent Provider 浏览器端到端验收、可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
 ## 测试设计
 

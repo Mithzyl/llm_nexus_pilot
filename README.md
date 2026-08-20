@@ -58,18 +58,23 @@ apps/api/src/nexuspilot_api/
 后端必须使用项目虚拟环境：
 
 ```bash
-cp .env.example .env
+cp apps/api/.env.example apps/api/.env
+cp apps/web/.env.example apps/web/.env.local
 make api-install
-docker compose -f deployments/compose/docker-compose.yml up -d mysql minio
+docker compose --env-file apps/api/.env -f deployments/compose/docker-compose.yml up -d mysql minio
 make api-migrate
 make api-run
 ```
+
+后端只读取 `apps/api/.env`；前端只读取 `apps/web/.env.local`。前端文件中的
+`NEXUSPILOT_API_KEY` 必须与后端同名配置一致，但 Provider 密钥、数据库和对象存储配置
+不得复制到前端文件。根目录不再使用共享 `.env`。
 
 如果宿主机 MySQL 已占用 `3306`，可以把项目 MySQL 隔离到其他端口：
 
 ```bash
 NEXUSPILOT_MYSQL_HOST_PORT=3307 \
-  docker compose -f deployments/compose/docker-compose.yml up -d mysql minio
+  docker compose --env-file apps/api/.env -f deployments/compose/docker-compose.yml up -d mysql minio
 ```
 
 此时本地虚拟环境使用：
@@ -83,13 +88,13 @@ Compose 中的 API 会自动使用容器内部的 `mysql:3306` 和 `minio:9000`�
 API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要携带：
 
 ```text
-X-API-Key: .env 中的 NEXUSPILOT_API_KEY
+X-API-Key: apps/api/.env 中的 NEXUSPILOT_API_KEY
 ```
 
 `/api/v1/internal/*` 审计接口还必须同时携带：
 
 ```text
-X-Internal-API-Key: .env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
+X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 ```
 
 公共和内部密钥必须不同，否则应用配置校验失败。
@@ -142,10 +147,17 @@ DeepSeek 当前通过专用 Chat Completions 适配器调用，不调用 DeepSee
 response.started
 response.text.delta
 response.tool_call.delta
+reasoning.started
+reasoning.raw.delta
+reasoning.summary.delta
+reasoning.completed
+reasoning.interrupted
 response.usage
 response.completed
 response.failed
 ```
+
+Reasoning 公开内容分为原始推理、Provider 摘要和无文本状态三种语义。逐模型能力来自 `GET /api/v1/providers`；请求可以用 `reasoning_display_policy` 选择 `hidden`、`summary-only` 或 `provider-visible`，但不能超过服务端登记能力。DeepSeek 工具续接原文和 OpenAI `encrypted_content` 使用独立后端加密状态保存，普通响应、消息正文、SSE 和 Provider 原始审计对象均不返回这些字段。生产环境必须配置至少 32 字符的 `NEXUSPILOT_PROVIDER_CONTINUATION_ENCRYPTION_KEY`。
 
 除四家内置适配器外，OpenAI Chat Completions 风格的本地或第三方服务可配置为：
 
@@ -206,9 +218,8 @@ apps/api/.venv/bin/pytest -q apps/api/tests/test_real_infrastructure.py
 ```bash
 cd apps/web
 npm install
-NEXUSPILOT_API_URL=http://127.0.0.1:8000 \
-NEXUSPILOT_API_KEY=local-development-key-change-me \
-npm run dev
+cd ../..
+make web-run
 ```
 
 打开 `http://localhost:3000`。界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。具体行为边界见 [`phase-4-web-ui-plan.md`](docs/frontend/phase-4-web-ui-plan.md)。

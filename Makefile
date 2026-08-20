@@ -1,4 +1,4 @@
-.PHONY: api-install api-test api-lint api-migrate api-run
+.PHONY: api-install api-test api-lint api-migrate api-run web-run
 
 api-install:
 	python3 -m venv apps/api/.venv
@@ -13,7 +13,13 @@ api-lint:
 	apps/api/.venv/bin/python -m ruff check apps/api packages/models
 
 api-migrate:
+	test -f apps/api/.env
 	cd apps/api && .venv/bin/alembic upgrade head
 
 api-run:
+	test -f apps/api/.env
 	cd apps/api && .venv/bin/uvicorn nexuspilot_api.main:app --app-dir src --reload
+
+web-run:
+	test -f apps/web/.env.local
+	cd apps/web && npm run dev

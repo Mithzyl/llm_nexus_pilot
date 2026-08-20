@@ -5,7 +5,9 @@ import type {
   AgentWorkflowSummary,
   CursorPage,
   Message,
+  ModelResponseEventPage,
   ProviderCatalog,
+  ReasoningBlockSnapshot,
   Run,
   RunDetail,
   Session,
@@ -64,8 +66,8 @@ export function listSessions(): Promise<CursorPage<Session>> {
 /**
  * Read provider names reported by the server-side registry.
  */
-export function listProviders(): Promise<ProviderCatalog> {
-  return nexusFetch<ProviderCatalog>("providers");
+export function listProviders(signal?: AbortSignal): Promise<ProviderCatalog> {
+  return nexusFetch<ProviderCatalog>("providers", { signal });
 }
 
 /**
@@ -153,12 +155,30 @@ export function createMessage(
     role: "user" | "assistant";
     content_text: string;
     run_id?: string;
+    source_model_attempt_id?: string;
   },
 ): Promise<Message> {
   return nexusFetch<Message>(`sessions/${encodeURIComponent(sessionId)}/messages`, {
     method: "POST",
     body: JSON.stringify({ content_type: "text", ...payload }),
   });
+}
+
+/** Read authoritative public reasoning blocks for one owned model invocation. */
+export function getReasoningBlocks(attemptId: string): Promise<ReasoningBlockSnapshot[]> {
+  return nexusFetch<ReasoningBlockSnapshot[]>(
+    `attempts/${encodeURIComponent(attemptId)}/reasoning-blocks`,
+  );
+}
+
+/** Replay a bounded page of committed response events after one acknowledged sequence. */
+export function replayModelResponseEvents(
+  attemptId: string,
+  afterSequence: number,
+): Promise<ModelResponseEventPage> {
+  return nexusFetch<ModelResponseEventPage>(
+    `attempts/${encodeURIComponent(attemptId)}/events?after_sequence=${afterSequence}&limit=100`,
+  );
 }
 
 /** Convert a failed raw stream response into the same safe API error used by JSON calls. */

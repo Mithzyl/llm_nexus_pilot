@@ -8,6 +8,8 @@ from nexuspilot_models.contracts import (
     ModelRequest,
     ProviderName,
     ReasoningConfiguration,
+    ReasoningDisplayPolicy,
+    ReasoningPresentation,
     ToolCall,
     ToolDefinition,
 )
@@ -28,6 +30,8 @@ class ResponsesRequest(BaseModel):
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
     reasoning: ReasoningConfiguration | None = None
+    reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
+    continuation_from_attempt_id: str | None = Field(default=None, min_length=1, max_length=36)
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     timeout_seconds: float = Field(default=60, ge=1, le=600)
@@ -74,6 +78,7 @@ class ResponseUsage(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    reasoning_tokens: int | None
     estimated_cost: str | None
 
 
@@ -89,6 +94,7 @@ class ResponsesResult(BaseModel):
     tool_calls: list[ToolCall]
     structured_output: dict[str, Any] | list[Any] | None
     finish_reason: str
+    reasoning_blocks: list[ReasoningPresentation]
     usage: ResponseUsage
     latency_ms: int
     provider_request_id: str | None

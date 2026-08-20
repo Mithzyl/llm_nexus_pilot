@@ -4,7 +4,12 @@ import json
 from decimal import Decimal, InvalidOperation
 
 import httpx
-from nexuspilot_models.contracts import ProviderName
+from nexuspilot_models.contracts import (
+    ModelReasoningCapabilities,
+    ProviderName,
+    ReasoningContinuationMode,
+    ReasoningPresentationCapability,
+)
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog
 from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
@@ -30,6 +35,7 @@ def create_provider_registry(
     )
     registry = ProviderRegistry()
     if settings.openai_api_key:
+        openai_models = _parse_model_allowlist(settings.openai_models)
         registry.register(
             ProviderName.OPENAI,
             OpenAIResponsesProvider(
@@ -37,9 +43,19 @@ def create_provider_registry(
                 base_url=settings.openai_base_url,
                 api_key=settings.openai_api_key.get_secret_value(),
             ),
-            allowed_models=_parse_model_allowlist(settings.openai_models),
+            allowed_models=openai_models,
+            reasoning_capabilities_by_model={
+                model: ModelReasoningCapabilities(
+                    presentation=ReasoningPresentationCapability.SUMMARY,
+                    supports_streaming_presentation=True,
+                    continuation=ReasoningContinuationMode.ENCRYPTED_ITEM_REPLAY,
+                    supports_reasoning_tokens=True,
+                )
+                for model in openai_models
+            },
         )
     if settings.deepseek_api_key:
+        deepseek_models = _parse_model_allowlist(settings.deepseek_models)
         registry.register(
             ProviderName.DEEPSEEK,
             DeepSeekChatProvider(
@@ -47,7 +63,16 @@ def create_provider_registry(
                 base_url=settings.deepseek_base_url,
                 api_key=settings.deepseek_api_key.get_secret_value(),
             ),
-            allowed_models=_parse_model_allowlist(settings.deepseek_models),
+            allowed_models=deepseek_models,
+            reasoning_capabilities_by_model={
+                model: ModelReasoningCapabilities(
+                    presentation=ReasoningPresentationCapability.RAW,
+                    supports_streaming_presentation=True,
+                    continuation=ReasoningContinuationMode.RAW_REASONING_REPLAY,
+                    supports_reasoning_tokens=True,
+                )
+                for model in deepseek_models
+            },
         )
     if settings.anthropic_api_key:
         registry.register(

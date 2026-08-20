@@ -6,6 +6,12 @@ import { isAllowedProxyRoute } from "../lib/proxy-policy";
 test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("GET", ["providers"]), true);
   assert.equal(isAllowedProxyRoute("POST", ["responses"]), true);
+  assert.equal(isAllowedProxyRoute("GET", ["attempts", "attempt-1", "events"]), true);
+  assert.equal(
+    isAllowedProxyRoute("GET", ["attempts", "attempt-1", "reasoning-blocks"]),
+    true,
+  );
+  assert.equal(isAllowedProxyRoute("POST", ["attempts", "attempt-1", "events"]), false);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "messages"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "messages", "latest"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "latest-run"]), true);

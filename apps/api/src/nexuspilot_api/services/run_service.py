@@ -160,6 +160,8 @@ async def get_run_detail(db_session: AsyncSession, run_id: str) -> dict:
     model_attempt_details = [
         {
             **model_attempt.__dict__,
+            # Provider response identifiers are continuation credentials, not public diagnostics.
+            "provider_request_id": None,
             "retries": provider_transport_attempts_by_model_attempt.get(
                 model_attempt.attempt_id,
                 [],

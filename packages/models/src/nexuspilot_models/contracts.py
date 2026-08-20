@@ -2,6 +2,7 @@
 
 from enum import StrEnum
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -36,6 +37,113 @@ class ReasoningEffort(StrEnum):
     LOW = "low"
     HIGH = "high"
     MAX = "max"
+
+
+class ReasoningPresentationCapability(StrEnum):
+    """Describe the most detailed reasoning presentation a model can provide."""
+
+    RAW = "raw"
+    SUMMARY = "summary"
+    HIDDEN = "hidden"
+    NONE = "none"
+
+
+class ReasoningContinuationMode(StrEnum):
+    """Describe how a provider continues reasoning state across related requests."""
+
+    RAW_REASONING_REPLAY = "raw-reasoning-replay"
+    ENCRYPTED_ITEM_REPLAY = "encrypted-item-replay"
+    RESPONSE_ID = "response-id"
+    NONE = "none"
+
+
+class ReasoningPresentationKind(StrEnum):
+    """Distinguish raw provider reasoning, provider summaries, and status-only evidence."""
+
+    RAW = "reasoning.raw"
+    SUMMARY = "reasoning.summary"
+    STATUS = "reasoning.status"
+
+
+class ReasoningBlockStatus(StrEnum):
+    """Represent the independent lifecycle of one normalized reasoning block."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+
+
+class ReasoningDisplayPolicy(StrEnum):
+    """Limit the reasoning detail that a caller is allowed to receive."""
+
+    HIDDEN = "hidden"
+    SUMMARY_ONLY = "summary-only"
+    PROVIDER_VISIBLE = "provider-visible"
+
+
+class ProviderContinuationKind(StrEnum):
+    """Identify private provider state without exposing its payload to public DTOs."""
+
+    DEEPSEEK_RAW_REASONING = "deepseek.raw-reasoning-replay.v1"
+    OPENAI_ENCRYPTED_ITEMS = "openai.encrypted-items.v1"
+    OPENAI_RESPONSE_ID = "openai.response-id.v1"
+
+
+class ModelReasoningCapabilities(ContractModel):
+    """Declare presentation, streaming, accounting, and continuation support for one model."""
+
+    presentation: ReasoningPresentationCapability = ReasoningPresentationCapability.NONE
+    supports_streaming_presentation: bool = False
+    continuation: ReasoningContinuationMode = ReasoningContinuationMode.NONE
+    supports_reasoning_tokens: bool = False
+
+
+class ReasoningPresentation(ContractModel):
+    """Carry one truthful provider-neutral reasoning block candidate."""
+
+    kind: ReasoningPresentationKind
+    block_id: str = Field(min_length=1, max_length=128)
+    status: ReasoningBlockStatus
+    text: str | None = None
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_text_matches_kind(self) -> "ReasoningPresentation":
+        """Require visible kinds to contain text and forbid fabricated status text."""
+
+        if self.kind is ReasoningPresentationKind.STATUS:
+            if self.text is not None:
+                raise ValueError("reasoning.status cannot contain text")
+            return self
+        if not self.text:
+            raise ValueError("visible reasoning presentations require non-empty text")
+        return self
+
+
+class ProviderContinuationState(ContractModel):
+    """Hold sensitive provider continuation data only while inside trusted backend code."""
+
+    kind: ProviderContinuationKind
+    provider_response_id: str | None = Field(default=None, max_length=512)
+    raw_reasoning_for_tool_continuation: str | None = None
+    encrypted_reasoning_items: list[dict[str, Any]] = Field(default_factory=list)
+    tool_call_ids: list[str] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_kind_payload(self) -> "ProviderContinuationState":
+        """Reject continuation records whose payload does not match the declared kind."""
+
+        if self.kind is ProviderContinuationKind.DEEPSEEK_RAW_REASONING:
+            if not self.raw_reasoning_for_tool_continuation:
+                raise ValueError("DeepSeek continuation requires raw reasoning")
+        elif self.kind is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS:
+            if not self.encrypted_reasoning_items:
+                raise ValueError("OpenAI encrypted-item continuation requires output items")
+        elif self.kind is ProviderContinuationKind.OPENAI_RESPONSE_ID:
+            if not self.provider_response_id:
+                raise ValueError("OpenAI response-id continuation requires a response ID")
+        return self
 
 
 class ReasoningConfiguration(ContractModel):
@@ -115,6 +223,10 @@ class ModelRequest(ContractModel):
     max_output_tokens: int | None = Field(default=None, ge=1, le=1_000_000)
     timeout_seconds: float = Field(default=60, ge=1, le=600)
     metadata: dict[str, str] = Field(default_factory=dict)
+    provider_continuation_state: ProviderContinuationState | None = Field(
+        default=None,
+        exclude=True,
+    )
 
 
 class ModelResponse(ContractModel):
@@ -127,6 +239,12 @@ class ModelResponse(ContractModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    reasoning_blocks: list[ReasoningPresentation] = Field(default_factory=list)
+    provider_continuation_state: ProviderContinuationState | None = Field(
+        default=None,
+        exclude=True,
+    )
     estimated_cost: str | None = None
     latency_ms: int = Field(ge=0)
     provider_request_id: str | None = None
@@ -140,14 +258,27 @@ class StreamEventType(StrEnum):
     STARTED = "response.started"
     TEXT_DELTA = "response.text.delta"
     TOOL_CALL_DELTA = "response.tool_call.delta"
+    REASONING_STARTED = "reasoning.started"
+    REASONING_RAW_DELTA = "reasoning.raw.delta"
+    REASONING_SUMMARY_DELTA = "reasoning.summary.delta"
+    REASONING_COMPLETED = "reasoning.completed"
+    REASONING_INTERRUPTED = "reasoning.interrupted"
     USAGE = "response.usage"
     COMPLETED = "response.completed"
     FAILED = "response.failed"
 
 
 class StreamEvent(ContractModel):
-    """Represent one ordered normalized stream event."""
+    """Represent one ordered normalized stream event and its platform envelope."""
 
     type: StreamEventType
     sequence: int = Field(ge=1)
+    schema_version: str = "conversation-stream.v2"
+    event_id: str = Field(default_factory=lambda: str(uuid4()))
+    response_id: str | None = None
+    run_id: str | None = None
+    turn_id: str | None = None
+    step_id: str | None = None
+    timestamp_ms: int | None = Field(default=None, ge=0)
     data: dict[str, Any] = Field(default_factory=dict)
+    private_data: dict[str, Any] = Field(default_factory=dict, exclude=True)

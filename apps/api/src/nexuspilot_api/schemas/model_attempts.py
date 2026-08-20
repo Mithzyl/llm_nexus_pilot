@@ -3,6 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
+from nexuspilot_models.contracts import ReasoningDisplayPolicy
 from pydantic import BaseModel, Field
 
 from nexuspilot_api.models import AttemptStatus
@@ -20,6 +21,8 @@ class ModelAttemptCreate(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
     estimated_cost: Decimal | None = Field(default=None, ge=0)
     latency_ms: int | None = Field(default=None, ge=0)
     provider_request_id: str | None = Field(default=None, max_length=255)
@@ -58,6 +61,8 @@ class ModelAttemptRead(ApiModel):
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    reasoning_tokens: int | None
+    reasoning_display_policy: ReasoningDisplayPolicy
     estimated_cost: Decimal | None
     latency_ms: int | None
     provider_request_id: str | None
@@ -66,6 +71,7 @@ class ModelAttemptRead(ApiModel):
     error_code: str | None
     error_message: str | None
     started_at: datetime
+    first_visible_token_at: datetime | None
     completed_at: datetime | None
     retries: list[ModelTransportAttemptRead] = Field(default_factory=list)
 
@@ -84,10 +90,13 @@ class ModelAttemptSummary(ApiModel):
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    reasoning_tokens: int | None
+    reasoning_display_policy: ReasoningDisplayPolicy
     estimated_cost: Decimal | None
     latency_ms: int | None
     error_code: str | None
     started_at: datetime
+    first_visible_token_at: datetime | None
     completed_at: datetime | None
 
 
