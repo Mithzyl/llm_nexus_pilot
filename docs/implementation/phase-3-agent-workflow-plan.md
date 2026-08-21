@@ -964,6 +964,10 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 2026 年 8 月 20 日补充回归确认：DeepSeek prompted JSON 曾仅依赖 Schema 提示词，真实 Worker 响应虽以 `finish_reason=stop` 完成，却因末尾数组缺少 `]` 而产生 `node_output_invalid`。当前 Agent 调用使用独立的 `json_object_output` 合同，DeepSeek 适配器映射为官方 `response_format: {"type":"json_object"}` 并在 Provider 边界解析；节点层继续执行原有 Pydantic Schema 校验。普通 JSON object 与原生 JSON Schema 仍是两个能力，不允许静默降级。真实浏览器回归已完成 10 个节点和 3 次模型调用，刷新后最终消息与节点事实均可恢复。
 
+2026 年 8 月 20 日补充合同修复：后续真实 Worker 响应已经是完整 JSON，却把 Schema 元数据 `additionalProperties` 误写成业务字段 `additional_properties`，因严格合同禁止额外字段而失败。修复位于 Provider 无关的 `prompted_json` 指令构造层：提示明确列出唯一允许的顶层响应字段，声明 Schema 关键字不是响应字段，并从面向模型的 Schema 投影中移除 `additionalProperties` 与 `title` 元数据；原始 Pydantic 合同及 `extra="forbid"` 校验保持不变。该行为不按 Provider 名称分支，所有不具备原生 JSON Schema、使用提示式 JSON 的模型共享同一协议。Agent 工作流 38 项定向测试通过，其中新增回归覆盖字段白名单、Schema/响应边界、元数据剔除和普通解释任务的知识边界。
+
+2026 年 8 月 21 日补充知识边界修复：统一 Agent 指令原先要求 `Use only the supplied content`，导致普通解释问题也被错误当成必须提供外部资料的证据任务；Worker 只能报告资料缺失，Reviewer 因目标未回答而拒绝。当前 Provider 无关策略将已提供内容视为权威上下文，并允许普通解释问题使用模型已有的通用知识；任务明确限制来源时仍必须遵守，且任何模型都不得伪造工具、文件、测试、网络请求或外部验证事实。Playwright 使用真实 DeepSeek 对同一问题完成 15 个节点和 6 次模型调用，三个 Worker、Reviewer、最终汇总和消息关联全部成功，最终回答无需刷新即可见。后端与模型适配层全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
+
 以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 
 ### 节点合同

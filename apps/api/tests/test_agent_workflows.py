@@ -22,6 +22,7 @@ from nexuspilot_api.core.dependencies import get_price_catalog, get_provider_reg
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentModelBinding,
+    AgentWorkerModelOutput,
     AgentWorkflowCreate,
     AgentWorkflowNodeResultRead,
 )
@@ -33,6 +34,9 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_service i
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_service import (
     WorkflowExecutionStateService,
+)
+from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
+    structured_model_instructions,
 )
 from nexuspilot_api.features.memory.schemas.collaboration_memory import (
     HANDOFF_V1_HARD_CAP_TOKENS,
@@ -556,6 +560,40 @@ async def test_prompted_json_workflow_requests_provider_json_object_mode(
     assert provider.requests
     assert all(request.json_object_output for request in provider.requests)
     assert all(request.output_schema is None for request in provider.requests)
+
+
+def test_prompted_json_instructions_distinguish_schema_rules_from_response_fields() -> None:
+    """Verify every prompted-JSON Provider receives an explicit response-field allowlist."""
+
+    instructions = structured_model_instructions(
+        role="planner",
+        purpose="Complete the assigned task.",
+        output_model=AgentWorkerModelOutput,
+        prompted_json=True,
+    )
+
+    assert (
+        'Only these top-level response fields are allowed: "summary", '
+        '"confirmed_facts", "decisions", "remaining_work", "risks", "unknowns".'
+        in instructions
+    )
+    assert "Schema keywords are validation rules, not response fields." in instructions
+    assert '"additionalProperties"' not in instructions
+
+
+def test_model_instructions_allow_general_knowledge_without_claiming_external_evidence() -> None:
+    """Verify ordinary Agent questions may use model knowledge without inventing evidence."""
+
+    instructions = structured_model_instructions(
+        role="planner",
+        purpose="Answer an ordinary explanatory question.",
+        output_model=AgentWorkerModelOutput,
+        prompted_json=True,
+    )
+
+    assert "You may use general knowledge already available to the model" in instructions
+    assert "Use only the supplied content" not in instructions
+    assert "Never claim tools, files, tests, network requests, or external evidence" in instructions
 
 
 async def test_budgeted_workflow_requires_an_explicit_output_bound(

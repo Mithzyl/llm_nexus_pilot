@@ -19,6 +19,7 @@ MODEL_ONLY_ALLOWED_CAPABILITIES = frozenset({"model_generation", "text_analysis"
 MODEL_ONLY_DENIED_CAPABILITIES = frozenset(
     {"tool", "read", "write", "execute", "network", "external_side_effect"}
 )
+PROMPT_ONLY_JSON_SCHEMA_METADATA_KEYS = frozenset({"additionalProperties", "title"})
 
 
 def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
@@ -46,6 +47,20 @@ def hash_node_input(value: dict[str, Any]) -> str:
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
+def _remove_prompt_only_json_schema_metadata(schema_value: Any) -> Any:
+    """Remove Schema metadata that language models may mistake for response fields."""
+
+    if isinstance(schema_value, dict):
+        return {
+            key: _remove_prompt_only_json_schema_metadata(value)
+            for key, value in schema_value.items()
+            if key not in PROMPT_ONLY_JSON_SCHEMA_METADATA_KEYS
+        }
+    if isinstance(schema_value, list):
+        return [_remove_prompt_only_json_schema_metadata(value) for value in schema_value]
+    return schema_value
+
+
 def structured_model_instructions(
     *,
     role: str,
@@ -53,20 +68,34 @@ def structured_model_instructions(
     output_model: type[BaseModel],
     prompted_json: bool,
 ) -> str:
-    """Build bounded role instructions and optionally embed the required JSON Schema."""
+    """Build evidence-honest role instructions and optionally embed a prompt-safe Schema."""
 
     instructions = (
         f"You are the NexusPilot {role} Agent. {purpose} "
-        "Use only the supplied content. Never claim tools, files, tests, network requests, "
-        "or external evidence that are not explicitly present. Do not return hidden reasoning "
-        "or chain-of-thought. Return only the requested result fields."
+        "Treat supplied content as authoritative when it is present. You may use general "
+        "knowledge already available to the model for ordinary explanatory questions unless "
+        "the task explicitly restricts allowed sources. Identify material uncertainty instead "
+        "of presenting assumptions as verified facts. Never claim tools, files, tests, network "
+        "requests, or external evidence that are not explicitly present. Do not return hidden "
+        "reasoning or chain-of-thought. Return only the requested result fields."
     )
     if not prompted_json:
         return instructions
-    schema = json.dumps(output_model.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+    prompt_schema = _remove_prompt_only_json_schema_metadata(output_model.model_json_schema())
+    serialized_prompt_schema = json.dumps(
+        prompt_schema,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    allowed_top_level_fields = ", ".join(
+        json.dumps(field_name, ensure_ascii=False) for field_name in output_model.model_fields
+    )
     return (
-        f"{instructions} Return exactly one JSON object matching this schema and no markdown: "
-        f"{schema}"
+        f"{instructions} The following JSON Schema is a validation specification, not a "
+        "response template. Schema keywords are validation rules, not response fields. "
+        f"Only these top-level response fields are allowed: {allowed_top_level_fields}. "
+        "Do not emit any other top-level field. Return exactly one JSON object matching the "
+        f"schema and no markdown: {serialized_prompt_schema}"
     )
 
 

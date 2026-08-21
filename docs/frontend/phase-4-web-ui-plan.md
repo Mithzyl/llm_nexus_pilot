@@ -702,6 +702,10 @@ apps/web/
 
 2026 年 8 月 20 日本地实际故障记录：会话 `4e4932ee-68ec-4170-ab55-c438935e0527` 的 DeepSeek Agent Worker 调用以 `finish_reason=stop` 正常结束并返回 1195 字符正文，但最后一个数组缺少 `]`，因此严格 `json.loads` 在末尾失败；该错误与 Token、Handoff 和前端展示无关。Prompted JSON 现显式请求 DeepSeek 官方 `response_format: {"type":"json_object"}`，Provider 层先保证 JSON 语法，工作流仍以 Pydantic 校验完整节点 Schema，不把 JSON mode 误称为原生 JSON Schema。Playwright 使用真实 DeepSeek 完成一个包含 10 个节点、3 次模型调用的 Workflow，并在刷新后恢复最终 Message 和完整节点时间线。
 
+2026 年 8 月 20 日本地实际故障记录：会话 `865c0292-c075-4c07-8523-9a98a2dc0ae6` 的 Worker 调用正常结束并返回完整 JSON，但额外输出了 `additional_properties=false`；该名称来自提示中 JSON Schema 的 `additionalProperties` 元数据，不属于 Worker 六个业务字段，因此被 `extra="forbid"` 拒绝。当前修复不对 DeepSeek 或单一模型写特殊分支：所有 `prompted_json` 调用均获得明确的顶层字段白名单和“Schema 关键字不是响应字段”约束，面向模型的 Schema 投影不再携带容易误抄的 `additionalProperties` 与 `title`，服务端仍按原始严格合同验证结果。前端继续只展示后端权威终态，不在浏览器中猜测性修补模型结果。
+
+2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而返回 `agent_review_rejected`。当前通用策略允许普通解释任务使用模型已有知识，同时保持“明确来源限制优先、不得伪造外部证据、重要不确定性必须说明”的边界。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；该修复没有前端结果修补或 DeepSeek 专用分支。后端与模型适配层最新全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
+
 2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。多模型、多审核策略和并行 Agent 的真实 Provider 矩阵以及完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
 
 当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
