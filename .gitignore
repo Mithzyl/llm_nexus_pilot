@@ -46,12 +46,16 @@ tmp/
 node_modules/
 apps/web/node_modules/
 .next/
+.next-dev/
 apps/web/.next/
+apps/web/.next-dev/
+*.tsbuildinfo
 out/
 coverage/
 .turbo/
 .npm/
 .pnpm-store/
+.playwright-cli/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
