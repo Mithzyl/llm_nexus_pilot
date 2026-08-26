@@ -49,6 +49,7 @@ from nexuspilot_api.models import (
     AgentWorkflowNodeStatus,
     AgentWorkflowStatus,
     AttemptStatus,
+    EvaluationVerdict,
     LlmAgentHandoff,
     LlmAgentRun,
     LlmAgentTurn,
@@ -261,7 +262,7 @@ class ScriptedAgentProvider:
                 "rejected_claims": [],
                 "missing_evidence": [],
                 "requires_replan": False,
-                "requires_retry": (self.reviewer_requires_retry or self.reviewer_verdict != "pass"),
+                "requires_retry": self.reviewer_requires_retry,
                 "review_summary": (
                     "The candidate satisfies the model-only contract."
                     if self.reviewer_verdict == "pass"
@@ -1108,10 +1109,11 @@ async def test_conditional_review_skips_reviewer_after_successful_verification(
     assert len(provider.requests) == 3
 
 
-async def test_reviewer_rejection_stops_before_final_synthesis(
+async def test_nonblocking_reviewer_revision_proceeds_to_final_synthesis(
     client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Verify an explicit Reviewer rejection cannot become a successful final answer."""
+    """Verify minor Reviewer revisions are applied by final synthesis instead of discarded."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider(reviewer_verdict="needs_revision")
@@ -1124,13 +1126,79 @@ async def test_reviewer_rejection_stops_before_final_synthesis(
 
     assert response.status_code == 201
     result = response.json()
+    assert result["status"] == "completed"
+    assert result["error"] is None
+    assert result["final_output"] is not None
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    assert review_node["output"]["verdict"] == "needs_revision"
+    assert review_node["output"]["requires_replan"] is False
+    assert review_node["output"]["requires_retry"] is False
+    assert review_node["transition"]["selected_transition"] == "synthesize"
+    assert review_node["transition"]["next_node_keys"] == ["final_synthesis"]
+    assert review_node["output"]["evaluation_ids"]
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata["agent_node_key"] == "final_synthesis"
+    )
+    assert final_request.system_instruction is not None
+    assert "Apply every non-blocking Reviewer required_action" in final_request.system_instruction
+    final_model_input = json.loads(final_request.messages[-1].content)
+    assert final_model_input["review"]["verdict"] == "needs_revision"
+    evaluation_id = review_node["output"]["evaluation_ids"][0]
+    async with test_database_session_factory() as db_session:
+        evaluation = await db_session.get(LlmTaskEvaluation, evaluation_id)
+    assert evaluation is not None
+    assert evaluation.verdict == EvaluationVerdict.PASS
+
+
+async def test_reviewer_fail_stops_before_final_synthesis(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify an explicit Reviewer failure cannot become a successful final answer."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(reviewer_verdict="fail")
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-review-fail-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
     assert result["status"] == "failed"
     assert result["error"]["error_code"] == "agent_review_rejected"
     assert result["final_output"] is None
     assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+
+
+async def test_reviewer_revision_with_error_finding_stops_before_final_synthesis(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify an error-level revision remains blocking even without a retry request."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider(
+        reviewer_verdict="needs_revision",
+        reviewer_error_finding=True,
+    )
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-review-error-revision-0001"),
+    )
+
+    assert response.status_code == 201
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error"]["error_code"] == "agent_review_rejected"
+    assert result["final_output"] is None
     review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
-    assert review_node["output"]["verdict"] == "needs_revision"
-    assert review_node["output"]["evaluation_ids"]
+    assert review_node["transition"]["selected_transition"] == "reject"
+    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
 
 
 async def test_reviewer_retry_request_uses_reject_transition(

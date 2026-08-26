@@ -83,6 +83,20 @@ from nexuspilot_api.schemas.responses import ResponsesResult
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 
 
+def review_allows_final_synthesis(review_output: ReviewerModelOutput) -> bool:
+    """Allow final revision only when review findings require no new execution or replanning."""
+
+    has_blocking_finding = any(
+        finding.severity == "error" for finding in review_output.findings
+    )
+    return (
+        review_output.verdict in {"pass", "needs_revision"}
+        and not has_blocking_finding
+        and not review_output.requires_replan
+        and not review_output.requires_retry
+    )
+
+
 @dataclass(frozen=True)
 class WorkerExecutionRecord:
     """Keep one worker's ownership and evidence joined without positional list matching."""
@@ -488,11 +502,7 @@ class ModelOnlyWorkflowOrchestrator:
                     ),
                 )
                 raise WorkflowExecutionStopped
-            if review_output is not None and (
-                review_output.verdict != "pass"
-                or review_output.requires_replan
-                or review_output.requires_retry
-            ):
+            if review_output is not None and not review_allows_final_synthesis(review_output):
                 await self._fail_workflow(
                     workflow,
                     error=self._workflow_error(
@@ -534,7 +544,8 @@ class ModelOnlyWorkflowOrchestrator:
                 binding=controller_binding,
                 role="controller",
                 purpose=(
-                    "Synthesize the final answer and distinguish verified from unresolved items."
+                    "Synthesize the final answer and distinguish verified from unresolved items. "
+                    "Apply every non-blocking Reviewer required_action before finalizing."
                 ),
                 model_output=FinalSynthesisModelOutput,
                 model_input={
@@ -1537,7 +1548,7 @@ class ModelOnlyWorkflowOrchestrator:
                 status=EvaluationStatus.COMPLETED,
                 verdict=(
                     EvaluationVerdict.PASS
-                    if reviewer_output.verdict == "pass"
+                    if review_allows_final_synthesis(reviewer_output)
                     else EvaluationVerdict.FAIL
                 ),
                 score=reviewer_output.score * Decimal("100"),
@@ -1560,11 +1571,7 @@ class ModelOnlyWorkflowOrchestrator:
             reviewer_agent_run_id=agent_run.agent_run_id,
             reviewer_model_attempt_id=response.id,
         )
-        review_accepted = (
-            reviewer_output.verdict == "pass"
-            and not reviewer_output.requires_replan
-            and not reviewer_output.requires_retry
-        )
+        review_accepted = review_allows_final_synthesis(reviewer_output)
         await self._complete_node(
             workflow,
             node,
