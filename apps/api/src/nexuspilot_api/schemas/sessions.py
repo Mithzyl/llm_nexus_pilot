@@ -1,6 +1,7 @@
 """Conversation session and immutable message HTTP schemas."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -8,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from nexuspilot_api.models import MessageRole, SessionStatus
 from nexuspilot_api.schemas.base import ApiModel
 from nexuspilot_api.schemas.model_reasoning import ReasoningBlockRead
+from nexuspilot_api.schemas.runs import RunRead
 
 
 class SessionCreate(BaseModel):
@@ -88,6 +90,24 @@ class MessageRead(ApiModel):
     metadata_json: dict[str, Any]
     reasoning_blocks: list[ReasoningBlockRead] = Field(default_factory=list)
     created_at: datetime
+
+
+class ConversationTurnCreate(BaseModel):
+    """Validate one user turn that must create its Run and Message atomically."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, max_length=128)
+    content_text: str = Field(min_length=1, max_length=16_000)
+    run_type: str = Field(default="general", min_length=1, max_length=64)
+    budget_limit: Decimal | None = Field(default=None, ge=0)
+
+
+class ConversationTurnRead(ApiModel):
+    """Return the Run and anchored User Message committed for one conversation turn."""
+
+    run: RunRead
+    message: MessageRead
 
 
 class MessageSummary(ApiModel):

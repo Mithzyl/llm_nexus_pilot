@@ -5,15 +5,22 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select
 
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import AgentModelBinding
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
+    hash_node_input,
     structured_model_instructions,
 )
 from nexuspilot_api.models import (
+    ContextSourceSelectionStatus,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
+    LlmContextSource,
+    LlmMessage,
+    LlmModelAttempt,
+    MessageRole,
 )
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult
 from nexuspilot_api.services.model_response_service import ModelInvocationService
@@ -121,9 +128,14 @@ class AgentModelNodeService:
             remaining_wall_time_ms / 1_000,
         )
         try:
+            current_user_message_id = await self._find_current_user_message_id(
+                workflow.run_id
+            )
             response = await self.model_invocation_service.generate(
                 ResponsesRequest(
                     run_id=workflow.run_id,
+                    current_user_message_id=current_user_message_id,
+                    append_input_to_context=current_user_message_id is not None,
                     task_id=node.task_id,
                     provider=binding.provider,
                     model=binding.model,
@@ -146,6 +158,7 @@ class AgentModelNodeService:
                     stream=False,
                 )
             )
+            await self._bind_context_evidence(node, response.id, model_input)
             await self.workflow_state.ensure_workflow_running(workflow)
             if response.tool_calls:
                 raise InvalidRequestError(
@@ -170,3 +183,55 @@ class AgentModelNodeService:
                 workflow,
                 reserved_estimated_cost=reserved_estimated_cost,
             )
+
+    async def _find_current_user_message_id(self, run_id: str) -> str | None:
+        """Return the immutable User Message anchoring a Session-owned workflow Run."""
+
+        return await self.model_invocation_service.db_session.scalar(
+            select(LlmMessage.message_id)
+            .where(
+                LlmMessage.run_id == run_id,
+                LlmMessage.role == MessageRole.USER,
+            )
+            .order_by(LlmMessage.sequence.desc())
+            .limit(1)
+        )
+
+    async def _bind_context_evidence(
+        self,
+        node: LlmAgentWorkflowNodeExecution,
+        model_attempt_id: str,
+        model_input: dict[str, Any],
+    ) -> None:
+        """Bind the exact Context Build and selected Messages to a model node input."""
+
+        db_session = self.model_invocation_service.db_session
+        model_attempt = await db_session.get(LlmModelAttempt, model_attempt_id)
+        if model_attempt is None or model_attempt.context_build_id is None:
+            return
+        message_ids = list(
+            (
+                await db_session.scalars(
+                    select(LlmContextSource.source_id)
+                    .where(
+                        LlmContextSource.context_build_id
+                        == model_attempt.context_build_id,
+                        LlmContextSource.source_type == "message",
+                        LlmContextSource.selection_status
+                        == ContextSourceSelectionStatus.SELECTED,
+                    )
+                    .order_by(LlmContextSource.source_order)
+                )
+            ).all()
+        )
+        input_payload = {
+            **(node.input_json or {}),
+            "message_ids": message_ids,
+            "context_build_id": model_attempt.context_build_id,
+            "values": model_input,
+        }
+        node.input_hash = hash_node_input(input_payload)
+        node.input_json = {
+            key: value for key, value in input_payload.items() if key != "values"
+        }
+        await db_session.commit()

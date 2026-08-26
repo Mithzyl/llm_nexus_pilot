@@ -4,6 +4,7 @@ import type {
   AgentWorkflowResult,
   AgentWorkflowSummary,
   CursorPage,
+  ConversationTurn,
   Message,
   ModelResponseEventPage,
   ProviderCatalog,
@@ -141,6 +142,19 @@ export function createRun(payload: {
   user_request: string;
 }): Promise<Run> {
   return nexusFetch<Run>("runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/**
+ * Atomically persist a Run and its immutable current User Message.
+ */
+export function createConversationTurn(
+  sessionId: string,
+  payload: { user_id: string; content_text: string },
+): Promise<ConversationTurn> {
+  return nexusFetch<ConversationTurn>(`sessions/${encodeURIComponent(sessionId)}/turns`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -14,6 +14,7 @@ test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("POST", ["attempts", "attempt-1", "events"]), false);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "messages"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "messages", "latest"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["sessions", "session-1", "turns"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["sessions", "session-1", "latest-run"]), true);
   assert.equal(isAllowedProxyRoute("POST", ["runs", "run-1", "agent-workflows"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["runs", "run-1", "agent-workflow"]), true);

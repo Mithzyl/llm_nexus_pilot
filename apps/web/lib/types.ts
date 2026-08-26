@@ -86,10 +86,16 @@ export type Run = {
   updated_at: string;
 };
 
+export type ConversationTurn = {
+  run: Run;
+  message: Message;
+};
+
 export type ModelAttempt = {
   attempt_id: string;
   run_id: string;
   task_id: string | null;
+  context_build_id: string | null;
   provider: string;
   model: string;
   request_type: string;

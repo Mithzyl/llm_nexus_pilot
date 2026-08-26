@@ -1,18 +1,18 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 8 月 3 日
-**文档状态：** 已完成（稳定范围已通过快速测试、真实 MySQL/MinIO、迁移循环和静态检查；Memory 只保留规划与实验性准备代码；Knowledge 已移出本阶段）
+**文档日期：** 2026 年 8 月 26 日
+**文档状态：** 已完成（阶段2稳定基线保持完成；2026年8月26日确认统一Context Builder负责全部模型上下文，运行时接入作为阶段4当前集成工作项，不回退本阶段状态）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 目标
 
-- 提供可独立调用的 Model Gateway、Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail。
-- Memory 按 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 分层记录规划；现有同步代码作为实验性准备保留，本阶段不继续扩展、不接入实际 `/responses` 调用链，也不作为阶段2完成门禁。Context Preview 已移除 Memory 候选输入和读取分支，稳定合同只处理显式 instruction、安全 instruction 与 Session Message。
-- Knowledge 明确属于独立知识库能力。本阶段不继续实施或验收；现有 ORM、Schema、Service 和 Router 只作为待重新评审的实验性代码，后续另行确定需求、边界和实施阶段。
-- Agent 后续只组合已经完成验收的稳定单元，不在工作流节点中临时实现消息历史或上下文裁剪；Memory 和 Knowledge 在各自重新通过启用门禁前不得被 Agent 自动读取。
+- 提供可独立调用的Model Gateway、统一Context Builder、Prompt/模型能力目录和Evaluation/Guardrail。Context Builder是所有模型可见上下文的唯一组装入口，不只负责Session消息。
+- Memory按L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project和L4 User分层记录；Memory Service负责事实、权限、版本和检索，正式启用的结果必须作为类型化来源进入Context Builder，不能由`/responses`或Agent直接读取。
+- Knowledge是独立知识库能力；Knowledge Service负责文档、版本、检索和权限，正式启用的检索片段必须由Context Builder统一选择、预算和记录来源。
+- Agent只组合已经完成验收的稳定单元，不在工作流节点中临时实现Session历史、Prompt、Memory、Knowledge、Artifact、Handoff或工具结果的拼接与裁剪。
 - 业务调用方通过同一请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Gemini 和 OpenAI-compatible 服务。
-- 每次模型调用、阶段2 Context Build、Prompt 渲染和 Evaluation 都具有可查询输入来源、结果、耗时或错误。实验性 Memory 与 Knowledge 的证据要求留到各自正式启用规划。
+- 每次模型调用、Context Build、Prompt渲染和Evaluation都具有可查询输入来源、结果、耗时或错误。尚未通过启用门禁的来源不会进入模型，但其未来接入点统一保留在Context Builder来源合同中。
 - 明确不处理：RabbitMQ Worker、任务自动领取、总控与工作模型、工具执行循环、MCP、代码搜索、LangGraph、OpenTelemetry 和前端页面。
 - 明确不处理：自训练模型选择器、默认多候选答案投票，以及对真实供应商发起默认批量测试请求。
 
@@ -24,11 +24,11 @@
 - 当前实现：`ObjectStorage` 已增加受控删除、按前缀列举和内容 hash 复核；Memory 快照会在登记数据库记录前复核对象。自动孤儿对象巡检与补偿任务尚未实现。
 - 当前实现：`POST /api/v1/runs/{run_id}/attempts` 是阶段1的记录写入接口，不具备模型调用能力。阶段2增加统一生成接口后，该接口暂时保留，用于内部迁移和兼容，不作为普通业务调用入口。
 - 已验证：四家 Provider、OpenAI-compatible codec、统一 Responses、SSE、重试、费用与原始响应证据；DeepSeek 使用专用 Chat Completions 适配器完成最新模型、思考参数和流终止约束。
-- 当前实现及本阶段保持不变：`POST /api/v1/responses` 校验 Run/Task 后直接调用 Model Gateway；不读取 Memory、不创建 Memory Packet。Conversation Context 保持独立预览能力，不在本阶段隐式接入该接口。
+- 当前实现：带`current_user_message_id`的`POST /api/v1/responses`会在Provider调用前创建Run锚定的Context Build，并把`context_build_id`关联到Model Attempt；未带锚点的低层兼容调用仍只使用显式`input`，不宣称具有Session语义。
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
 - 当前实现：平台只有公共 API Key 与内部 API Key，没有可验证的最终用户认证主体；现有 Memory 详情、纠正和删除按 `memory_id` 与受信调用方边界工作，不能声称已完成用户本人越权隔离。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
-- 已验证：Context Builder 的稳定请求只接受显式 instruction、安全 instruction 和指定数量的 Session Message；tokenizer/context window 来自启用的 Model Catalog，历史读取使用不可变内容快照，不读取 Memory/Knowledge，也不接入 `/responses`。
+- 已验证：Context Builder当前稳定请求只接受显式instruction、安全instruction和指定数量的Session Message；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。Prompt、Memory、Knowledge、Artifact和Agent来源尚未接入，属于新增统一来源合同的实施范围。
 - 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
 - 已验证：Evaluation/Guardrail 拒绝未知或非法规则，同一幂等键只允许相同输入重放，候选 Attempt 必须属于指定 Task，历史非法规则安全失败。
 - 当前结论：阶段2稳定范围已满足完成条件。Memory 仍是规划和实验性准备代码，Knowledge 仍等待独立知识库规划；两者均不因阶段2完成而成为运行时能力。
@@ -100,11 +100,97 @@ exclusion_reason, content_hash, message_role, content_text
 - 同一请求使用固定 tokenizer 名称、版本、来源版本和排序键；重复读取 `context_build_id` 必须能够解释当时输入，不使用当前最新内容覆盖历史证据。
 - 单条消息超过该类预算时返回明确超限原因；不在 UTF-8 字符、工具调用结构或消息结构中间截断。
 - 长对话摘要的形成和启用策略暂不纳入实际响应链路，原始 Message 始终保持不可变。
-- Context 构建与 Provider 调用分离；预览不发起模型请求、不产生供应商费用，也不会被 `/responses` 自动使用。
+- Context预览与Provider调用分离，预览不发起模型请求、不产生供应商费用；运行时Responses和Agent调用使用同一来源选择服务创建独立Context Build。
+
+### 统一模型上下文构建与阶段3、阶段4运行时集成设计
+
+状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入以及Attempt/Node证据已经实现；Prompt Release、Memory、Knowledge、Artifact对象读取、Handoff/Evaluation/Tool来源和浏览器证据抽屉仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
+
+#### 2026年8月26日已实现基线
+
+- `POST /api/v1/sessions/{session_id}/turns`在一个数据库事务中创建Run和带`run_id`的当前User Message；任一归属、状态或消息序号失败都会回滚二者。
+- `POST /api/v1/context-builds`校验User、Session、Run与当前User Message关系，以当前消息序号排除稍后并发消息，并按最新完整User/Assistant轮次向前选择。当前文本、平台安全指令和受控节点输入属于必选来源。
+- 运行时Context Build使用Model Catalog上下文窗口、tokenizer名称和版本，保存全部候选快照、选择状态、内容哈希和排除原因；相同幂等键与相同请求返回原构建，不重新读取Session。
+- 快速Responses以Context Build消息替换单条Composer输入；Agent各模型节点在Session历史之后追加本节点类型化输入。Model Attempt、Agent Node Input和`context_assembly`分别保存`context_build_id`及实际选中的Message ID。
+- 当前User Message若只有`content_uri`会在Provider调用前明确失败，不能转换为空文本。旧的对象消息只记录为未支持来源；ObjectStorage受限读取尚未实现。
+- 当前兼容入口仍允许不带消息锚点的低层Responses请求，此时不会创建Context Build，也不会读取Session历史；Web普通对话已经迁移到原子轮次与消息锚点合同。
+
+#### 当前问题与目标行为
+
+- 当前快速对话把 Composer 本次输入作为单个 User Message 直接发送到 `/responses`；`run_id` 只用于执行归属和审计，后端不会读取所属 Session 的历史消息。
+- 当前 `model_only_v1` 的 `context_assembly` 只登记 `Run.user_request`，`included_message_ids` 为空；Controller 和 Worker 不读取此前会话消息。
+- 目标态中，两种模式以及Agent的每一个模型节点必须使用同一套来源归属、信任分级、消息锚点、预算选择和排除原因。快速对话生成Provider中立消息序列；Agent节点生成类型化节点上下文；当前`Run.user_request`不能重复追加。
+- Context Builder负责组装全部已授权且已启用的上下文。来源服务负责产生和校验自己的数据，Context Builder不能伪造Memory、执行Knowledge检索算法、修改Artifact或重写Handoff事实。
+
+#### 全部上下文来源
+
+| 来源类型 | 权威来源服务 | Context Builder职责 | 启用条件 |
+|---|---|---|---|
+| 平台安全与系统指令 | 平台策略、调用入口 | 作为最高优先级指令，单独映射为Provider系统指令 | 始终启用或由明确策略启用 |
+| Prompt Release | Prompt Catalog | 固定模板版本、渲染变量和内容哈希 | 用例绑定已启用Prompt版本 |
+| 当前用户请求 | Run与当前User Message | 校验Run/Session/Message归属并作为必选来源 | 所有会话和Agent调用 |
+| Session历史 | Session Message | 以当前Message序号为锚点，按完整轮次选择 | Session调用 |
+| Session Summary与Working State | Session/Agent State Service | 作为带版本和覆盖范围的类型化摘要来源 | 对应能力通过启用门禁 |
+| User、Project和执行Memory | Memory Service | 消费已授权检索结果或Memory Packet，保留层级、信任和版本 | Memory策略、权限、删除和预算门禁通过 |
+| Knowledge片段 | Knowledge Service | 消费有界检索片段，保留文档版本、片段ID和外部不可信标记 | Knowledge权限、检索和引用门禁通过 |
+| Artifact与对象消息 | Artifact/ObjectStorage Service | 受限读取、校验大小和哈希，按完整对象或片段选择 | 内容类型允许且调用主体有读取权限 |
+| Agent任务与协作事实 | Agent Runtime | 组装Task、Node输出、Handoff、验证、Reviewer和Evaluation引用 | 对应节点合同已提交 |
+| Tool结果 | Tool Runtime | 组装已批准、已执行和已脱敏的工具结果 | 阶段7权限和执行合同通过 |
+
+Provider私有continuation不属于业务上下文来源，只用于同一Run、Task、Provider和Model下的加密推理或工具续接。
+
+#### Context Builder职责边界
+
+- 解析调用场景和目标模型，向已登记的来源Provider请求候选，不允许调用方把任意数据库ID或自由文本伪装成受信来源。
+- 校验User、Project、Session、Run、Task、Message、Artifact、Memory、Knowledge、Agent和Tool结果的归属、权限、状态、版本和保留策略。
+- 为每个候选记录来源类型、来源ID、版本、内容哈希、信任级别、选择优先级、token估算、选中状态和排除原因。
+- 根据Model Catalog的上下文窗口和Context策略版本执行总预算及分来源预算；完整消息轮次、Memory事实、Knowledge片段、Artifact片段、Handoff和Tool结果不能从结构中间截断。
+- 输出一个Provider中立Context Build：系统指令、按时间排序的消息、类型化资料区块、Agent节点输入和引用证据。Provider适配器只负责编码，不能再次选择或删除业务来源。
+- 在模型调用前持久化Context Build和来源快照；Model Attempt与Agent Node必须引用实际使用的`context_build_id`。预览和运行时构建调用同一引擎，仅执行动作不同。
+- Context Builder不生成Session摘要、不批准Memory候选、不执行Knowledge排序算法、不修改Artifact/Handoff/Tool结果，也不决定模型业务答案。
+
+#### 对话轮次与并发锚点
+
+- 新增“提交对话轮次”的应用服务，在同一数据库事务中创建 Run 和当前 User Message，并返回 `run_id`、`message_id`、`message_sequence`。HTTP 可以在现有 Session 资源下增加专用轮次动作，但实现必须复用当前 Run、Message 表和归属校验，不能创建第二套会话记录。
+- 当前 User Message 必须带 `run_id`。前端不能先创建一个无法关联 Run 的 Message，再通过相同正文猜测它属于哪个 Run。
+- 运行时 Context Build 必须携带 `run_id` 和 `current_user_message_id`，并校验 User、Session、Run、Message、角色和消息序号关系。候选查询增加 `sequence <= current_user_message.sequence`，因此同一 Session 中稍后并发提交的消息不会进入当前 Run。
+- 重放同一 Run 时复用已经提交的 Context Build，不根据 Session 的新状态重新构建历史。Context Build 在 Provider 调用前提交；构建失败时不创建可计费 Model Attempt。
+
+#### 来源选择与预算规则
+
+1. 必选来源依次为平台安全指令、调用方允许的系统指令和当前 User Message。任一必选来源无法完整放入模型上下文时明确失败，不能静默排除当前问题。
+2. 旧消息按完整对话轮次分组，从最新轮次向更早轮次选择；一个轮次中的 User、Assistant 及其关联 Tool Message 必须整体纳入或整体排除，不能产生孤立 Assistant/Tool Message。
+3. 选择完成后按原始消息序号恢复时间顺序，再生成 Provider 请求。稳定前缀保持“系统指令、较旧历史、较新历史、当前输入”的顺序，为支持前缀缓存的 Provider 提供可重复输入，但缓存命中不参与正确性判断。
+4. `content_uri` 不能转换为空文本。允许的对象内容必须通过 ObjectStorage 受限读取、大小和哈希校验后成为一个完整来源；暂不支持的内容类型记录明确排除原因。当前 User Message 若不是可读取文本则直接拒绝生成。
+5. Context Builder的预算覆盖所有来源，不只覆盖Session历史；预算预留只决定可以纳入多少上下文，不向Provider设置`max_output_tokens`，也不构成用户可见的生成长度限制。预算值和协议开销来自启用的Model Catalog或服务端策略版本，不能由Web写死。
+6. 同一 Agent Workflow 如果角色绑定到不同 Provider 或模型，复用相同的消息锚点和候选来源，为每个不同的 `(provider, model, catalog_version)` 生成独立预算投影。节点必须记录实际使用的 `context_build_id`，不能用Controller模型的窗口假设替代Worker模型能力。
+
+#### 接口和执行证据
+
+- 用户可见的`/responses`执行必须先调用Context Builder：显式`input`也是一种类型化来源，不允许直接绕过构建器进入Provider。后端可以创建新的运行时Context Build，或在幂等重放时加载已提交的`context_build_id`；重放必须验证Run、Session、Provider、Model和策略版本归属，不能再次追加当前输入。
+- Agent Workflow请求仍不携带用户正文。编排器向Context Builder提交当前节点需要的来源类型和已提交引用；Context Builder按节点、角色和模型构建或复用Context Build，并把Session、Prompt、Memory、Knowledge、Artifact、Agent和Tool来源证据交给`context_assembly`及模型节点。
+- `llm_attempts`增加可查询的`context_build_id`关联；Agent Node Input填充`message_ids`和`context_build_id`。MinIO原始请求继续作为审计大对象，但不能代替数据库中的来源关联。
+- 运行时Context Build增加幂等请求标识或等价唯一约束，至少绑定Run、当前Message、Provider、Model、目录版本和选择策略版本。相同输入重放返回原构建，不制造不同历史快照。
+
+#### 错误处理和兼容
+
+- Model Catalog缺失、消息归属冲突、锚点已失效、必选来源超限、对象内容不可读和角色序列不合法均在Provider调用前返回明确错误；不能退化为只发送当前输入并伪装完整上下文。
+- 现有调用方迁移期间可以继续提交原`input`合同，但Responses Service必须在内部把它转换为`explicit_input`来源并创建Context Build。真正的低层Model Gateway只作为内部Provider调用端口，不作为绕过Context Builder的用户运行入口。
+- 尚未通过启用门禁的来源记录为能力未启用或不进入候选集，不能由调用方绕过Context Builder直接读取后塞入Prompt。
+
+#### 测试和完成条件
+
+- 快速对话第二轮Provider请求包含第一轮User/Assistant和本轮User，且本轮User只出现一次。
+- Agent Controller、Worker、Reviewer和Final synthesis都通过Context Builder获得各自所需的完整类型化上下文；相同来源引用保持一致，不同模型绑定使用各自Context Build并记录正确证据。
+- 并发提交时，较晚Message不会进入较早Run；同一Run重放得到相同来源ID、顺序、哈希和排除原因。
+- 预算不足时优先保留当前User和最新完整轮次，不出现孤立Assistant/Tool Message；必选来源超限时不调用Provider。
+- 文本、暂不支持的对象消息、对象读取失败、跨Session/Run/用户引用和非法角色序列均有合同测试。
+- OpenAI、DeepSeek、Anthropic、Gemini和OpenAI-compatible的Provider codec验证系统指令与消息角色映射一致；真实Provider验证保持显式开启，不默认产生费用。
+- Attempt、Agent Node和Context Build查询能够回答本次调用使用了哪些Prompt、Message、Memory、Knowledge片段、Artifact、Handoff、Evaluation和Tool结果，排除了哪些来源，以及使用哪个模型目录和Context策略版本。
 
 ### Memory：规划边界与实验性准备代码
 
-Memory 设计为独立、可查询的长期事实账本，不是 Agent 工作流内部的临时字典，也不是知识库的第二套文档库。仓库中已有 Store、Policy、确定性 Retrieval 和 L0～L4 同步准备代码，但当前决策是只保留规划与实验性验证：不继续补全，不接入 Context Builder 或 `/responses`，不把它描述为模型运行时能力。
+Memory设计为独立、可查询的长期事实账本，不是Agent工作流内部的临时字典，也不是知识库的第二套文档库。仓库中已有Store、Policy、确定性Retrieval和L0～L4同步准备代码；当前实现仍是实验性准备，正式启用时必须通过统一Context Builder进入模型，不能单独接入`/responses`。
 
 当前代码的 `memory_type` 只允许：
 
@@ -262,7 +348,7 @@ Memory 的长期目标不是把所有历史文字塞回模型，而是按执行�
 | L2 直接前置 Handoff | 每条 500 tokens | 每条 1000 tokens | 默认最多 4 条且合计不超过 3000 tokens，更多内容通过 Artifact 引用 |
 | L0 Agent Working State | 300 tokens | 800 tokens | 删除低价值搜索轨迹，保留恢复所需状态，不截断 JSON |
 
-这些数字作为未来启用门禁的预算基线，届时必须进入带上下限配置并记录目标模型 tokenizer 名称和版本。当前 Context Builder 和 `/responses` 不给 Memory 分配运行时预算；未来预算不足时必须整项排除并记录原因，不能截断 JSON、Handoff 或事实正文。
+这些数字作为未来启用门禁的预算基线，届时必须进入Context Builder的分来源预算并记录目标模型tokenizer名称和版本。当前代码尚未给Memory分配运行时预算；正式启用后预算不足必须整项排除并记录原因，不能截断JSON、Handoff或事实正文。
 
 #### 与当前 Memory 代码的兼容关系
 
@@ -730,7 +816,7 @@ apps/api/src/nexuspilot_api/features/memory/
 
 #### Memory 复杂度审查结论
 
-当前决定是停止扩展 Memory，只维护规划和已经存在的实验性准备代码。可审计事实账本、L0 手动检查点、L1 State/Summary、L2 Handoff/Run Snapshot、L3/L4 候选和 Profile 都不进入实际模型响应链路；Memory Packet 不在阶段2创建，也不绑定 Context Builder 或 Model Attempt。
+当前实现决定仍是停止扩展Memory，只维护规划和已经存在的实验性准备代码，因此尚不进入实际模型响应链路。目标架构不变：L0～L4来源正式启用后统一由Context Builder读取；Memory Packet若保留，只是Memory Service提供的版本化候选包，不能成为绕过Context Build或Model Attempt关联的第二条输入链路。
 
 暂不继续实现：自动记忆形成、定时压缩/擦除、Agent Runtime 自动检查点、Embedding、Vector Store、Mem0、知识图谱、后台 Profile 刷新和自动 Lesson 提升。它们分别依赖阶段10 Worker、阶段3 Agent Runtime 或固定检索评估门禁；现在加入只会扩大状态机和双存储恢复面，不能提高当前同步接口的可靠性。
 
@@ -739,7 +825,7 @@ apps/api/src/nexuspilot_api/features/memory/
 - Knowledge 表达外部资料及其引用、版本、解析和检索，属于独立知识库，不属于 Memory，也不再属于阶段2。
 - 仓库中现有 Knowledge ORM、Schema、Service 和 Router 是未完成的实验性准备代码，不作为稳定 API，不进入阶段2测试数量、完成状态或前端第一版功能。
 - 后续必须先单独讨论资料来源、上传与 Artifact 关系、解析器、分块、检索质量、向量方案、引用展示、用户/项目权限、版本切换、删除和失败恢复，再建立知识库实施文档。
-- 在独立规划批准前，不继续扩展 Knowledge，也不接入 Context Builder、`/responses`、Agent 或前端。
+- 在独立规划批准前不启用Knowledge运行时来源；批准并完成权限、检索和引用门禁后，只能通过Context Builder接入`/responses`和Agent，前端不能直接把Knowledge结果拼入Prompt。
 
 ### Prompt 与模型能力目录
 

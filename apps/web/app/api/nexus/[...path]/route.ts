@@ -285,6 +285,16 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   }
 
   if (
+    path[0] === "sessions" &&
+    path.length === 3 &&
+    path[2] === "turns" &&
+    request.method === "POST" &&
+    payload?.user_id !== DEVELOPMENT_USER_ID
+  ) {
+    return Response.json({ detail: "对话轮次只能归属于当前开发用户。" }, { status: 403 });
+  }
+
+  if (
     path[0] === "runs" &&
     path.length === 1 &&
     request.method === "POST" &&

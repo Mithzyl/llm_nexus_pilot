@@ -1,6 +1,7 @@
 """Coordinate provider calls with durable model and transport-attempt records."""
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -9,6 +10,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 from nexuspilot_models.contracts import (
+    Message,
+    MessageRole,
     ModelReasoningCapabilities,
     ModelRequest,
     ModelResponse,
@@ -42,7 +45,9 @@ from nexuspilot_api.models import (
     LlmRun,
     new_id,
 )
+from nexuspilot_api.schemas.context_builds import ContextBuildCreate
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
+from nexuspilot_api.services.context_builder_service import build_runtime_context
 from nexuspilot_api.services.lookups import require_run, require_task
 from nexuspilot_api.services.model_reasoning_service import (
     project_reasoning_presentation,
@@ -80,8 +85,17 @@ class ModelInvocationService:
     async def generate(self, payload: ResponsesRequest) -> ResponsesResult:
         """Execute a response and finalize its durable LLM model invocation record."""
 
-        request = payload.to_model_request()
-        model_attempt = await self._start_model_attempt(payload)
+        model_attempt_id = new_id()
+        request, context_build_id = await self._apply_runtime_context(
+            payload,
+            payload.to_model_request(),
+            model_attempt_id,
+        )
+        model_attempt = await self._start_model_attempt(
+            payload,
+            attempt_id=model_attempt_id,
+            context_build_id=context_build_id,
+        )
         provider_dispatch_may_have_started = False
         try:
             provider = self.registry.resolve(request.provider, request.model)
@@ -134,8 +148,17 @@ class ModelInvocationService:
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
         """Stream normalized events and finalize success, failure, timeout, or cancellation."""
 
-        request = payload.to_model_request()
-        model_attempt = await self._start_model_attempt(payload)
+        model_attempt_id = new_id()
+        request, context_build_id = await self._apply_runtime_context(
+            payload,
+            payload.to_model_request(),
+            model_attempt_id,
+        )
+        model_attempt = await self._start_model_attempt(
+            payload,
+            attempt_id=model_attempt_id,
+            context_build_id=context_build_id,
+        )
         sequence = 0
         active_reasoning_blocks: dict[str, dict[str, str]] = {}
         provider_dispatch_may_have_started = False
@@ -334,8 +357,14 @@ class ModelInvocationService:
                 retryable=True,
             ) from exc
 
-    async def _start_model_attempt(self, payload: ResponsesRequest) -> LlmModelAttempt:
-        """Validate ownership and persist a started LLM model invocation."""
+    async def _start_model_attempt(
+        self,
+        payload: ResponsesRequest,
+        *,
+        attempt_id: str,
+        context_build_id: str | None,
+    ) -> LlmModelAttempt:
+        """Validate ownership and persist a started invocation with Context lineage."""
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -359,9 +388,10 @@ class ModelInvocationService:
                     ),
                 )
         model_attempt = LlmModelAttempt(
-            attempt_id=new_id(),
+            attempt_id=attempt_id,
             run_id=payload.run_id,
             task_id=payload.task_id,
+            context_build_id=context_build_id,
             provider=payload.provider.value,
             model=payload.model,
             request_type="stream" if payload.stream else "generation",
@@ -395,6 +425,83 @@ class ModelInvocationService:
                 "Failed to persist the raw model request.",
             ) from exc
         return model_attempt
+
+    async def _apply_runtime_context(
+        self,
+        payload: ResponsesRequest,
+        request: ModelRequest,
+        model_attempt_id: str,
+    ) -> tuple[ModelRequest, str | None]:
+        """Replace single-turn input with a persisted Run-anchored Session context.
+
+        Requests without a current-message anchor retain the legacy explicit-input
+        behavior. Anchored requests fail before provider dispatch when their Run,
+        Session, model catalog, or message lineage is inconsistent.
+        """
+
+        if payload.current_user_message_id is None:
+            return request, None
+        run = await self.db_session.get(LlmRun, payload.run_id)
+        if run is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        if run.session_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Anchored responses require a Session-owned Run",
+            )
+        context_build, _ = await build_runtime_context(
+            self.db_session,
+            ContextBuildCreate(
+                user_id=run.user_id,
+                session_id=run.session_id,
+                run_id=run.run_id,
+                current_user_message_id=payload.current_user_message_id,
+                provider=payload.provider.value,
+                model=payload.model,
+                system_instruction=payload.instructions,
+                additional_user_input=(
+                    payload.input
+                    if payload.append_input_to_context and isinstance(payload.input, str)
+                    else None
+                ),
+                recent_message_count=100,
+                idempotency_key=self._context_idempotency_key(
+                    payload.idempotency_key,
+                    model_attempt_id,
+                ),
+            ),
+        )
+        provider_messages = [
+            Message(role=MessageRole(message.role), content=message.content)
+            for message in context_build.messages
+            if message.role != "system"
+        ]
+        system_instructions = [
+            message.content
+            for message in context_build.messages
+            if message.role == "system"
+        ]
+        return (
+            request.model_copy(
+                update={
+                    "messages": provider_messages,
+                    "system_instruction": "\n\n".join(system_instructions) or None,
+                }
+            ),
+            context_build.context_build_id,
+        )
+
+    @staticmethod
+    def _context_idempotency_key(
+        response_idempotency_key: str | None,
+        model_attempt_id: str,
+    ) -> str:
+        """Derive a bounded stable Context key from the logical Responses request."""
+
+        if response_idempotency_key is None:
+            return f"context:{model_attempt_id}"
+        key_digest = hashlib.sha256(response_idempotency_key.encode()).hexdigest()
+        return f"context:{key_digest}"
 
     async def _complete_model_attempt(
         self,

@@ -21,6 +21,7 @@ const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "GET", pattern: ["sessions", ":id", "messages", "full"] },
   { method: "GET", pattern: ["sessions", ":id", "messages", "latest"] },
   { method: "POST", pattern: ["sessions", ":id", "messages"] },
+  { method: "POST", pattern: ["sessions", ":id", "turns"] },
   { method: "GET", pattern: ["sessions", ":id", "latest-run"] },
   { method: "GET", pattern: ["messages", ":id"] },
   { method: "POST", pattern: ["runs"] },

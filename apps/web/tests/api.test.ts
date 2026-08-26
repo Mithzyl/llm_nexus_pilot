@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   cancelAgentWorkflow,
+  createConversationTurn,
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
@@ -92,6 +93,34 @@ test("loads one complete newest message page without per-message fetches", async
     assert.equal(page.has_more, true);
     assert.equal(page.next_cursor, "cursor-2");
     assert.equal(requests.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("atomically creates a run-linked current user message", async () => {
+  let request: { url: string; init?: RequestInit } | null = null;
+  globalThis.fetch = (async (input, init) => {
+    request = { url: String(input), init };
+    return Response.json({
+      run: { run_id: "run-1", session_id: "session-1" },
+      message: { message_id: "message-1", run_id: "run-1", role: "user" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const turn = await createConversationTurn("session-1", {
+      user_id: "nexuspilot-web",
+      content_text: "Current question",
+    });
+    assert.equal(turn.run.run_id, "run-1");
+    assert.equal(turn.message.run_id, "run-1");
+    assert.match(request!.url, /sessions\/session-1\/turns$/);
+    assert.equal(request!.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(request!.init?.body)), {
+      user_id: "nexuspilot-web",
+      content_text: "Current question",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

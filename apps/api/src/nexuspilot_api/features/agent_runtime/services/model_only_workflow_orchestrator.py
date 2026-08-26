@@ -70,11 +70,13 @@ from nexuspilot_api.models import (
     LlmAgentWorkflowEvent,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
+    LlmMessage,
     LlmModelAttempt,
     LlmRun,
     LlmTask,
     LlmTaskDependency,
     LlmTaskEvaluation,
+    MessageRole,
     TaskStatus,
     new_id,
 )
@@ -315,13 +317,17 @@ class ModelOnlyWorkflowOrchestrator:
                 summary="Normalized the Run objective and capability boundary",
             )
 
+            context_messages = await self._load_anchored_context_messages(run)
             context = ContextAssemblyOutput(
                 included_run_id=run.run_id,
-                included_message_ids=[],
+                included_message_ids=[message.message_id for message in context_messages],
                 included_artifact_ids=[],
                 included_handoff_ids=[],
                 excluded_sources=[],
-                input_character_count=len(run.user_request),
+                input_character_count=sum(
+                    len(message.content_text or "") for message in context_messages
+                )
+                or len(run.user_request),
                 is_truncated=False,
                 memory_packet_id=None,
             )
@@ -1792,6 +1798,35 @@ class ModelOnlyWorkflowOrchestrator:
         """Delegate final Assistant Message staging to the state service."""
 
         return await self.workflow_state.save_final_message(run, output)
+
+    async def _load_anchored_context_messages(self, run: LlmRun) -> list[LlmMessage]:
+        """Load the same bounded Session history advertised by context assembly."""
+
+        current_message = await self.db_session.scalar(
+            select(LlmMessage)
+            .where(
+                LlmMessage.run_id == run.run_id,
+                LlmMessage.role == MessageRole.USER,
+            )
+            .order_by(LlmMessage.sequence.desc())
+            .limit(1)
+        )
+        if current_message is None or run.session_id is None:
+            return []
+        newest_messages = list(
+            (
+                await self.db_session.scalars(
+                    select(LlmMessage)
+                    .where(
+                        LlmMessage.session_id == run.session_id,
+                        LlmMessage.sequence <= current_message.sequence,
+                    )
+                    .order_by(LlmMessage.sequence.desc())
+                    .limit(100)
+                )
+            ).all()
+        )
+        return list(reversed(newest_messages))
 
     async def _require_run(self, run_id: str) -> LlmRun:
         """Return the owning Run or raise a stable resource-not-found failure."""

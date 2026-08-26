@@ -3,7 +3,7 @@
 import {
   cancelAgentWorkflow,
   createMessage,
-  createRun,
+  createConversationTurn,
   createSession,
   DEVELOPMENT_USER_ID,
   ensureDevelopmentUser,
@@ -911,7 +911,7 @@ export default function Home() {
   }
 
   /**
-   * Submit one user turn through the durable user, session, run, message, and SSE flow.
+   * Submit one atomic Run/Message turn, then stream its anchored quick or Agent response.
    */
   async function handleSend() {
     const input = draft.trim();
@@ -960,15 +960,11 @@ export default function Home() {
       }
       submittedSessionId = session.session_id;
 
-      await createMessage(session.session_id, {
-        role: "user",
+      const createdTurn = await createConversationTurn(session.session_id, {
+        user_id: DEVELOPMENT_USER_ID,
         content_text: input,
       });
-      const createdRun = await createRun({
-        user_id: DEVELOPMENT_USER_ID,
-        session_id: session.session_id,
-        user_request: input,
-      });
+      const createdRun = createdTurn.run;
       submittedRunId = createdRun.run_id;
       setRun(createdRun);
       setRunModelFacts({ provider: selectedProvider, model: selectedModel });
@@ -993,6 +989,7 @@ export default function Home() {
         signal: responseController.signal,
         body: JSON.stringify({
           run_id: createdRun.run_id,
+          current_user_message_id: createdTurn.message.message_id,
           provider: selectedProvider,
           model: selectedModel,
           input,

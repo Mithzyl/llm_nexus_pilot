@@ -47,8 +47,13 @@ class RunDatabasePage:
     next_database_key: DatabaseQueryPaginationKey | None
 
 
-async def create_run(db_session: AsyncSession, payload: RunCreate) -> LlmRun:
-    """Persist a new user request after validating that its owner is active."""
+async def create_run(
+    db_session: AsyncSession,
+    payload: RunCreate,
+    *,
+    commit: bool = True,
+) -> LlmRun:
+    """Persist a validated user request, optionally inside a caller-owned transaction."""
 
     user = await db_session.get(User, payload.user_id)
     if user is None or not user.is_active:
@@ -75,8 +80,11 @@ async def create_run(db_session: AsyncSession, payload: RunCreate) -> LlmRun:
             )
     run = LlmRun(**payload.model_dump(), status=RunStatus.PENDING)
     db_session.add(run)
-    await db_session.commit()
-    await db_session.refresh(run)
+    if commit:
+        await db_session.commit()
+        await db_session.refresh(run)
+    else:
+        await db_session.flush()
     return run
 
 

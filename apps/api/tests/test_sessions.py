@@ -44,6 +44,60 @@ async def append_message(
     return response.json()
 
 
+async def test_conversation_turn_atomically_links_run_and_user_message(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify one turn creates a Run and its anchored User Message in one contract."""
+
+    await create_user(client, "turn-owner")
+    conversation = await create_session(client, "turn-owner")
+
+    response = await client.post(
+        f"/api/v1/sessions/{conversation['session_id']}/turns",
+        json={"user_id": "turn-owner", "content_text": "Second-turn question"},
+    )
+
+    assert response.status_code == 201
+    turn = response.json()
+    assert turn["run"]["session_id"] == conversation["session_id"]
+    assert turn["run"]["user_request"] == "Second-turn question"
+    assert turn["message"]["session_id"] == conversation["session_id"]
+    assert turn["message"]["run_id"] == turn["run"]["run_id"]
+    assert turn["message"]["role"] == "user"
+    assert turn["message"]["content_text"] == "Second-turn question"
+
+    latest = await client.get(
+        f"/api/v1/sessions/{conversation['session_id']}/messages/latest"
+    )
+    assert latest.json()["items"][-1]["message_id"] == turn["message"]["message_id"]
+
+
+async def test_conversation_turn_rejects_cross_owner_without_partial_facts(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify an ownership failure creates neither a Run nor a Session Message."""
+
+    await create_user(client, "turn-owner-a")
+    await create_user(client, "turn-owner-b")
+    conversation = await create_session(client, "turn-owner-a")
+
+    response = await client.post(
+        f"/api/v1/sessions/{conversation['session_id']}/turns",
+        json={"user_id": "turn-owner-b", "content_text": "wrong owner"},
+    )
+    latest = await client.get(
+        f"/api/v1/sessions/{conversation['session_id']}/messages/latest"
+    )
+    runs = await client.get(
+        "/api/v1/runs",
+        params={"user_id": "turn-owner-b"},
+    )
+
+    assert response.status_code == 422
+    assert latest.json()["items"] == []
+    assert runs.json()["items"] == []
+
+
 async def test_session_create_detail_filter_and_update(client: httpx.AsyncClient) -> None:
     """Verify conversations support ownership filtering, details, and restricted updates."""
 

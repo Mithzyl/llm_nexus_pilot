@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 24 日
-**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复、Responses 事件回放、新会话首条回复恢复和仅通过显式按钮发送已实现；代码块工具栏以及完整 Agent 与浏览器门禁仍待完成）
+**文档日期：** 2026 年 8 月 26 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、显式按钮发送及Session文本上下文运行时接入已实现；其他Context来源、代码块工具栏以及完整Agent与浏览器门禁仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -22,7 +22,7 @@
 
 ## 明确不处理
 
-- 第一版不消费实验性 Memory 或 Knowledge 接口，不展示 Memory Profile、Memory Packet 或知识库检索结果。
+- 第一版不直接消费实验性Memory或Knowledge接口，不在浏览器拼装这些来源。来源正式启用后由Context Builder统一加入模型输入；前端只展示经过脱敏的Context Build证据。
 - 第一版已经实现当前后端提供的 `model_only_v1` Agent Runtime 展示与控制；不实现 RabbitMQ Worker、工具执行、MCP 或 OpenTelemetry，只为这些后续能力保留界面扩展点。
 - 不把模型流中的 `response.tool_call.delta` 显示成“工具正在执行”。该事件只表示模型提出了工具调用参数；只有未来后端产生正式 Tool Call 执行事件后才能显示执行进度。
 - 不在浏览器中保存平台内部 API Key、供应商 API Key、MinIO URI 或未脱敏原始供应商响应。
@@ -52,7 +52,7 @@ FastAPI
 | 会话列表与详情 | Session 查询接口 | 左侧栏分页加载，cursor 与筛选条件绑定 |
 | 消息历史 | Session Message 接口 | 按不可变顺序读取，不在前端改写历史消息 |
 | 创建运行与任务 | Run、Task 接口 | 每次需要可审计模型执行时创建对应 Run；任务信息进入详情抽屉 |
-| 普通与流式生成 | `POST /api/v1/responses` | 发送显式输入；不请求 Memory、Knowledge 或 Context Preview 自动注入 |
+| 普通与流式生成 | `POST /api/v1/responses` | 前端传递原子轮次返回的Run和当前Message标识，由后端创建Context Build；浏览器不拼接上下文来源 |
 | 推理能力与展示策略 | `GET /api/v1/providers`、Responses Reasoning 事件 | 只按服务端声明的 `raw`、`summary`、`hidden`、`none` 能力和最终公开块渲染，不按 Provider 名称判断 |
 | 响应事件恢复 | `GET /api/v1/attempts/{attempt_id}/events` | 从最后确认的事件序号有限回放；重复序号忽略、缺口拒绝、最终快照替换流式临时状态 |
 | 推理历史 | `GET /api/v1/attempts/{attempt_id}/reasoning-blocks`、Message `reasoning_blocks` | Chat 恢复已保存 Assistant 的公开推理块，Trajectory 查询每次模型调用的权威快照 |
@@ -61,11 +61,11 @@ FastAPI
 | 运行审计 | Run、Task、内部审计接口 | 仅内部开发/运维视图使用，不默认暴露给普通用户 |
 | 模型 Agent 工作流 | Agent Workflow 创建、发现、结果、节点和事件回放接口 | 只在内部开发功能门禁下启用 `model_only_v1`；完整节点查询是权威事实，事件只驱动增量提示 |
 
-Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验收后，可以加入开发者抽屉；它们不应阻塞第一版聊天界面，也不能被前端自行组合成第二套调用链。
+Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后进入开发者证据抽屉；它们不应阻塞对话阅读，也不能被前端自行组合成第二套调用链。Memory、Knowledge、Artifact和Agent来源只通过Context Build证据出现。
 
 ### 前端实施前必须处理的后端缺口
 
-- 当前 Session Message、Run 和 Task 创建接口没有统一幂等键，浏览器超时后不能安全地自动重试整条“发送消息”编排。开始实施前应增加稳定的 `client_request_id`/幂等合同，或提供一个由后端事务协调的聊天提交接口。
+- Session下的轮次提交接口已原子创建Run与当前User Message；该动作仍缺少客户端幂等键，因此浏览器超时后不能安全地自动重发未知结果的轮次。
 - `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
 - 当前只有平台 API Key，没有最终用户登录和资源授权。公开部署前必须补齐认证；开发版只能由服务端持有密钥。
 - `/responses` 已使用 `conversation-stream.v2` 信封持久化公开事件，并按 Attempt 提供有限回放。浏览器收到首个事件并取得 `attempt_id` 后，断线会从最后确认的 `sequence` 继续读取；若连接在首个事件前断开，仍只能通过 Run/Attempt 最终事实恢复，不能自动重发可能计费的请求。阶段3 Agent Workflow 保留自己的事件合同，两者不能混用。
@@ -92,7 +92,7 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 | 后端检查点 | 后端交付能力 | 对应前端交付 | 主要界面 | 前端启用条件 | 当前前端状态 |
 |---|---|---|---|---|---|
 | 阶段1：数据与控制平面 | User、Session、Message、Run、Task、Attempt、Retry、Artifact 和安全查询闭环 | 会话历史、运行证据、分页、取消/重试入口和产物元数据 | 会话侧栏、对话页、运行详情页 | 公开响应不含内部 URI；归属、cursor、允许动作和稳定错误合同通过 | 进行中 |
-| 阶段2：LLM 核心能力 | Provider、Responses、SSE、Context Preview、Prompt/Model Catalog、Evaluation | 模型选择、普通/流式生成、上下文与评估证据开发视图 | Composer、模型选择器、证据抽屉 | 终止事件、用量、错误、能力目录和证据字段稳定；Memory/Knowledge 不进入调用链 | 进行中 |
+| 阶段2：LLM核心能力 | Provider、Responses、SSE、统一Context Builder、Prompt/Model Catalog、Evaluation | 模型选择、普通/流式生成、全部上下文来源与评估证据 | Composer、模型选择器、证据抽屉 | 终止事件、用量、错误、能力目录和Context来源证据稳定；所有来源只能通过Context Builder | 进行中 |
 | 阶段3：Agent Runtime 与工作流 | 后端已完成 `model_only_v1`、完整节点合同、持久事件、最多两个无依赖工作 Agent 并行、费用预留和显式取消；工具与恢复不属于当前配置 | 展示 Agent 分工、节点结果、Handoff、验证、审核和预算证据，并适配取消与并行组 | Run 下的 Agent 时间线和工作流详情 | 八个接口、取消动作、并行组和费用预留已接入；真实 Provider 端到端验收待完成，工具另等阶段7 | 进行中 |
 | 阶段4：Web 前端 | BFF、对话外壳、响应式、主题、可访问性和前端验证体系 | 承载各后端检查点的统一交互面 | `apps/web` 全部页面 | 只启用已通过对应后端检查点的能力；浏览器边界和真实状态门禁持续通过 | 进行中 |
 | 阶段5：身份、授权与凭据 | 登录主体、浏览器会话、个人 API Key、供应商凭据和资源授权 | 登录/退出、会话管理、密钥与供应商凭据设置，移除固定开发用户 | 登录页、账户安全、API Key 与 Provider 凭据页 | Cookie/Bearer、跨用户隔离、跨站请求伪造防护、撤销和加密门禁全部通过 | 未开始 |
@@ -131,8 +131,8 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - `/responses` 的普通与服务器发送事件（SSE）模式使用同一 Assistant 消息结构；`response.started`、文本增量、用量、完成和失败分别驱动界面。
 - Reasoning 使用 `reasoning.raw`、`reasoning.summary`、`reasoning.status` 可辨识联合类型；Chat 默认折叠公开文本，隐藏推理完成后不保留空状态行，Trajectory 保留不可见标记、时间和 Reasoning Token 证据。
 - 服务端按模型注册能力与当前展示策略裁剪公开数据。前端不允许把摘要提升为原始推理，也不接收 `reasoning_content`、`encrypted_content`、Provider response ID 或续接状态。
-- Context Preview、Prompt Render 和 Evaluation 进入独立开发者证据抽屉。Context Preview 只展示显式 instruction、安全 instruction 和 Session Message 来源；Evaluation 必须把执行状态与 verdict 分开。
-- Memory 和 Knowledge 不出现在模型调用开关、来源列表或默认导航中；前端不得调用实验性 Memory 接口补充上下文。
+- Context Build、Prompt Render和Evaluation进入独立开发者证据抽屉。Context Build按来源类型展示Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、Evaluation和Tool结果的纳入数量、排除原因、版本与信任级别；Evaluation必须把执行状态与verdict分开。
+- 前端不得直接调用Memory、Knowledge、Artifact或Agent内部接口补充Prompt。尚未启用的来源不显示为已使用；启用后的来源由Context Builder策略自动选择，或使用后端提供的受控高层选项，不能接受任意资源ID注入。
 
 **失败与恢复：**
 
@@ -664,15 +664,15 @@ apps/web/
 
 | 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
 |---|---|---|---|
-| 会话与路由 | 创建和选择会话、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | Message、Run 与 Workflow 尚无统一事务或端到端幂等提交；首个事件前断线不能安全重发可能计费的请求 | 进行中 |
+| 会话与路由 | 创建和选择会话、原子创建Run与当前User Message、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | 轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
 | Provider 与模型选择 | 服务端 Provider/Model 目录、推理能力、搜索、键盘选择、自定义模型、加载/失败/空目录状态 | 最终用户自己的 Provider 凭据和设置页等待阶段5 | 进行中 |
-| Responses 流 | SSE 增量正文、序号去重、缺口拒绝、已知 Attempt 有限回放、完成/保存/失败/取消状态分离、默认不发送输出 Token 上限、`length` 截断证据持久化 | 未知 Attempt 的首事件前断线只能读取最终事实；没有统一聊天提交恢复合同；修复前的历史 Message 没有截断元数据，不进行猜测性回填 | 进行中 |
+| Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build | 未知Attempt的首事件前断线只能读取最终事实；Prompt、Memory、Knowledge、Artifact、Agent与Tool来源尚未全部接入；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
 | 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
 | Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 240px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键 | 输入区仍需随完整响应式门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
-| Agent 上下文 | Controller 和 Worker 获得当前 `Run.user_request`；依赖 Worker、Reviewer 和最终汇总获得完整 Worker 结构化输出及限长 Handoff | `context_assembly` 尚未注入完整会话历史、Memory、Knowledge、Artifact 或 Memory Packet | 进行中 |
+| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Session文本Context Build，并保留当前节点结构化输入、Attempt/Node Context证据及Worker/Handoff数据 | Prompt、Memory、Knowledge、Artifact对象读取、Agent/Handoff、Evaluation及未来Tool结果尚未统一作为Context来源 | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离 | 真实 Provider 浏览器端到端、可访问性、响应式、性能、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
 | 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
@@ -713,6 +713,40 @@ apps/web/
 
 当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
+## 2026 年 8 月 26 日新增阶段4工作项
+
+### 快速对话与Agent统一模型上下文
+
+状态：进行中。原子轮次提交、快速Responses消息锚点和Agent Session文本历史已经实现；其他来源与Context证据抽屉尚未实现。全部来源、信任、预算、并发锚点和证据合同以[阶段2统一模型上下文设计](../implementation/phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准；阶段4只负责提交用户意图、消费后端事实和展示失败，不在浏览器拼接任何上下文来源。
+
+#### 前端数据流
+
+| 步骤 | 快速对话 | Agent Workflow | 前端约束 |
+|---|---|---|---|
+| 提交当前轮次 | 调用统一轮次提交动作，获得`run_id`、当前`message_id`和序号 | 相同 | 不再先创建无`run_id`的User Message；局部失败按后端事务结果展示 |
+| 构建上下文 | 后端为所选Provider/Model组装Session、Prompt及全部已启用来源 | 后端按节点、角色和模型组装会话、协作证据及全部已启用来源 | 浏览器不发送本地`messages`、Memory、Knowledge、Artifact或Handoff正文，不从页面加载状态判断模型上下文 |
+| 启动执行 | `/responses`提交Run、当前输入和受控来源策略，后端在调用Provider前创建Context Build | Workflow请求仍只携带执行配置和角色模型绑定，由后端逐节点构建Context | 当前User输入在Provider请求中只能出现一次；浏览器不负责预先创建Context Build |
+| 流式展示 | 继续使用Responses事件合同 | 继续使用Agent Workflow事件合同 | 上下文集成不混用两种事件协议，不改变断线和幂等规则 |
+| 运行证据 | Attempt显示Context Build和各类来源纳入/排除数量 | `context_assembly`和各模型节点显示实际Context Build | 默认不展示完整敏感正文；按类型化引用跳转或显示安全摘要 |
+
+#### 界面行为
+
+- 用户继续已有会话时不需要额外开启“使用历史”开关；Session历史是两种对话模式的默认语义。无状态模型调试仍属于独立开发接口，不暴露为容易误用的普通聊天选项。
+- Composer继续只显示模式、Agent配置、模型和发送按钮，不增加解释Context Builder内部机制的常驻文案。
+- 后端返回Context Build失败时保留当前输入并显示可行动错误：模型目录不可用时允许重新选择模型；消息归属或并发锚点冲突时要求重新读取会话；必选输入超过模型上下文时明确说明当前输入无法完整发送。
+- Context Build成功而Provider失败时沿用现有Attempt失败和回放行为，不重新提交轮次或创建第二个Context Build。
+- 运行详情可以按来源类型展示纳入和排除数量、版本、信任级别、Context策略版本、模型目录版本及Context Build ID；完整系统指令、安全指令、对象URI和其他敏感正文不进入浏览器。
+- Memory、Knowledge、Artifact、Agent协作和Tool来源没有正式进入Context Builder前，界面不得显示这些来源已被使用；启用后也不提供绕过权限的原始内容入口。
+
+#### 测试与完成条件
+
+- Playwright在真实会话中完成两轮快速对话，第二轮回答能够引用第一轮信息；网络请求和Provider假实现确认当前User文本只出现一次。
+- 相同会话切换为Agent模式后，Controller和Worker节点都记录当前Message锚点；刷新后Context证据与最终回答保持一致。
+- 两个并发提交不会相互读取对方消息；失败的一次提交不会留下孤立User Message或触发模型调用。
+- 历史分页只影响页面展示，不影响后端构建完整的有界上下文；即使浏览器只加载最新一页，Provider输入仍以Context Build为准。
+- Context Build重放、Provider失败、SSE断线和Assistant Message保存失败均不产生重复计费调用。
+- 桌面、移动端、亮暗主题和屏幕阅读器能够辨认上下文失败状态及运行证据入口。
+
 ## 2026 年 8 月 24 日新增阶段4工作项
 
 ### 对话代码块展示优化
@@ -742,6 +776,7 @@ apps/web/
 - 组件测试：空状态、消息角色、Markdown、代码块语言标签、复制原文、错误提示、生成中与完成状态。
 - SSE 测试：sequence 顺序、重复事件、缺失终止、失败事件、取消和断线。
 - 页面集成测试：新建会话、追加用户消息、普通响应、流式响应、保存 Assistant Message、打开 Attempt 详情。
+- 上下文测试：第二轮快速对话、Agent消息锚点、当前输入单次出现、历史分页独立性、Prompt版本、Memory/Knowledge/Artifact/Agent来源门禁、信任标记、并发提交隔离、Context Build重放和必选来源超限不调用Provider。
 - 安全测试：浏览器响应和静态资源不包含平台 API Key、内部 API Key、供应商凭据或 MinIO URI。
 - 可访问性测试：Enter/Shift+Enter 换行、仅按钮发送、输入法组合、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
 - 响应式测试：桌面侧栏、移动端覆盖层、长代码块和长单词不会破坏布局。
@@ -759,8 +794,8 @@ apps/web/
 | 对应后端检查点 | 前端工作项 | 依赖 | 完成条件 | 状态 |
 |---|---|---|---|---|
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
-| 阶段2 | Provider/Model、普通响应、SSE、Context/Prompt/Evaluation 开发证据 | 阶段2已完成的 LLM 核心 API | 真实 API 端到端、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
-| 阶段3 | 已接入 `model_only_v1` 创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组和费用预留 | 后端八个接口和完整节点合同；既有 BFF 归属保护，工具视图另等阶段7 | 真实 Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
+| 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及Context/Prompt/Evaluation开发证据 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
+| 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组和费用预留；待接入Session历史 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | Agent消息锚点、不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
 | 阶段4 | Next.js、BFF、主题、响应式、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 代码块复制/长行/流式性能、Enter 只换行、按钮单次提交，以及构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |

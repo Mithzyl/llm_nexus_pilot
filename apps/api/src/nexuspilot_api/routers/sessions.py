@@ -6,8 +6,10 @@ from fastapi import APIRouter, Query, status
 
 from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.pagination import CursorPage
-from nexuspilot_api.schemas.runs import RunDetail
+from nexuspilot_api.schemas.runs import RunDetail, RunRead
 from nexuspilot_api.schemas.sessions import (
+    ConversationTurnCreate,
+    ConversationTurnRead,
     MessageCreate,
     MessageRead,
     MessageSummary,
@@ -18,6 +20,7 @@ from nexuspilot_api.schemas.sessions import (
 )
 from nexuspilot_api.services.run_service import get_latest_run_detail_for_session
 from nexuspilot_api.services.session_service import (
+    create_conversation_turn,
     create_message,
     create_session,
     get_message,
@@ -40,6 +43,25 @@ async def post_session(
     """Create a durable conversation for an active platform user."""
 
     return SessionRead.model_validate(await create_session(db_session, payload))
+
+
+@router.post(
+    "/sessions/{session_id}/turns",
+    response_model=ConversationTurnRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_conversation_turn(
+    session_id: str,
+    payload: ConversationTurnCreate,
+    db_session: DatabaseSessionDependency,
+) -> ConversationTurnRead:
+    """Commit one Run and its current User Message as a single conversation turn."""
+
+    run, message = await create_conversation_turn(db_session, session_id, payload)
+    return ConversationTurnRead(
+        run=RunRead.model_validate(run),
+        message=MessageRead.model_validate(message),
+    )
 
 
 @router.get("/sessions", response_model=CursorPage[SessionRead])

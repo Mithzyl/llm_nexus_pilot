@@ -7,9 +7,12 @@ import httpx
 import pytest
 from nexuspilot_models.contracts import (
     ModelReasoningCapabilities,
+    ModelRequest,
+    ModelResponse,
     ProviderName,
     ReasoningContinuationMode,
     ReasoningPresentationCapability,
+    TransportAttempt,
 )
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.registry import ProviderRegistry
@@ -91,6 +94,40 @@ class StallingStreamProvider:
 
         yield StreamEvent(type=StreamEventType.STARTED, sequence=1)
         await asyncio.sleep(2)
+
+
+class CapturingContextProvider:
+    """Capture the exact provider-neutral request used by a context integration test."""
+
+    name = ProviderName.OPENAI
+
+    def __init__(self) -> None:
+        """Initialize an empty ordered request list."""
+
+        self.requests: list[ModelRequest] = []
+
+    async def generate(self, request: ModelRequest) -> ModelResponse:
+        """Record one request and return a stable completed response."""
+
+        self.requests.append(request)
+        return ModelResponse(
+            text="context answer",
+            finish_reason="stop",
+            input_tokens=30,
+            output_tokens=3,
+            latency_ms=4,
+            provider_request_id="context-provider-request",
+            raw_response={"text": "context answer"},
+            transport_attempts=[
+                TransportAttempt(attempt_index=1, status_code=200, latency_ms=4)
+            ],
+        )
+
+    async def stream(self, _request: ModelRequest):
+        """Reject streaming because this fixture verifies one non-streaming request."""
+
+        raise AssertionError("CapturingContextProvider does not support streaming")
+        yield
 
 
 def create_deepseek_stream_registry(
@@ -238,6 +275,102 @@ def test_http_response_request_accepts_the_provider_output_cap() -> None:
 
     assert payload.max_output_tokens == 65_536
     assert payload.to_model_request().max_output_tokens == 65_536
+
+
+async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify quick responses use persisted Session history and expose its Context Build."""
+
+    catalog = await client.post(
+        "/api/v1/internal/model-catalog-versions",
+        headers={"X-Internal-API-Key": "test-internal-key-long-enough"},
+        json={
+            "provider": "openai",
+            "model": "test-model",
+            "catalog_version": "2026-08-26",
+            "source": "response-context-test",
+            "context_window": 8_192,
+            "supports_streaming": True,
+            "tokenizer_name": "utf8_bytes_upper_bound",
+            "tokenizer_version": "v1",
+        },
+    )
+    assert catalog.status_code == 200
+    assert (
+        await client.post(
+            "/api/v1/users",
+            json={"user_id": "response-context-owner", "display_name": "Owner"},
+        )
+    ).status_code == 201
+    conversation = (
+        await client.post(
+            "/api/v1/sessions",
+            json={"user_id": "response-context-owner", "title": "Context"},
+        )
+    ).json()
+    first_turn = (
+        await client.post(
+            f"/api/v1/sessions/{conversation['session_id']}/turns",
+            json={"user_id": "response-context-owner", "content_text": "Remember beta"},
+        )
+    ).json()
+    assert (
+        await client.post(
+            f"/api/v1/sessions/{conversation['session_id']}/messages",
+            json={
+                "role": "assistant",
+                "content_text": "Beta is remembered",
+                "run_id": first_turn["run"]["run_id"],
+            },
+        )
+    ).status_code == 201
+    current_turn = (
+        await client.post(
+            f"/api/v1/sessions/{conversation['session_id']}/turns",
+            json={"user_id": "response-context-owner", "content_text": "What is remembered?"},
+        )
+    ).json()
+
+    provider = CapturingContextProvider()
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI,
+        provider,
+        allowed_models=frozenset({"test-model"}),
+    )
+    app.dependency_overrides[get_provider_registry] = lambda: registry
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": current_turn["run"]["run_id"],
+            "current_user_message_id": current_turn["message"]["message_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "What is remembered?",
+            "idempotency_key": "response-context-request-0001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert [message.content for message in provider.requests[0].messages] == [
+        "Remember beta",
+        "Beta is remembered",
+        "What is remembered?",
+    ]
+    run_detail = (
+        await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
+    ).json()
+    context_build_id = run_detail["attempts"][0]["context_build_id"]
+    assert context_build_id is not None
+    context_build = (
+        await client.get(f"/api/v1/context-builds/{context_build_id}")
+    ).json()
+    assert [
+        message["content"]
+        for message in context_build["messages"]
+        if message["role"] != "system"
+    ] == ["Remember beta", "Beta is remembered", "What is remembered?"]
 
 
 async def test_non_streaming_response_persists_attempt_and_cost(

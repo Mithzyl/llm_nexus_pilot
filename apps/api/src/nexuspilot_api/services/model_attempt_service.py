@@ -21,6 +21,7 @@ from nexuspilot_api.core.pagination import (
 )
 from nexuspilot_api.models import (
     AttemptStatus,
+    LlmContextBuild,
     LlmModelAttempt,
     LlmModelTransportAttempt,
     LlmRun,
@@ -67,6 +68,12 @@ async def create_model_attempt(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Task does not belong to the run",
             )
+    if payload.context_build_id:
+        context_build = await db_session.get(LlmContextBuild, payload.context_build_id)
+        if context_build is None:
+            raise ResourceNotFoundError("Context Build")
+        if context_build.run_id != run_id:
+            raise InvalidRequestError("Context Build does not belong to the run")
     model_attempt = LlmModelAttempt(run_id=run_id, **payload.model_dump())
     db_session.add(model_attempt)
     cost = payload.estimated_cost or Decimal("0")

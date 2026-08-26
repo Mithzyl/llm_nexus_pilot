@@ -39,6 +39,7 @@ class LlmContextBuild(Base):
             "created_at",
             "context_build_id",
         ),
+        UniqueConstraint("request_key", name="uq_context_build_request_key"),
     )
 
     context_build_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -50,6 +51,16 @@ class LlmContextBuild(Base):
         ForeignKey("llm_sessions.session_id", ondelete="RESTRICT"),
         index=True,
     )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_runs.run_id", ondelete="CASCADE"),
+        index=True,
+    )
+    current_user_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_messages.message_id", ondelete="RESTRICT"),
+        index=True,
+    )
+    request_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     project_id: Mapped[str | None] = mapped_column(
         ForeignKey("llm_projects.project_id", ondelete="RESTRICT"),
         index=True,

@@ -49,6 +49,7 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                     "/sessions/{session_id}/messages",
                     "/sessions/{session_id}/messages/full",
                     "/sessions/{session_id}/messages/latest",
+                    "/sessions/{session_id}/turns",
                     "/messages/{message_id}",
             },
         ),
@@ -157,8 +158,9 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
         ),
         (
             context_builds.router,
-            {
-                "/context-builds/preview",
+                {
+                    "/context-builds",
+                    "/context-builds/preview",
                 "/context-builds/{context_build_id}",
             },
         ),

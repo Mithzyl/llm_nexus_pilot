@@ -14,6 +14,7 @@ class ModelAttemptCreate(BaseModel):
     """Validate one completed, failed, or in-progress LLM model invocation."""
 
     task_id: str | None = None
+    context_build_id: str | None = None
     provider: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=128)
     request_type: str = Field(default="generation", min_length=1, max_length=64)
@@ -52,6 +53,7 @@ class ModelAttemptRead(ApiModel):
     attempt_id: str
     run_id: str
     task_id: str | None
+    context_build_id: str | None
     provider: str
     model: str
     request_type: str
@@ -82,6 +84,7 @@ class ModelAttemptSummary(ApiModel):
     attempt_id: str
     run_id: str
     task_id: str | None
+    context_build_id: str | None
     provider: str
     model: str
     request_type: str

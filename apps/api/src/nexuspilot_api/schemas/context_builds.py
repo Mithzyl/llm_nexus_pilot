@@ -18,16 +18,34 @@ class ContextBuildCreate(BaseModel):
     provider: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=128)
     catalog_version: str | None = Field(default=None, min_length=1, max_length=64)
-    token_budget: int = Field(ge=256, le=200_000)
+    run_id: str | None = Field(default=None, min_length=1, max_length=36)
+    current_user_message_id: str | None = Field(default=None, min_length=1, max_length=36)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    token_budget: int | None = Field(default=None, ge=256, le=200_000)
     reserved_output_tokens: int = Field(default=0, ge=0, le=100_000)
-    system_instruction: str | None = Field(default=None, min_length=1, max_length=4_000)
+    system_instruction: str | None = Field(default=None, min_length=1, max_length=100_000)
+    additional_user_input: str | None = Field(default=None, min_length=1, max_length=100_000)
     recent_message_count: int = Field(default=12, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_reserved_output_budget(self) -> "ContextBuildCreate":
         """Reject a reservation that leaves no room for input context."""
 
-        if self.reserved_output_tokens >= self.token_budget:
+        runtime_fields = (
+            self.run_id,
+            self.current_user_message_id,
+            self.idempotency_key,
+        )
+        if any(runtime_fields) and not all(runtime_fields):
+            raise ValueError(
+                "run_id, current_user_message_id, and idempotency_key must be provided together"
+            )
+        if self.additional_user_input is not None and self.run_id is None:
+            raise ValueError("additional_user_input is available only for runtime context")
+        if (
+            self.token_budget is not None
+            and self.reserved_output_tokens >= self.token_budget
+        ):
             raise ValueError("reserved_output_tokens must be less than token_budget")
         return self
 
@@ -61,6 +79,8 @@ class ContextBuildRead(ApiModel):
     catalog_version_id: str
     user_id: str
     session_id: str | None
+    run_id: str | None
+    current_user_message_id: str | None
     project_id: str | None
     provider: str
     model: str

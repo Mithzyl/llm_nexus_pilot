@@ -29,7 +29,9 @@ from nexuspilot_api.models import (
 )
 from nexuspilot_api.schemas.model_reasoning import ReasoningBlockRead
 from nexuspilot_api.schemas.pagination import CursorPage
+from nexuspilot_api.schemas.runs import RunCreate
 from nexuspilot_api.schemas.sessions import (
+    ConversationTurnCreate,
     MessageCreate,
     MessageRead,
     MessageSummary,
@@ -37,6 +39,7 @@ from nexuspilot_api.schemas.sessions import (
     SessionRead,
     SessionUpdate,
 )
+from nexuspilot_api.services.run_service import create_run
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,49 @@ async def create_message(
     if commit:
         await db_session.refresh(message)
     return message
+
+
+async def create_conversation_turn(
+    db_session: AsyncSession,
+    session_id: str,
+    payload: ConversationTurnCreate,
+) -> tuple[LlmRun, LlmMessage]:
+    """Atomically create one Run and its immutable, Run-linked User Message.
+
+    The existing Run and Message validators remain authoritative. Any ownership,
+    lifecycle, or sequence failure rolls back both facts so callers never need to
+    infer whether a partially submitted turn can be used as model context.
+    """
+
+    try:
+        run = await create_run(
+            db_session,
+            RunCreate(
+                user_id=payload.user_id,
+                session_id=session_id,
+                user_request=payload.content_text,
+                run_type=payload.run_type,
+                budget_limit=payload.budget_limit,
+            ),
+            commit=False,
+        )
+        message = await create_message(
+            db_session,
+            session_id,
+            MessageCreate(
+                role="user",
+                content_text=payload.content_text,
+                run_id=run.run_id,
+            ),
+            commit=False,
+        )
+        await db_session.commit()
+        await db_session.refresh(run)
+        await db_session.refresh(message)
+        return run, message
+    except Exception:
+        await db_session.rollback()
+        raise
 
 
 async def get_message(db_session: AsyncSession, message_id: str) -> MessageRead:

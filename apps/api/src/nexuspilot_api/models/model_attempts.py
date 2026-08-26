@@ -47,6 +47,10 @@ class LlmModelAttempt(Base):
     task_id: Mapped[str | None] = mapped_column(
         ForeignKey("llm_tasks.task_id", ondelete="SET NULL")
     )
+    context_build_id: Mapped[str | None] = mapped_column(
+        ForeignKey("llm_context_builds.context_build_id", ondelete="RESTRICT"),
+        index=True,
+    )
     provider: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(128))
     request_type: Mapped[str] = mapped_column(String(64), default="generation")

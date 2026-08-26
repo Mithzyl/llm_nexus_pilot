@@ -620,6 +620,112 @@ async def test_budgeted_workflow_requires_an_explicit_output_bound(
     assert provider.requests == []
 
 
+async def test_agent_workflow_reuses_session_history_for_each_model_node(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify every Agent model node receives anchored history plus its node input."""
+
+    catalog = await client.post(
+        "/api/v1/internal/model-catalog-versions",
+        headers=INTERNAL_HEADERS,
+        json={
+            "provider": "openai",
+            "model": "test-model",
+            "catalog_version": "2026-08-26",
+            "source": "agent-context-test",
+            "context_window": 16_384,
+            "supports_streaming": True,
+            "tokenizer_name": "utf8_bytes_upper_bound",
+            "tokenizer_version": "v1",
+        },
+    )
+    assert catalog.status_code == 200
+    assert (
+        await client.post(
+            "/api/v1/users",
+            json={"user_id": "agent-context-owner", "display_name": "Owner"},
+        )
+    ).status_code == 201
+    conversation = (
+        await client.post(
+            "/api/v1/sessions",
+            json={"user_id": "agent-context-owner", "title": "Agent context"},
+        )
+    ).json()
+    first_turn = (
+        await client.post(
+            f"/api/v1/sessions/{conversation['session_id']}/turns",
+            json={"user_id": "agent-context-owner", "content_text": "Remember gamma"},
+        )
+    ).json()
+    assistant_message_response = await client.post(
+        f"/api/v1/sessions/{conversation['session_id']}/messages",
+        json={
+            "role": "assistant",
+            "content_text": "Gamma is remembered",
+            "run_id": first_turn["run"]["run_id"],
+        },
+    )
+    assert assistant_message_response.status_code == 201
+    assistant_message = assistant_message_response.json()
+    current_turn = (
+        await client.post(
+            f"/api/v1/sessions/{conversation['session_id']}/turns",
+            json={
+                "user_id": "agent-context-owner",
+                "content_text": "Create an evidence-bounded answer",
+            },
+        )
+    ).json()
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{current_turn['run']['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-context-workflow-0001"),
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "completed", response.json()
+    context_node = next(
+        node
+        for node in response.json()["nodes"]
+        if node["node_key"] == "context_assembly"
+    )
+    assert context_node["output"]["included_message_ids"] == [
+        first_turn["message"]["message_id"],
+        assistant_message["message_id"],
+        current_turn["message"]["message_id"],
+    ]
+    assert len(provider.requests) == 4
+    for provider_request in provider.requests:
+        assert [message.content for message in provider_request.messages[:3]] == [
+            "Remember gamma",
+            "Gamma is remembered",
+            "Create an evidence-bounded answer",
+        ]
+        assert provider_request.messages[-1].content.startswith("{")
+    model_nodes = [
+        node
+        for node in response.json()["nodes"]
+        if node["input"]["context_build_id"]
+    ]
+    assert len(model_nodes) == 4
+    assert all(
+        node["input"]["message_ids"]
+        == [
+            first_turn["message"]["message_id"],
+            assistant_message["message_id"],
+            current_turn["message"]["message_id"],
+        ]
+        for node in model_nodes
+    )
+    run_detail = (
+        await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
+    ).json()
+    assert all(attempt["context_build_id"] for attempt in run_detail["attempts"])
+
+
 async def test_model_only_workflow_returns_and_persists_complete_nodes(
     client: httpx.AsyncClient,
 ) -> None:

@@ -1,13 +1,15 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 24 日
-**文档状态：** 已完成（`model_only_v1` 同步 Agent Runtime 已实现并通过自动化验证）
+**文档日期：** 2026 年 8 月 26 日
+**文档状态：** 已完成（`model_only_v1`同步Agent Runtime基线已实现并通过自动化验证；统一Context Builder接入属于阶段4新增集成工作项）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 
 > 本文记录阶段3的最终实施事实。`model_only_v1` 已具备同步执行、最多两个无依赖工作 Agent 并行、显式取消、费用预留、实时服务器发送事件（SSE）、持久化事件回放和完整节点查询。工具循环属于阶段7恢复后的新执行配置，跨进程恢复属于阶段10，遥测装配属于阶段6，不再作为阶段3完成条件。
 
 > 2026 年 8 月 19 日路线图重排：本能力由原阶段5调整为阶段3；实现范围和完成状态不变。
+
+> 2026年8月26日新增的统一Context Builder要求不推翻阶段3原完成条件。阶段3文档负责规定Agent节点如何消费统一上下文；实际跨阶段运行时接入纳入正在进行的阶段4，并保留本文件中的实施任务和验证合同。
 
 本文统一使用以下口径：
 
@@ -70,7 +72,7 @@
   ↓
 请求归一化（确定性）
   ↓
-上下文组装（当前仅使用 Run 请求；消息、Prompt 与 Artifact 引用为目标态）
+上下文组装（当前仅使用Run请求；目标态由Context Builder组装全部已启用来源）
   ↓
 Controller 规划（模型）
   ↓
@@ -297,9 +299,10 @@ is_truncated
 memory_packet_id
 ```
 
-- 当前实现仅将 `Run.user_request` 作为 Controller 上下文；消息、Artifact 和 Handoff ID 列表初始为空，`memory_packet_id` 固定为 `null`。
-- 目标态再接入 Context Builder 和 Prompt Catalog，增加 `context_build_id`、`prompt_release_id`、token 估算和裁剪证据；这些字段当前不在 `ContextAssemblyOutput` 中。
+- 当前实现已用Run关联的当前User Message锚定Session文本历史；Controller、Worker、Reviewer和Final synthesis分别按自己的Provider/Model创建Context Build，Model Attempt与Node Input保存`context_build_id`和实际Message ID。
+- `context_assembly`已登记锚点之前的有界Message ID；Prompt Release、Memory、Knowledge、Artifact对象内容、Handoff/Evaluation和Tool结果尚未作为统一来源进入Context Builder，`memory_packet_id`仍为`null`。
 - 目标态中单个结构化来源不能从中间截断；排除或裁剪必须返回证据。
+- 2026年8月26日确认的统一上下文接入以[阶段2统一模型上下文设计](phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准：工作流按Run关联的当前User Message建立并发锚点；Controller、Worker、Reviewer和Final synthesis都向Context Builder声明本节点需要的来源类型，由它统一组装Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、验证/Evaluation及未来Tool结果。不同角色模型使用各自Context Build，不能重复追加当前目标，也不能在工作流内部另写历史或节点结果裁剪逻辑。
 
 ### 3. `controller_planning` → `ControllerPlanOutput`
 
@@ -1070,6 +1073,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 9 | 阶段6遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段6装配 | Schema 和持久化字段检查 |
 | 10 | `model_only_v1` 基础设施与供应商验证 | 已完成离线门禁 | 快速测试、迁移链和 MySQL 离线 SQL 可验证；真实供应商调用必须使用部署环境密钥，保持可选 | 完整后端测试、Alembic 检查、可选供应商冒烟 |
 | 11 | 阶段7恢复后的 Tool Runtime 集成 | 不属于阶段3完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段7工具循环、写隔离、取消和未知结果测试 |
+| 12 | 统一Context Builder接入 | 进行中 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build及Attempt/Node证据；Prompt、Memory、Knowledge、Artifact对象读取、Agent/Handoff、Evaluation和Tool来源仍待实现 | 已有第二轮会话、并发锚点、完整轮次、对象当前消息失败和节点证据测试；其余来源门禁与真实Provider矩阵待补 |
 
 ## 失败与恢复设计
 

@@ -23,6 +23,8 @@ class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
+    current_user_message_id: str | None = Field(default=None, min_length=1, max_length=36)
+    append_input_to_context: bool = False
     task_id: str | None = None
     provider: ProviderName
     model: str = Field(min_length=1, max_length=128)
