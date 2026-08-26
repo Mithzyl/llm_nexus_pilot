@@ -16,7 +16,7 @@ api-migrate:
 	test -f apps/api/.env
 	cd apps/api && .venv/bin/alembic upgrade head
 
-api-run:
+api-run: api-migrate
 	test -f apps/api/.env
 	cd apps/api && .venv/bin/uvicorn nexuspilot_api.main:app --app-dir src --reload
 
