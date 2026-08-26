@@ -1,6 +1,6 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 19 日
+**文档日期：** 2026 年 8 月 24 日
 **文档状态：** 已完成（`model_only_v1` 同步 Agent Runtime 已实现并通过自动化验证）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
@@ -42,7 +42,7 @@
 | 完整节点结果 | 已实现 | 所有节点使用 `agent_workflow_node_result.v1` 信封，包含输入引用、类型化输出、分支、预算、证据、错误和生命周期；详情与完整结果可查询 |
 | 数据库事实 | 已实现 | 新增 Workflow、Node、Event 表；补充 Agent Run/Turn 到 Workflow/Node 的引用；Run 目前最多创建一个 Workflow，节点键和节点尝试具有数据库唯一约束 |
 | 依赖与交接 | 已实现 | Controller 返回的有向无环任务图先由程序校验；无依赖的工作 Agent 最多两个并行，每个 Provider 调用使用独立数据库会话；依赖 Task 的 Worker 输出与 Handoff 会显式传给下游 Agent |
-| 审核门禁 | 已实现 | 确定性验证失败不能被 Reviewer 覆盖；Reviewer 的拒绝、重新规划或重试要求会阻止最终汇总；Evaluation 保留候选 Attempt 与 Task 的正确归属 |
+| 审核门禁 | 已实现 | 确定性验证失败不能被 Reviewer 覆盖；无错误级发现且不要求重试或重新规划的 `needs_revision` 进入最终汇总并应用修改，明确失败、错误级发现、重新规划或重试要求会阻止最终汇总；Evaluation 保留候选 Attempt 与 Task 的正确归属 |
 | 最终消息一致性 | 已实现 | Assistant Message 与最终汇总节点的完成事件使用同一事务；节点合同或持久化失败会回滚尚未提交的消息，避免失败工作流留下成功答案 |
 | HTTP 与 SSE | 已实现 | POST 支持同步 JSON 或提交后实时 SSE；GET 支持 Workflow、Result、Node 列表/详情和按序号回放已持久化事件；显式取消接口可阻止后续节点；GET `/events` 按设计只做有限回放 |
 | 幂等和失败收敛 | 已实现核心范围 | 完全相同的幂等请求返回原 Workflow；不同请求或同一 Run 的第二个 Workflow 返回冲突；超时、取消和模型结果校验失败会终结已经启动的 Node、Task、Agent Run 与 Agent Turn，避免遗留虚假的 `running` 状态 |
@@ -138,7 +138,7 @@ Run
 - 节点输出由 `NODE_OUTPUT_MODELS` 按 `output_type` 映射到唯一 Pydantic 类型，写入前和读取后都会重新校验。
 - `workflow_definition_registry.py` 已登记 `model_only/1.0.0/model_only_v1` 的固定节点和按任务生成的节点，应用导入该模块时会检查重复定义、未知输出类型和未知后续节点。
 - 创建工作流时必须找到完全匹配的名称、版本和执行配置；节点开始前校验 `node_key`、`node_type` 和 `output_type`，节点完成前校验实际后续节点及跳过节点是否属于允许连接。
-- `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核及审核拒绝后的终止行为。
+- `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核，以及审核意见进入最终修改或终止工作流的分支。
 
 ### 后续目标
 
@@ -815,7 +815,7 @@ trace_id
 | 并行 Agent 数 | 1～2 | 只并行无依赖的模型工作节点，每个调用使用独立数据库会话 |
 | 每 Agent 实际 Model Turn | 1 | 当前没有工具循环或 Agent 内重试；Controller 计划合同也只接受字面值 `1`，不会接受无法执行的多轮预算 |
 | 单工作流模型调用 | 默认/最大 16；最小 3 或 4 | 不审核时最小 3，其他审核策略最小 4；控制费用 |
-| Reviewer 返工轮次 | 0 | 当前 Reviewer 拒绝或要求重试会终止工作流；未来最多允许 1 次 |
+| Reviewer 返工轮次 | 0 | 非阻断的 `needs_revision` 由最终汇总一次性应用；明确失败、错误级发现、要求重试或重新规划时终止工作流，不启动新的 Worker 返工轮次；未来最多允许 1 次返工 |
 | 同步总时长 | 默认/最大 600 秒；最小 1 秒 | 匹配当前无 Worker 边界 |
 | 单节点 `output` JSON | 64 KiB | 类型化输出超限明确失败；公共合同不自动切换为 Artifact |
 | 单事件 public payload | 固定小型投影 | 事件只包含节点 ID、类型、状态、错误摘要和权威查询路径，不内联节点完整输出或供应商响应 |
@@ -948,6 +948,49 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 调整过程保持小步验证：阶段3定向测试已经包含事件“提交后通知”、Provider“开始事件提交后调用”、终态事务可见性、原子费用预留、并行数据库会话和显式取消；状态写入、工作流结束时的状态收尾、模型调用、版本化工作流定义登记、运行时节点连接检查、节点顺序和审核分支均已具有明确负责文件。后续扩展新工作流定义时继续运行 Agent Workflow 测试、完整 API 测试和 Ruff，不为每个只包含一次简单调用的节点创建一个 Service 文件。
 
+## 2026 年 8 月 24 日工作流 Token 缓存优化规划
+
+本工作项是阶段3完成后的性能与费用优化，不更改阶段3“已完成”状态，也不改变模型输出、证据合同或审核语义。当前代码已经从 OpenAI 兼容、Anthropic 和 Gemini 响应中归一化读取 `cached_tokens`，并聚合到 Workflow 用量；尚未形成按 Provider、Model、节点角色和稳定前缀分析的命中率基线，也没有统一的显式缓存请求策略。DeepSeek 和 OpenAI 兼容调用当前主要依赖供应商自动前缀缓存；Anthropic 适配器只读取 `cache_read_input_tokens`，尚未发送 `cache_control`；Gemini 适配器只读取 `cachedContentTokenCount`，尚未创建或引用显式缓存对象。
+
+供应商事实以官方文档为准：
+
+- [DeepSeek 上下文缓存](https://api-docs.deepseek.com/guides/kv_cache/)默认启用并按重复前缀命中，响应提供命中与未命中 Token；命中属于尽力而为，不能作为业务正确性的前置条件。
+- [OpenAI Prompt Caching](https://developers.openai.com/api/docs/guides/prompt-caching)要求精确前缀匹配，建议把稳定指令、示例、工具和结构化输出 Schema 放在前面，把用户输入、请求标识和时间戳放在后面；不同模型存在最低可缓存前缀长度。
+- [Anthropic Prompt Caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)支持顶层自动缓存和内容块显式断点，缓存前缀顺序为 tools、system、messages；默认生存时间为 5 分钟，显式断点放在变化内容之后会持续写入却无法复用。
+- [Gemini Context Caching](https://ai.google.dev/gemini-api/docs/caching)对 Gemini 2.5 及更新模型默认启用隐式缓存；显式缓存依赖具体 API，并非所有 Gemini 调用接口都支持。
+
+### 当前需要先验证的基线
+
+- 以一次模型调用为最小统计单位，记录 Provider、Model、工作流定义版本、节点角色、输入 Token、缓存命中 Token、首 Token 延迟和总耗时；不得用跨模型、跨节点角色的单一平均值判断优化效果。
+- 统一基础命中率口径为“缓存读取 Token / 供应商归一化后的总输入 Token”，同时保留供应商原始用量证据。OpenAI 兼容与 Gemini 可从总 Prompt Token 中计算；Anthropic 的 `input_tokens`、缓存读取和缓存创建字段语义不同，必须先将三者归一化后再计算，不能直接使用当前 `cached_tokens / input_tokens`。供应商提供缓存写入或未命中 Token 时，先增加兼容读取与诊断，不修改既有 `cached_tokens` 含义。
+- 对同一模型和节点角色执行冷请求、等待首个响应开始后的相同稳定前缀请求、仅改变动态后缀请求三组样本；缓存未达到供应商最低长度、缓存尚未建立或已过期时必须单独标记，不能归类为序列化缺陷。
+- 生成安全的前缀指纹用于比较相邻请求首次分歧位置。指纹不得保存 Prompt 正文、用户内容、密钥或可逆缓存键，原始 Provider 证据继续遵循现有 MinIO 和脱敏边界。
+
+### 稳定前缀与请求合同设计
+
+- 保持稳定的系统指令、节点输出合同、示例、工具定义和共享参考材料在动态内容之前；用户输入、Workflow/Run/Task/Attempt 标识、时间戳和节点结果等变化内容放在后缀。仅用于日志的标识移出 Prompt，不以改变模型语义为代价追求缓存。
+- 对提示式 JSON 中由平台生成的 Schema 投影和结构化模型输入使用确定性序列化：键顺序、数组顺序、空白和数字表现保持稳定。不得重排有语义的对话消息、证据列表或用户文本。
+- 为稳定指令与 Schema 建立明确版本；内容修改应有意生成新版本和新指纹，禁止为了维持命中而继续发送已经失效的合同。
+- 先用现有自动缓存验证稳定前缀收益。只有供应商能力目录声明支持且真实样本证明有收益时，才扩展 Provider 无关的缓存策略合同，并分别映射 Anthropic 缓存断点或 Gemini 显式缓存；工作流层不得按 Provider 名称拼接私有字段。
+- 显式缓存必须定义作用域、生存时间、费用、失效和删除责任。缓存写入失败或未命中只能回退为普通模型输入，不能改变节点成功条件、权限判断、审核结论或最终回答。
+
+### 测试与完成条件
+
+- 先新增失败基线测试：语义相同但平台生成 JSON 键顺序不同会产生不同前缀指纹；实现确定性序列化后，稳定输入生成相同前缀，动态后缀变化不会改变稳定前缀指纹。
+- Provider 合同测试覆盖：自动缓存不增加私有请求字段；能力不支持时不发送显式缓存配置；支持时只由适配器映射；命中、未命中、缓存创建和缺失用量都不会被误报为零成本或业务失败。
+- 工作流回归覆盖 Controller、Worker、Reviewer 和最终汇总的输出合同、用量聚合、审核与最终消息，证明缓存优化不改变语义和持久化事实。
+- 使用至少一个自动缓存 Provider 完成真实重复请求对照，记录稳定前缀长度、命中 Token 和首 Token 延迟；Anthropic 或 Gemini 显式缓存只有在对应凭据和已注册模型能力可用时作为可选集成验证。
+- 完成条件：能够定位低命中来自前缀过短、前缀变化、TTL、供应商路由或能力不支持中的哪一类；相同 Provider/Model/节点角色的稳定前缀命中率可查询；优化前后语义回归通过；没有新增敏感 Prompt 日志。未获得可重复收益时保留自动缓存和诊断能力，不引入显式缓存的资源生命周期复杂度。
+
+实施顺序：
+
+| 步骤 | 修改对象 | 预期结果 | 验证方式 | 状态 |
+|---|---|---|---|---|
+| 1 | 现有 Attempt/Workflow 用量读取与诊断 | 得到按 Provider、Model、节点角色分组的冷/热请求基线，并纠正跨供应商总输入口径 | 固定样本单元测试、原始用量对照和本地查询 | 未开始 |
+| 2 | Agent 稳定前缀和平台生成 JSON 序列化 | 静态指令与 Schema 在前，动态内容在后；相同语义的稳定前缀字节一致 | 先行失败测试、前缀指纹快照和工作流语义回归 | 未开始 |
+| 3 | Model Gateway 能力目录与 Provider 适配器 | 只在能力明确且有收益时增加 Provider 无关缓存策略，由适配器映射供应商字段 | Provider 请求合同、能力拒绝和用量归一化测试 | 未开始 |
+| 4 | 真实供应商对照与启用决定 | 记录命中、延迟、费用和失效行为；无可重复收益时不启用显式缓存 | 重复请求集成测试、敏感字段扫描和结果等价评估 | 未开始 |
+
 ## 测试设计
 
 公共节点合同、状态、预算、并发和幂等必须测试先行。
@@ -967,6 +1010,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 2026 年 8 月 20 日补充合同修复：后续真实 Worker 响应已经是完整 JSON，却把 Schema 元数据 `additionalProperties` 误写成业务字段 `additional_properties`，因严格合同禁止额外字段而失败。修复位于 Provider 无关的 `prompted_json` 指令构造层：提示明确列出唯一允许的顶层响应字段，声明 Schema 关键字不是响应字段，并从面向模型的 Schema 投影中移除 `additionalProperties` 与 `title` 元数据；原始 Pydantic 合同及 `extra="forbid"` 校验保持不变。该行为不按 Provider 名称分支，所有不具备原生 JSON Schema、使用提示式 JSON 的模型共享同一协议。Agent 工作流 38 项定向测试通过，其中新增回归覆盖字段白名单、Schema/响应边界、元数据剔除和普通解释任务的知识边界。
 
 2026 年 8 月 21 日补充知识边界修复：统一 Agent 指令原先要求 `Use only the supplied content`，导致普通解释问题也被错误当成必须提供外部资料的证据任务；Worker 只能报告资料缺失，Reviewer 因目标未回答而拒绝。当前 Provider 无关策略将已提供内容视为权威上下文，并允许普通解释问题使用模型已有的通用知识；任务明确限制来源时仍必须遵守，且任何模型都不得伪造工具、文件、测试、网络请求或外部验证事实。Playwright 使用真实 DeepSeek 对同一问题完成 15 个节点和 6 次模型调用，三个 Worker、Reviewer、最终汇总和消息关联全部成功，最终回答无需刷新即可见。后端与模型适配层全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
+
+2026 年 8 月 24 日补充审核门禁修复：Reviewer 返回 `needs_revision` 且不存在错误级发现、重试或重新规划要求时，工作流不再丢弃候选回答，而是把完整审核意见交给 Final synthesis 应用后生成最终消息；明确 `fail`、错误级发现、重试或重新规划仍会阻止汇总。定向回归覆盖上述四类分支，结果为 `4 passed`。
 
 以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 
@@ -993,7 +1038,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 ### 验证、审核和汇总
 
 - 程序验证失败不能被 Reviewer 改成通过；无证据声明进入 unverified。
-- Reviewer 只读明确输入，不读取 Worker Working State；当前拒绝、重新规划或重试要求直接终止工作流，尚未实现返工轮次。
+- Reviewer 只读明确输入，不读取 Worker Working State；无错误级发现且不要求重试或重新规划的 `needs_revision` 交由 Final synthesis 应用，明确失败、错误级发现、重新规划或重试要求直接终止工作流，尚未实现 Worker 返工轮次。
 - Final synthesis 引用正确 Handoff/Evaluation/Artifact；Message 保存失败不再次调用模型。
 - 汇总 totals 与 Attempt 明细不一致时明确失败，不使用默认零值。
 
@@ -1032,7 +1077,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 - 节点开始事实和开始事件提交成功后才调用 Provider；提交失败时不进入模型调用。
 - Provider 的超时、网络/连接错误、无法确认的内部错误或请求中取消会使当前 Node 与 Workflow 进入 `outcome_unknown`；已启动的 Task、Agent Run 和 Agent Turn 被收敛到其现有可表达的终态。
-- 节点输出校验失败、计划拒绝、验证失败和 Reviewer 拒绝会终止当前 Workflow，不继续最终汇总。
+- 节点输出校验失败、计划拒绝、验证失败，以及 Reviewer 的明确失败、错误级发现、重新规划或重试要求会终止当前 Workflow；非阻断的 `needs_revision` 进入最终汇总，不再被当作异常丢弃回答。
 - SSE observer 在事件提交后收到通知；当前 `event_sink` 仍是执行服务上的可变字段，通知自身失败还没有独立隔离合同。
 - Final synthesis 的 Assistant Message 与最终汇总节点完成事件共用事务；测试已验证最终节点无法持久化时不会遗留成功消息。
 - 当前没有跨请求继续、等待输入、resume 或启动审计。同步请求所在进程意外退出仍可能留下 `running` 事实；该问题需要阶段10的可靠执行与恢复机制，不能由 API 进程内后台任务安全解决。
