@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 20 日
-**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复、Responses 事件回放和新会话首条回复恢复已实现；真实 DeepSeek 快速回复已通过 Playwright，完整 Agent 与浏览器门禁仍待完成）
+**文档日期：** 2026 年 8 月 24 日
+**文档状态：** 进行中（统一 Reasoning 协议、Chat/Trajectory 展示、安全 Markdown、消息历史恢复、Responses 事件回放、新会话首条回复恢复和仅通过显式按钮发送已实现；代码块工具栏以及完整 Agent 与浏览器门禁仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -495,9 +495,9 @@ Context Preview、Prompt/Model Catalog 和 Evaluation 在阶段2完成行为验�
 - 中央阅读列保持约 720～820 像素的舒适文本宽度，宽屏剩余空间用于留白或详情抽屉。
 - 左侧栏使用低对比度背景，突出“新对话”和最近会话，不堆叠多层卡片。
 - 消息主体以排版区分角色；避免每条消息都使用厚重边框和阴影。
-- 输入框固定在主区底部，支持多行输入、Enter 发送、Shift+Enter 换行和生成中停止按钮。
+- 输入框固定在主区底部并支持多行输入；Enter 和 Shift+Enter 都只写入换行，消息只通过显式发送按钮提交，生成期间显示停止按钮。
 - 流式文本直接追加到当前 Assistant 消息；每一帧不重新渲染完整 Markdown，按批次刷新以避免长响应卡顿。
-- 代码块提供语言标识、复制按钮和横向滚动；表格、引用和列表遵循 Markdown 语义。
+- 已完成消息中的代码块提供语言标识、复制按钮、保留空白和横向滚动；流式期间先使用低开销的代码展示，不能因每个增量重新高亮整段回复。表格、引用和列表遵循 Markdown 语义。
 - 状态、错误和费用使用低干扰的辅助信息，不覆盖正文。
 - 使用 NexusPilot 自有名称、标记和排版，不复制 ChatGPT 商标、图标、文案或专有视觉资产。
 - 整体采用单色视觉系统。亮色主题使用白色背景、黑色文字和黑色主要动作；暗色主题反相为黑色背景、白色文字和白色主要动作。
@@ -651,10 +651,10 @@ apps/web/
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
 - 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理展示能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度的后端接口已有部分实现，但控制能力目录、完整 Provider 映射和用户选择器仍按新增规划实施。
-- Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
+- Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
-- 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、键盘发送、移动端覆盖层和 reduced motion。
+- 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、仅按钮发送、移动端覆盖层和 reduced motion。
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
 - Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
@@ -669,7 +669,8 @@ apps/web/
 | Responses 流 | SSE 增量正文、序号去重、缺口拒绝、已知 Attempt 有限回放、完成/保存/失败/取消状态分离、默认不发送输出 Token 上限、`length` 截断证据持久化 | 未知 Attempt 的首事件前断线只能读取最终事实；没有统一聊天提交恢复合同；修复前的历史 Message 没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
 | 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
-| Markdown | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条和可选语法高亮尚未实现 | 进行中 |
+| Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
+| 消息输入与发送 | 多行输入、自动增高至 240px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键 | 输入区仍需随完整响应式门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
 | Agent 上下文 | Controller 和 Worker 获得当前 `Run.user_request`；依赖 Worker、Reviewer 和最终汇总获得完整 Worker 结构化输出及限长 Handoff | `context_assembly` 尚未注入完整会话历史、Memory、Knowledge、Artifact 或 Memory Packet | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
@@ -706,17 +707,43 @@ apps/web/
 
 2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而返回 `agent_review_rejected`。当前通用策略允许普通解释任务使用模型已有知识，同时保持“明确来源限制优先、不得伪造外部证据、重要不确定性必须说明”的边界。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；该修复没有前端结果修补或 DeepSeek 专用分支。后端与模型适配层最新全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
 
+2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，Textarea 随内容自动增高至 240px 后再内部滚动，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。Playwright 在真实长回复会话中验证：20 行输入使 Composer 增至 419px，消息列表底部预留随之从普通状态的 247px 增至 443px，`message-actions` 始终位于 Composer 上方 24px；按 Enter 只增加第 21 行。前端 54 项测试、TypeScript、ESLint 和生产构建均通过。
+
 2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。多模型、多审核策略和并行 Agent 的真实 Provider 矩阵以及完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
 
 当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
 
+## 2026 年 8 月 24 日新增阶段4工作项
+
+### 对话代码块展示优化
+
+- 继续复用当前 `MarkdownContent` 安全渲染入口，不创建第二套实时与历史消息渲染器。
+- 为围栏代码块增加可见语言标签、复制按钮和复制成功/失败状态；复制内容必须与原始代码一致，不能带工具栏文字或丢失换行。
+- 无语言代码块使用中性标签；长行默认横向滚动，代码区不能撑破中央阅读列或移动端视口，并保留缩进、空格和换行。
+- 语法高亮属于可选增强。实施前先比较依赖体积和长回复渲染耗时；流式增量阶段使用低开销展示，代码块闭合或消息完成后再按内容哈希进行缓存或高亮，不能在每个 Token 增量上重新解析整条回复。
+- 继续禁止执行原始 HTML，不允许复制按钮或高亮组件绕过现有危险链接、远程图片和内容安全边界。
+
+完成条件：实时消息与历史消息展示一致；有语言、无语言、超长行、多代码块、复制原文、亮暗主题、移动端和流式完成切换测试通过；复制按钮具有可访问名称和键盘焦点；代码块不会导致横向页面溢出。
+
+### 取消 Enter 键盘发送
+
+状态：已完成。
+
+- Composer 已删除“Enter 直接发送、Shift+Enter 换行”的分支；Enter、Shift+Enter 以及输入法组合期间的 Enter 均不提交消息。
+- 消息只通过显式发送按钮提交；没有新增 Command+Enter、Control+Enter 等替代快捷键。
+- 输入区已删除运行机制解释文案，执行模式、Agent 并行度、审核策略分布在左侧，模型和发送动作分布在右侧；原生下拉菜单替换为可访问的项目列表。
+- Textarea 根据内容自动增高，达到 240px 后才使用内部滚动；会话底部间距根据 Composer 实际高度动态更新，长回复的 `message-actions` 始终可滚动到 Composer 上方。
+- 保留空白输入拒绝、生成中禁用重复提交、发送按钮状态和现有幂等/恢复边界；没有改变请求合同或消息持久化顺序。
+
+完成条件：Enter 与 Shift+Enter 均只产生换行；中文等输入法组合不误发；点击或触摸发送按钮只提交一次；空白文本与生成中重复点击仍被拒绝；刷新恢复和首条回复即时显示行为保持不变。
+
 ## 测试设计
 
-- 组件测试：空状态、消息角色、Markdown、代码块、错误提示、生成中与完成状态。
+- 组件测试：空状态、消息角色、Markdown、代码块语言标签、复制原文、错误提示、生成中与完成状态。
 - SSE 测试：sequence 顺序、重复事件、缺失终止、失败事件、取消和断线。
 - 页面集成测试：新建会话、追加用户消息、普通响应、流式响应、保存 Assistant Message、打开 Attempt 详情。
 - 安全测试：浏览器响应和静态资源不包含平台 API Key、内部 API Key、供应商凭据或 MinIO URI。
-- 可访问性测试：键盘发送/换行、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
+- 可访问性测试：Enter/Shift+Enter 换行、仅按钮发送、输入法组合、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
 - 响应式测试：桌面侧栏、移动端覆盖层、长代码块和长单词不会破坏布局。
 - 恢复测试：刷新页面、SSE 中断、保存失败和重复提交不会重复产生计费调用。
 - 阶段10测试：重复/乱序任务事件、有限重试、死信、Worker 崩溃、取消竞争和刷新恢复。
@@ -734,7 +761,7 @@ apps/web/
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
 | 阶段2 | Provider/Model、普通响应、SSE、Context/Prompt/Evaluation 开发证据 | 阶段2已完成的 LLM 核心 API | 真实 API 端到端、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
 | 阶段3 | 已接入 `model_only_v1` 创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组和费用预留 | 后端八个接口和完整节点合同；既有 BFF 归属保护，工具视图另等阶段7 | 真实 Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
-| 阶段4 | Next.js、BFF、主题、响应式、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
+| 阶段4 | Next.js、BFF、主题、响应式、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 代码块复制/长行/流式性能、Enter 只换行、按钮单次提交，以及构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |
 | 阶段7 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段7完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |

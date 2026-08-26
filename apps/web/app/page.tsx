@@ -57,8 +57,13 @@ import {
   agentWorkflowStatusLabel,
 } from "../components/agent-workflow/AgentWorkflowPanel";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
+import { CompactSelect } from "../components/composer/CompactSelect";
 import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
+import {
+  composerConversationClearance,
+  composerTextareaHeight,
+} from "../lib/composer-layout";
 import {
   isModelSelectionAllowed,
   resolveInitialModelSelection,
@@ -78,7 +83,7 @@ import {
 } from "../lib/response-outcome";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { CSSProperties } from "react";
 
 const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
   providers: [],
@@ -237,10 +242,13 @@ export default function Home() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("checking");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [composerClearancePx, setComposerClearancePx] = useState(180);
   const latestAssistantText = useRef("");
   const latestReasoningBlocks = useRef<ReasoningPresentation[]>([]);
   const assistantProjectionFrame = useRef<number | null>(null);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
+  const composerWrap = useRef<HTMLDivElement | null>(null);
+  const composerTextarea = useRef<HTMLTextAreaElement | null>(null);
   const shouldAutoFollowConversation = useRef(true);
   const activeResponseAttemptId = useRef<string | null>(null);
   const lastResponseSequence = useRef(0);
@@ -319,6 +327,32 @@ export default function Home() {
   useEffect(() => {
     window.localStorage.setItem("nexuspilot-theme", isDark ? "dark" : "light");
   }, [isDark]);
+
+  useEffect(() => {
+    const textarea = composerTextarea.current;
+    if (!textarea) return;
+    textarea.style.overflowY = "hidden";
+    textarea.style.height = "0px";
+    const nextHeight = composerTextareaHeight(textarea.scrollHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+  }, [draft]);
+
+  useEffect(() => {
+    const composerElement = composerWrap.current;
+    if (!composerElement) return;
+
+    /** Keep the last message actions scrollable above the full current Composer height. */
+    const updateConversationClearance = () => {
+      setComposerClearancePx(
+        composerConversationClearance(composerElement.getBoundingClientRect().height),
+      );
+    };
+    updateConversationClearance();
+    const composerResizeObserver = new ResizeObserver(updateConversationClearance);
+    composerResizeObserver.observe(composerElement);
+    return () => composerResizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     /** Cancel an uncommitted visual projection when the workspace unmounts. */
@@ -1138,16 +1172,6 @@ export default function Home() {
     }
   }
 
-  /**
-   * Keep Enter for sending and Shift+Enter for a multiline composer value.
-   */
-  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void handleSend();
-    }
-  }
-
   const statusLabel = agentWorkflow
     ? agentWorkflowStatusLabel(agentWorkflow.status)
     : isSending
@@ -1223,7 +1247,10 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="conversation-stage">
+        <div
+          className="conversation-stage"
+          style={{ "--composer-clearance": `${composerClearancePx}px` } as CSSProperties}
+        >
           <div
             className="conversation-scroll"
             ref={conversationScroll}
@@ -1293,81 +1320,77 @@ export default function Home() {
             )}
           </div>
 
-          <div className="composer-wrap">
+          <div className="composer-wrap" ref={composerWrap}>
             <div className="composer">
-              <div className="composer-mode-row" aria-label="执行模式">
-                <button
-                  className={executionMode === "response" ? "active" : ""}
-                  disabled={isSending}
-                  onClick={() => setExecutionMode("response")}
-                >
-                  快速回复
-                </button>
-                <button
-                  className={executionMode === "agent" ? "active" : ""}
-                  disabled={isSending}
-                  onClick={() => setExecutionMode("agent")}
-                >
-                  Agent Workflow
-                </button>
-              </div>
-              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder="继续对话…" aria-label="消息内容" rows={1} />
-              {executionMode === "agent" && (
-                <div className="agent-composer-options">
-                  <strong>{maxParallelAgents === 1 ? "串行" : "最多 2 个工作 Agent 并行"} · Controller + Planner{reviewPolicy === "never" ? "" : " + Reviewer"}</strong>
-                  <span>所有角色使用当前模型</span>
-                  <div className="agent-option-controls">
-                    <label>
-                      工作 Agent
-                      <select
-                        value={maxParallelAgents}
-                        onChange={(event) => setMaxParallelAgents(Number(event.target.value) === 2 ? 2 : 1)}
-                        disabled={isSending}
-                        aria-label="工作 Agent 最大并行数"
-                      >
-                        <option value={1}>串行</option>
-                        <option value={2}>最多并行 2 个</option>
-                      </select>
-                    </label>
-                    <label>
-                      审核
-                      <select
-                        value={reviewPolicy}
-                        onChange={(event) => setReviewPolicy(event.target.value as ReviewPolicy)}
-                        disabled={isSending}
-                        aria-label="Agent 审核策略"
-                      >
-                        <option value="always">始终审核</option>
-                        <option value="on_verification_failure">验证失败时</option>
-                        <option value="never">不审核</option>
-                      </select>
-                    </label>
+              <textarea
+                ref={composerTextarea}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="继续对话…"
+                aria-label="消息内容"
+                rows={1}
+              />
+              <div className="composer-toolbar">
+                <div className="composer-config-controls">
+                  <div className="composer-mode-row" aria-label="执行模式">
+                    <button
+                      className={executionMode === "response" ? "active" : ""}
+                      disabled={isSending}
+                      onClick={() => setExecutionMode("response")}
+                    >
+                      快速回复
+                    </button>
+                    <button
+                      className={executionMode === "agent" ? "active" : ""}
+                      disabled={isSending}
+                      onClick={() => setExecutionMode("agent")}
+                    >
+                      Agent
+                    </button>
                   </div>
-                </div>
-              )}
-              <div className="composer-tools">
-                <div className="composer-context"><span className="context-lock" aria-hidden="true">⌁</span><span>{executionMode === "agent" ? "model_only_v1 · 不使用工具、Memory 或 Knowledge" : "上下文仅来自当前输入与已保存消息"}</span></div>
-                <div className="composer-actions">
+                  {executionMode === "agent" && (
+                    <div className="agent-option-controls">
+                      <CompactSelect
+                        label="工作 Agent 最大并行数"
+                        value={String(maxParallelAgents)}
+                        options={[
+                          { value: "1", label: "串行" },
+                          { value: "2", label: "并行 2" },
+                        ]}
+                        disabled={isSending}
+                        onChange={(value) => setMaxParallelAgents(value === "2" ? 2 : 1)}
+                      />
+                      <CompactSelect
+                        label="Agent 审核策略"
+                        value={reviewPolicy}
+                        options={[
+                          { value: "always", label: "始终审核" },
+                          { value: "on_verification_failure", label: "失败时审核" },
+                          { value: "never", label: "不审核" },
+                        ]}
+                        disabled={isSending}
+                        onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
+                      />
+                    </div>
+                  )}
                   {executionMode === "response" &&
                     selectedReasoningCapabilities?.presentation !== "none" && (
-                      <label className="reasoning-policy-picker">
-                        <span>推理展示</span>
-                        <select
-                          value={reasoningDisplayPolicy}
-                          onChange={(event) =>
-                            setReasoningDisplayPolicy(
-                              event.target.value as ReasoningDisplayPolicy,
-                            )
-                          }
-                          disabled={isSending}
-                          aria-label="推理展示策略"
-                        >
-                          <option value="hidden">隐藏</option>
-                          <option value="summary-only">仅摘要</option>
-                          <option value="provider-visible">Provider 可见内容</option>
-                        </select>
-                      </label>
+                      <CompactSelect
+                        label="推理展示策略"
+                        value={reasoningDisplayPolicy}
+                        options={[
+                          { value: "hidden", label: "隐藏推理" },
+                          { value: "summary-only", label: "仅摘要" },
+                          { value: "provider-visible", label: "显示推理" },
+                        ]}
+                        disabled={isSending}
+                        onChange={(value) =>
+                          setReasoningDisplayPolicy(value as ReasoningDisplayPolicy)
+                        }
+                      />
                     )}
+                </div>
+                <div className="composer-actions">
                   <ModelPicker
                     catalog={providerCatalog}
                     catalogState={providerCatalogState}
@@ -1384,7 +1407,6 @@ export default function Home() {
                 </div>
               </div>
             </div>
-            <p className="composer-note">Enter 发送 · Shift + Enter 换行 · {executionMode === "agent" ? "Agent 节点来自持久化工作流事实" : "运行状态来自后端事实"}</p>
           </div>
         </div>
       </section>
