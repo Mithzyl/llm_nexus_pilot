@@ -12,6 +12,9 @@ type AllowedRoute = {
  */
 const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "GET", pattern: ["providers"] },
+  { method: "GET", pattern: ["models"] },
+  { method: "GET", pattern: ["prompt-templates"] },
+  { method: "GET", pattern: ["context-builds", ":id", "evidence"] },
   { method: "GET", pattern: ["users", ":id"] },
   { method: "POST", pattern: ["users"] },
   { method: "GET", pattern: ["sessions"] },

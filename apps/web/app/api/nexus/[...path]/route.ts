@@ -313,6 +313,14 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     if (path.length === 1 && path[0] === "sessions" && request.method === "GET") {
       upstreamUrl.searchParams.set("user_id", DEVELOPMENT_USER_ID);
     }
+    if (
+      path.length === 3 &&
+      path[0] === "context-builds" &&
+      path[2] === "evidence" &&
+      request.method === "GET"
+    ) {
+      upstreamUrl.searchParams.set("user_id", DEVELOPMENT_USER_ID);
+    }
 
     const upstream = await fetch(upstreamUrl, {
       method: request.method,

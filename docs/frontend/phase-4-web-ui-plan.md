@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 26 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、显式按钮发送及Session文本上下文运行时接入已实现；其他Context来源、代码块工具栏以及完整Agent与浏览器门禁仍待完成）
+**文档日期：** 2026 年 8 月 27 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、显式按钮发送、Session文本上下文运行时接入及稳定模型目录已实现；其他Context来源、代码块工具栏以及完整Agent与浏览器门禁仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -650,7 +650,7 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
-- 模型调用：自定义选择器渲染后端返回的 Provider、模型允许列表和推理展示能力，支持搜索、键盘选择和空允许列表下的自定义模型输入；通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度的后端接口已有部分实现，但控制能力目录、完整 Provider 映射和用户选择器仍按新增规划实施。
+- 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度的后端接口已有部分实现，但完整程度枚举、逐模型控制映射和用户选择器仍按新增规划实施。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
@@ -665,7 +665,8 @@ apps/web/
 | 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
 |---|---|---|---|
 | 会话与路由 | 创建和选择会话、原子创建Run与当前User Message、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | 轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
-| Provider 与模型选择 | 服务端 Provider/Model 目录、推理能力、搜索、键盘选择、自定义模型、加载/失败/空目录状态 | 最终用户自己的 Provider 凭据和设置页等待阶段5 | 进行中 |
+| Provider 与模型选择 | Web读取稳定模型目录，支持搜索、键盘选择、加载/失败/空目录状态，并保留旧Provider目录兼容接口 | 最终用户自己的Provider凭据、设置页和模型授权过滤等待阶段5 | 进行中 |
+| 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
 | Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端明确引用的Prompt Release/文本Artifact来源 | 未知Attempt的首事件前断线只能读取最终事实；普通产品入口尚未提供Prompt/Artifact绑定，Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
 | 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
@@ -717,9 +718,13 @@ apps/web/
 
 ### 快速对话与Agent统一模型上下文
 
-状态：进行中。原子轮次提交、快速Responses消息锚点、Agent Session文本历史、明确绑定的Prompt Release、受限文本Artifact以及Agent/Handoff/Evaluation类型化来源已经实现；Context证据抽屉、普通产品入口绑定和Memory/Knowledge/Tool门禁尚未实现。全部来源、信任、预算、并发锚点和证据合同以[阶段2统一模型上下文设计](../implementation/phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准；阶段4只负责提交用户意图、消费后端事实和展示失败，不在浏览器拼接任何上下文来源。
+状态：进行中。原子轮次提交、快速Responses消息锚点、Agent Session文本历史、Prompt产品绑定、普通Responses的Prompt/Artifact引用合同、受限文本Artifact测试读取、Context证据抽屉以及Agent/Handoff/Evaluation类型化来源已经实现；对象型Message产品接入、真实文件上传、Artifact产品选择和Memory/Knowledge/Tool门禁尚未实现。全部来源、信任、预算、并发锚点和证据合同以[阶段2统一模型上下文设计](../implementation/phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准；阶段4只负责提交用户意图、消费后端事实和展示失败，不在浏览器拼接任何上下文来源。
 
-2026年8月27日实现事实：后端`context_policy.v2`已记录来源类型、版本、SHA-256、信任级别、必选标记、token估算和选择结果；Prompt Release固定实际渲染版本，文本Artifact校验Run归属、MIME、100000字节上限、对象大小、哈希与UTF-8，Agent下游节点按明确引用读取Handoff、验证、审核及Evaluation。Provider输入测试确认当前用户目标只出现一次，协作事实也不再同时复制到节点自由JSON。定向测试`70 passed`、全量后端与模型适配层`276 passed, 4 skipped`、Ruff通过；真实Provider浏览器矩阵和Context证据抽屉仍待完成。
+2026年8月27日实现事实：后端`context_policy.v2`已记录来源类型、版本、SHA-256、信任级别、必选标记、token估算和选择结果；Prompt Release固定实际渲染版本，文本Artifact校验Run归属、MIME、100000字节上限、对象大小、哈希与UTF-8，Agent下游节点按明确引用读取Handoff、验证、审核及Evaluation。Provider输入测试确认当前用户目标只出现一次，协作事实也不再同时复制到节点自由JSON。定向测试`70 passed`、全量后端与模型适配层`276 passed, 4 skipped`、Ruff通过；真实Provider浏览器矩阵仍待后续验证。
+
+2026年8月27日产品补充事实：`GET /api/v1/prompt-templates`只返回已启用Prompt的名称、用途、当前版本和变量Schema，不返回模板正文；普通`/responses`接受`context_source_references`，浏览器只提交版本固定的Prompt引用和已声明变量。`GET /api/v1/context-builds/{context_build_id}/evidence`按User隔离并省略组装消息正文，Web代理强制使用当前开发用户；运行详情按来源展示纳入/排除、版本、信任级别、必选标记和token估算，证据局部失败不清空对话。Web文件上传仍不存在，Artifact只通过内存对象存储测试夹具验证，Composer明确显示“等待上传功能”，不提供任意Artifact ID或URI输入。
+
+本次验证结果：后端与模型适配层`277 passed, 4 skipped`，4项跳过仍为显式开启的真实基础设施测试；前端`61 passed`，Ruff、ESLint、TypeScript和Next.js生产构建通过。真实Provider浏览器矩阵按用户决定推迟，不计入本次自动化完成判断。
 
 #### 前端数据流
 
@@ -734,11 +739,11 @@ apps/web/
 #### 界面行为
 
 - 用户继续已有会话时不需要额外开启“使用历史”开关；Session历史是两种对话模式的默认语义。无状态模型调试仍属于独立开发接口，不暴露为容易误用的普通聊天选项。
-- Composer继续只显示模式、Agent配置、模型和发送按钮，不增加解释Context Builder内部机制的常驻文案。
+- Composer继续以模式、Agent配置、模型和发送按钮为主；可选上下文绑定收在默认折叠的“上下文”区域，不增加解释Context Builder内部机制的常驻文案。
 - 后端返回Context Build失败时保留当前输入并显示可行动错误：模型目录不可用时允许重新选择模型；消息归属或并发锚点冲突时要求重新读取会话；必选输入超过模型上下文时明确说明当前输入无法完整发送。
 - Context Build成功而Provider失败时沿用现有Attempt失败和回放行为，不重新提交轮次或创建第二个Context Build。
-- 运行详情可以按来源类型展示纳入和排除数量、版本、信任级别、Context策略版本、模型目录版本及Context Build ID；完整系统指令、安全指令、对象URI和其他敏感正文不进入浏览器。
-- Memory、Knowledge、Artifact、Agent协作和Tool来源没有正式进入Context Builder前，界面不得显示这些来源已被使用；启用后也不提供绕过权限的原始内容入口。
+- 运行详情可以按来源类型展示纳入和排除数量、版本、信任级别、Context策略版本和模型目录版本；Context Build ID只用于内部请求关联，不作为默认界面内容。完整系统指令、安全指令、来源ID、内容哈希、对象URI和其他敏感正文不进入界面。
+- Memory、Knowledge和Tool来源没有正式进入Context Builder前，界面不得显示这些来源已被使用；启用后也不提供绕过权限的原始内容入口。
 
 #### 测试与完成条件
 
@@ -748,6 +753,128 @@ apps/web/
 - 历史分页只影响页面展示，不影响后端构建完整的有界上下文；即使浏览器只加载最新一页，Provider输入仍以Context Build为准。
 - Context Build重放、Provider失败、SSE断线和Assistant Message保存失败均不产生重复计费调用。
 - 桌面、移动端、亮暗主题和屏幕阅读器能够辨认上下文失败状态及运行证据入口。
+
+#### 尚未实现工作项与阶段归属
+
+| 工作项 | 归属 | 阶段4负责的结果 | 明确不负责 |
+|---|---|---|---|
+| 对象型Message产品接入 | 阶段2补充后端读取合同，阶段4完成产品接入验收 | 进行中：当前只测试“不支持对象内容时明确失败”；正式上传后再实现允许类型和恢复行为 | 浏览器不读取对象存储、不解析`content_uri`、不自行校验哈希，也不把不支持对象转为空文本 |
+| Prompt普通产品绑定 | 阶段4 | 已完成：用户选择已启用Prompt版本并填写受Schema约束的变量；浏览器提交稳定引用，后端重新渲染和校验 | 不在浏览器下载或渲染Prompt正文，不接受禁用版本或未知变量 |
+| Artifact普通产品绑定 | 阶段4 | 进行中：Responses引用合同和内存对象存储测试已完成；用户选择等待正式文件上传 | 不开放任意Artifact ID或URI输入，不允许跨Run资源，也不把测试夹具描述为生产上传 |
+| Context证据抽屉 | 阶段4 | 已完成：按来源类型显示纳入/排除数量、版本、信任级别、必选标记、token估算、策略版本和模型目录版本；失败不遮挡已生成的对话正文 | 不展示完整系统指令、Prompt正文、来源ID、内容哈希、对象URI、Handoff全文或其他敏感内容，不把前端推测显示成后端事实 |
+
+Prompt绑定当前执行“读取后端可选Prompt、用户明确选择并填写变量、随轮次提交版本引用”，后端负责重新渲染并校验版本和状态。Artifact在文件上传完成后沿用相同受控选择原则；资源在选择后被禁用、删除、跨Run引用或读取失败时，本轮必须在Provider调用前失败，不能静默移除后继续生成。
+
+Context证据抽屉读取最新Model Attempt关联的已持久化Context Build及来源证据。证据查询局部失败时只让抽屉进入失败状态，不能清空对话正文、把运行改成成功或重新调用Provider；逐Agent Node切换继续使用节点现有证据区域，后续需要时再增加多Context选择器。
+
+真实Provider浏览器矩阵继续作为后续端到端验证项保留。本轮只固定上述三项的归属、产品行为和失败边界，不展开多Provider、多模型、多审核策略或并行Agent组合，也不把矩阵作为上述功能开始实施的前置条件。
+
+## 2026 年 8 月 27 日新增阶段4工作项
+
+### 稳定模型目录与模型选择数据基础
+
+状态：已完成。数据库迁移、历史能力回填、内部管理接口、目录读取、Web选择数据迁移和定向验证均已执行。
+
+当前系统的 `llm_model_catalog_versions` 只保存某个 `provider + model + catalog_version` 的不可变能力快照；`GET /api/v1/providers` 则读取服务端 Provider Registry 的环境配置。两者都不能作为稳定的模型业务实体，也不能表达“平台当前向用户提供哪些模型”。阶段4先补充稳定模型实体表，供 Web 模型选择器和后续阶段5用户授权复用；不在本工作项中提前实现登录、供应商凭据或用户授权。
+
+#### 数据职责
+
+新增表：`llm_models`。一行表示平台登记的一个稳定逻辑模型，不保存任何 API Key、供应商密钥、Prompt 正文或用户授权。
+
+| 字段 | 含义与约束 |
+|---|---|
+| `model_id` | 稳定模型标识，作为后续引用和用户授权的外键 |
+| `provider` | 已登记的 Provider 名称，必须使用系统支持的枚举 |
+| `model_identifier` | 供应商侧模型标识；与 `provider` 组成唯一键 |
+| `display_name` | 前端展示名称，不参与模型调用匹配 |
+| `description` | 可选的人类可读说明 |
+| `status` | 平台登记状态：`enabled` 或 `disabled`；禁用采用软状态，不物理删除 |
+| `sort_order` | 稳定的前端排序值 |
+| `metadata_json` | 非敏感展示元数据；不得写入密钥、完整供应商响应或内部 URI |
+| `created_at`、`updated_at` | 审计和缓存失效依据 |
+
+现有 `llm_model_catalog_versions` 保持为能力事实表，迁移完成前通过 `llm_models.(provider, model_identifier) = llm_model_catalog_versions.(provider, model)` 解析最新的已启用能力快照。能力快照继续记录上下文窗口、流式、工具、结构化输出、缓存、视觉、Tokenizer 和思考程度等事实；不把这些字段复制成第二套“模型能力”规则。现有表中的 `provider`、`model` 在迁移完成前保留兼容含义，后续可增加 `model_id` 外键，但不能删除已有 Context Build 和 Attempt 的目录版本引用。
+
+#### 模型目录读取规则
+
+新增面向 Web 的只读接口：
+
+```http
+GET /api/v1/models
+```
+
+响应至少包含 `model_id`、`provider`、`model_identifier`、`display_name`、`status`、`registry_available`、当前已启用的 `catalog_version`、能力字段和思考程度控制能力。结果按 `provider`、`sort_order`、`display_name`、`model_identifier` 稳定排序。
+
+模型选择器只把同时满足以下条件的记录作为可提交模型：
+
+1. `llm_models.status = enabled`；
+2. Provider Registry 已注册该 Provider，且环境白名单允许该 `model_identifier`；
+3. 存在匹配的已启用 Model Catalog 能力快照；
+4. 当前请求的推理程度、流式和输出合同在能力目录中可用。
+
+不满足条件的模型可以作为“不可用/待确认”证据返回，但不能由前端静默切换模型、猜测能力或补写目录记录。现有 `GET /api/v1/providers` 保留兼容，前端迁移到 `/models` 后再评估是否收敛为单一入口。
+
+#### 与阶段5用户授权的边界
+
+本阶段不创建 `user_model_access`，也不把 `user_id` 写入 `llm_models`。阶段5实现最终用户认证后，再增加用户与稳定 `model_id` 的授权关联，并将读取规则扩展为：
+
+```text
+当前用户
+  → user_model_access 允许
+  → llm_models.enabled
+  → enabled Model Catalog 快照
+  → Provider Registry 可用
+  → 返回模型选择器
+```
+
+全局 `enabled` 只表示平台登记和能力可用，不表示任何用户自动获得授权。
+
+#### 迁移与初始化
+
+- 迁移只创建 `llm_models`、唯一约束和查询索引，不依赖运行时环境变量，不在迁移中写入供应商密钥。
+- 提供受内部密钥保护的模型登记/更新入口；初始化数据由显式 bootstrap 或内部管理动作创建，不能把 `.env` 白名单隐式当作数据库事实。
+- 已存在的 `llm_model_catalog_versions` 按 `(provider, model)` 去重生成稳定模型记录；重复版本保留为能力历史，最新已启用版本仅用于当前读取。
+- 禁用模型不得被新提交选择，但已有 Run、Attempt、Context Build 和事件仍可查询，不能因目录状态变化破坏历史证据。
+
+实际实现使用 `20260827_0016` 创建和回填表；`POST /api/v1/internal/models/bootstrap` 是唯一从当前Registry白名单显式生成缺失登记行的动作，重复调用不生成重复记录。当前本地开发库已显式登记 `deepseek-v4-flash` 和 `deepseek-v4-pro`，并以2026年8月27日核对的[DeepSeek模型与价格](https://api-docs.deepseek.com/quick_start/pricing/)和[思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)官方资料写入各自的启用能力快照；两者在当前Registry中均满足Web流式选择合同。该本地初始化不是迁移中的隐式环境种子，其他环境仍需通过内部管理动作明确登记和确认能力。
+
+#### 实现时采用的设计约束（历史实施输入，非待办）
+
+```text
+你是一名负责大语言模型网关、模型目录、用户授权边界和 Web 模型选择器的高级工程师。
+
+请在不破坏现有 API、Context Build、Model Attempt、Agent Workflow 和历史证据的前提下，为 NexusPilot 设计并实现“稳定模型目录”能力。先检查当前 User、Provider Registry、llm_model_catalog_versions、Context Build、Responses、Agent Workflow、Next.js BFF 及迁移；不要假设存在未检查的模型表或用户-模型关联表。
+
+当前事实：
+1. users 已存在，但最终用户登录和授权属于阶段5，当前 user_id 仍由受信调用方提供。
+2. llm_model_catalog_versions 已存在，它是 provider + model + catalog_version 的不可变能力快照，不是稳定模型业务实体，也不是用户授权表。
+3. GET /api/v1/providers 当前来自服务端 Provider Registry 和环境白名单；环境配置不是数据库模型目录。
+4. 当前不得把 API Key、供应商密钥、Prompt 正文或完整供应商响应写入模型目录。
+
+目标：
+1. 新增 llm_models 稳定模型实体表：model_id、provider、model_identifier、display_name、description、status、sort_order、metadata_json、created_at、updated_at；provider + model_identifier 唯一。
+2. 保留 llm_model_catalog_versions 作为能力事实和版本历史，禁止复制第二套能力字段；迁移完成前通过 llm_models.(provider, model_identifier) 与 llm_model_catalog_versions.(provider, model) 对应，解析最新 enabled 快照，并保留历史 Context Build/Attempt 的 catalog_version_id 引用。
+3. 提供受内部凭据保护的模型登记/更新接口，以及 GET /api/v1/models 只读接口。
+4. /models 返回稳定模型标识、展示字段、Provider Registry 可用性、最新已启用能力和思考程度控制能力，并按确定规则排序。
+5. Web 模型选择器只允许提交同时满足模型启用、Provider Registry 可用、能力快照启用和请求合同支持的模型；不可用模型只能显示原因，不能静默切换或猜测能力。
+6. 不在本次实现 user_model_access、登录、个人 API Key 或供应商凭据；为阶段5按 model_id 增加用户授权关联保留清晰外键和接口扩展点。
+
+失败与兼容要求：
+- 数据库迁移必须支持空库和已有库；重复 provider/model 不能生成重复 llm_models。
+- 禁用模型拒绝新提交，但历史 Run、Attempt、Context Build 和事件仍可读取。
+- Model Catalog 缺失、Provider 未注册、环境白名单不允许、能力未知和数据库不可用必须返回可区分且不泄露敏感信息的错误。
+- 保留 GET /api/v1/providers 的兼容行为，前端迁移完成前不得删除。
+- 不从环境变量自动写数据库，不在浏览器暴露平台密钥或供应商凭据。
+
+请先输出：数据模型、迁移与回填策略、接口合同、前后端数据流、阶段5授权扩展点、失败处理和测试矩阵；确认方案后再修改代码。新增或实质修改的函数必须补充用途、参数、返回值、副作用和失败条件注释。至少覆盖迁移、唯一约束、启用/禁用、能力版本选择、Registry 交集、空目录、未知能力、历史证据可读性、BFF 脱敏和模型选择器不可静默切换等测试。
+```
+
+#### 实现验收结果
+
+- `llm_models` 的职责与 `llm_model_catalog_versions` 明确分离，字段、唯一键、禁用语义和历史引用规则固定。
+- `/api/v1/models` 的返回结构和可选模型判定规则固定，Provider Registry 与数据库目录不再被描述为同一数据源。
+- 阶段4前端模型选择器迁移有明确入口和兼容策略；阶段5可以仅通过新增 `user_model_access` 过滤，不需要重做模型目录。
+- 迁移、回填、能力版本选择、禁用模型、空目录和安全边界均有实现前测试设计。
 
 ## 2026 年 8 月 24 日新增阶段4工作项
 
@@ -779,6 +906,7 @@ apps/web/
 - SSE 测试：sequence 顺序、重复事件、缺失终止、失败事件、取消和断线。
 - 页面集成测试：新建会话、追加用户消息、普通响应、流式响应、保存 Assistant Message、打开 Attempt 详情。
 - 上下文测试：第二轮快速对话、Agent消息锚点、当前输入单次出现、历史分页独立性、Prompt版本、Memory/Knowledge/Artifact/Agent来源门禁、信任标记、并发提交隔离、Context Build重放和必选来源超限不调用Provider。
+- 上下文产品测试：对象型Message的允许类型与失败恢复、Prompt版本和变量选择、Artifact归属与状态变化、Context证据抽屉的纳入/排除事实、敏感正文不进入浏览器，以及证据查询失败不遮挡对话。
 - 安全测试：浏览器响应和静态资源不包含平台 API Key、内部 API Key、供应商凭据或 MinIO URI。
 - 可访问性测试：Enter/Shift+Enter 换行、仅按钮发送、输入法组合、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
 - 响应式测试：桌面侧栏、移动端覆盖层、长代码块和长单词不会破坏布局。
@@ -797,6 +925,10 @@ apps/web/
 |---|---|---|---|---|
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
 | 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及Context/Prompt/Evaluation开发证据 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
+| 阶段2 + 阶段4 | 对象型Message受控读取与普通对话接入 | 阶段2对象读取合同、ObjectStorage受控访问和统一Context Builder | 当前明确拒绝测试通过；生产归属、MIME、大小、哈希、UTF-8、重放和浏览器错误恢复等待上传合同 | 进行中 |
+| 阶段4 | Prompt普通产品绑定与Context证据抽屉 | 已实现的Prompt Release、`context_policy.v2`和脱敏Context证据接口 | 受控选择、变量类型转换、后端二次校验、用户隔离、敏感正文隔离和局部失败测试通过 | 已完成 |
+| 阶段4 | Artifact普通产品绑定 | 已实现的受限文本Artifact读取与普通Responses引用合同 | 内存对象存储合同测试已通过；正式文件上传、受控选择和浏览器恢复尚未完成 | 进行中 |
+| 阶段2 + 阶段4 | 稳定模型目录、数据库模型实体、Provider Registry 交集和 `/models` 选择数据 | `llm_models`、`llm_model_catalog_versions`与Provider Registry | 空库/存量库回填、唯一约束、启用/禁用、能力缺失、稳定排序、BFF固定路由和前端不可静默切换测试通过 | 已完成 |
 | 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
 | 阶段4 | Next.js、BFF、主题、响应式、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 代码块复制/长行/流式性能、Enter 只换行、按钮单次提交，以及构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |

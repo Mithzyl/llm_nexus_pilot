@@ -4,10 +4,13 @@ import type {
   AgentWorkflowResult,
   AgentWorkflowSummary,
   CursorPage,
+  ContextBuildEvidence,
   ConversationTurn,
   Message,
+  ModelDirectoryEntry,
   ModelResponseEventPage,
   ProviderCatalog,
+  PromptOption,
   ReasoningBlockSnapshot,
   Run,
   RunDetail,
@@ -69,6 +72,27 @@ export function listSessions(): Promise<CursorPage<Session>> {
  */
 export function listProviders(signal?: AbortSignal): Promise<ProviderCatalog> {
   return nexusFetch<ProviderCatalog>("providers", { signal });
+}
+
+/** Load stable models that satisfy the Web conversation streaming contract. */
+export function listModels(signal?: AbortSignal): Promise<ModelDirectoryEntry[]> {
+  return nexusFetch<ModelDirectoryEntry[]>("models?requires_streaming=true", { signal });
+}
+
+/** Load enabled Prompt choices without downloading immutable Prompt source bodies. */
+export function listPromptOptions(signal?: AbortSignal): Promise<PromptOption[]> {
+  return nexusFetch<PromptOption[]>("prompt-templates", { signal });
+}
+
+/** Read the content-free Context evidence projection for the development user. */
+export function getContextBuildEvidence(
+  contextBuildId: string,
+  signal?: AbortSignal,
+): Promise<ContextBuildEvidence> {
+  return nexusFetch<ContextBuildEvidence>(
+    `context-builds/${encodeURIComponent(contextBuildId)}/evidence?user_id=${encodeURIComponent(DEVELOPMENT_USER_ID)}`,
+    { signal },
+  );
 }
 
 /**

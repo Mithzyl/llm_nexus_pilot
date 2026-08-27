@@ -301,6 +301,7 @@ memory_packet_id
 
 - 当前实现已用Run关联的当前User Message锚定Session文本历史；Controller、Worker、Reviewer和Final synthesis分别按自己的Provider/Model创建Context Build，Model Attempt与Node Input保存`context_build_id`和实际Message ID。
 - `context_assembly`已登记锚点之前的有界Message ID；Context Builder已支持明确绑定的Prompt Release、受限文本Artifact，并把已提交Handoff、确定性验证、独立审核和Evaluation作为下游模型节点的类型化来源。Memory、Knowledge、Tool和对象Message仍未启用，`memory_packet_id`保持`null`。
+- 对象型Message的受控读取合同归入阶段2统一上下文来源补充，并在阶段4产品链路验收；阶段3只消费Context Builder返回的类型化来源，不自行读取`content_uri`，也不把该合同列为阶段3原完成条件。
 - 目标态中单个结构化来源不能从中间截断；排除或裁剪必须返回证据。
 - 2026年8月26日确认的统一上下文接入以[阶段2统一模型上下文设计](phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准：工作流按Run关联的当前User Message建立并发锚点；Controller、Worker、Reviewer和Final synthesis都向Context Builder声明本节点需要的来源类型，由它统一组装Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、验证/Evaluation及未来Tool结果。不同角色模型使用各自Context Build，不能重复追加当前目标，也不能在工作流内部另写历史或节点结果裁剪逻辑。
 

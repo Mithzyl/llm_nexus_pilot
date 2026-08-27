@@ -131,3 +131,23 @@ class ContextBuildRead(ApiModel):
     messages: list[ContextMessageRead]
     sources: list[ContextSourceRead]
     created_at: datetime
+
+
+class ContextBuildEvidenceRead(ApiModel):
+    """Expose owner-scoped Context selection facts without assembled source content."""
+
+    context_build_id: str
+    catalog_version_id: str
+    user_id: str
+    session_id: str | None
+    run_id: str | None
+    current_user_message_id: str | None
+    provider: str
+    model: str
+    policy_version: str
+    token_budget: int
+    reserved_output_tokens: int
+    input_token_estimate: int
+    status: ContextBuildStatus
+    sources: list[ContextSourceRead]
+    created_at: datetime

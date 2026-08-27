@@ -104,7 +104,7 @@ exclusion_reason, content_hash, message_role, content_text
 
 ### 统一模型上下文构建与阶段3、阶段4运行时集成设计
 
-状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入、明确绑定的Prompt Release、受限文本Artifact读取、Agent/Handoff/Evaluation类型化来源以及Attempt/Node证据已经实现；Memory、Knowledge、Tool来源、普通产品入口的Prompt/Artifact绑定和浏览器证据抽屉仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
+状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入、普通Responses的Prompt/Artifact引用合同、明确绑定的Prompt Release、受限文本Artifact读取、Agent/Handoff/Evaluation类型化来源、Attempt/Node证据以及脱敏浏览器证据投影已经实现；Memory、Knowledge、Tool来源、对象型Message生产读取和Artifact产品选择仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
 
 #### 2026年8月26日已实现基线
 
@@ -118,6 +118,17 @@ exclusion_reason, content_hash, message_role, content_text
 - Agent节点把已提交Handoff、确定性验证、独立审核和Evaluation作为独立来源交给Context Builder，不再同时复制进自由模型输入；当前User Message已经存在时也不重复附加`Run.user_request`。无Session锚点的低层兼容工作流继续使用原显式输入合同。
 
 2026年8月27日验证结果：统一上下文定向测试为`70 passed`，后端与模型适配层全量测试为`276 passed, 4 skipped`，Ruff全量检查通过；4项跳过仍是需要真实MySQL/MinIO环境的基础设施测试。MySQL开发库已向前迁移到唯一head `20260827_0015`，从空库生成MySQL离线迁移SQL成功。`alembic check`仍报告Memory表三个归属外键在历史迁移中的`SET NULL`与当前ORM `RESTRICT`不一致；该漂移早于本次Context迁移，因Memory仍暂停且改变删除语义不属于本工作项，本次没有顺带修改。
+
+#### 对象型Message读取合同（阶段2合同补充，阶段4集成验收）
+
+状态：进行中。当前只完成测试方式验证，不提供生产对象型Message读取。Web尚未提供文件上传功能，因此自动化测试通过内存对象存储夹具创建Run Artifact，验证普通Responses会把显式Artifact引用交给统一Context Builder；真实用户文件、对象型Message和上传后的产品选择等待正式上传合同。本工作项不更改阶段2原有稳定范围的完成状态。
+
+- 对象型Message是正文保存在受控对象存储、Message只保存引用的消息，不等同于已经实现的Run Artifact。它必须复用Artifact读取时已经验证的归属、对象大小、内容哈希、UTF-8完整性和受控存储访问方式，不能让Context Builder直接读取任意`content_uri`。
+- Message来源服务必须明确允许的内容类型、最大字节数、Message与User/Session/Run的归属关系、对象不存在或哈希不一致时的稳定错误，以及内容是否作为完整消息或有界片段进入上下文。未通过合同的对象类型继续在Provider调用前明确失败，不能退化为空文本。
+- Context Build证据至少记录Message ID、对象内容类型、内容大小、内容哈希、读取结果、纳入或排除原因；浏览器和公开错误不得暴露MinIO对象键、签名地址或内部路径。
+- 当前测试事实：ASGI测试使用`FakeObjectStorage`保存受限文本Artifact，普通`/responses`请求携带`context_source_references`后，Provider输入包含固定Prompt版本和Artifact正文各一次；跨Run Artifact仍明确拒绝。对象型当前User Message继续返回`Current user message must contain readable text`，没有把`content_uri`转换为空文本。
+- 正式实现前继续补齐合同测试：合法对象型Message、跨用户/Session/Run引用、对象缺失、大小超限、哈希不匹配、非UTF-8、未允许MIME、幂等重放和Provider未被调用。阶段4再覆盖上传、普通对话选择、错误可见性和刷新恢复。
+- 阶段3不新增第二套读取器。Agent模型节点需要对象型Message时，必须通过同一个Context Builder和Message来源合同读取；合同未启用前继续明确拒绝。
 
 #### 已解决问题与剩余目标行为
 

@@ -2,6 +2,8 @@
 
 from re import Match
 
+from nexuspilot_models.contracts import ModelReasoningCapabilities
+from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,9 @@ from nexuspilot_api.models import (
     LlmPromptTemplate,
     LlmPromptTemplateChange,
     LlmPromptTemplateVersion,
+    LlmRegisteredModel,
     ModelCatalogStatus,
+    ModelRegistrationStatus,
     PromptTemplateStatus,
     new_id,
 )
@@ -26,17 +30,55 @@ from nexuspilot_api.schemas.prompt_catalog import (
     ModelCapabilityRead,
     ModelCatalogStatusUpdate,
     ModelCatalogVersionCreate,
+    ModelDirectoryEntryRead,
+    ModelUnavailableReason,
     PromptActiveVersionUpdate,
     PromptRenderCreate,
     PromptRenderRead,
     PromptTemplateCreate,
+    PromptTemplateOptionRead,
     PromptTemplateRead,
     PromptTemplateStatusUpdate,
     PromptTemplateVersionCreate,
     PromptVariableValue,
+    RegisteredModelBootstrapRead,
+    RegisteredModelCreate,
+    RegisteredModelRead,
+    RegisteredModelUpdate,
 )
 
 MAX_RENDERED_PROMPT_CHARACTERS = 40_000
+
+
+async def list_enabled_prompt_template_options(
+    db_session: AsyncSession,
+) -> list[PromptTemplateOptionRead]:
+    """List enabled active Prompt versions without exposing immutable source text."""
+
+    rows = (
+        await db_session.execute(
+            select(LlmPromptTemplate, LlmPromptTemplateVersion)
+            .join(
+                LlmPromptTemplateVersion,
+                (LlmPromptTemplateVersion.template_name == LlmPromptTemplate.template_name)
+                & (
+                    LlmPromptTemplateVersion.version_number
+                    == LlmPromptTemplate.current_version_number
+                ),
+            )
+            .where(LlmPromptTemplate.status == PromptTemplateStatus.ENABLED)
+            .order_by(LlmPromptTemplate.template_name)
+        )
+    ).all()
+    return [
+        PromptTemplateOptionRead(
+            template_name=template.template_name,
+            purpose=template.purpose,
+            current_version_number=template.current_version_number,
+            variable_schema=version.variable_schema_json,
+        )
+        for template, version in rows
+    ]
 
 
 async def create_prompt_template(
@@ -358,6 +400,210 @@ async def create_model_catalog_version(
     )
 
 
+async def create_registered_model(
+    db_session: AsyncSession,
+    payload: RegisteredModelCreate,
+) -> RegisteredModelRead:
+    """Persist one stable model identity; duplicate provider/model pairs fail explicitly."""
+
+    registered_model = LlmRegisteredModel(
+        model_id=new_id(),
+        provider=payload.provider,
+        model_identifier=payload.model_identifier,
+        display_name=payload.display_name,
+        description=payload.description,
+        status=payload.status,
+        sort_order=payload.sort_order,
+        metadata_json=payload.metadata_json,
+    )
+    db_session.add(registered_model)
+    try:
+        await db_session.commit()
+    except IntegrityError as exc:
+        await db_session.rollback()
+        raise ResourceConflictError(
+            "Registered model already exists for this provider/model identifier"
+        ) from exc
+    await db_session.refresh(registered_model)
+    return _registered_model_read(registered_model)
+
+
+async def update_registered_model(
+    db_session: AsyncSession,
+    model_id: str,
+    payload: RegisteredModelUpdate,
+) -> RegisteredModelRead:
+    """Update mutable display or availability fields without changing stable identity."""
+
+    registered_model = await db_session.get(LlmRegisteredModel, model_id)
+    if registered_model is None:
+        raise ResourceNotFoundError("Registered Model")
+    for field_name, field_value in payload.model_dump(exclude_unset=True).items():
+        setattr(registered_model, field_name, field_value)
+    await db_session.commit()
+    await db_session.refresh(registered_model)
+    return _registered_model_read(registered_model)
+
+
+async def bootstrap_registered_models(
+    db_session: AsyncSession,
+    registry: ProviderRegistry,
+) -> RegisteredModelBootstrapRead:
+    """Explicitly persist configured allowlist models and remain idempotent on repeats."""
+
+    configured_pairs = sorted(
+        (provider, model_identifier)
+        for provider, model_identifiers in registry.configured_models_by_provider.items()
+        for model_identifier in model_identifiers
+    )
+    if not configured_pairs:
+        return RegisteredModelBootstrapRead(created_count=0, existing_count=0)
+    existing_pairs = {
+        (provider, model_identifier)
+        for provider, model_identifier in (
+            await db_session.execute(
+                select(
+                    LlmRegisteredModel.provider,
+                    LlmRegisteredModel.model_identifier,
+                ).where(
+                    LlmRegisteredModel.provider.in_(
+                        {provider for provider, _model in configured_pairs}
+                    )
+                )
+            )
+        ).all()
+    }
+    missing_pairs = [pair for pair in configured_pairs if pair not in existing_pairs]
+    sort_order_by_pair = {
+        pair: sort_order
+        for sort_order, pair in enumerate(configured_pairs, start=1)
+    }
+    for provider, model_identifier in missing_pairs:
+        db_session.add(
+            LlmRegisteredModel(
+                model_id=new_id(),
+                provider=provider,
+                model_identifier=model_identifier,
+                display_name=model_identifier,
+                description=None,
+                status=ModelRegistrationStatus.ENABLED,
+                sort_order=sort_order_by_pair[(provider, model_identifier)],
+                metadata_json={"registration_source": "provider_registry_bootstrap"},
+            )
+        )
+    try:
+        await db_session.commit()
+    except IntegrityError as exc:
+        # A concurrent bootstrap may win the unique-key race; only accept it when
+        # every requested pair is now present rather than masking another failure.
+        await db_session.rollback()
+        persisted_pairs = {
+            (provider, model_identifier)
+            for provider, model_identifier in (
+                await db_session.execute(
+                    select(
+                        LlmRegisteredModel.provider,
+                        LlmRegisteredModel.model_identifier,
+                    )
+                )
+            ).all()
+        }
+        if all(pair in persisted_pairs for pair in configured_pairs):
+            return RegisteredModelBootstrapRead(
+                created_count=0,
+                existing_count=len(configured_pairs),
+            )
+        raise ResourceConflictError("Registered model bootstrap conflicted") from exc
+    return RegisteredModelBootstrapRead(
+        created_count=len(missing_pairs),
+        existing_count=len(configured_pairs) - len(missing_pairs),
+    )
+
+
+async def list_model_directory(
+    db_session: AsyncSession,
+    registry: ProviderRegistry,
+    *,
+    requires_streaming: bool,
+    requires_structured_output: bool,
+    requires_tools: bool,
+    requires_vision: bool,
+) -> list[ModelDirectoryEntryRead]:
+    """Join stable registrations, Registry allowlists, and newest enabled capabilities."""
+
+    registered_models = (
+        await db_session.scalars(
+            select(LlmRegisteredModel).order_by(
+                LlmRegisteredModel.provider,
+                LlmRegisteredModel.sort_order,
+                LlmRegisteredModel.display_name,
+                LlmRegisteredModel.model_identifier,
+                LlmRegisteredModel.model_id,
+            )
+        )
+    ).all()
+    catalog_versions = (
+        await db_session.scalars(
+            select(LlmModelCatalogVersion)
+            .where(LlmModelCatalogVersion.status == ModelCatalogStatus.ENABLED)
+            .order_by(
+                LlmModelCatalogVersion.provider,
+                LlmModelCatalogVersion.model,
+                LlmModelCatalogVersion.confirmed_at.desc(),
+                LlmModelCatalogVersion.created_at.desc(),
+                LlmModelCatalogVersion.catalog_version_id.desc(),
+            )
+        )
+    ).all()
+    latest_capability_by_provider_model: dict[
+        tuple[str, str], LlmModelCatalogVersion
+    ] = {}
+    for catalog_version in catalog_versions:
+        latest_capability_by_provider_model.setdefault(
+            (catalog_version.provider, catalog_version.model), catalog_version
+        )
+
+    registered_provider_names = set(registry.registered_names)
+    configured_models_by_provider = registry.configured_models_by_provider
+    directory_entries: list[ModelDirectoryEntryRead] = []
+    for registered_model in registered_models:
+        provider = registered_model.provider
+        configured_models = configured_models_by_provider.get(provider)
+        is_provider_registered = provider in registered_provider_names
+        is_model_allowed = bool(is_provider_registered) and (
+            not configured_models
+            or registered_model.model_identifier in configured_models
+        )
+        capability = latest_capability_by_provider_model.get(
+            (provider.value, registered_model.model_identifier)
+        )
+        unavailable_reason = _model_unavailable_reason(
+            registered_model=registered_model,
+            is_provider_registered=is_provider_registered,
+            is_model_allowed=is_model_allowed,
+            capability=capability,
+            requires_streaming=requires_streaming,
+            requires_structured_output=requires_structured_output,
+            requires_tools=requires_tools,
+            requires_vision=requires_vision,
+        )
+        reasoning_capabilities = (
+            registry.reasoning_capabilities(provider, registered_model.model_identifier)
+            if is_model_allowed
+            else ModelReasoningCapabilities()
+        )
+        directory_entries.append(
+            _model_directory_entry_read(
+                registered_model,
+                capability,
+                registry_available=is_model_allowed,
+                unavailable_reason=unavailable_reason,
+                reasoning_capabilities=reasoning_capabilities,
+            )
+        )
+    return directory_entries
+
+
 async def update_model_catalog_status(
     db_session: AsyncSession,
     catalog_version_id: str,
@@ -448,4 +694,91 @@ def _model_capability_read(entry: LlmModelCatalogVersion) -> ModelCapabilityRead
         supports_streaming=entry.supports_streaming,
         tokenizer_name=entry.tokenizer_name,
         tokenizer_version=entry.tokenizer_version,
+    )
+
+
+def _registered_model_read(registered_model: LlmRegisteredModel) -> RegisteredModelRead:
+    """Map one stable model row to the internal management response contract."""
+
+    return RegisteredModelRead(
+        model_id=registered_model.model_id,
+        provider=registered_model.provider,
+        model_identifier=registered_model.model_identifier,
+        display_name=registered_model.display_name,
+        description=registered_model.description,
+        status=registered_model.status,
+        sort_order=registered_model.sort_order,
+        metadata_json=registered_model.metadata_json,
+        created_at=registered_model.created_at,
+        updated_at=registered_model.updated_at,
+    )
+
+
+def _model_unavailable_reason(
+    *,
+    registered_model: LlmRegisteredModel,
+    is_provider_registered: bool,
+    is_model_allowed: bool,
+    capability: LlmModelCatalogVersion | None,
+    requires_streaming: bool,
+    requires_structured_output: bool,
+    requires_tools: bool,
+    requires_vision: bool,
+) -> ModelUnavailableReason | None:
+    """Return the first actionable reason a registered model cannot satisfy a request."""
+
+    if registered_model.status != ModelRegistrationStatus.ENABLED:
+        return "model_disabled"
+    if not is_provider_registered:
+        return "provider_unavailable"
+    if not is_model_allowed:
+        return "model_not_allowed"
+    if capability is None:
+        return "capability_unknown"
+    if requires_streaming and not capability.supports_streaming:
+        return "streaming_unsupported"
+    if requires_structured_output and not capability.supports_structured_output:
+        return "structured_output_unsupported"
+    if requires_tools and not capability.supports_tools:
+        return "tools_unsupported"
+    if requires_vision and not capability.supports_vision:
+        return "vision_unsupported"
+    return None
+
+
+def _model_directory_entry_read(
+    registered_model: LlmRegisteredModel,
+    capability: LlmModelCatalogVersion | None,
+    *,
+    registry_available: bool,
+    unavailable_reason: ModelUnavailableReason | None,
+    reasoning_capabilities: ModelReasoningCapabilities,
+) -> ModelDirectoryEntryRead:
+    """Compose one content-safe directory entry from persisted and runtime evidence."""
+
+    return ModelDirectoryEntryRead(
+        model_id=registered_model.model_id,
+        provider=registered_model.provider,
+        model_identifier=registered_model.model_identifier,
+        display_name=registered_model.display_name,
+        description=registered_model.description,
+        status=registered_model.status,
+        sort_order=registered_model.sort_order,
+        metadata_json=registered_model.metadata_json,
+        registry_available=registry_available,
+        selectable=unavailable_reason is None,
+        unavailable_reason=unavailable_reason,
+        catalog_version_id=(capability.catalog_version_id if capability else None),
+        catalog_version=(capability.catalog_version if capability else None),
+        context_window=(capability.context_window if capability else None),
+        supports_tools=(capability.supports_tools if capability else None),
+        supports_structured_output=(
+            capability.supports_structured_output if capability else None
+        ),
+        supports_vision=(capability.supports_vision if capability else None),
+        supports_caching=(capability.supports_caching if capability else None),
+        supports_streaming=(capability.supports_streaming if capability else None),
+        tokenizer_name=(capability.tokenizer_name if capability else None),
+        tokenizer_version=(capability.tokenizer_version if capability else None),
+        reasoning_capabilities=reasoning_capabilities,
     )

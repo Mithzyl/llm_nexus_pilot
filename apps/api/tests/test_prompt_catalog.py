@@ -161,6 +161,47 @@ async def test_disabled_prompt_cannot_render(client: httpx.AsyncClient) -> None:
     assert rendered.status_code == 409
 
 
+async def test_prompt_options_expose_only_enabled_active_versions(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify product selectors receive active schemas without Prompt source text."""
+
+    enabled = await create_prompt_template(
+        client,
+        template_name="enabled-product-prompt",
+        content_text="Explain {{ topic }} for {{ audience }}",
+        variable_schema={"topic": "string", "audience": "string"},
+    )
+    disabled = await create_prompt_template(
+        client,
+        template_name="disabled-product-prompt",
+        content_text="Do not expose this body",
+        variable_schema={},
+    )
+    assert enabled.status_code == 200
+    assert disabled.status_code == 200
+    assert (
+        await client.patch(
+            "/api/v1/internal/prompt-templates/disabled-product-prompt/status",
+            headers=INTERNAL_HEADERS,
+            json={"status": "disabled", "actor_id": "prompt-test"},
+        )
+    ).status_code == 200
+
+    response = await client.get("/api/v1/prompt-templates")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "template_name": "enabled-product-prompt",
+            "purpose": None,
+            "current_version_number": 1,
+            "variable_schema": {"topic": "string", "audience": "string"},
+        }
+    ]
+    assert "content_text" not in response.text
+
+
 async def test_model_catalog_returns_latest_enabled_snapshot_by_creation_order(
     client: httpx.AsyncClient,
 ) -> None:
@@ -206,3 +247,120 @@ async def test_model_catalog_returns_latest_enabled_snapshot_by_creation_order(
     assert disabled.json()["known"] is False
     assert fallback.status_code == 200
     assert fallback.json()["catalog_version"] == "2"
+
+
+async def test_registered_model_bootstrap_is_explicit_idempotent_and_capability_gated(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify Registry models require explicit persistence and an enabled capability snapshot."""
+
+    empty_directory = await client.get(
+        "/api/v1/models", params={"requires_streaming": True}
+    )
+    first_bootstrap = await client.post(
+        "/api/v1/internal/models/bootstrap",
+        headers=INTERNAL_HEADERS,
+    )
+    second_bootstrap = await client.post(
+        "/api/v1/internal/models/bootstrap",
+        headers=INTERNAL_HEADERS,
+    )
+    unknown_capability = await client.get(
+        "/api/v1/models", params={"requires_streaming": True}
+    )
+
+    capability = await client.post(
+        "/api/v1/internal/model-catalog-versions",
+        headers=INTERNAL_HEADERS,
+        json={
+            "provider": "openai",
+            "model": "test-model",
+            "catalog_version": "model-directory-v1",
+            "source": "model-directory-test",
+            "context_window": 65_536,
+            "supports_streaming": True,
+            "tokenizer_name": "utf8_bytes_upper_bound",
+            "tokenizer_version": "v1",
+        },
+    )
+    available_directory = await client.get(
+        "/api/v1/models", params={"requires_streaming": True}
+    )
+
+    assert empty_directory.status_code == 200
+    assert empty_directory.json() == []
+    assert first_bootstrap.status_code == 200
+    assert first_bootstrap.json() == {"created_count": 1, "existing_count": 0}
+    assert second_bootstrap.status_code == 200
+    assert second_bootstrap.json() == {"created_count": 0, "existing_count": 1}
+    assert unknown_capability.status_code == 200
+    assert unknown_capability.json()[0]["model_identifier"] == "test-model"
+    assert unknown_capability.json()[0]["selectable"] is False
+    assert unknown_capability.json()[0]["unavailable_reason"] == "capability_unknown"
+    assert capability.status_code == 200
+    assert available_directory.status_code == 200
+    assert available_directory.json()[0]["selectable"] is True
+    assert available_directory.json()[0]["unavailable_reason"] is None
+    assert available_directory.json()[0]["catalog_version"] == "model-directory-v1"
+
+
+async def test_registered_model_directory_distinguishes_disablement_and_registry_failures(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify persisted models expose stable failure reasons without becoming selectable."""
+
+    registered_responses = []
+    for payload in [
+        {
+            "provider": "openai",
+            "model_identifier": "not-allowlisted",
+            "display_name": "Not allowlisted",
+            "sort_order": 20,
+        },
+        {
+            "provider": "deepseek",
+            "model_identifier": "provider-unavailable",
+            "display_name": "Provider unavailable",
+            "sort_order": 10,
+        },
+    ]:
+        response = await client.post(
+            "/api/v1/internal/models",
+            headers=INTERNAL_HEADERS,
+            json=payload,
+        )
+        assert response.status_code == 200
+        registered_responses.append(response.json())
+
+    duplicate = await client.post(
+        "/api/v1/internal/models",
+        headers=INTERNAL_HEADERS,
+        json={
+            "provider": "openai",
+            "model_identifier": "not-allowlisted",
+            "display_name": "Duplicate",
+        },
+    )
+    disabled = await client.patch(
+        f"/api/v1/internal/models/{registered_responses[0]['model_id']}",
+        headers=INTERNAL_HEADERS,
+        json={"status": "disabled"},
+    )
+    invalid_clear = await client.patch(
+        f"/api/v1/internal/models/{registered_responses[0]['model_id']}",
+        headers=INTERNAL_HEADERS,
+        json={"display_name": None},
+    )
+    directory = await client.get("/api/v1/models")
+
+    assert duplicate.status_code == 409
+    assert disabled.status_code == 200
+    assert disabled.json()["status"] == "disabled"
+    assert invalid_clear.status_code == 422
+    assert directory.status_code == 200
+    assert [entry["model_identifier"] for entry in directory.json()] == [
+        "provider-unavailable",
+        "not-allowlisted",
+    ]
+    assert directory.json()[0]["unavailable_reason"] == "provider_unavailable"
+    assert directory.json()[1]["unavailable_reason"] == "model_disabled"

@@ -270,6 +270,13 @@ class ModelCatalogStatus(str, enum.Enum):
     DISABLED = "disabled"
 
 
+class ModelRegistrationStatus(str, enum.Enum):
+    """Platform availability states for one stable registered model identity."""
+
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
 class ContextBuildStatus(str, enum.Enum):
     """Completion states for one persisted Context Build."""
 

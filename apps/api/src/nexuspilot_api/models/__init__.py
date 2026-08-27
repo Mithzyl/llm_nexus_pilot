@@ -72,6 +72,7 @@ from nexuspilot_api.models.enums import (
     MemoryType,
     MessageRole,
     ModelCatalogStatus,
+    ModelRegistrationStatus,
     ProjectMemoryStatus,
     ProjectStatus,
     PromptTemplateStatus,
@@ -108,6 +109,7 @@ from nexuspilot_api.models.prompt_catalog import (
     LlmPromptTemplate,
     LlmPromptTemplateChange,
     LlmPromptTemplateVersion,
+    LlmRegisteredModel,
 )
 from nexuspilot_api.models.records import (
     LlmModelToolCall,
@@ -166,6 +168,7 @@ __all__ = [
     "LlmProviderContinuationState",
     "LlmReasoningBlock",
     "LlmModelCatalogVersion",
+    "LlmRegisteredModel",
     "LlmModelToolCall",
     "LlmMessage",
     "LlmOutboxEvent",
@@ -199,6 +202,7 @@ __all__ = [
     "MemoryType",
     "MessageRole",
     "ModelCatalogStatus",
+    "ModelRegistrationStatus",
     "PromptTemplateStatus",
     "ProjectMemoryStatus",
     "ProjectStatus",

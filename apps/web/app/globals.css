@@ -234,6 +234,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .composer:focus-within { border-color: var(--text); box-shadow: 0 12px 42px var(--shadow), 0 0 0 3px color-mix(in srgb, var(--text) 8%, transparent); }
 .composer textarea { display: block; width: 100%; min-height: 44px; max-height: 240px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; }
 .composer textarea::placeholder { color: var(--muted); }
+.context-bindings { margin-top: 8px; border-top: 1px solid var(--line); }
+.context-bindings summary { display: flex; align-items: center; gap: 8px; min-height: 34px; color: var(--muted); cursor: pointer; list-style: none; font-size: 10px; }
+.context-bindings summary::-webkit-details-marker { display: none; }
+.context-bindings summary::before { content: "+"; width: 14px; color: var(--text); font: 600 12px var(--font-geist-mono); }
+.context-bindings[open] summary::before { content: "−"; }
+.context-bindings summary small { margin-left: auto; color: var(--muted); font: 500 8px var(--font-geist-mono); }
+.context-binding-body { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 10px 14px; padding: 2px 0 10px 22px; }
+.context-binding-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 9px; }
+.context-binding-field select, .context-binding-field input { min-width: 0; width: 100%; min-height: 32px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; background: var(--soft); color: var(--text); font: inherit; outline: 0; }
+.context-binding-field select:focus, .context-binding-field input:focus { border-color: var(--text); }
+.context-variable-list { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 9px; grid-column: 1 / -1; }
+.context-binding-retry { align-self: end; min-height: 32px; border: 0; background: transparent; color: var(--text); cursor: pointer; font-size: 9px; }
+.context-file-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
+.context-file-status small { font: 500 8px var(--font-geist-mono); }
 .composer-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--line); }
 .composer-config-controls, .composer-actions { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .composer-mode-row { display: flex; align-items: center; gap: 4px; padding-right: 10px; border-right: 1px solid var(--line); }
@@ -318,6 +332,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .section-title { display: flex; align-items: center; margin-bottom: 15px; }
 .section-title h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
 .section-title span { margin-left: auto; color: var(--muted); font: 500 8px var(--font-geist-mono); }
+.context-evidence-summary { display: grid; gap: 8px; margin: 0 0 15px; }
+.context-evidence-summary div { display: flex; align-items: baseline; gap: 12px; }
+.context-evidence-summary dt { color: var(--muted); font-size: 9px; }
+.context-evidence-summary dd { margin-left: auto; color: var(--text); font: 500 9px var(--font-geist-mono); text-align: right; }
+.context-source-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.context-source-list li { display: flex; align-items: flex-start; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.context-source-list li > div { display: grid; gap: 4px; min-width: 0; }
+.context-source-list strong { font-size: 10px; font-weight: 650; }
+.context-source-list small { overflow-wrap: anywhere; color: var(--muted); font: 500 8px/1.45 var(--font-geist-mono); }
+.context-source-list li > span { margin-left: auto; max-width: 48%; color: var(--muted); font: 500 8px/1.45 var(--font-geist-mono); text-align: right; overflow-wrap: anywhere; }
+.context-source-list li > span.selected { color: var(--text); }
+.context-source-list li > span.excluded { color: var(--danger); }
+.context-evidence-empty, .context-evidence-error { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.context-evidence-error { color: var(--danger); }
 .detail-list { margin: 0; }
 .detail-list > div { display: flex; padding: 7px 0; }
 .detail-list dt { color: var(--muted); font-size: 10px; }
@@ -410,6 +438,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 
 @container (max-width: 640px) {
   .composer-toolbar { align-items: stretch; flex-direction: column; gap: 10px; }
+  .context-binding-body, .context-variable-list { grid-template-columns: 1fr; }
   .composer-config-controls { flex-wrap: wrap; }
   .composer-actions { width: 100%; justify-content: flex-end; }
 }

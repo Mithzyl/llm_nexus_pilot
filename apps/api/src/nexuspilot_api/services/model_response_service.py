@@ -128,7 +128,9 @@ class ModelInvocationService:
             payload,
             payload.to_model_request(),
             model_attempt_id,
-            context_source_references=context_source_references,
+            context_source_references=(
+                context_source_references or payload.context_source_references
+            ),
         )
         model_attempt = await self._start_model_attempt(
             payload,
@@ -198,7 +200,9 @@ class ModelInvocationService:
             payload,
             payload.to_model_request(),
             model_attempt_id,
-            context_source_references=context_source_references,
+            context_source_references=(
+                context_source_references or payload.context_source_references
+            ),
         )
         model_attempt = await self._start_model_attempt(
             payload,

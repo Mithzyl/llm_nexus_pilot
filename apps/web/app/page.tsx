@@ -10,12 +10,14 @@ import {
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
+  getContextBuildEvidence,
   getLatestRun,
   getReasoningBlocks,
   getRun,
   getRunAgentWorkflow,
   listLatestMessagePage,
-  listProviders,
+  listPromptOptions,
+  listModels,
   listSessions,
   NexusApiError,
   nexusFetch,
@@ -28,11 +30,13 @@ import type {
   AgentWorkflowNodeResult,
   AgentWorkflowResult,
   AgentWorkflowSummary,
+  ContextBuildEvidence,
   Message,
   MessageRole,
   MessageSummary,
   ProviderCatalog,
   ProviderName,
+  PromptOption,
   ReasoningPresentation,
   ReasoningBlockSnapshot,
   Run,
@@ -60,12 +64,19 @@ import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { CompactSelect } from "../components/composer/CompactSelect";
 import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
+import { ContextBindings } from "../components/context/ContextBindings";
+import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
+import {
+  ContextBindingValidationError,
+  createContextSourceReferences,
+} from "../lib/context-bindings";
 import {
   composerConversationClearance,
   composerTextareaHeight,
 } from "../lib/composer-layout";
 import {
   isModelSelectionAllowed,
+  modelDirectoryToProviderCatalog,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
 import {
@@ -206,6 +217,12 @@ export default function Home() {
   >("loading");
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
   const [selectedModel, setSelectedModel] = useState("");
+  const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
+  const [promptOptionsState, setPromptOptionsState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const [selectedPromptName, setSelectedPromptName] = useState("");
+  const [promptVariableDrafts, setPromptVariableDrafts] = useState<Record<string, string>>({});
   const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
     null,
   );
@@ -227,6 +244,11 @@ export default function Home() {
     EMPTY_AGENT_EVENT_STATE,
   );
   const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [contextEvidenceResult, setContextEvidenceResult] = useState<{
+    contextBuildId: string;
+    evidence: ContextBuildEvidence | null;
+    errorMessage: string | null;
+  } | null>(null);
   const [runUsage, setRunUsage] = useState<{ input: number | null; output: number | null; cost: string } | null>(null);
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
@@ -263,6 +285,25 @@ export default function Home() {
           selectedModel
         ]
       : undefined;
+  const selectedPrompt =
+    promptOptions.find((prompt) => prompt.template_name === selectedPromptName) ?? null;
+  const latestContextBuildId =
+    run && "attempts" in run ? run.attempts.at(-1)?.context_build_id ?? null : null;
+  const contextEvidence =
+    contextEvidenceResult?.contextBuildId === latestContextBuildId
+      ? contextEvidenceResult.evidence
+      : null;
+  const contextEvidenceError =
+    contextEvidenceResult?.contextBuildId === latestContextBuildId
+      ? contextEvidenceResult.errorMessage
+      : null;
+  const contextEvidenceState = !latestContextBuildId
+    ? "empty"
+    : contextEvidenceResult?.contextBuildId !== latestContextBuildId
+      ? "loading"
+      : contextEvidenceError
+        ? "error"
+        : "ready";
 
   /** Batch text and reasoning token projections into one browser animation frame. */
   function scheduleAssistantProjection(assistantLocalId: string) {
@@ -290,6 +331,46 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsDark(savedTheme === "dark");
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void listPromptOptions(controller.signal)
+      .then((options) => {
+        setPromptOptions(options);
+        setPromptOptionsState("ready");
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setPromptOptions([]);
+          setPromptOptionsState("error");
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!latestContextBuildId) return;
+    const controller = new AbortController();
+    void getContextBuildEvidence(latestContextBuildId, controller.signal)
+      .then((evidence) => {
+        setContextEvidenceResult({
+          contextBuildId: latestContextBuildId,
+          evidence,
+          errorMessage: null,
+        });
+      })
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setContextEvidenceResult({
+            contextBuildId: latestContextBuildId,
+            evidence: null,
+            errorMessage:
+              error instanceof Error ? error.message : "上下文证据暂不可用。",
+          });
+        }
+      });
+    return () => controller.abort();
+  }, [latestContextBuildId]);
 
   useEffect(() => {
     const scrollContainer = conversationScroll.current;
@@ -415,7 +496,8 @@ export default function Home() {
     const { controller, requestId, timeoutId } = startProviderCatalogRequest();
     setProviderCatalogState("loading");
     try {
-      const catalog = await listProviders(controller.signal);
+      const modelDirectory = await listModels(controller.signal);
+      const catalog = modelDirectoryToProviderCatalog(modelDirectory);
       if (providerCatalogRequestId.current !== requestId) return;
       setProviderCatalog(catalog);
       const initialSelection = resolveInitialModelSelection(catalog);
@@ -436,11 +518,43 @@ export default function Home() {
     }
   }
 
+  /** Reload product-safe Prompt options without affecting model selection or messages. */
+  async function loadProductPromptOptions() {
+    setPromptOptionsState("loading");
+    try {
+      const options = await listPromptOptions();
+      setPromptOptions(options);
+      setPromptOptionsState("ready");
+      if (
+        selectedPromptName &&
+        !options.some((option) => option.template_name === selectedPromptName)
+      ) {
+        setSelectedPromptName("");
+        setPromptVariableDrafts({});
+      }
+    } catch {
+      setPromptOptions([]);
+      setPromptOptionsState("error");
+    }
+  }
+
+  /** Select one immutable Prompt version and initialize its variable controls. */
+  function handlePromptChange(templateName: string) {
+    setSelectedPromptName(templateName);
+    const prompt = promptOptions.find((option) => option.template_name === templateName);
+    setPromptVariableDrafts(
+      prompt
+        ? Object.fromEntries(Object.keys(prompt.variable_schema).map((name) => [name, ""]))
+        : {},
+    );
+  }
+
   useEffect(() => {
     const { controller, requestId, timeoutId } = startProviderCatalogRequest();
-    void listProviders(controller.signal)
-      .then((catalog) => {
+    void listModels(controller.signal)
+      .then((modelDirectory) => {
         if (providerCatalogRequestId.current !== requestId) return;
+        const catalog = modelDirectoryToProviderCatalog(modelDirectory);
         setProviderCatalog(catalog);
         const initialSelection = resolveInitialModelSelection(catalog);
         setSelectedProvider(initialSelection.provider);
@@ -921,6 +1035,20 @@ export default function Home() {
       !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
     ) return;
     const submittedMode = executionMode;
+    let contextSourceReferences;
+    try {
+      contextSourceReferences = createContextSourceReferences(
+        submittedMode === "response" ? selectedPrompt : null,
+        promptVariableDrafts,
+      );
+    } catch (error) {
+      setErrorMessage(
+        error instanceof ContextBindingValidationError
+          ? error.message
+          : "无法校验上下文绑定。",
+      );
+      return;
+    }
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
     let submittedSessionId: string | null = null;
@@ -993,6 +1121,7 @@ export default function Home() {
           provider: selectedProvider,
           model: selectedModel,
           input,
+          context_source_references: contextSourceReferences,
           timeout_seconds: 60,
           reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
@@ -1327,6 +1456,23 @@ export default function Home() {
                 aria-label="消息内容"
                 rows={1}
               />
+              {executionMode === "response" && (
+                <ContextBindings
+                  promptOptions={promptOptions}
+                  promptOptionsState={promptOptionsState}
+                  selectedPromptName={selectedPromptName}
+                  promptVariableDrafts={promptVariableDrafts}
+                  disabled={isSending}
+                  onPromptChange={handlePromptChange}
+                  onVariableChange={(variableName, value) =>
+                    setPromptVariableDrafts((current) => ({
+                      ...current,
+                      [variableName]: value,
+                    }))
+                  }
+                  onRetry={() => void loadProductPromptOptions()}
+                />
+              )}
               <div className="composer-toolbar">
                 <div className="composer-config-controls">
                   <div className="composer-mode-row" aria-label="执行模式">
@@ -1426,6 +1572,12 @@ export default function Home() {
           <div><span>预估费用</span><strong>{runUsage?.cost ?? "—"}</strong></div>
           <div><span>{agentWorkflow ? "模型调用" : "Attempt"}</span><strong>{agentWorkflow ? `${agentWorkflow.model_call_count} / ${agentWorkflow.max_model_calls}` : attemptId ? "已记录" : "—"}</strong></div>
         </div>
+
+        <ContextEvidencePanel
+          evidence={contextEvidence}
+          state={contextEvidenceState}
+          errorMessage={contextEvidenceError}
+        />
 
         {agentWorkflow ? (
           <AgentWorkflowPanel

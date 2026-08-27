@@ -359,6 +359,23 @@ async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
             json={"user_id": "response-context-owner", "content_text": "What is remembered?"},
         )
     ).json()
+    prompt = await client.post(
+        "/api/v1/internal/prompt-templates",
+        headers={"X-Internal-API-Key": "test-internal-key-long-enough"},
+        json={
+            "template_name": "response-product-prompt",
+            "content_text": "Answer for {{ audience }}.",
+            "variable_schema": {"audience": "string"},
+            "created_by_actor_id": "response-context-test",
+        },
+    )
+    assert prompt.status_code == 200
+    artifact = await client.post(
+        f"/api/v1/runs/{current_turn['run']['run_id']}/artifacts",
+        data={"artifact_type": "context-test-fixture"},
+        files={"file": ("brief.txt", b"Fixture-only artifact context", "text/plain")},
+    )
+    assert artifact.status_code == 201
 
     provider = CapturingContextProvider()
     registry = ProviderRegistry()
@@ -376,16 +393,28 @@ async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
             "provider": "openai",
             "model": "test-model",
             "input": "What is remembered?",
+            "context_source_references": {
+                "prompt": {
+                    "template_name": "response-product-prompt",
+                    "version_number": 1,
+                    "variables": {"audience": "engineers"},
+                },
+                "artifact_ids": [artifact.json()["artifact_id"]],
+            },
             "idempotency_key": "response-context-request-0001",
         },
     )
 
     assert response.status_code == 200
-    assert [message.content for message in provider.requests[0].messages] == [
+    assert provider.requests[0].system_instruction is not None
+    assert "Answer for engineers." in provider.requests[0].system_instruction
+    provider_message_texts = [message.content for message in provider.requests[0].messages]
+    assert provider_message_texts[:3] == [
         "Remember beta",
         "Beta is remembered",
         "What is remembered?",
     ]
+    assert "Fixture-only artifact context" in provider_message_texts[3]
     run_detail = (
         await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
     ).json()
@@ -398,7 +427,26 @@ async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
         message["content"]
         for message in context_build["messages"]
         if message["role"] != "system"
-    ] == ["Remember beta", "Beta is remembered", "What is remembered?"]
+    ][:3] == ["Remember beta", "Beta is remembered", "What is remembered?"]
+
+    evidence = await client.get(
+        f"/api/v1/context-builds/{context_build_id}/evidence",
+        params={"user_id": "response-context-owner"},
+    )
+    cross_user_evidence = await client.get(
+        f"/api/v1/context-builds/{context_build_id}/evidence",
+        params={"user_id": "another-owner"},
+    )
+
+    assert evidence.status_code == 200
+    assert "messages" not in evidence.json()
+    assert "content_text" not in evidence.text
+    assert {source["source_type"] for source in evidence.json()["sources"]} >= {
+        "message",
+        "prompt_release",
+        "artifact",
+    }
+    assert cross_user_evidence.status_code == 404
 
 
 async def test_non_streaming_response_persists_attempt_and_cost(

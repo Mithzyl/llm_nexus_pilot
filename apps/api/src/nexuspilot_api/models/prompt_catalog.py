@@ -2,6 +2,7 @@
 
 from datetime import datetime
 
+from nexuspilot_models.contracts import ProviderName
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -18,7 +19,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nexuspilot_api.models.base import Base, TimestampMixin, new_id, utc_now
-from nexuspilot_api.models.enums import ModelCatalogStatus, PromptTemplateStatus
+from nexuspilot_api.models.enums import (
+    ModelCatalogStatus,
+    ModelRegistrationStatus,
+    PromptTemplateStatus,
+)
 
 
 class LlmPromptTemplate(TimestampMixin, Base):
@@ -161,3 +166,51 @@ class LlmModelCatalogVersion(Base):
         default=utc_now,
         server_default=func.now(),
     )
+
+
+class LlmRegisteredModel(TimestampMixin, Base):
+    """Represent one stable platform model identity independent of capability versions."""
+
+    __tablename__ = "llm_models"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "model_identifier",
+            name="uq_llm_model_provider_identifier",
+        ),
+        Index(
+            "ix_llm_model_directory_order",
+            "provider",
+            "status",
+            "sort_order",
+            "display_name",
+            "model_identifier",
+        ),
+    )
+
+    model_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    provider: Mapped[ProviderName] = mapped_column(
+        Enum(
+            ProviderName,
+            values_callable=lambda provider_names: [
+                provider_name.value for provider_name in provider_names
+            ],
+            native_enum=False,
+            length=32,
+        )
+    )
+    model_identifier: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[ModelRegistrationStatus] = mapped_column(
+        Enum(
+            ModelRegistrationStatus,
+            values_callable=lambda statuses: [status.value for status in statuses],
+            native_enum=False,
+            length=32,
+        ),
+        default=ModelRegistrationStatus.ENABLED,
+        index=True,
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)

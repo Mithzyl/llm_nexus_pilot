@@ -125,6 +125,28 @@ test("checks model invocation ownership before forwarding reasoning history", as
   }
 });
 
+test("forces Context evidence reads into the development-user scope", async () => {
+  const upstreamUrls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    upstreamUrls.push(String(input));
+    return Response.json({ context_build_id: "context-1", sources: [] });
+  }) as typeof fetch;
+
+  try {
+    const response = await GET(
+      createRequest("context-builds/context-1/evidence?user_id=another-user"),
+      createContext("context-builds/context-1/evidence"),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(upstreamUrls, [
+      "https://nexus.test/api/v1/context-builds/context-1/evidence?user_id=nexuspilot-web",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("rejects cross-user workflow creation and nested workflow reads", async () => {
   const upstreamUrls: string[] = [];
   globalThis.fetch = (async (input) => {

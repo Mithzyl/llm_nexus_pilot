@@ -23,6 +23,90 @@ export type ProviderCatalog = {
   >;
 };
 
+export type ModelUnavailableReason =
+  | "model_disabled"
+  | "provider_unavailable"
+  | "model_not_allowed"
+  | "capability_unknown"
+  | "streaming_unsupported"
+  | "structured_output_unsupported"
+  | "tools_unsupported"
+  | "vision_unsupported";
+
+export type ModelDirectoryEntry = {
+  model_id: string;
+  provider: ProviderName;
+  model_identifier: string;
+  display_name: string;
+  description: string | null;
+  status: "enabled" | "disabled";
+  sort_order: number;
+  metadata_json: Record<string, unknown>;
+  registry_available: boolean;
+  selectable: boolean;
+  unavailable_reason: ModelUnavailableReason | null;
+  catalog_version_id: string | null;
+  catalog_version: string | null;
+  context_window: number | null;
+  supports_tools: boolean | null;
+  supports_structured_output: boolean | null;
+  supports_vision: boolean | null;
+  supports_caching: boolean | null;
+  supports_streaming: boolean | null;
+  tokenizer_name: string | null;
+  tokenizer_version: string | null;
+  reasoning_capabilities: ModelReasoningCapabilities;
+};
+
+export type PromptVariableType = "string" | "integer" | "number" | "boolean";
+export type PromptVariableValue = string | number | boolean;
+
+export type PromptOption = {
+  template_name: string;
+  purpose: string | null;
+  current_version_number: number;
+  variable_schema: Record<string, PromptVariableType>;
+};
+
+export type RuntimeContextSourceReferences = {
+  prompt?: {
+    template_name: string;
+    version_number: number;
+    variables: Record<string, PromptVariableValue>;
+  };
+  artifact_ids: string[];
+};
+
+export type ContextSourceEvidence = {
+  source_type: string;
+  source_id: string;
+  source_version: string | null;
+  trust_level: string;
+  is_required: boolean;
+  token_estimate: number;
+  selection_status: "selected" | "excluded";
+  exclusion_reason: string | null;
+  content_hash: string | null;
+};
+
+export type ContextBuildEvidence = {
+  context_build_id: string;
+  catalog_version_id: string;
+  user_id: string;
+  session_id: string | null;
+  run_id: string | null;
+  current_user_message_id: string | null;
+  provider: string;
+  model: string;
+  policy_version: string;
+  token_budget: number;
+  reserved_output_tokens: number;
+  input_token_estimate: number;
+  status: "completed" | "failed";
+  sources: ContextSourceEvidence[];
+  created_at: string;
+};
+
 export type ModelReasoningCapabilities = {
   presentation: "raw" | "summary" | "hidden" | "none";
   supports_streaming_presentation: boolean;

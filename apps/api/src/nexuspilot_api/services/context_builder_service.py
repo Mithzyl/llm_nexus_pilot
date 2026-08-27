@@ -36,6 +36,7 @@ from nexuspilot_api.models import (
 )
 from nexuspilot_api.schemas.context_builds import (
     ContextBuildCreate,
+    ContextBuildEvidenceRead,
     ContextBuildRead,
     ContextMessageRead,
     ContextSourceRead,
@@ -549,6 +550,64 @@ async def get_context_build(
         candidates,
         selected_candidates,
         stored_sources=sources,
+    )
+
+
+async def get_context_build_evidence(
+    db_session: AsyncSession,
+    context_build_id: str,
+    *,
+    user_id: str,
+) -> ContextBuildEvidenceRead:
+    """Return an owner-scoped Context evidence projection without source contents.
+
+    A mismatched owner receives the same not-found result as an unknown build so
+    callers cannot probe Context identifiers belonging to another user.
+    """
+
+    context_build = await db_session.get(LlmContextBuild, context_build_id)
+    if context_build is None or context_build.user_id != user_id:
+        raise ResourceNotFoundError("Context Build")
+    if context_build.catalog_version_id is None:
+        raise ResourceConflictError("Historical Context Build lacks catalog evidence")
+    sources = list(
+        (
+            await db_session.scalars(
+                select(LlmContextSource)
+                .where(LlmContextSource.context_build_id == context_build_id)
+                .order_by(LlmContextSource.source_order)
+            )
+        ).all()
+    )
+    return ContextBuildEvidenceRead(
+        context_build_id=context_build.context_build_id,
+        catalog_version_id=context_build.catalog_version_id,
+        user_id=context_build.user_id,
+        session_id=context_build.session_id,
+        run_id=context_build.run_id,
+        current_user_message_id=context_build.current_user_message_id,
+        provider=context_build.provider,
+        model=context_build.model,
+        policy_version=context_build.policy_version,
+        token_budget=context_build.token_budget,
+        reserved_output_tokens=context_build.reserved_output_tokens,
+        input_token_estimate=context_build.input_token_estimate,
+        status=context_build.status,
+        sources=[
+            ContextSourceRead(
+                source_type=source.source_type,
+                source_id=source.source_id,
+                source_version=source.source_version,
+                trust_level=source.trust_level,
+                is_required=source.is_required,
+                token_estimate=source.token_estimate,
+                selection_status=source.selection_status,
+                exclusion_reason=source.exclusion_reason,
+                content_hash=source.content_hash,
+            )
+            for source in sources
+        ],
+        created_at=context_build.created_at,
     )
 
 

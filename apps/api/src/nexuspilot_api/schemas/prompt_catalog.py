@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
+from nexuspilot_models.contracts import ModelReasoningCapabilities, ProviderName
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -15,7 +16,11 @@ from pydantic import (
     model_validator,
 )
 
-from nexuspilot_api.models import ModelCatalogStatus, PromptTemplateStatus
+from nexuspilot_api.models import (
+    ModelCatalogStatus,
+    ModelRegistrationStatus,
+    PromptTemplateStatus,
+)
 from nexuspilot_api.schemas.base import ApiModel
 
 PROMPT_VARIABLE_PATTERN = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -112,6 +117,15 @@ class PromptTemplateRead(ApiModel):
     updated_at: datetime
 
 
+class PromptTemplateOptionRead(ApiModel):
+    """Expose one enabled Prompt version for a product selector without its source body."""
+
+    template_name: str
+    purpose: str | None
+    current_version_number: int
+    variable_schema: dict[str, PromptVariableType]
+
+
 class PromptRenderCreate(BaseModel):
     """Validate one render request that never triggers a model call."""
 
@@ -176,3 +190,105 @@ class ModelCapabilityRead(ApiModel):
     supports_streaming: bool | None
     tokenizer_name: str | None
     tokenizer_version: str | None
+
+
+class RegisteredModelCreate(BaseModel):
+    """Validate explicit registration of one stable provider/model identity."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderName
+    model_identifier: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=4_000)
+    status: ModelRegistrationStatus = ModelRegistrationStatus.ENABLED
+    sort_order: int = Field(default=0, ge=-1_000_000, le=1_000_000)
+    metadata_json: dict = Field(default_factory=dict)
+
+
+class RegisteredModelUpdate(BaseModel):
+    """Validate mutable display and availability fields for one registered model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=4_000)
+    status: ModelRegistrationStatus | None = None
+    sort_order: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
+    metadata_json: dict | None = None
+
+    @model_validator(mode="after")
+    def require_one_update(self) -> "RegisteredModelUpdate":
+        """Reject empty PATCH bodies that cannot change the registered model."""
+
+        if not self.model_fields_set:
+            raise ValueError("At least one registered model field must be supplied")
+        non_nullable_fields = {"display_name", "status", "sort_order", "metadata_json"}
+        if any(
+            field_name in self.model_fields_set
+            and getattr(self, field_name) is None
+            for field_name in non_nullable_fields
+        ):
+            raise ValueError("Registered model update cannot clear a required field")
+        return self
+
+
+class RegisteredModelRead(ApiModel):
+    """Expose stable registered-model fields without provider credentials."""
+
+    model_id: str
+    provider: ProviderName
+    model_identifier: str
+    display_name: str
+    description: str | None
+    status: ModelRegistrationStatus
+    sort_order: int
+    metadata_json: dict
+    created_at: datetime
+    updated_at: datetime
+
+
+class RegisteredModelBootstrapRead(BaseModel):
+    """Report explicit Registry-to-directory initialization without exposing settings."""
+
+    created_count: int
+    existing_count: int
+
+
+ModelUnavailableReason = Literal[
+    "model_disabled",
+    "provider_unavailable",
+    "model_not_allowed",
+    "capability_unknown",
+    "streaming_unsupported",
+    "structured_output_unsupported",
+    "tools_unsupported",
+    "vision_unsupported",
+]
+
+
+class ModelDirectoryEntryRead(ApiModel):
+    """Expose one stable model with current Registry and capability availability evidence."""
+
+    model_id: str
+    provider: ProviderName
+    model_identifier: str
+    display_name: str
+    description: str | None
+    status: ModelRegistrationStatus
+    sort_order: int
+    metadata_json: dict
+    registry_available: bool
+    selectable: bool
+    unavailable_reason: ModelUnavailableReason | None
+    catalog_version_id: str | None
+    catalog_version: str | None
+    context_window: int | None
+    supports_tools: bool | None
+    supports_structured_output: bool | None
+    supports_vision: bool | None
+    supports_caching: bool | None
+    supports_streaming: bool | None
+    tokenizer_name: str | None
+    tokenizer_version: str | None
+    reasoning_capabilities: ModelReasoningCapabilities

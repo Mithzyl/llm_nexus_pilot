@@ -1,6 +1,8 @@
 """Context Build preview and evidence controllers."""
 
-from fastapi import APIRouter, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Query, Response, status
 
 from nexuspilot_api.routers.common import (
     DatabaseSessionDependency,
@@ -8,12 +10,14 @@ from nexuspilot_api.routers.common import (
 )
 from nexuspilot_api.schemas.context_builds import (
     ContextBuildCreate,
+    ContextBuildEvidenceRead,
     ContextBuildRead,
 )
 from nexuspilot_api.services.context_builder_service import (
     build_context,
     build_runtime_context,
     get_context_build,
+    get_context_build_evidence,
 )
 
 router = APIRouter(tags=["context-builds"])
@@ -67,3 +71,21 @@ async def get_context_build_by_id(
     """Return one persisted Context Build with historical selection evidence."""
 
     return await get_context_build(db_session, context_build_id)
+
+
+@router.get(
+    "/context-builds/{context_build_id}/evidence",
+    response_model=ContextBuildEvidenceRead,
+)
+async def get_context_build_evidence_by_id(
+    context_build_id: str,
+    db_session: DatabaseSessionDependency,
+    user_id: Annotated[str, Query(min_length=1, max_length=128)],
+) -> ContextBuildEvidenceRead:
+    """Return a content-free Context evidence projection for the owning user."""
+
+    return await get_context_build_evidence(
+        db_session,
+        context_build_id,
+        user_id=user_id,
+    )

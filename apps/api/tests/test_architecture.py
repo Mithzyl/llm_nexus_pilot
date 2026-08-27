@@ -158,10 +158,11 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
         ),
         (
             context_builds.router,
-                {
-                    "/context-builds",
-                    "/context-builds/preview",
+            {
+                "/context-builds",
+                "/context-builds/preview",
                 "/context-builds/{context_build_id}",
+                "/context-builds/{context_build_id}/evidence",
             },
         ),
         (
@@ -176,14 +177,19 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
         (
             prompt_catalog.router,
             {
+                "/prompt-templates",
                 "/prompt-renders",
                 "/model-capabilities",
+                "/models",
                 "/internal/prompt-templates",
                 "/internal/prompt-templates/{template_name}/versions",
                 "/internal/prompt-templates/{template_name}/active-version",
                 "/internal/prompt-templates/{template_name}/status",
                 "/internal/model-catalog-versions",
                 "/internal/model-catalog-versions/{catalog_version_id}/status",
+                "/internal/models",
+                "/internal/models/{model_id}",
+                "/internal/models/bootstrap",
             },
         ),
         (

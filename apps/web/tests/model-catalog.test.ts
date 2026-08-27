@@ -4,9 +4,10 @@ import test from "node:test";
 import {
   filterProviderModels,
   isModelSelectionAllowed,
+  modelDirectoryToProviderCatalog,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
-import type { ProviderCatalog } from "../lib/types";
+import type { ModelDirectoryEntry, ProviderCatalog } from "../lib/types";
 
 const catalog: ProviderCatalog = {
   providers: ["deepseek", "openai_compatible"],
@@ -45,4 +46,55 @@ test("treats an empty allowlist as an unrestricted custom-model provider", () =>
     ),
     false,
   );
+});
+
+test("builds selectable provider options only from stable available model records", () => {
+  const baseEntry: ModelDirectoryEntry = {
+    model_id: "model-1",
+    provider: "deepseek",
+    model_identifier: "deepseek-v4-flash",
+    display_name: "DeepSeek V4 Flash",
+    description: null,
+    status: "enabled",
+    sort_order: 10,
+    metadata_json: {},
+    registry_available: true,
+    selectable: true,
+    unavailable_reason: null,
+    catalog_version_id: "catalog-1",
+    catalog_version: "2026-08-27",
+    context_window: 65_536,
+    supports_tools: true,
+    supports_structured_output: true,
+    supports_vision: false,
+    supports_caching: true,
+    supports_streaming: true,
+    tokenizer_name: "deepseek",
+    tokenizer_version: "v1",
+    reasoning_capabilities: {
+      presentation: "raw",
+      supports_streaming_presentation: true,
+      continuation: "raw-reasoning-replay",
+      supports_reasoning_tokens: true,
+    },
+  };
+  const unavailableEntry: ModelDirectoryEntry = {
+    ...baseEntry,
+    model_id: "model-2",
+    model_identifier: "deepseek-v4-pro",
+    selectable: false,
+    unavailable_reason: "capability_unknown",
+    catalog_version_id: null,
+    catalog_version: null,
+  };
+
+  assert.deepEqual(modelDirectoryToProviderCatalog([baseEntry, unavailableEntry]), {
+    providers: ["deepseek"],
+    models_by_provider: { deepseek: ["deepseek-v4-flash"] },
+    reasoning_capabilities_by_provider_model: {
+      deepseek: {
+        "deepseek-v4-flash": baseEntry.reasoning_capabilities,
+      },
+    },
+  });
 });

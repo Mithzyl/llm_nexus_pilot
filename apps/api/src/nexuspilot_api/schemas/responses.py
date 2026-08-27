@@ -16,6 +16,8 @@ from nexuspilot_models.contracts import (
 )
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from nexuspilot_api.schemas.context_builds import RuntimeContextSourceReferences
+
 
 class ResponsesRequest(BaseModel):
     """Accept an OpenAI-Responses-inspired request while retaining explicit provider routing."""
@@ -30,6 +32,9 @@ class ResponsesRequest(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     input: str | list[Message]
     instructions: str | None = Field(default=None, max_length=100_000)
+    context_source_references: RuntimeContextSourceReferences = Field(
+        default_factory=RuntimeContextSourceReferences
+    )
     tools: list[ToolDefinition] = Field(default_factory=list, max_length=128)
     output_schema: dict[str, Any] | None = None
     json_object_output: bool = False
@@ -49,7 +54,7 @@ class ResponsesRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_input(self) -> "ResponsesRequest":
-        """Reject empty string and empty-list inputs before a provider attempt is created."""
+        """Reject empty inputs, conflicting outputs, and unanchored Context references."""
 
         if isinstance(self.input, str) and not self.input.strip():
             raise ValueError("input cannot be empty")
@@ -57,6 +62,13 @@ class ResponsesRequest(BaseModel):
             raise ValueError("input cannot be empty")
         if self.json_object_output and self.output_schema is not None:
             raise ValueError("json_object_output cannot be combined with output_schema")
+        if (
+            self.context_source_references != RuntimeContextSourceReferences()
+            and self.current_user_message_id is None
+        ):
+            raise ValueError(
+                "context_source_references require a current_user_message_id"
+            )
         return self
 
     def to_model_request(self) -> ModelRequest:

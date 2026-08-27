@@ -7,10 +7,13 @@ import {
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
+  getContextBuildEvidence,
   getLatestRun,
   getRunAgentWorkflow,
   listAgentWorkflowNodes,
   listLatestMessagePage,
+  listPromptOptions,
+  listModels,
   listProviders,
   listSessions,
   openAgentWorkflowStream,
@@ -36,6 +39,88 @@ test("loads provider names and their server-configured model options", async () 
       "deepseek-v4-pro",
     ]);
     assert.deepEqual(catalog.models_by_provider.openai_compatible, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("loads the stable model directory with the Web streaming contract", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = (async (input) => {
+    requests.push(String(input));
+    return Response.json([
+      {
+        model_id: "model-1",
+        provider: "deepseek",
+        model_identifier: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        description: null,
+        status: "enabled",
+        sort_order: 10,
+        metadata_json: {},
+        registry_available: true,
+        selectable: true,
+        unavailable_reason: null,
+        catalog_version_id: "catalog-1",
+        catalog_version: "2026-08-27",
+        context_window: 65_536,
+        supports_tools: true,
+        supports_structured_output: true,
+        supports_vision: false,
+        supports_caching: true,
+        supports_streaming: true,
+        tokenizer_name: "deepseek",
+        tokenizer_version: "v1",
+        reasoning_capabilities: {
+          presentation: "raw",
+          supports_streaming_presentation: true,
+          continuation: "raw-reasoning-replay",
+          supports_reasoning_tokens: true,
+        },
+      },
+    ]);
+  }) as typeof fetch;
+
+  try {
+    const models = await listModels();
+    assert.equal(models[0].model_id, "model-1");
+    assert.deepEqual(requests, ["/api/nexus/models?requires_streaming=true"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("loads safe Prompt options and owner-scoped Context evidence", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    if (url.endsWith("/prompt-templates")) {
+      return Response.json([
+        {
+          template_name: "explain-topic",
+          purpose: "Explain one topic",
+          current_version_number: 2,
+          variable_schema: { topic: "string" },
+        },
+      ]);
+    }
+    return Response.json({
+      context_build_id: "context-1",
+      user_id: "nexuspilot-web",
+      sources: [],
+    });
+  }) as typeof fetch;
+
+  try {
+    const prompts = await listPromptOptions();
+    const evidence = await getContextBuildEvidence("context-1");
+    assert.equal(prompts[0].current_version_number, 2);
+    assert.equal(evidence.context_build_id, "context-1");
+    assert.deepEqual(requests, [
+      "/api/nexus/prompt-templates",
+      "/api/nexus/context-builds/context-1/evidence?user_id=nexuspilot-web",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
