@@ -6,6 +6,35 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import ContextBuildStatus, ContextSourceSelectionStatus
 from nexuspilot_api.schemas.base import ApiModel
+from nexuspilot_api.schemas.prompt_catalog import PromptRenderCreate
+
+
+class RuntimeContextSourceReferences(BaseModel):
+    """Declare trusted, version-checked runtime facts for one model invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: PromptRenderCreate | None = None
+    artifact_ids: list[str] = Field(default_factory=list, max_length=32)
+    agent_handoff_ids: list[str] = Field(default_factory=list, max_length=32)
+    agent_node_execution_ids: list[str] = Field(default_factory=list, max_length=32)
+    evaluation_ids: list[str] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def reject_duplicate_references(self) -> "RuntimeContextSourceReferences":
+        """Keep source identity and ordering deterministic within every source class."""
+
+        for values in (
+            self.artifact_ids,
+            self.agent_handoff_ids,
+            self.agent_node_execution_ids,
+            self.evaluation_ids,
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError("Context source references cannot contain duplicates")
+            if any(len(value) != 36 for value in values):
+                raise ValueError("Context source references must use 36-character IDs")
+        return self
 
 
 class ContextBuildCreate(BaseModel):
@@ -25,6 +54,9 @@ class ContextBuildCreate(BaseModel):
     reserved_output_tokens: int = Field(default=0, ge=0, le=100_000)
     system_instruction: str | None = Field(default=None, min_length=1, max_length=100_000)
     additional_user_input: str | None = Field(default=None, min_length=1, max_length=100_000)
+    source_references: RuntimeContextSourceReferences = Field(
+        default_factory=RuntimeContextSourceReferences
+    )
     recent_message_count: int = Field(default=12, ge=1, le=100)
 
     @model_validator(mode="after")
@@ -42,6 +74,8 @@ class ContextBuildCreate(BaseModel):
             )
         if self.additional_user_input is not None and self.run_id is None:
             raise ValueError("additional_user_input is available only for runtime context")
+        if self.run_id is None and self.source_references != RuntimeContextSourceReferences():
+            raise ValueError("source_references are available only for runtime context")
         if (
             self.token_budget is not None
             and self.reserved_output_tokens >= self.token_budget
@@ -56,6 +90,8 @@ class ContextSourceRead(ApiModel):
     source_type: str
     source_id: str
     source_version: str | None
+    trust_level: str
+    is_required: bool
     token_estimate: int
     selection_status: ContextSourceSelectionStatus
     exclusion_reason: str | None
@@ -84,6 +120,7 @@ class ContextBuildRead(ApiModel):
     project_id: str | None
     provider: str
     model: str
+    policy_version: str
     token_budget: int
     reserved_output_tokens: int
     recent_message_count: int

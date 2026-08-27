@@ -1,6 +1,6 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 8 月 26 日
+**文档日期：** 2026 年 8 月 27 日
 **文档状态：** 已完成（阶段2稳定基线保持完成；2026年8月26日确认统一Context Builder负责全部模型上下文，运行时接入作为阶段4当前集成工作项，不回退本阶段状态）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
@@ -19,7 +19,7 @@
 ## 当前事实
 
 - 当前实现：阶段1已经完成 User、Session、Message、Run、Task、Model Attempt、Provider Transport Attempt、Run Artifact 以及内部审计资源的新增、查询和必要动作闭环。
-- 当前实现：`llm_attempts` 已保存供应商、模型、token、费用、耗时、供应商请求编号、原始请求/响应 URI 和错误；阶段2应复用该表，不创建第二套调用记录。
+- 当前实现：`llm_attempts` 已保存供应商、模型、token、费用、耗时、供应商请求编号、原始请求/响应 URI、错误和不含Prompt正文的稳定前缀指纹；阶段2及后续工作流应复用该表，不创建第二套调用记录。
 - 当前实现：`ObjectStorage` 已能保存二进制内容并返回 SHA-256、大小和 `minio://` URI；原始供应商请求和响应应复用该能力。
 - 当前实现：`ObjectStorage` 已增加受控删除、按前缀列举和内容 hash 复核；Memory 快照会在登记数据库记录前复核对象。自动孤儿对象巡检与补偿任务尚未实现。
 - 当前实现：`POST /api/v1/runs/{run_id}/attempts` 是阶段1的记录写入接口，不具备模型调用能力。阶段2增加统一生成接口后，该接口暂时保留，用于内部迁移和兼容，不作为普通业务调用入口。
@@ -28,7 +28,7 @@
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
 - 当前实现：平台只有公共 API Key 与内部 API Key，没有可验证的最终用户认证主体；现有 Memory 详情、纠正和删除按 `memory_id` 与受信调用方边界工作，不能声称已完成用户本人越权隔离。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
-- 已验证：Context Builder当前稳定请求只接受显式instruction、安全instruction和指定数量的Session Message；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。Prompt、Memory、Knowledge、Artifact和Agent来源尚未接入，属于新增统一来源合同的实施范围。
+- 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时明确引用的Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。Memory、Knowledge和Tool来源仍未通过正式启用门禁。
 - 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
 - 已验证：Evaluation/Guardrail 拒绝未知或非法规则，同一幂等键只允许相同输入重放，候选 Attempt 必须属于指定 Task，历史非法规则安全失败。
 - 当前结论：阶段2稳定范围已满足完成条件。Memory 仍是规划和实验性准备代码，Knowledge 仍等待独立知识库规划；两者均不因阶段2完成而成为运行时能力。
@@ -104,7 +104,7 @@ exclusion_reason, content_hash, message_role, content_text
 
 ### 统一模型上下文构建与阶段3、阶段4运行时集成设计
 
-状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入以及Attempt/Node证据已经实现；Prompt Release、Memory、Knowledge、Artifact对象读取、Handoff/Evaluation/Tool来源和浏览器证据抽屉仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
+状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入、明确绑定的Prompt Release、受限文本Artifact读取、Agent/Handoff/Evaluation类型化来源以及Attempt/Node证据已经实现；Memory、Knowledge、Tool来源、普通产品入口的Prompt/Artifact绑定和浏览器证据抽屉仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
 
 #### 2026年8月26日已实现基线
 
@@ -112,14 +112,18 @@ exclusion_reason, content_hash, message_role, content_text
 - `POST /api/v1/context-builds`校验User、Session、Run与当前User Message关系，以当前消息序号排除稍后并发消息，并按最新完整User/Assistant轮次向前选择。当前文本、平台安全指令和受控节点输入属于必选来源。
 - 运行时Context Build使用Model Catalog上下文窗口、tokenizer名称和版本，保存全部候选快照、选择状态、内容哈希和排除原因；相同幂等键与相同请求返回原构建，不重新读取Session。
 - 快速Responses以Context Build消息替换单条Composer输入；Agent各模型节点在Session历史之后追加本节点类型化输入。Model Attempt、Agent Node Input和`context_assembly`分别保存`context_build_id`及实际选中的Message ID。
-- 当前User Message若只有`content_uri`会在Provider调用前明确失败，不能转换为空文本。旧的对象消息只记录为未支持来源；ObjectStorage受限读取尚未实现。
+- 当前User Message若只有`content_uri`会在Provider调用前明确失败，不能转换为空文本。旧的对象消息仍记录为未支持来源；明确引用的Run Artifact已经支持受限文本读取，但Message对象内容尚未建立等价的类型、大小与归属合同。
 - 当前兼容入口仍允许不带消息锚点的低层Responses请求，此时不会创建Context Build，也不会读取Session历史；Web普通对话已经迁移到原子轮次与消息锚点合同。
+- `context_policy.v2`保存每个来源的类型、版本、内容哈希、信任级别、必选标记、token估算和纳入/排除结果。运行时只接受明确引用且通过Run归属与完成状态校验的Prompt Release、Artifact、Handoff、工作流节点和Evaluation；Artifact额外校验MIME、100000字节上限、对象大小、SHA-256和UTF-8完整性。
+- Agent节点把已提交Handoff、确定性验证、独立审核和Evaluation作为独立来源交给Context Builder，不再同时复制进自由模型输入；当前User Message已经存在时也不重复附加`Run.user_request`。无Session锚点的低层兼容工作流继续使用原显式输入合同。
 
-#### 当前问题与目标行为
+2026年8月27日验证结果：统一上下文定向测试为`70 passed`，后端与模型适配层全量测试为`276 passed, 4 skipped`，Ruff全量检查通过；4项跳过仍是需要真实MySQL/MinIO环境的基础设施测试。MySQL开发库已向前迁移到唯一head `20260827_0015`，从空库生成MySQL离线迁移SQL成功。`alembic check`仍报告Memory表三个归属外键在历史迁移中的`SET NULL`与当前ORM `RESTRICT`不一致；该漂移早于本次Context迁移，因Memory仍暂停且改变删除语义不属于本工作项，本次没有顺带修改。
 
-- 当前快速对话把 Composer 本次输入作为单个 User Message 直接发送到 `/responses`；`run_id` 只用于执行归属和审计，后端不会读取所属 Session 的历史消息。
-- 当前 `model_only_v1` 的 `context_assembly` 只登记 `Run.user_request`，`included_message_ids` 为空；Controller 和 Worker 不读取此前会话消息。
-- 目标态中，两种模式以及Agent的每一个模型节点必须使用同一套来源归属、信任分级、消息锚点、预算选择和排除原因。快速对话生成Provider中立消息序列；Agent节点生成类型化节点上下文；当前`Run.user_request`不能重复追加。
+#### 已解决问题与剩余目标行为
+
+- 已解决：快速对话不再只发送单条Composer文本；Run锚定的Context Build会读取当前Message之前的完整有界Session轮次，并排除稍后并发消息。
+- 已解决：`model_only_v1`的Controller、Worker、Reviewer和Final synthesis均按自己的Provider/Model创建Context Build，已提交协作来源不再藏在一个自由`request_input`中，当前`Run.user_request`也不会重复追加。
+- 剩余目标：两种模式继续使用同一套来源归属、信任分级、消息锚点、预算选择和排除原因；Memory、Knowledge、Tool和对象Message只有通过各自门禁后才能增加来源Provider。
 - Context Builder负责组装全部已授权且已启用的上下文。来源服务负责产生和校验自己的数据，Context Builder不能伪造Memory、执行Knowledge检索算法、修改Artifact或重写Handoff事实。
 
 #### 全部上下文来源

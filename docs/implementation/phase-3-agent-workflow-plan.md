@@ -1,6 +1,6 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 26 日
+**文档日期：** 2026 年 8 月 27 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime基线已实现并通过自动化验证；统一Context Builder接入属于阶段4新增集成工作项）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
@@ -28,7 +28,7 @@
 
 ## 当前事实
 
-- 阶段2 Model Gateway、Context Builder、Prompt/Model Catalog 和 Evaluation 可以独立调用。当前工作流已复用 Model Gateway 的 `ModelInvocationService`、Model Attempt 与费用事实，但上下文节点尚未调用 Context Builder 或 Prompt Catalog，Evaluation 也由工作流直接写入现有表。
+- 阶段2 Model Gateway、Context Builder、Prompt/Model Catalog 和 Evaluation 可以独立调用。当前工作流已复用 Model Gateway 的 `ModelInvocationService`、Model Attempt 与费用事实；所有有Session锚点的模型节点均调用Context Builder，已提交Handoff、确定性验证、独立审核和Evaluation通过类型化引用进入后续节点。工作流当前没有配置Prompt Release绑定，仍使用版本化代码指令。
 - `llm_runs`、`llm_tasks`、`llm_attempts`、`llm_evaluations` 和 `llm_artifacts` 已保存主要业务事实。
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
@@ -300,7 +300,7 @@ memory_packet_id
 ```
 
 - 当前实现已用Run关联的当前User Message锚定Session文本历史；Controller、Worker、Reviewer和Final synthesis分别按自己的Provider/Model创建Context Build，Model Attempt与Node Input保存`context_build_id`和实际Message ID。
-- `context_assembly`已登记锚点之前的有界Message ID；Prompt Release、Memory、Knowledge、Artifact对象内容、Handoff/Evaluation和Tool结果尚未作为统一来源进入Context Builder，`memory_packet_id`仍为`null`。
+- `context_assembly`已登记锚点之前的有界Message ID；Context Builder已支持明确绑定的Prompt Release、受限文本Artifact，并把已提交Handoff、确定性验证、独立审核和Evaluation作为下游模型节点的类型化来源。Memory、Knowledge、Tool和对象Message仍未启用，`memory_packet_id`保持`null`。
 - 目标态中单个结构化来源不能从中间截断；排除或裁剪必须返回证据。
 - 2026年8月26日确认的统一上下文接入以[阶段2统一模型上下文设计](phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准：工作流按Run关联的当前User Message建立并发锚点；Controller、Worker、Reviewer和Final synthesis都向Context Builder声明本节点需要的来源类型，由它统一组装Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、验证/Evaluation及未来Tool结果。不同角色模型使用各自Context Build，不能重复追加当前目标，也不能在工作流内部另写历史或节点结果裁剪逻辑。
 
@@ -953,7 +953,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 ## 2026 年 8 月 24 日工作流 Token 缓存优化规划
 
-本工作项是阶段3完成后的性能与费用优化，不更改阶段3“已完成”状态，也不改变模型输出、证据合同或审核语义。当前代码已经从 OpenAI 兼容、Anthropic 和 Gemini 响应中归一化读取 `cached_tokens`，并聚合到 Workflow 用量；尚未形成按 Provider、Model、节点角色和稳定前缀分析的命中率基线，也没有统一的显式缓存请求策略。DeepSeek 和 OpenAI 兼容调用当前主要依赖供应商自动前缀缓存；Anthropic 适配器只读取 `cache_read_input_tokens`，尚未发送 `cache_control`；Gemini 适配器只读取 `cachedContentTokenCount`，尚未创建或引用显式缓存对象。
+本工作项是阶段3完成后的性能与费用优化，不更改阶段3“已完成”状态，也不改变模型输出、证据合同或审核语义。当前代码已经从 OpenAI 兼容、Anthropic 和 Gemini 响应中归一化读取 `cached_tokens`，并聚合到 Workflow 用量；平台生成的 Agent 输入与Schema已经使用确定性JSON序列化，`llm_attempts.prompt_prefix_fingerprint`保存不含Prompt正文的稳定前缀SHA-256指纹。现有Attempt查询可返回Provider、Model、输入Token、缓存命中Token、延迟和该指纹，但尚未提供按节点角色分组的服务端统计，也没有统一的显式缓存请求策略。DeepSeek 和 OpenAI 兼容调用当前主要依赖供应商自动前缀缓存；Anthropic 适配器只读取 `cache_read_input_tokens`，尚未发送 `cache_control`；Gemini 适配器只读取 `cachedContentTokenCount`，尚未创建或引用显式缓存对象。
 
 供应商事实以官方文档为准：
 
@@ -989,10 +989,12 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 | 步骤 | 修改对象 | 预期结果 | 验证方式 | 状态 |
 |---|---|---|---|---|
-| 1 | 现有 Attempt/Workflow 用量读取与诊断 | 得到按 Provider、Model、节点角色分组的冷/热请求基线，并纠正跨供应商总输入口径 | 固定样本单元测试、原始用量对照和本地查询 | 未开始 |
-| 2 | Agent 稳定前缀和平台生成 JSON 序列化 | 静态指令与 Schema 在前，动态内容在后；相同语义的稳定前缀字节一致 | 先行失败测试、前缀指纹快照和工作流语义回归 | 未开始 |
+| 1 | 现有 Attempt/Workflow 用量读取与诊断 | 得到按 Provider、Model、节点角色分组的冷/热请求基线，并纠正跨供应商总输入口径 | 固定样本单元测试、原始用量对照和本地查询 | 进行中：Attempt已保存并返回稳定前缀指纹，服务端分组统计和跨供应商输入口径仍未实现 |
+| 2 | Agent 稳定前缀和平台生成 JSON 序列化 | 静态指令与 Schema 在前，动态内容在后；相同语义的稳定前缀字节一致 | 先行失败测试、前缀指纹快照和工作流语义回归 | 已完成：映射键和空白确定性序列化，动态消息不参与稳定前缀指纹 |
 | 3 | Model Gateway 能力目录与 Provider 适配器 | 只在能力明确且有收益时增加 Provider 无关缓存策略，由适配器映射供应商字段 | Provider 请求合同、能力拒绝和用量归一化测试 | 未开始 |
 | 4 | 真实供应商对照与启用决定 | 记录命中、延迟、费用和失效行为；无可重复收益时不启用显式缓存 | 重复请求集成测试、敏感字段扫描和结果等价评估 | 未开始 |
+
+2026年8月27日完成步骤2及步骤1的指纹证据部分：Agent节点对平台生成的模型输入、提示式JSON Schema和原生输出Schema使用统一确定性序列化；Model Gateway根据实际系统指令、工具和输出合同生成稳定前缀指纹，并在Provider调用前保存到Model Attempt。指纹不包含动态消息或Prompt正文，Provider和Model继续使用Attempt已有字段分组。统一上下文定向回归为`70 passed`，完整后端与模型适配层测试为`276 passed, 4 skipped`；4项跳过仍是需要真实MySQL/MinIO环境的基础设施测试。Ruff全量检查及MySQL离线迁移SQL通过，Alembic唯一head为`20260827_0015`。真实供应商缓存收益、服务端分组统计和显式缓存请求策略尚未验证或启用。
 
 ## 测试设计
 
@@ -1073,7 +1075,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 9 | 阶段6遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段6装配 | Schema 和持久化字段检查 |
 | 10 | `model_only_v1` 基础设施与供应商验证 | 已完成离线门禁 | 快速测试、迁移链和 MySQL 离线 SQL 可验证；真实供应商调用必须使用部署环境密钥，保持可选 | 完整后端测试、Alembic 检查、可选供应商冒烟 |
 | 11 | 阶段7恢复后的 Tool Runtime 集成 | 不属于阶段3完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段7工具循环、写隔离、取消和未知结果测试 |
-| 12 | 统一Context Builder接入 | 进行中 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build及Attempt/Node证据；Prompt、Memory、Knowledge、Artifact对象读取、Agent/Handoff、Evaluation和Tool来源仍待实现 | 已有第二轮会话、并发锚点、完整轮次、对象当前消息失败和节点证据测试；其余来源门禁与真实Provider矩阵待补 |
+| 12 | 统一Context Builder接入 | 进行中 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build、Prompt Release、受限文本Artifact、Agent/Handoff/Evaluation类型化来源、去重和Attempt/Node证据；Memory、Knowledge、Tool及产品入口绑定仍待各自门禁 | 已有第二轮会话、并发锚点、完整轮次、Prompt/Artifact、Agent协作来源、当前目标单次出现、对象失败和节点证据测试；其余来源门禁与真实Provider矩阵待补 |
 
 ## 失败与恢复设计
 

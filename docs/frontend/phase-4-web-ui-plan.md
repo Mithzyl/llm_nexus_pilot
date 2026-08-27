@@ -666,13 +666,13 @@ apps/web/
 |---|---|---|---|
 | 会话与路由 | 创建和选择会话、原子创建Run与当前User Message、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | 轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
 | Provider 与模型选择 | 服务端 Provider/Model 目录、推理能力、搜索、键盘选择、自定义模型、加载/失败/空目录状态 | 最终用户自己的 Provider 凭据和设置页等待阶段5 | 进行中 |
-| Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build | 未知Attempt的首事件前断线只能读取最终事实；Prompt、Memory、Knowledge、Artifact、Agent与Tool来源尚未全部接入；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
+| Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端明确引用的Prompt Release/文本Artifact来源 | 未知Attempt的首事件前断线只能读取最终事实；普通产品入口尚未提供Prompt/Artifact绑定，Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
 | 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
 | Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 240px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键 | 输入区仍需随完整响应式门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
-| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Session文本Context Build，并保留当前节点结构化输入、Attempt/Node Context证据及Worker/Handoff数据 | Prompt、Memory、Knowledge、Artifact对象读取、Agent/Handoff、Evaluation及未来Tool结果尚未统一作为Context来源 | 进行中 |
+| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离 | 真实 Provider 浏览器端到端、可访问性、响应式、性能、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
 | 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
@@ -717,7 +717,9 @@ apps/web/
 
 ### 快速对话与Agent统一模型上下文
 
-状态：进行中。原子轮次提交、快速Responses消息锚点和Agent Session文本历史已经实现；其他来源与Context证据抽屉尚未实现。全部来源、信任、预算、并发锚点和证据合同以[阶段2统一模型上下文设计](../implementation/phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准；阶段4只负责提交用户意图、消费后端事实和展示失败，不在浏览器拼接任何上下文来源。
+状态：进行中。原子轮次提交、快速Responses消息锚点、Agent Session文本历史、明确绑定的Prompt Release、受限文本Artifact以及Agent/Handoff/Evaluation类型化来源已经实现；Context证据抽屉、普通产品入口绑定和Memory/Knowledge/Tool门禁尚未实现。全部来源、信任、预算、并发锚点和证据合同以[阶段2统一模型上下文设计](../implementation/phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准；阶段4只负责提交用户意图、消费后端事实和展示失败，不在浏览器拼接任何上下文来源。
+
+2026年8月27日实现事实：后端`context_policy.v2`已记录来源类型、版本、SHA-256、信任级别、必选标记、token估算和选择结果；Prompt Release固定实际渲染版本，文本Artifact校验Run归属、MIME、100000字节上限、对象大小、哈希与UTF-8，Agent下游节点按明确引用读取Handoff、验证、审核及Evaluation。Provider输入测试确认当前用户目标只出现一次，协作事实也不再同时复制到节点自由JSON。定向测试`70 passed`、全量后端与模型适配层`276 passed, 4 skipped`、Ruff通过；真实Provider浏览器矩阵和Context证据抽屉仍待完成。
 
 #### 前端数据流
 
@@ -795,7 +797,7 @@ apps/web/
 |---|---|---|---|---|
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
 | 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及Context/Prompt/Evaluation开发证据 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
-| 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组和费用预留；待接入Session历史 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | Agent消息锚点、不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
+| 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
 | 阶段4 | Next.js、BFF、主题、响应式、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 代码块复制/长行/流式性能、Enter 只换行、按钮单次提交，以及构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |

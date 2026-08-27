@@ -45,7 +45,10 @@ from nexuspilot_api.models import (
     LlmRun,
     new_id,
 )
-from nexuspilot_api.schemas.context_builds import ContextBuildCreate
+from nexuspilot_api.schemas.context_builds import (
+    ContextBuildCreate,
+    RuntimeContextSourceReferences,
+)
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
 from nexuspilot_api.services.context_builder_service import build_runtime_context
 from nexuspilot_api.services.lookups import require_run, require_task
@@ -54,6 +57,36 @@ from nexuspilot_api.services.model_reasoning_service import (
     project_reasoning_stream_event,
     record_model_response_event,
 )
+
+
+def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
+    """Hash cache-relevant instructions and contracts without retaining prompt content.
+
+    Dynamic conversation messages are deliberately excluded so callers can compare
+    requests that share the same platform-controlled prefix. Provider and model are
+    stored separately on the model attempt and must remain part of diagnostic grouping.
+    """
+
+    if (
+        request.system_instruction is None
+        and not request.tools
+        and request.output_schema is None
+        and not request.json_object_output
+    ):
+        return None
+    prefix_contract = {
+        "system_instruction": request.system_instruction,
+        "tools": [tool.model_dump(mode="json") for tool in request.tools],
+        "output_schema": request.output_schema,
+        "json_object_output": request.json_object_output,
+    }
+    serialized_prefix = json.dumps(
+        prefix_contract,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized_prefix.encode()).hexdigest()
 
 
 class ModelInvocationService:
@@ -82,7 +115,12 @@ class ModelInvocationService:
             settings=selected_settings,
         )
 
-    async def generate(self, payload: ResponsesRequest) -> ResponsesResult:
+    async def generate(
+        self,
+        payload: ResponsesRequest,
+        *,
+        context_source_references: RuntimeContextSourceReferences | None = None,
+    ) -> ResponsesResult:
         """Execute a response and finalize its durable LLM model invocation record."""
 
         model_attempt_id = new_id()
@@ -90,11 +128,13 @@ class ModelInvocationService:
             payload,
             payload.to_model_request(),
             model_attempt_id,
+            context_source_references=context_source_references,
         )
         model_attempt = await self._start_model_attempt(
             payload,
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
+            prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
         )
         provider_dispatch_may_have_started = False
         try:
@@ -145,7 +185,12 @@ class ModelInvocationService:
             await self._fail_model_attempt(model_attempt, error)
             raise error from exc
 
-    async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
+    async def stream(
+        self,
+        payload: ResponsesRequest,
+        *,
+        context_source_references: RuntimeContextSourceReferences | None = None,
+    ) -> AsyncIterator[StreamEvent]:
         """Stream normalized events and finalize success, failure, timeout, or cancellation."""
 
         model_attempt_id = new_id()
@@ -153,11 +198,13 @@ class ModelInvocationService:
             payload,
             payload.to_model_request(),
             model_attempt_id,
+            context_source_references=context_source_references,
         )
         model_attempt = await self._start_model_attempt(
             payload,
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
+            prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
         )
         sequence = 0
         active_reasoning_blocks: dict[str, dict[str, str]] = {}
@@ -363,8 +410,9 @@ class ModelInvocationService:
         *,
         attempt_id: str,
         context_build_id: str | None,
+        prompt_prefix_fingerprint: str | None,
     ) -> LlmModelAttempt:
-        """Validate ownership and persist a started invocation with Context lineage."""
+        """Persist a started invocation with Context lineage and safe prefix diagnostics."""
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -396,6 +444,7 @@ class ModelInvocationService:
             model=payload.model,
             request_type="stream" if payload.stream else "generation",
             request_key=payload.idempotency_key,
+            prompt_prefix_fingerprint=prompt_prefix_fingerprint,
             retry_count=0,
             status=AttemptStatus.STARTED,
             reasoning_display_policy=payload.reasoning_display_policy.value,
@@ -431,6 +480,8 @@ class ModelInvocationService:
         payload: ResponsesRequest,
         request: ModelRequest,
         model_attempt_id: str,
+        *,
+        context_source_references: RuntimeContextSourceReferences | None,
     ) -> tuple[ModelRequest, str | None]:
         """Replace single-turn input with a persisted Run-anchored Session context.
 
@@ -465,11 +516,15 @@ class ModelInvocationService:
                     else None
                 ),
                 recent_message_count=100,
+                source_references=(
+                    context_source_references or RuntimeContextSourceReferences()
+                ),
                 idempotency_key=self._context_idempotency_key(
                     payload.idempotency_key,
                     model_attempt_id,
                 ),
             ),
+            object_storage=self.storage,
         )
         provider_messages = [
             Message(role=MessageRole(message.role), content=message.content)

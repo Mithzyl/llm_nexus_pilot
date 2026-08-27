@@ -31,6 +31,9 @@ from nexuspilot_api.infrastructure.provider_registry import create_provider_regi
 from nexuspilot_api.main import app
 from nexuspilot_api.models import AttemptStatus, LlmModelAttempt
 from nexuspilot_api.schemas.responses import ResponsesRequest
+from nexuspilot_api.services.model_response_service import (
+    calculate_prompt_prefix_fingerprint,
+)
 
 
 class RawResponseFailingObjectStorage:
@@ -277,6 +280,31 @@ def test_http_response_request_accepts_the_provider_output_cap() -> None:
     assert payload.to_model_request().max_output_tokens == 65_536
 
 
+def test_prompt_prefix_fingerprint_ignores_dynamic_messages_and_mapping_order() -> None:
+    """Verify equivalent stable contracts share a fingerprint across dynamic inputs."""
+
+    first_request = ResponsesRequest(
+        run_id="run-1",
+        provider=ProviderName.OPENAI,
+        model="test-model",
+        input="first dynamic question",
+        instructions="Use the stable response contract.",
+        output_schema={"type": "object", "properties": {"answer": {"type": "string"}}},
+    ).to_model_request()
+    second_request = ResponsesRequest(
+        run_id="run-2",
+        provider=ProviderName.OPENAI,
+        model="test-model",
+        input="second dynamic question",
+        instructions="Use the stable response contract.",
+        output_schema={"properties": {"answer": {"type": "string"}}, "type": "object"},
+    ).to_model_request()
+
+    assert calculate_prompt_prefix_fingerprint(
+        first_request
+    ) == calculate_prompt_prefix_fingerprint(second_request)
+
+
 async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
     client: httpx.AsyncClient,
 ) -> None:
@@ -386,6 +414,7 @@ async def test_non_streaming_response_persists_attempt_and_cost(
             "provider": "openai",
             "model": "test-model",
             "input": "Hello",
+            "instructions": "Use the stable response contract.",
             "idempotency_key": "request-key-0001",
         },
     )
@@ -400,6 +429,7 @@ async def test_non_streaming_response_persists_attempt_and_cost(
     attempt = detail["attempts"][0]
     assert attempt["status"] == "completed"
     assert attempt["request_key"] == "request-key-0001"
+    assert len(attempt["prompt_prefix_fingerprint"]) == 64
     assert attempt["retry_count"] == 0
     assert len(attempt["retries"]) == 1
     assert attempt["retries"][0]["status_code"] == 200

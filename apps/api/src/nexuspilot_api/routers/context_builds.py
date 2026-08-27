@@ -2,7 +2,10 @@
 
 from fastapi import APIRouter, Response, status
 
-from nexuspilot_api.routers.common import DatabaseSessionDependency
+from nexuspilot_api.routers.common import (
+    DatabaseSessionDependency,
+    ObjectStorageDependency,
+)
 from nexuspilot_api.schemas.context_builds import (
     ContextBuildCreate,
     ContextBuildRead,
@@ -25,10 +28,15 @@ async def post_runtime_context_build(
     payload: ContextBuildCreate,
     response: Response,
     db_session: DatabaseSessionDependency,
+    object_storage: ObjectStorageDependency,
 ) -> ContextBuildRead:
     """Build or idempotently replay one Run-anchored model input context."""
 
-    context_build, was_replayed = await build_runtime_context(db_session, payload)
+    context_build, was_replayed = await build_runtime_context(
+        db_session,
+        payload,
+        object_storage=object_storage,
+    )
     if was_replayed:
         response.status_code = status.HTTP_200_OK
     return context_build

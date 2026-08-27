@@ -18,6 +18,12 @@ class ModelAttemptCreate(BaseModel):
     provider: str = Field(min_length=1, max_length=64)
     model: str = Field(min_length=1, max_length=128)
     request_type: str = Field(default="generation", min_length=1, max_length=64)
+    prompt_prefix_fingerprint: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     status: AttemptStatus
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -58,6 +64,7 @@ class ModelAttemptRead(ApiModel):
     model: str
     request_type: str
     request_key: str | None
+    prompt_prefix_fingerprint: str | None
     retry_count: int
     status: AttemptStatus
     input_tokens: int | None
@@ -88,6 +95,7 @@ class ModelAttemptSummary(ApiModel):
     provider: str
     model: str
     request_type: str
+    prompt_prefix_fingerprint: str | None
     retry_count: int
     status: AttemptStatus
     input_tokens: int | None

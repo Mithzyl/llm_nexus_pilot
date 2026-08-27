@@ -22,28 +22,29 @@ MODEL_ONLY_DENIED_CAPABILITIES = frozenset(
 PROMPT_ONLY_JSON_SCHEMA_METADATA_KEYS = frozenset({"additionalProperties", "title"})
 
 
-def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
-    """Hash logical creation input while excluding its transport-only stream choice."""
+def serialize_agent_generated_json(value: Any) -> str:
+    """Serialize platform-generated Agent JSON with stable mapping order and whitespace."""
 
-    canonical_payload = payload.model_dump(mode="json", exclude={"stream"})
-    serialized = json.dumps(
-        canonical_payload,
+    return json.dumps(
+        value,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
+    """Hash logical creation input while excluding its transport-only stream choice."""
+
+    canonical_payload = payload.model_dump(mode="json", exclude={"stream"})
+    serialized = serialize_agent_generated_json(canonical_payload)
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def hash_node_input(value: dict[str, Any]) -> str:
     """Hash exact node input references and bounded deterministic values."""
 
-    serialized = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    serialized = serialize_agent_generated_json(value)
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
@@ -82,11 +83,7 @@ def structured_model_instructions(
     if not prompted_json:
         return instructions
     prompt_schema = _remove_prompt_only_json_schema_metadata(output_model.model_json_schema())
-    serialized_prompt_schema = json.dumps(
-        prompt_schema,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+    serialized_prompt_schema = serialize_agent_generated_json(prompt_schema)
     allowed_top_level_fields = ", ".join(
         json.dumps(field_name, ensure_ascii=False) for field_name in output_model.model_fields
     )

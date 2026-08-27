@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -73,6 +74,9 @@ class LlmContextBuild(Base):
     )
     provider: Mapped[str] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(128))
+    policy_version: Mapped[str] = mapped_column(
+        String(64), default="context_policy.v2"
+    )
     token_budget: Mapped[int] = mapped_column(Integer)
     reserved_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     recent_message_count: Mapped[int] = mapped_column(Integer, default=12)
@@ -112,6 +116,10 @@ class LlmContextSource(Base):
     source_type: Mapped[str] = mapped_column(String(64))
     source_id: Mapped[str] = mapped_column(String(36))
     source_version: Mapped[str | None] = mapped_column(String(64))
+    trust_level: Mapped[str] = mapped_column(
+        String(32), default="legacy_unclassified"
+    )
+    is_required: Mapped[bool] = mapped_column(Boolean, default=False)
     message_role: Mapped[str | None] = mapped_column(String(32))
     source_order: Mapped[int] = mapped_column(Integer)
     token_estimate: Mapped[int] = mapped_column(Integer)

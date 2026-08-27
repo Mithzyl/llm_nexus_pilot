@@ -36,6 +36,7 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
     WorkflowExecutionStateService,
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
+    serialize_agent_generated_json,
     structured_model_instructions,
 )
 from nexuspilot_api.features.memory.schemas.collaboration_memory import (
@@ -597,6 +598,15 @@ def test_model_instructions_allow_general_knowledge_without_claiming_external_ev
     assert "Never claim tools, files, tests, network requests, or external evidence" in instructions
 
 
+def test_agent_generated_json_serialization_is_stable_for_equivalent_mappings() -> None:
+    """Verify mapping insertion order cannot change an Agent request's cacheable bytes."""
+
+    first = {"task": {"title": "explain", "priority": 1}, "evidence": ["a", "b"]}
+    second = {"evidence": ["a", "b"], "task": {"priority": 1, "title": "explain"}}
+
+    assert serialize_agent_generated_json(first) == serialize_agent_generated_json(second)
+
+
 async def test_budgeted_workflow_requires_an_explicit_output_bound(
     client: httpx.AsyncClient,
 ) -> None:
@@ -705,6 +715,10 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
             "Create an evidence-bounded answer",
         ]
         assert provider_request.messages[-1].content.startswith("{")
+        assert sum(
+            message.content.count("Create an evidence-bounded answer")
+            for message in provider_request.messages
+        ) == 1
     model_nodes = [
         node
         for node in response.json()["nodes"]
@@ -720,6 +734,20 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
         ]
         for node in model_nodes
     )
+    final_node = next(node for node in model_nodes if node["node_key"] == "final_synthesis")
+    final_context = (
+        await client.get(
+            f"/api/v1/context-builds/{final_node['input']['context_build_id']}"
+        )
+    ).json()
+    final_source_types = {source["source_type"] for source in final_context["sources"]}
+    assert {"agent_handoff", "agent_node", "evaluation"}.issubset(final_source_types)
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata["agent_node_execution_key"] == "final_synthesis"
+    )
+    assert json.loads(final_request.messages[-1].content) == {}
     run_detail = (
         await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
     ).json()

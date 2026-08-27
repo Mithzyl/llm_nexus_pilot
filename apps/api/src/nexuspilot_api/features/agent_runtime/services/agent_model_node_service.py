@@ -1,6 +1,5 @@
 """Invoke and validate model-backed Agent workflow nodes."""
 
-import json
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -11,9 +10,11 @@ from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import AgentModelBinding
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
     hash_node_input,
+    serialize_agent_generated_json,
     structured_model_instructions,
 )
 from nexuspilot_api.models import (
+    AgentWorkflowNodeStatus,
     ContextSourceSelectionStatus,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
@@ -22,6 +23,7 @@ from nexuspilot_api.models import (
     LlmModelAttempt,
     MessageRole,
 )
+from nexuspilot_api.schemas.context_builds import RuntimeContextSourceReferences
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 
@@ -91,10 +93,21 @@ class AgentModelNodeService:
             output_model=model_output,
             prompted_json=prompted_json,
         )
-        serialized_model_input = json.dumps(model_input, ensure_ascii=False)
+        current_user_message_id = await self._find_current_user_message_id(workflow.run_id)
+        context_source_references = await self._context_references_for_node(
+            node,
+            enabled=current_user_message_id is not None,
+        )
+        provider_model_input = self._provider_model_input(
+            node,
+            model_input,
+            has_current_user_message=current_user_message_id is not None,
+            context_source_references=context_source_references,
+        )
+        serialized_model_input = serialize_agent_generated_json(provider_model_input)
         output_schema = None if prompted_json else model_output.model_json_schema()
         serialized_output_schema = (
-            "" if output_schema is None else json.dumps(output_schema, ensure_ascii=False)
+            "" if output_schema is None else serialize_agent_generated_json(output_schema)
         )
         await self.workflow_state.ensure_workflow_running(workflow)
         remaining_wall_time_ms = self.workflow_state.remaining_wall_time_ms(workflow)
@@ -128,9 +141,6 @@ class AgentModelNodeService:
             remaining_wall_time_ms / 1_000,
         )
         try:
-            current_user_message_id = await self._find_current_user_message_id(
-                workflow.run_id
-            )
             response = await self.model_invocation_service.generate(
                 ResponsesRequest(
                     run_id=workflow.run_id,
@@ -156,9 +166,10 @@ class AgentModelNodeService:
                         f"agent:{workflow.workflow_execution_id}:{node.node_sequence}"
                     ),
                     stream=False,
-                )
+                ),
+                context_source_references=context_source_references,
             )
-            await self._bind_context_evidence(node, response.id, model_input)
+            await self._bind_context_evidence(node, response.id, provider_model_input)
             await self.workflow_state.ensure_workflow_running(workflow)
             if response.tool_calls:
                 raise InvalidRequestError(
@@ -196,6 +207,86 @@ class AgentModelNodeService:
             .order_by(LlmMessage.sequence.desc())
             .limit(1)
         )
+
+    async def _context_references_for_node(
+        self,
+        node: LlmAgentWorkflowNodeExecution,
+        *,
+        enabled: bool,
+    ) -> RuntimeContextSourceReferences:
+        """Resolve committed source-node evidence for an anchored Agent model call."""
+
+        if not enabled:
+            return RuntimeContextSourceReferences()
+        node_input = node.input_json or {}
+        source_node_ids = list(node_input.get("source_node_execution_ids") or [])
+        loaded_source_nodes = list(
+            (
+                await self.model_invocation_service.db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.node_execution_id.in_(source_node_ids),
+                        LlmAgentWorkflowNodeExecution.run_id == node.run_id,
+                        LlmAgentWorkflowNodeExecution.status
+                        == AgentWorkflowNodeStatus.COMPLETED,
+                    )
+                )
+            ).all()
+        )
+        source_nodes_by_id = {
+            source_node.node_execution_id: source_node
+            for source_node in loaded_source_nodes
+        }
+        typed_source_nodes = [
+            source_nodes_by_id[source_node_id]
+            for source_node_id in source_node_ids
+            if source_node_id in source_nodes_by_id
+            and source_nodes_by_id[source_node_id].output_type
+            in {"deterministic_verification", "independent_review"}
+        ]
+        evaluation_ids: list[str] = []
+        artifact_ids = list(node_input.get("artifact_ids") or [])
+        handoff_ids = list(node_input.get("handoff_ids") or [])
+        for source_node in typed_source_nodes:
+            evidence = source_node.evidence_json or {}
+            evaluation_ids.extend(evidence.get("evaluation_ids") or [])
+            artifact_ids.extend(evidence.get("artifact_ids") or [])
+            handoff_ids.extend(evidence.get("handoff_ids") or [])
+        return RuntimeContextSourceReferences(
+            artifact_ids=list(dict.fromkeys(artifact_ids)),
+            agent_handoff_ids=list(dict.fromkeys(handoff_ids)),
+            agent_node_execution_ids=[
+                source_node.node_execution_id for source_node in typed_source_nodes
+            ],
+            evaluation_ids=list(dict.fromkeys(evaluation_ids)),
+        )
+
+    @staticmethod
+    def _provider_model_input(
+        node: LlmAgentWorkflowNodeExecution,
+        model_input: dict[str, Any],
+        *,
+        has_current_user_message: bool,
+        context_source_references: RuntimeContextSourceReferences,
+    ) -> dict[str, Any]:
+        """Remove data already represented by an authoritative Context source."""
+
+        provider_input = dict(model_input)
+        if has_current_user_message:
+            provider_input.pop("run_objective", None)
+            if node.node_key in {
+                "controller_planning",
+                "independent_review",
+                "final_synthesis",
+            }:
+                provider_input.pop("objective", None)
+        if context_source_references.agent_handoff_ids:
+            provider_input.pop("dependency_results", None)
+            provider_input.pop("worker_results", None)
+            provider_input.pop("handoffs", None)
+        if context_source_references.agent_node_execution_ids:
+            provider_input.pop("verification", None)
+            provider_input.pop("review", None)
+        return provider_input
 
     async def _bind_context_evidence(
         self,
