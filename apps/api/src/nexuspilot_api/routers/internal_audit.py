@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from nexuspilot_api.core.security import require_internal_api_key
 from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.internal_audit import (
+    ModelCacheDiagnosticsRead,
     ModelToolCallDetail,
     ModelToolCallSummary,
     OutboxEventDetail,
@@ -16,6 +17,7 @@ from nexuspilot_api.schemas.internal_audit import (
 )
 from nexuspilot_api.schemas.pagination import CursorPage
 from nexuspilot_api.services.internal_audit_service import (
+    get_model_cache_diagnostics,
     get_model_tool_call,
     get_outbox_event,
     get_task_evaluation,
@@ -29,6 +31,25 @@ router = APIRouter(
     tags=["internal-audit"],
     dependencies=[Depends(require_internal_api_key)],
 )
+
+
+@router.get("/model-cache-diagnostics", response_model=ModelCacheDiagnosticsRead)
+async def get_internal_model_cache_diagnostics(
+    db_session: DatabaseSessionDependency,
+    run_id: Annotated[str, Query(max_length=36)],
+    provider: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    model: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    agent_role: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+) -> ModelCacheDiagnosticsRead:
+    """Return prompt-free cache usage comparisons for one bounded Run."""
+
+    return await get_model_cache_diagnostics(
+        db_session,
+        run_id=run_id,
+        provider=provider,
+        model=model,
+        agent_role=agent_role,
+    )
 
 
 @router.get("/tool-calls", response_model=CursorPage[ModelToolCallSummary])

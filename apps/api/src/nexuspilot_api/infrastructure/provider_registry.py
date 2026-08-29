@@ -136,6 +136,11 @@ def create_price_catalog(settings: Settings) -> PriceCatalog:
                     if value.get("cached_input_per_million") is not None
                     else None
                 ),
+                cache_write_input_per_million=(
+                    Decimal(str(value["cache_write_input_per_million"]))
+                    if value.get("cache_write_input_per_million") is not None
+                    else None
+                ),
             )
         except (KeyError, InvalidOperation, ValueError) as exc:
             raise ValueError(f"Invalid model price entry '{key}'") from exc

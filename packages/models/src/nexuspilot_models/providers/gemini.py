@@ -133,6 +133,7 @@ class GeminiGenerateContentProvider:
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
             cached_tokens=usage.get("cachedContentTokenCount"),
+            cache_miss_tokens=self._cache_miss_tokens(usage),
             latency_ms=self._elapsed_ms(started),
             provider_request_id=request_id,
             raw_response={
@@ -250,6 +251,7 @@ class GeminiGenerateContentProvider:
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
             cached_tokens=usage.get("cachedContentTokenCount"),
+            cache_miss_tokens=self._cache_miss_tokens(usage),
             latency_ms=latency_ms,
             provider_request_id=payload.get("responseId"),
             raw_response=payload,
@@ -274,7 +276,17 @@ class GeminiGenerateContentProvider:
             "input_tokens": usage.get("promptTokenCount"),
             "output_tokens": usage.get("candidatesTokenCount"),
             "cached_tokens": usage.get("cachedContentTokenCount"),
+            "cache_miss_tokens": self._cache_miss_tokens(usage),
         }
+
+    def _cache_miss_tokens(self, usage: dict[str, Any]) -> int | None:
+        """Derive non-cached input from Gemini's inclusive prompt-token total."""
+
+        input_tokens = usage.get("promptTokenCount")
+        cached_tokens = usage.get("cachedContentTokenCount")
+        if isinstance(input_tokens, int) and isinstance(cached_tokens, int):
+            return max(0, input_tokens - cached_tokens)
+        return None
 
     def _finish_reason(self, value: str | None) -> str:
         """Map Gemini finish reasons to stable platform reasons."""

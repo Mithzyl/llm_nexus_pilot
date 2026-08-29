@@ -3,6 +3,7 @@
 from decimal import Decimal
 from typing import Any, Protocol
 
+from nexuspilot_models.contracts import ReasoningConfiguration
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
@@ -82,9 +83,10 @@ class AgentModelNodeService:
         purpose: str,
         model_output: type[BaseModel],
         model_input: dict[str, Any],
+        reasoning: ReasoningConfiguration | None = None,
         timeout_seconds: int | None = None,
     ) -> tuple[Any, ResponsesResult]:
-        """Invoke and validate a model node, reserving cost only from an explicit output bound."""
+        """Invoke and validate a typed model node with the shared workflow reasoning choice."""
 
         prompted_json = binding.structured_output_mode == "prompted_json"
         instructions = structured_model_instructions(
@@ -153,6 +155,7 @@ class AgentModelNodeService:
                     instructions=instructions,
                     output_schema=output_schema,
                     json_object_output=prompted_json,
+                    reasoning=reasoning,
                     max_output_tokens=binding.max_output_tokens,
                     timeout_seconds=effective_timeout_seconds,
                     metadata={
@@ -226,15 +229,13 @@ class AgentModelNodeService:
                     select(LlmAgentWorkflowNodeExecution).where(
                         LlmAgentWorkflowNodeExecution.node_execution_id.in_(source_node_ids),
                         LlmAgentWorkflowNodeExecution.run_id == node.run_id,
-                        LlmAgentWorkflowNodeExecution.status
-                        == AgentWorkflowNodeStatus.COMPLETED,
+                        LlmAgentWorkflowNodeExecution.status == AgentWorkflowNodeStatus.COMPLETED,
                     )
                 )
             ).all()
         )
         source_nodes_by_id = {
-            source_node.node_execution_id: source_node
-            for source_node in loaded_source_nodes
+            source_node.node_execution_id: source_node for source_node in loaded_source_nodes
         }
         typed_source_nodes = [
             source_nodes_by_id[source_node_id]
@@ -305,11 +306,9 @@ class AgentModelNodeService:
                 await db_session.scalars(
                     select(LlmContextSource.source_id)
                     .where(
-                        LlmContextSource.context_build_id
-                        == model_attempt.context_build_id,
+                        LlmContextSource.context_build_id == model_attempt.context_build_id,
                         LlmContextSource.source_type == "message",
-                        LlmContextSource.selection_status
-                        == ContextSourceSelectionStatus.SELECTED,
+                        LlmContextSource.selection_status == ContextSourceSelectionStatus.SELECTED,
                     )
                     .order_by(LlmContextSource.source_order)
                 )
@@ -322,7 +321,5 @@ class AgentModelNodeService:
             "values": model_input,
         }
         node.input_hash = hash_node_input(input_payload)
-        node.input_json = {
-            key: value for key, value in input_payload.items() if key != "values"
-        }
+        node.input_json = {key: value for key, value in input_payload.items() if key != "values"}
         await db_session.commit()

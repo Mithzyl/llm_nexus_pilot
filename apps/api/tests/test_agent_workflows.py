@@ -10,6 +10,8 @@ from nexuspilot_models.contracts import (
     ModelRequest,
     ModelResponse,
     ProviderName,
+    ReasoningConfigurationSource,
+    ReasoningEffort,
     TransportAttempt,
 )
 from nexuspilot_models.pricing import PriceCatalog
@@ -39,9 +41,6 @@ from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
     serialize_agent_generated_json,
     structured_model_instructions,
 )
-from nexuspilot_api.features.memory.schemas.collaboration_memory import (
-    HANDOFF_V1_HARD_CAP_TOKENS,
-)
 from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
 from nexuspilot_api.models import (
@@ -59,14 +58,63 @@ from nexuspilot_api.models import (
     LlmAgentWorkflowNodeExecution,
     LlmMessage,
     LlmModelAttempt,
+    LlmRegisteredModel,
     LlmRun,
     LlmTask,
     LlmTaskEvaluation,
     MessageRole,
+    ModelRegistrationStatus,
     TaskStatus,
 )
 
 INTERNAL_HEADERS = {"X-Internal-API-Key": "test-internal-key-long-enough"}
+
+
+def registered_agent_test_model(
+    model_identifier: str = "test-model",
+    *,
+    supported_efforts: list[str] | None = None,
+    effort_mapping: dict[str, str | int] | None = None,
+    supports_disable: bool = True,
+) -> LlmRegisteredModel:
+    """Build one enabled OpenAI model profile for Agent workflow contract tests."""
+
+    effective_supported_efforts = (
+        ["minimal", "low", "medium", "high", "xhigh"]
+        if supported_efforts is None
+        else supported_efforts
+    )
+    effective_effort_mapping = (
+        {effort: effort for effort in effective_supported_efforts}
+        if effort_mapping is None
+        else effort_mapping
+    )
+    return LlmRegisteredModel(
+        provider=ProviderName.OPENAI,
+        model_identifier=model_identifier,
+        display_name=model_identifier,
+        description=None,
+        status=ModelRegistrationStatus.ENABLED,
+        sort_order=0,
+        metadata_json={},
+        reasoning_supported_efforts_json=effective_supported_efforts,
+        reasoning_supports_disable=supports_disable,
+        reasoning_default_enabled=True,
+        reasoning_default_effort="medium",
+        reasoning_effort_mapping_json=effective_effort_mapping,
+        reasoning_profile_version="reasoning.agent-test.v1",
+    )
+
+
+@pytest.fixture(autouse=True)
+async def register_default_agent_test_model(
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Register the stable model required by every product-facing Agent workflow."""
+
+    async with test_database_session_factory() as db_session:
+        db_session.add(registered_agent_test_model())
+        await db_session.commit()
 
 
 class ScriptedAgentProvider:
@@ -428,9 +476,7 @@ def workflow_payload(**overrides: object) -> dict:
 def test_agent_model_binding_keeps_output_limit_optional() -> None:
     """Verify Agent output limits remain optional up to the Provider ceiling."""
 
-    binding = AgentModelBinding.model_validate(
-        {"provider": "openai", "model": "test-model"}
-    )
+    binding = AgentModelBinding.model_validate({"provider": "openai", "model": "test-model"})
 
     assert binding.max_output_tokens is None
 
@@ -451,6 +497,189 @@ def test_agent_model_binding_keeps_output_limit_optional() -> None:
                 "max_output_tokens": 65_537,
             }
         )
+
+
+async def test_workflow_reasoning_selection_reaches_every_model_attempt(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify one workflow-level choice is resolved and audited for every model role."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-reasoning-selection-0001")
+    payload["reasoning"] = {"enabled": True, "effort": "xhigh"}
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "completed"
+    assert len(provider.requests) == 4
+    assert all(
+        request.reasoning is not None
+        and request.reasoning.enabled
+        and request.reasoning.effort is ReasoningEffort.XHIGH
+        and request.resolved_reasoning is not None
+        and request.resolved_reasoning.source is ReasoningConfigurationSource.REQUEST
+        and request.resolved_reasoning.profile_version == "reasoning.agent-test.v1"
+        and request.resolved_reasoning.provider_value == "xhigh"
+        for request in provider.requests
+    )
+    async with test_database_session_factory() as db_session:
+        workflow = await db_session.scalar(
+            select(LlmAgentWorkflowExecution).where(
+                LlmAgentWorkflowExecution.run_id == run["run_id"]
+            )
+        )
+        assert workflow is not None
+        assert workflow.request_json["reasoning"] == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+        attempts = list(
+            (
+                await db_session.scalars(
+                    select(LlmModelAttempt)
+                    .where(LlmModelAttempt.run_id == run["run_id"])
+                    .order_by(LlmModelAttempt.started_at)
+                )
+            ).all()
+        )
+    assert len(attempts) == 4
+    assert all(attempt.reasoning_enabled is True for attempt in attempts)
+    assert all(attempt.reasoning_effort == "xhigh" for attempt in attempts)
+    assert all(attempt.reasoning_source == "request" for attempt in attempts)
+    assert all(
+        attempt.reasoning_profile_version == "reasoning.agent-test.v1" for attempt in attempts
+    )
+    assert all(
+        attempt.reasoning_provider_options_json == {"provider_value": "xhigh"}
+        for attempt in attempts
+    )
+
+
+async def test_workflow_omission_uses_each_registered_model_medium_default(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify omitted workflow reasoning never falls back to an implicit Provider default."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-reasoning-default-0001"),
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(provider.requests) == 4
+    assert all(
+        request.reasoning is not None
+        and request.reasoning.enabled
+        and request.reasoning.effort is ReasoningEffort.MEDIUM
+        and request.resolved_reasoning is not None
+        and request.resolved_reasoning.source is ReasoningConfigurationSource.MODEL_DEFAULT
+        for request in provider.requests
+    )
+
+
+async def test_workflow_reasoning_disable_reaches_every_supported_role(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify a supported workflow-level disable choice reaches every role unchanged."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-reasoning-disable-0001")
+    payload["reasoning"] = {"enabled": False}
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert len(provider.requests) == 4
+    assert all(
+        request.reasoning is not None
+        and not request.reasoning.enabled
+        and request.reasoning.effort is None
+        and request.resolved_reasoning is not None
+        and request.resolved_reasoning.source is ReasoningConfigurationSource.REQUEST
+        and request.resolved_reasoning.provider_value is None
+        for request in provider.requests
+    )
+
+
+async def test_workflow_rejects_one_unsupported_role_reasoning_before_provider_calls(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify all role models support the shared choice before creating billable work."""
+
+    async with test_database_session_factory() as db_session:
+        db_session.add(
+            registered_agent_test_model(
+                "medium-only-model",
+                supported_efforts=["medium"],
+                effort_mapping={"medium": "medium"},
+                supports_disable=False,
+            )
+        )
+        await db_session.commit()
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-reasoning-unsupported-0001")
+    payload["reasoning"] = {"enabled": True, "effort": "xhigh"}
+    payload["role_bindings"]["reviewer"]["model"] = "medium-only-model"
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "unsupported_capability"
+    assert provider.requests == []
+    async with test_database_session_factory() as db_session:
+        workflow_count = len(
+            list((await db_session.scalars(select(LlmAgentWorkflowExecution))).all())
+        )
+    assert workflow_count == 0
+
+
+async def test_workflow_rejects_unregistered_role_model_before_creation(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify product-facing Agent roles cannot bypass the stable model directory."""
+
+    run = await create_test_run(client)
+    provider = ScriptedAgentProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(idempotency_key="agent-reasoning-unregistered-0001")
+    payload["role_bindings"]["reviewer"]["model"] = "unregistered-model"
+
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=payload,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["type"] == "model_not_allowed"
+    assert provider.requests == []
+    async with test_database_session_factory() as db_session:
+        workflow_count = len(
+            list((await db_session.scalars(select(LlmAgentWorkflowExecution))).all())
+        )
+    assert workflow_count == 0
 
 
 async def test_provider_is_called_only_after_node_started_fact_is_committed(
@@ -509,6 +738,53 @@ async def test_workflow_event_sink_observes_only_committed_events(
     assert replayed is False
     assert workflow.event_count == 1
     assert len(observed_event_ids) == 1
+
+
+async def test_workflow_continues_when_live_event_observer_fails(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify an SSE observer failure cannot roll back or fail committed workflow facts."""
+
+    run = await create_test_run(client)
+
+    async def reject_committed_event(_event) -> None:
+        """Simulate a disconnected live observer after the event commit succeeds."""
+
+        raise RuntimeError("observer disconnected")
+
+    async with test_database_session_factory() as db_session:
+        service = AgentWorkflowExecutionService(
+            registry=scripted_registry(ScriptedAgentProvider()),
+            prices=app.dependency_overrides[get_price_catalog](),
+            db_session=db_session,
+            db_session_factory=test_database_session_factory,
+            storage=app.dependency_overrides[get_object_storage](),
+        )
+        workflow, replayed = await service.prepare_workflow(
+            run["run_id"],
+            AgentWorkflowCreate.model_validate(
+                workflow_payload(idempotency_key="agent-event-observer-failure-0001")
+            ),
+            event_sink=reject_committed_event,
+        )
+
+    assert replayed is False
+    assert workflow.event_count == 1
+    async with test_database_session_factory() as observer_session:
+        durable_event_count = len(
+            list(
+                (
+                    await observer_session.scalars(
+                        select(LlmAgentWorkflowEvent).where(
+                            LlmAgentWorkflowEvent.workflow_execution_id
+                            == workflow.workflow_execution_id
+                        )
+                    )
+                ).all()
+            )
+        )
+    assert durable_event_count == 1
 
 
 async def test_unbudgeted_workflow_does_not_apply_an_output_token_limit(
@@ -576,8 +852,7 @@ def test_prompted_json_instructions_distinguish_schema_rules_from_response_field
 
     assert (
         'Only these top-level response fields are allowed: "summary", '
-        '"confirmed_facts", "decisions", "remaining_work", "risks", "unknowns".'
-        in instructions
+        '"confirmed_facts", "decisions", "remaining_work", "risks", "unknowns".' in instructions
     )
     assert "Schema keywords are validation rules, not response fields." in instructions
     assert '"additionalProperties"' not in instructions
@@ -698,9 +973,7 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
     assert response.status_code == 201
     assert response.json()["status"] == "completed", response.json()
     context_node = next(
-        node
-        for node in response.json()["nodes"]
-        if node["node_key"] == "context_assembly"
+        node for node in response.json()["nodes"] if node["node_key"] == "context_assembly"
     )
     assert context_node["output"]["included_message_ids"] == [
         first_turn["message"]["message_id"],
@@ -715,15 +988,14 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
             "Create an evidence-bounded answer",
         ]
         assert provider_request.messages[-1].content.startswith("{")
-        assert sum(
-            message.content.count("Create an evidence-bounded answer")
-            for message in provider_request.messages
-        ) == 1
-    model_nodes = [
-        node
-        for node in response.json()["nodes"]
-        if node["input"]["context_build_id"]
-    ]
+        assert (
+            sum(
+                message.content.count("Create an evidence-bounded answer")
+                for message in provider_request.messages
+            )
+            == 1
+        )
+    model_nodes = [node for node in response.json()["nodes"] if node["input"]["context_build_id"]]
     assert len(model_nodes) == 4
     assert all(
         node["input"]["message_ids"]
@@ -736,9 +1008,7 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
     )
     final_node = next(node for node in model_nodes if node["node_key"] == "final_synthesis")
     final_context = (
-        await client.get(
-            f"/api/v1/context-builds/{final_node['input']['context_build_id']}"
-        )
+        await client.get(f"/api/v1/context-builds/{final_node['input']['context_build_id']}")
     ).json()
     final_source_types = {source["source_type"] for source in final_context["sources"]}
     assert {"agent_handoff", "agent_node", "evaluation"}.issubset(final_source_types)
@@ -748,9 +1018,7 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
         if request.metadata["agent_node_execution_key"] == "final_synthesis"
     )
     assert json.loads(final_request.messages[-1].content) == {}
-    run_detail = (
-        await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
-    ).json()
+    run_detail = (await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")).json()
     assert all(attempt["context_build_id"] for attempt in run_detail["attempts"])
 
 
@@ -835,10 +1103,55 @@ async def test_model_only_workflow_returns_and_persists_complete_nodes(
     assert node_detail == node_page["items"][0]
 
 
+async def test_workflow_usage_consistency_rejects_corrupted_node_aggregate(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Verify final accounting detects divergence between nodes and model Attempts."""
+
+    run = await create_test_run(client)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(
+        ScriptedAgentProvider()
+    )
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(idempotency_key="agent-usage-consistency-0001"),
+    )
+    assert response.status_code == 201, response.text
+
+    async with test_database_session_factory() as db_session:
+        workflow = await db_session.scalar(
+            select(LlmAgentWorkflowExecution).where(
+                LlmAgentWorkflowExecution.run_id == run["run_id"]
+            )
+        )
+        assert workflow is not None
+        nodes = list(
+            (
+                await db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id
+                        == workflow.workflow_execution_id
+                    )
+                )
+            ).all()
+        )
+        model_node = next(node for node in nodes if node.usage_json.get("model_call_count") == 1)
+        model_node.usage_json = {**model_node.usage_json, "input_tokens": 999_999}
+        state_service = WorkflowExecutionStateService(
+            db_session=db_session,
+            workflow_definitions=DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
+        )
+
+        with pytest.raises(InvalidRequestError, match="does not match committed model Attempts"):
+            await state_service.assert_workflow_usage_matches_model_attempts(workflow, nodes)
+
+
 async def test_workflow_idempotency_replays_without_new_model_calls(
     client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Verify exact replay returns one workflow while changed input is rejected."""
+    """Verify exact replay retains its result while changed reasoning is rejected."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider()
@@ -847,10 +1160,21 @@ async def test_workflow_idempotency_replays_without_new_model_calls(
     payload = workflow_payload(idempotency_key="agent-idempotency-0001")
 
     first = await client.post(url, json=payload)
+    async with test_database_session_factory() as db_session:
+        registered_model = await db_session.scalar(
+            select(LlmRegisteredModel).where(LlmRegisteredModel.model_identifier == "test-model")
+        )
+        assert registered_model is not None
+        registered_model.status = ModelRegistrationStatus.DISABLED
+        await db_session.commit()
     replay = await client.post(url, json=payload)
     conflict = await client.post(
         url,
         json={**payload, "review_policy": "never"},
+    )
+    reasoning_conflict = await client.post(
+        url,
+        json={**payload, "reasoning": {"enabled": True, "effort": "high"}},
     )
     different_key = await client.post(
         url,
@@ -862,6 +1186,7 @@ async def test_workflow_idempotency_replays_without_new_model_calls(
     assert replay.json()["workflow_execution_id"] == first.json()["workflow_execution_id"]
     assert len(provider.requests) == 4
     assert conflict.status_code == 409
+    assert reasoning_conflict.status_code == 409
     assert different_key.status_code == 409
 
 
@@ -1608,10 +1933,10 @@ async def test_workflow_openapi_declares_json_and_sse_response_contracts(
     assert workflow_create_properties["max_parallel_agents"]["maximum"] == 2
 
 
-async def test_verbose_worker_output_is_compacted_into_a_valid_handoff(
+async def test_verbose_worker_output_is_preserved_in_complete_handoff(
     client: httpx.AsyncClient,
 ) -> None:
-    """Keep the complete Worker result while bounding its collaboration Handoff."""
+    """Keep the complete Worker result in both its node and collaboration Handoff."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider(verbose_worker_output=True)
@@ -1628,28 +1953,25 @@ async def test_verbose_worker_output_is_compacted_into_a_valid_handoff(
     worker_node = next(
         node for node in result["nodes"] if node["output_type"] == "agent_model_execution"
     )
-    handoff_node = next(
-        node for node in result["nodes"] if node["output_type"] == "agent_handoff"
-    )
+    handoff_node = next(node for node in result["nodes"] if node["output_type"] == "agent_handoff")
     assert len(worker_node["output"]["structured_output"]["confirmed_facts"][0]) > 1_000
-    serialized_handoff = json.dumps(
-        {
-            key: value
-            for key, value in handoff_node["output"].items()
-            if key
-            not in {
-                "agent_handoff_id",
-                "schema_version",
-                "supersedes_handoff_id",
-            }
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
+    assert (
+        handoff_node["output"]["confirmed_facts"]
+        == worker_node["output"]["structured_output"]["confirmed_facts"]
     )
-    assert len(serialized_handoff.encode()) <= HANDOFF_V1_HARD_CAP_TOKENS
-    assert handoff_node["output"]["invariants_for_next_agent"] == [
-        f"Complete Worker output is preserved in node {worker_node['node_execution_id']}."
-    ]
+    assert (
+        handoff_node["output"]["decisions"]
+        == worker_node["output"]["structured_output"]["decisions"]
+    )
+    assert (
+        handoff_node["output"]["remaining_work"]
+        == worker_node["output"]["structured_output"]["remaining_work"]
+    )
+    assert handoff_node["output"]["risks"] == worker_node["output"]["structured_output"]["risks"]
+    assert (
+        handoff_node["output"]["unknowns"] == worker_node["output"]["structured_output"]["unknowns"]
+    )
+    assert handoff_node["output"]["invariants_for_next_agent"] == []
 
 
 async def test_node_result_rejects_unregistered_output_schema_version(

@@ -160,6 +160,7 @@ async def test_all_provider_streams_share_public_event_contract(
                     "prompt_tokens": 3,
                     "completion_tokens": 2,
                     "prompt_cache_hit_tokens": 1,
+                    "prompt_cache_miss_tokens": 2,
                 },
             },
             "/chat/completions",
@@ -208,6 +209,8 @@ async def test_openai_compatible_provider_reuses_chat_codec(
     assert response.text == expected_text
     assert response.provider_request_id in {"chat-1", "local-1"}
     assert len(response.transport_attempts) == 1
+    if provider_name is ProviderName.DEEPSEEK:
+        assert response.cache_miss_tokens == 2
 
 
 async def test_openai_compatible_provider_forwards_an_explicit_output_allowance() -> None:
@@ -1086,7 +1089,12 @@ async def test_anthropic_messages_codec_parses_content_blocks() -> None:
                     },
                 ],
                 "stop_reason": "tool_use",
-                "usage": {"input_tokens": 6, "output_tokens": 3},
+                "usage": {
+                    "input_tokens": 6,
+                    "cache_creation_input_tokens": 4,
+                    "cache_read_input_tokens": 10,
+                    "output_tokens": 3,
+                },
             },
         )
 
@@ -1101,6 +1109,10 @@ async def test_anthropic_messages_codec_parses_content_blocks() -> None:
 
     assert response.finish_reason == "tool_calls"
     assert response.tool_calls[0].name == "lookup"
+    assert response.input_tokens == 20
+    assert response.cached_tokens == 10
+    assert response.cache_write_tokens == 4
+    assert response.cache_miss_tokens == 10
 
 
 async def test_gemini_codec_parses_candidate_parts() -> None:
@@ -1214,6 +1226,32 @@ def test_price_catalog_uses_cached_input_rate() -> None:
     )
 
     assert cost == Decimal("36.000000")
+
+
+def test_price_catalog_uses_distinct_cache_write_rate() -> None:
+    """Verify cache-write tokens use their explicit rate without double charging input."""
+
+    catalog = PriceCatalog(
+        {
+            (ProviderName.ANTHROPIC, "priced-model"): ModelPrice(
+                input_per_million=Decimal("10"),
+                output_per_million=Decimal("30"),
+                cached_input_per_million=Decimal("2"),
+                cache_write_input_per_million=Decimal("12.5"),
+            )
+        }
+    )
+
+    cost = catalog.estimate(
+        ProviderName.ANTHROPIC,
+        "priced-model",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cached_tokens=200_000,
+        cache_write_tokens=300_000,
+    )
+
+    assert cost == Decimal("39.150000")
 
 
 def test_price_catalog_maximum_estimate_uses_the_more_expensive_input_rate() -> None:

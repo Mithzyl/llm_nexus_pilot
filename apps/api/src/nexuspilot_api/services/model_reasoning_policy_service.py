@@ -29,22 +29,57 @@ async def resolve_registered_model_reasoning(
     Invalid or unsupported registered-model choices fail without calling a Provider.
     """
 
+    reasoning, resolved_reasoning = await resolve_registered_model_reasoning_configuration(
+        db_session,
+        provider=request.provider,
+        model=request.model,
+        requested_reasoning=request.reasoning,
+    )
+    if resolved_reasoning is None:
+        return request
+    return request.model_copy(
+        update={
+            "reasoning": reasoning,
+            "resolved_reasoning": resolved_reasoning,
+        }
+    )
+
+
+async def resolve_registered_model_reasoning_configuration(
+    db_session: AsyncSession,
+    *,
+    provider: ProviderName,
+    model: str,
+    requested_reasoning: ReasoningConfiguration | None,
+    require_registration: bool = False,
+) -> tuple[ReasoningConfiguration | None, ResolvedReasoningConfiguration | None]:
+    """Resolve one model's effective reasoning configuration without dispatching it.
+
+    Product surfaces can set ``require_registration`` to reject role bindings that
+    bypass the stable model directory. Low-level gateway callers retain the legacy
+    behavior of passing an unregistered model request through unchanged.
+    """
+
     registered_model = await db_session.scalar(
         select(LlmRegisteredModel).where(
-            LlmRegisteredModel.provider == request.provider,
-            LlmRegisteredModel.model_identifier == request.model,
+            LlmRegisteredModel.provider == provider,
+            LlmRegisteredModel.model_identifier == model,
         )
     )
     if registered_model is None:
-        return request
+        if require_registration:
+            raise ModelProviderError(
+                "model_not_allowed",
+                f"Model '{model}' is not registered in the stable model directory.",
+            )
+        return requested_reasoning, None
     if registered_model.status is not ModelRegistrationStatus.ENABLED:
         raise ModelProviderError(
             "model_not_allowed",
-            f"Model '{request.model}' is disabled in the registered model directory.",
+            f"Model '{model}' is disabled in the registered model directory.",
         )
 
     supported_efforts, effort_mapping, default_effort = _validated_policy(registered_model)
-    requested_reasoning = request.reasoning
     source = (
         ReasoningConfigurationSource.MODEL_DEFAULT
         if requested_reasoning is None
@@ -59,17 +94,15 @@ async def resolve_registered_model_reasoning(
         if not registered_model.reasoning_supports_disable:
             raise ModelProviderError(
                 "unsupported_capability",
-                f"Model '{request.model}' does not support disabling reasoning.",
+                f"Model '{model}' does not support disabling reasoning.",
             )
-        return request.model_copy(
-            update={
-                "reasoning": ReasoningConfiguration(enabled=False),
-                "resolved_reasoning": ResolvedReasoningConfiguration(
-                    source=source,
-                    profile_version=registered_model.reasoning_profile_version,
-                    provider_value=None,
-                ),
-            }
+        return (
+            ReasoningConfiguration(enabled=False),
+            ResolvedReasoningConfiguration(
+                source=source,
+                profile_version=registered_model.reasoning_profile_version,
+                provider_value=None,
+            ),
         )
 
     effective_effort = (
@@ -80,21 +113,18 @@ async def resolve_registered_model_reasoning(
     if effective_effort not in supported_efforts:
         raise ModelProviderError(
             "unsupported_capability",
-            f"Model '{request.model}' does not support reasoning effort "
-            f"'{effective_effort.value}'.",
+            f"Model '{model}' does not support reasoning effort '{effective_effort.value}'.",
         )
-    return request.model_copy(
-        update={
-            "reasoning": ReasoningConfiguration(
-                enabled=True,
-                effort=effective_effort,
-            ),
-            "resolved_reasoning": ResolvedReasoningConfiguration(
-                source=source,
-                profile_version=registered_model.reasoning_profile_version,
-                provider_value=effort_mapping[effective_effort],
-            ),
-        }
+    return (
+        ReasoningConfiguration(
+            enabled=True,
+            effort=effective_effort,
+        ),
+        ResolvedReasoningConfiguration(
+            source=source,
+            profile_version=registered_model.reasoning_profile_version,
+            provider_value=effort_mapping[effective_effort],
+        ),
     )
 
 
@@ -182,6 +212,5 @@ def validate_provider_reasoning_mapping(
             continue
         if not isinstance(provider_value, str) or provider_value not in allowed_string_values:
             raise ValueError(
-                f"Provider '{provider.value}' does not support reasoning value "
-                f"'{provider_value}'."
+                f"Provider '{provider.value}' does not support reasoning value '{provider_value}'."
             )

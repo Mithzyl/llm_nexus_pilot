@@ -500,6 +500,28 @@ async def test_non_streaming_response_persists_attempt_and_cost(
     assert attempt["retries"][0]["status_code"] == 200
 
 
+async def test_response_rejects_oversized_agent_role_metadata_before_provider_call(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify public metadata cannot overflow the persisted Agent role diagnostic field."""
+
+    run = await create_test_run(client)
+    response = await client.post(
+        "/api/v1/responses",
+        json={
+            "run_id": run["run_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "input": "Hello",
+            "metadata": {"agent_role": "x" * 65},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "agent_role metadata must contain 1 to 64 characters"
+    assert (await client.get(f"/api/v1/runs/{run['run_id']}")).json()["attempts"] == []
+
+
 async def test_raw_response_storage_failure_preserves_provider_accounting(
     client: httpx.AsyncClient,
 ) -> None:

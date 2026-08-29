@@ -99,6 +99,7 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
         (
             internal_audit.router,
             {
+                "/internal/model-cache-diagnostics",
                 "/internal/tool-calls",
                 "/internal/tool-calls/{tool_call_id}",
                 "/internal/evaluations",

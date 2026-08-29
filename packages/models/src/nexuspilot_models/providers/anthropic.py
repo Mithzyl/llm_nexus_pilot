@@ -62,6 +62,9 @@ class AnthropicMessagesProvider:
         text_parts: list[str] = []
         tools: dict[int, dict[str, str]] = {}
         input_tokens: int | None = None
+        cached_tokens: int | None = None
+        cache_write_tokens: int | None = None
+        cache_miss_tokens: int | None = None
         output_tokens: int | None = None
         stop_reason = "stop"
         request_id: str | None = None
@@ -86,7 +89,11 @@ class AnthropicMessagesProvider:
                 if event_type == "message_start":
                     native_message = event.get("message") or {}
                     request_id = native_message.get("id")
-                    input_tokens = (native_message.get("usage") or {}).get("input_tokens")
+                    normalized_usage = self._normalize_usage(native_message.get("usage") or {})
+                    input_tokens = normalized_usage["input_tokens"]
+                    cached_tokens = normalized_usage["cached_tokens"]
+                    cache_write_tokens = normalized_usage["cache_write_tokens"]
+                    cache_miss_tokens = normalized_usage["cache_miss_tokens"]
                 elif event_type == "content_block_start":
                     block = event.get("content_block") or {}
                     if block.get("type") == "tool_use":
@@ -134,7 +141,9 @@ class AnthropicMessagesProvider:
                         data={
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
-                            "cached_tokens": None,
+                            "cached_tokens": cached_tokens,
+                            "cache_write_tokens": cache_write_tokens,
+                            "cache_miss_tokens": cache_miss_tokens,
                         },
                     )
                     sequence += 1
@@ -163,6 +172,9 @@ class AnthropicMessagesProvider:
             finish_reason=self._finish_reason(stop_reason),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cache_write_tokens=cache_write_tokens,
+            cache_miss_tokens=cache_miss_tokens,
             latency_ms=self._elapsed_ms(started),
             provider_request_id=request_id,
             raw_response={
@@ -170,7 +182,13 @@ class AnthropicMessagesProvider:
                 "text": text,
                 "tool_calls": list(tools.values()),
                 "stop_reason": stop_reason,
-                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cached_tokens": cached_tokens,
+                    "cache_write_tokens": cache_write_tokens,
+                    "cache_miss_tokens": cache_miss_tokens,
+                },
             },
             transport_attempts=attempts,
         )
@@ -260,20 +278,49 @@ class AnthropicMessagesProvider:
                 )
         text = "".join(text_parts) or None
         usage = payload.get("usage") or {}
-        cached_tokens = usage.get("cache_read_input_tokens")
+        normalized_usage = self._normalize_usage(usage)
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
             structured_output=parse_structured_output(text) if request.output_schema else None,
             finish_reason=self._finish_reason(payload.get("stop_reason")),
-            input_tokens=usage.get("input_tokens"),
+            input_tokens=normalized_usage["input_tokens"],
             output_tokens=usage.get("output_tokens"),
-            cached_tokens=cached_tokens,
+            cached_tokens=normalized_usage["cached_tokens"],
+            cache_write_tokens=normalized_usage["cache_write_tokens"],
+            cache_miss_tokens=normalized_usage["cache_miss_tokens"],
             latency_ms=latency_ms,
             provider_request_id=payload.get("id"),
             raw_response=payload,
             transport_attempts=attempts,
         )
+
+    def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, int | None]:
+        """Convert Anthropic's disjoint cache counters to the platform's inclusive total."""
+
+        ordinary_input = usage.get("input_tokens")
+        cached_input = usage.get("cache_read_input_tokens")
+        cache_write_input = usage.get("cache_creation_input_tokens")
+        numeric_parts = [
+            value
+            for value in (ordinary_input, cached_input, cache_write_input)
+            if isinstance(value, int)
+        ]
+        total_input = sum(numeric_parts) if numeric_parts else None
+        cache_miss = (
+            (ordinary_input if isinstance(ordinary_input, int) else 0)
+            + (cache_write_input if isinstance(cache_write_input, int) else 0)
+            if numeric_parts
+            else None
+        )
+        return {
+            "input_tokens": total_input,
+            "cached_tokens": cached_input if isinstance(cached_input, int) else None,
+            "cache_write_tokens": (
+                cache_write_input if isinstance(cache_write_input, int) else None
+            ),
+            "cache_miss_tokens": cache_miss,
+        }
 
     def _headers(self) -> dict[str, str]:
         """Return Anthropic authentication, version, and JSON headers."""

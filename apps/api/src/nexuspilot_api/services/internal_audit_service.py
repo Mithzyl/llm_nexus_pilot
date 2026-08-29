@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,12 +19,15 @@ from nexuspilot_api.core.pagination import (
     database_query_fingerprint,
 )
 from nexuspilot_api.models import (
+    LlmAgentWorkflowExecution,
     LlmModelAttempt,
     LlmModelToolCall,
     LlmOutboxEvent,
     LlmTaskEvaluation,
 )
 from nexuspilot_api.schemas.internal_audit import (
+    ModelCacheDiagnosticGroup,
+    ModelCacheDiagnosticsRead,
     ModelToolCallDetail,
     ModelToolCallSummary,
     OutboxEventDetail,
@@ -57,6 +61,156 @@ class OutboxEventDatabasePage:
 
     items: list[LlmOutboxEvent]
     next_database_key: DatabaseQueryPaginationKey | None
+
+
+MAX_CACHE_DIAGNOSTIC_ATTEMPTS = 5_000
+
+
+async def get_model_cache_diagnostics(
+    db_session: AsyncSession,
+    *,
+    run_id: str,
+    provider: str | None,
+    model: str | None,
+    agent_role: str | None,
+) -> ModelCacheDiagnosticsRead:
+    """Group bounded run-scoped cache facts without reading stored prompt bodies."""
+
+    await require_run(db_session, run_id)
+    workflow = await db_session.scalar(
+        select(LlmAgentWorkflowExecution).where(
+            LlmAgentWorkflowExecution.run_id == run_id
+        )
+    )
+    statement = select(LlmModelAttempt).where(LlmModelAttempt.run_id == run_id)
+    if provider is not None:
+        statement = statement.where(LlmModelAttempt.provider == provider)
+    if model is not None:
+        statement = statement.where(LlmModelAttempt.model == model)
+    if agent_role is not None:
+        statement = statement.where(LlmModelAttempt.agent_role == agent_role)
+    statement = statement.order_by(
+        LlmModelAttempt.started_at,
+        LlmModelAttempt.attempt_id,
+    ).limit(MAX_CACHE_DIAGNOSTIC_ATTEMPTS + 1)
+    attempts = list((await db_session.scalars(statement)).all())
+    if len(attempts) > MAX_CACHE_DIAGNOSTIC_ATTEMPTS:
+        raise InvalidRequestError(
+            "Model cache diagnostics exceed the 5000-attempt run limit; narrow the filters"
+        )
+
+    attempts_by_group: dict[
+        tuple[str, str, str | None, str | None],
+        list[LlmModelAttempt],
+    ] = {}
+    for attempt in attempts:
+        key = (
+            attempt.provider,
+            attempt.model,
+            attempt.agent_role,
+            attempt.prompt_prefix_fingerprint,
+        )
+        attempts_by_group.setdefault(key, []).append(attempt)
+
+    groups = [
+        _model_cache_diagnostic_group(key, grouped_attempts)
+        for key, grouped_attempts in sorted(
+            attempts_by_group.items(),
+            key=lambda item: tuple(value or "" for value in item[0]),
+        )
+    ]
+    return ModelCacheDiagnosticsRead(
+        run_id=run_id,
+        workflow_name=workflow.workflow_name if workflow is not None else None,
+        workflow_version=workflow.workflow_version if workflow is not None else None,
+        execution_profile=workflow.execution_profile if workflow is not None else None,
+        attempt_count=len(attempts),
+        groups=groups,
+    )
+
+
+def _model_cache_diagnostic_group(
+    key: tuple[str, str, str | None, str | None],
+    attempts: list[LlmModelAttempt],
+) -> ModelCacheDiagnosticGroup:
+    """Calculate first-observed and subsequent cache ratios for one stable group."""
+
+    provider, model, agent_role, prompt_prefix_fingerprint = key
+    subsequent_attempts = attempts[1:]
+    subsequent_input_tokens = sum(item.input_tokens or 0 for item in subsequent_attempts)
+    subsequent_cached_tokens = sum(item.cached_tokens or 0 for item in subsequent_attempts)
+    subsequent_latencies_ms = [
+        item.latency_ms for item in subsequent_attempts if item.latency_ms is not None
+    ]
+    subsequent_first_visible_latencies_ms = [
+        latency_ms
+        for item in subsequent_attempts
+        if (latency_ms := _first_visible_token_latency_ms(item)) is not None
+    ]
+    subsequent_cache_hit_ratio = (
+        (Decimal(subsequent_cached_tokens) / Decimal(subsequent_input_tokens)).quantize(
+            Decimal("0.000001"),
+            rounding=ROUND_HALF_UP,
+        )
+        if subsequent_input_tokens > 0
+        else None
+    )
+    return ModelCacheDiagnosticGroup(
+        provider=provider,
+        model=model,
+        agent_role=agent_role,
+        prompt_prefix_fingerprint=prompt_prefix_fingerprint,
+        request_count=len(attempts),
+        requests_reporting_cache_usage=sum(
+            1
+            for item in attempts
+            if item.cached_tokens is not None
+            or item.cache_write_tokens is not None
+            or item.cache_miss_tokens is not None
+        ),
+        total_input_tokens=sum(item.input_tokens or 0 for item in attempts),
+        total_cached_tokens=sum(item.cached_tokens or 0 for item in attempts),
+        total_cache_write_tokens=sum(item.cache_write_tokens or 0 for item in attempts),
+        total_cache_miss_tokens=sum(item.cache_miss_tokens or 0 for item in attempts),
+        first_observed_cached_tokens=attempts[0].cached_tokens,
+        first_observed_latency_ms=attempts[0].latency_ms,
+        first_observed_first_visible_token_latency_ms=(
+            _first_visible_token_latency_ms(attempts[0])
+        ),
+        subsequent_request_count=len(subsequent_attempts),
+        subsequent_input_tokens=subsequent_input_tokens,
+        subsequent_cached_tokens=subsequent_cached_tokens,
+        subsequent_cache_hit_ratio=subsequent_cache_hit_ratio,
+        subsequent_average_latency_ms=_average_milliseconds(subsequent_latencies_ms),
+        subsequent_average_first_visible_token_latency_ms=_average_milliseconds(
+            subsequent_first_visible_latencies_ms
+        ),
+    )
+
+
+def _first_visible_token_latency_ms(attempt: LlmModelAttempt) -> int | None:
+    """Return one Attempt's time to first visible token when both timestamps exist."""
+
+    if attempt.first_visible_token_at is None:
+        return None
+    started_at = attempt.started_at
+    first_visible_token_at = attempt.first_visible_token_at
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    if first_visible_token_at.tzinfo is None:
+        first_visible_token_at = first_visible_token_at.replace(tzinfo=UTC)
+    return max(0, int((first_visible_token_at - started_at).total_seconds() * 1_000))
+
+
+def _average_milliseconds(values: list[int]) -> Decimal | None:
+    """Return a three-decimal mean for reported latency values only."""
+
+    if not values:
+        return None
+    return (Decimal(sum(values)) / Decimal(len(values))).quantize(
+        Decimal("0.001"),
+        rounding=ROUND_HALF_UP,
+    )
 
 
 async def get_model_tool_call(

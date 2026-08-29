@@ -448,19 +448,6 @@ async def test_l2_handoff_and_run_memory_limits(client: httpx.AsyncClient) -> No
     )
     assert mismatched_handoff_status.status_code == 422
 
-    oversized_handoff = await client.post(
-        f"/api/v1/internal/runs/{run['run_id']}/agent-handoffs",
-        json={
-            "agent_run_id": agent_run_id,
-            "schema_version": "agent_handoff.v1",
-            "status": "completed",
-            "handoff_json": {**handoff_json, "objective": "x" * 1_200},
-            "idempotency_key": "handoff-oversized",
-        },
-        headers=INTERNAL_HEADERS,
-    )
-    assert oversized_handoff.status_code == 422
-
     rebuild = await client.post(
         f"/api/v1/internal/runs/{run['run_id']}/memory/rebuild",
         json={
@@ -496,6 +483,20 @@ async def test_l2_handoff_and_run_memory_limits(client: httpx.AsyncClient) -> No
     assert run_memory.status_code == 200
     assert run_memory.json()["run_memory_snapshot_id"] == snapshot["run_memory_snapshot_id"]
 
+    large_handoff = await client.post(
+        f"/api/v1/internal/runs/{run['run_id']}/agent-handoffs",
+        json={
+            "agent_run_id": agent_run_id,
+            "schema_version": "agent_handoff.v1",
+            "status": "completed",
+            "handoff_json": {**handoff_json, "objective": "x" * 1_200},
+            "idempotency_key": "handoff-oversized",
+        },
+        headers=INTERNAL_HEADERS,
+    )
+    assert large_handoff.status_code == 201
+    assert large_handoff.json()["handoff_json"]["objective"] == "x" * 1_200
+
     for handoff_number in range(3):
         additional_handoff = await client.post(
             f"/api/v1/internal/runs/{run['run_id']}/agent-handoffs",
@@ -530,7 +531,7 @@ async def test_l2_handoff_and_run_memory_limits(client: httpx.AsyncClient) -> No
         headers=INTERNAL_HEADERS,
     )
     assert handoffs.status_code == 200
-    assert len(handoffs.json()["items"]) == 4
+    assert len(handoffs.json()["items"]) == 5
     assert handoffs.json()["items"][0]["agent_handoff_id"] == handoff_id
 
 

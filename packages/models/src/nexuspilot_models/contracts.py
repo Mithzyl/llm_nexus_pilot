@@ -286,6 +286,8 @@ class ModelResponse(ContractModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
     reasoning_blocks: list[ReasoningPresentation] = Field(default_factory=list)
     provider_continuation_state: ProviderContinuationState | None = Field(

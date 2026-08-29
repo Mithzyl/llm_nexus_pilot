@@ -238,6 +238,7 @@ class OpenAICompatibleChatProvider:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             cached_tokens=self._cached_tokens(usage),
+            cache_miss_tokens=self._cache_miss_tokens(usage),
             reasoning_tokens=reasoning_tokens,
             reasoning_blocks=reasoning_blocks,
             provider_continuation_state=provider_continuation_state,
@@ -431,6 +432,7 @@ class OpenAICompatibleChatProvider:
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
             cached_tokens=self._cached_tokens(usage),
+            cache_miss_tokens=self._cache_miss_tokens(usage),
             reasoning_tokens=reasoning_tokens,
             reasoning_blocks=reasoning_blocks,
             provider_continuation_state=provider_continuation_state,
@@ -492,6 +494,7 @@ class OpenAICompatibleChatProvider:
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
             "cached_tokens": self._cached_tokens(usage),
+            "cache_miss_tokens": self._cache_miss_tokens(usage),
             "reasoning_tokens": self._reasoning_tokens(usage),
         }
 
@@ -499,7 +502,23 @@ class OpenAICompatibleChatProvider:
         """Read cache usage from OpenAI-style or DeepSeek-style usage objects."""
 
         details = usage.get("prompt_tokens_details") or {}
-        return details.get("cached_tokens") or usage.get("prompt_cache_hit_tokens")
+        detailed_cached_tokens = details.get("cached_tokens")
+        if isinstance(detailed_cached_tokens, int):
+            return detailed_cached_tokens
+        compatible_cached_tokens = usage.get("prompt_cache_hit_tokens")
+        return compatible_cached_tokens if isinstance(compatible_cached_tokens, int) else None
+
+    def _cache_miss_tokens(self, usage: dict[str, Any]) -> int | None:
+        """Read an explicit miss count or derive it from the normalized prompt total."""
+
+        explicit_miss = usage.get("prompt_cache_miss_tokens")
+        if isinstance(explicit_miss, int):
+            return explicit_miss
+        input_tokens = usage.get("prompt_tokens")
+        cached_tokens = self._cached_tokens(usage)
+        if isinstance(input_tokens, int) and isinstance(cached_tokens, int):
+            return max(0, input_tokens - cached_tokens)
+        return None
 
     def _reasoning_tokens(self, usage: dict[str, Any]) -> int | None:
         """Read provider-reported reasoning-token usage without implying visible text."""

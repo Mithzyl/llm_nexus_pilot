@@ -101,6 +101,8 @@ class ResponseUsage(BaseModel):
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    cache_write_tokens: int | None
+    cache_miss_tokens: int | None
     reasoning_tokens: int | None
     estimated_cost: str | None
 

@@ -58,11 +58,14 @@ class LlmModelAttempt(Base):
     request_type: Mapped[str] = mapped_column(String(64), default="generation")
     request_key: Mapped[str | None] = mapped_column(String(128), unique=True)
     prompt_prefix_fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    agent_role: Mapped[str | None] = mapped_column(String(64), index=True)
     retry_count: Mapped[int] = mapped_column(default=0)
     status: Mapped[AttemptStatus] = mapped_column(Enum(AttemptStatus, native_enum=False, length=32))
     input_tokens: Mapped[int | None]
     output_tokens: Mapped[int | None]
     cached_tokens: Mapped[int | None]
+    cache_write_tokens: Mapped[int | None]
+    cache_miss_tokens: Mapped[int | None]
     reasoning_tokens: Mapped[int | None]
     reasoning_display_policy: Mapped[str] = mapped_column(String(32), default="hidden")
     reasoning_enabled: Mapped[bool | None] = mapped_column(Boolean)

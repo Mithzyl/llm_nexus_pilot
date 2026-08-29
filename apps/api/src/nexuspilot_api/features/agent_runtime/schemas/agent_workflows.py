@@ -4,7 +4,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from nexuspilot_models.contracts import MAX_PROVIDER_OUTPUT_TOKENS, ProviderName
+from nexuspilot_models.contracts import (
+    MAX_PROVIDER_OUTPUT_TOKENS,
+    ProviderName,
+    ReasoningConfiguration,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import AgentWorkflowNodeStatus, AgentWorkflowStatus
@@ -41,6 +45,7 @@ class AgentWorkflowCreate(StrictContract):
         Literal["controller", "planner", "researcher", "reviewer", "verifier"],
         AgentModelBinding,
     ]
+    reasoning: ReasoningConfiguration | None = None
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     max_nodes: int = Field(default=32, ge=10, le=32)
     max_model_calls: int = Field(default=16, ge=3, le=16)

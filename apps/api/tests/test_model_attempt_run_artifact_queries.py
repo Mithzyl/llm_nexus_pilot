@@ -25,6 +25,13 @@ async def _create_attempt(
     task_id: str | None = None,
     provider: str = "openai",
     raw_request_uri: str | None = None,
+    agent_role: str | None = None,
+    prompt_prefix_fingerprint: str | None = None,
+    input_tokens: int = 10,
+    cached_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+    cache_miss_tokens: int | None = None,
+    latency_ms: int | None = None,
 ) -> dict:
     """Create one reusable LLM model invocation through the compatibility endpoint."""
 
@@ -35,14 +42,84 @@ async def _create_attempt(
             "provider": provider,
             "model": "test-model",
             "status": "completed",
-            "input_tokens": 10,
+            "agent_role": agent_role,
+            "prompt_prefix_fingerprint": prompt_prefix_fingerprint,
+            "input_tokens": input_tokens,
             "output_tokens": 2,
+            "cached_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "cache_miss_tokens": cache_miss_tokens,
+            "latency_ms": latency_ms,
             "estimated_cost": "0.001000",
             "raw_request_uri": raw_request_uri,
         },
     )
     assert response.status_code == 201
     return response.json()
+
+
+async def test_internal_cache_diagnostics_group_stable_agent_prefixes(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify cache diagnostics compare first and subsequent calls by stable Agent prefix."""
+
+    run = await create_test_run(client)
+    fingerprint = "a" * 64
+    await _create_attempt(
+        client,
+        run["run_id"],
+        provider="deepseek",
+        agent_role="worker",
+        prompt_prefix_fingerprint=fingerprint,
+        input_tokens=100,
+        cached_tokens=0,
+        cache_miss_tokens=100,
+        latency_ms=100,
+    )
+    await _create_attempt(
+        client,
+        run["run_id"],
+        provider="deepseek",
+        agent_role="worker",
+        prompt_prefix_fingerprint=fingerprint,
+        input_tokens=100,
+        cached_tokens=80,
+        cache_miss_tokens=20,
+        latency_ms=40,
+    )
+
+    response = await client.get(
+        "/api/v1/internal/model-cache-diagnostics",
+        params={"run_id": run["run_id"]},
+        headers={"X-Internal-API-Key": "test-internal-key-long-enough"},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["attempt_count"] == 2
+    assert payload["groups"] == [
+        {
+            "provider": "deepseek",
+            "model": "test-model",
+            "agent_role": "worker",
+            "prompt_prefix_fingerprint": fingerprint,
+            "request_count": 2,
+            "requests_reporting_cache_usage": 2,
+            "total_input_tokens": 200,
+            "total_cached_tokens": 80,
+            "total_cache_write_tokens": 0,
+            "total_cache_miss_tokens": 120,
+            "first_observed_cached_tokens": 0,
+            "first_observed_latency_ms": 100,
+            "first_observed_first_visible_token_latency_ms": None,
+            "subsequent_request_count": 1,
+            "subsequent_input_tokens": 100,
+            "subsequent_cached_tokens": 80,
+            "subsequent_cache_hit_ratio": "0.800000",
+            "subsequent_average_latency_ms": "40.000",
+            "subsequent_average_first_visible_token_latency_ms": None,
+        }
+    ]
 
 
 async def _upload_artifact(

@@ -1,12 +1,12 @@
 """Decide the node order and review branches for the model_only_v1 workflow."""
 
 import asyncio
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from nexuspilot_models.contracts import ReasoningConfiguration
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.registry import ProviderRegistry
@@ -52,10 +52,7 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
     WorkflowExecutionStopped,
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import validate_controller_plan
-from nexuspilot_api.features.memory.schemas.collaboration_memory import (
-    HANDOFF_V1_HARD_CAP_TOKENS,
-    AgentHandoffCreate,
-)
+from nexuspilot_api.features.memory.schemas.collaboration_memory import AgentHandoffCreate
 from nexuspilot_api.features.memory.services.collaboration_memory_service import submit_handoff
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import (
@@ -88,9 +85,7 @@ from nexuspilot_api.services.model_response_service import ModelInvocationServic
 def review_allows_final_synthesis(review_output: ReviewerModelOutput) -> bool:
     """Allow final revision only when review findings require no new execution or replanning."""
 
-    has_blocking_finding = any(
-        finding.severity == "error" for finding in review_output.findings
-    )
+    has_blocking_finding = any(finding.severity == "error" for finding in review_output.findings)
     return (
         review_output.verdict in {"pass", "needs_revision"}
         and not has_blocking_finding
@@ -123,6 +118,7 @@ class PreparedWorkerExecution:
     agent_turn_id: str
     node_execution_id: str
     binding: AgentModelBinding
+    reasoning: ReasoningConfiguration | None
     agent_role: str
     model_input: dict[str, Any]
     timeout_seconds: int
@@ -138,37 +134,14 @@ class WorkerModelCallOutcome:
     error: Exception | None = None
 
 
-WORKER_HANDOFF_OBJECTIVE_MAX_BYTES = 240
-WORKER_HANDOFF_ITEM_MAX_BYTES = 160
-
-
-def _serialized_json_size_bytes(value: dict[str, Any]) -> int:
-    """Return the exact compact UTF-8 size used by the Handoff v1 validator."""
-
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode())
-
-
-def _truncate_utf8_text(value: str, max_bytes: int) -> str:
-    """Truncate text without splitting a UTF-8 code point and mark omitted content."""
-
-    normalized = value.strip()
-    encoded = normalized.encode()
-    if len(encoded) <= max_bytes:
-        return normalized
-    if max_bytes <= 3:
-        return encoded[:max_bytes].decode(errors="ignore")
-    return f"{encoded[: max_bytes - 3].decode(errors='ignore').rstrip()}…"
-
-
-def _build_bounded_worker_handoff(
+def _build_complete_worker_handoff(
     *,
     task_objective: str,
     worker_output: AgentWorkerModelOutput,
-    source_node_execution_id: str,
 ) -> dict[str, Any]:
-    """Project a verbose Worker result into Handoff v1 while retaining its source-node link."""
+    """Copy the complete typed Worker result into the immutable Handoff contract."""
 
-    complete_handoff: dict[str, Any] = {
+    return {
         "objective": task_objective,
         "status": "completed",
         "confirmed_facts": worker_output.confirmed_facts,
@@ -182,49 +155,6 @@ def _build_bounded_worker_handoff(
         "unknowns": worker_output.unknowns,
         "invariants_for_next_agent": [],
     }
-    if _serialized_json_size_bytes(complete_handoff) <= HANDOFF_V1_HARD_CAP_TOKENS:
-        return complete_handoff
-
-    bounded_handoff: dict[str, Any] = {
-        **complete_handoff,
-        "objective": _truncate_utf8_text(
-            task_objective,
-            WORKER_HANDOFF_OBJECTIVE_MAX_BYTES,
-        ),
-        "confirmed_facts": [],
-        "decisions": [],
-        "remaining_work": [],
-        "risks": [],
-        "unknowns": [],
-        "invariants_for_next_agent": [
-            f"Complete Worker output is preserved in node {source_node_execution_id}."
-        ],
-    }
-    if _serialized_json_size_bytes(bounded_handoff) > HANDOFF_V1_HARD_CAP_TOKENS:
-        bounded_handoff["objective"] = _truncate_utf8_text(task_objective, 64)
-
-    candidate_fields = {
-        "confirmed_facts": worker_output.confirmed_facts,
-        "decisions": worker_output.decisions,
-        "remaining_work": worker_output.remaining_work,
-        "risks": worker_output.risks,
-        "unknowns": worker_output.unknowns,
-    }
-    max_item_count = max((len(values) for values in candidate_fields.values()), default=0)
-    for item_index in range(max_item_count):
-        for field_name, values in candidate_fields.items():
-            if item_index >= len(values):
-                continue
-            compact_item = _truncate_utf8_text(
-                values[item_index],
-                WORKER_HANDOFF_ITEM_MAX_BYTES,
-            )
-            if not compact_item:
-                continue
-            bounded_handoff[field_name].append(compact_item)
-            if _serialized_json_size_bytes(bounded_handoff) > HANDOFF_V1_HARD_CAP_TOKENS:
-                bounded_handoff[field_name].pop()
-    return bounded_handoff
 
 
 class WorkerExecutionFailure(Exception):
@@ -376,6 +306,7 @@ class ModelOnlyWorkflowOrchestrator:
                     "maximum_tasks": 8,
                     "review_policy": payload.review_policy,
                 },
+                reasoning=payload.reasoning,
             )
             await self._complete_node(
                 workflow,
@@ -561,6 +492,7 @@ class ModelOnlyWorkflowOrchestrator:
                     "verification": verification.model_dump(mode="json"),
                     "review": review_output.model_dump(mode="json") if review_output else None,
                 },
+                reasoning=payload.reasoning,
             )
             assistant_message_id = await self._save_final_message(run, final_model_output)
             final_output = FinalSynthesisOutput(
@@ -741,6 +673,7 @@ class ModelOnlyWorkflowOrchestrator:
                         task=task_by_key[task_key],
                         agent_run=agent_run_by_task_key[task_key],
                         binding=payload.role_bindings[agent_run_by_task_key[task_key].agent_role],
+                        reasoning=payload.reasoning,
                         completion_criteria=completion_criteria_by_task_key[task_key],
                         dependency_records=dependency_records,
                         dispatch_node_execution_id=dispatch_node_execution_id,
@@ -776,6 +709,7 @@ class ModelOnlyWorkflowOrchestrator:
         task: LlmTask,
         agent_run: LlmAgentRun,
         binding: AgentModelBinding,
+        reasoning: ReasoningConfiguration | None,
         completion_criteria: list[str],
         dependency_records: list[WorkerExecutionRecord],
         dispatch_node_execution_id: str,
@@ -813,6 +747,7 @@ class ModelOnlyWorkflowOrchestrator:
             agent_turn_id=turn.agent_turn_id,
             node_execution_id=node.node_execution_id,
             binding=binding,
+            reasoning=reasoning,
             agent_role=agent_run.agent_role,
             model_input={
                 "task": {"title": task.title, "objective": task.objective},
@@ -897,6 +832,7 @@ class ModelOnlyWorkflowOrchestrator:
                 ),
                 model_output=AgentWorkerModelOutput,
                 model_input=prepared.model_input,
+                reasoning=prepared.reasoning,
                 timeout_seconds=prepared.timeout_seconds,
             )
             return worker_output, response
@@ -984,7 +920,6 @@ class ModelOnlyWorkflowOrchestrator:
             agent_run,
             outcome.worker_output,
             handoff_node_execution_id=handoff_node.node_execution_id,
-            source_node_execution_id=node.node_execution_id,
         )
         await self._complete_node(
             workflow,
@@ -1192,6 +1127,7 @@ class ModelOnlyWorkflowOrchestrator:
         purpose: str,
         model_output: type[BaseModel],
         model_input: dict,
+        reasoning: ReasoningConfiguration | None = None,
         timeout_seconds: int | None = None,
     ) -> tuple[Any, ResponsesResult]:
         """Delegate one typed Provider call to the model-node execution service."""
@@ -1204,6 +1140,7 @@ class ModelOnlyWorkflowOrchestrator:
             purpose=purpose,
             model_output=model_output,
             model_input=model_input,
+            reasoning=reasoning,
             timeout_seconds=timeout_seconds,
         )
 
@@ -1292,14 +1229,12 @@ class ModelOnlyWorkflowOrchestrator:
         worker_output: AgentWorkerModelOutput,
         *,
         handoff_node_execution_id: str,
-        source_node_execution_id: str,
     ) -> AgentHandoffOutput:
-        """Persist one model-only Handoff using the existing collaboration contract."""
+        """Persist one complete model-only Handoff using the collaboration contract."""
 
-        handoff_json = _build_bounded_worker_handoff(
+        handoff_json = _build_complete_worker_handoff(
             task_objective=task.objective,
             worker_output=worker_output,
-            source_node_execution_id=source_node_execution_id,
         )
         result = await submit_handoff(
             self.db_session,
@@ -1537,6 +1472,7 @@ class ModelOnlyWorkflowOrchestrator:
                 "worker_results": [self._worker_record_input(record) for record in worker_records],
                 "verification": verification.model_dump(mode="json"),
             },
+            reasoning=payload.reasoning,
             timeout_seconds=task.timeout_seconds,
         )
         await self._complete_agent_turn(turn, agent_run, response.id)
@@ -1629,6 +1565,10 @@ class ModelOnlyWorkflowOrchestrator:
             for node in existing_nodes
             for attempt_id in (node.evidence_json or {}).get("model_attempt_ids", [])
         ]
+        await self.workflow_state.assert_workflow_usage_matches_model_attempts(
+            workflow,
+            existing_nodes,
+        )
         total_usage = self._sum_usage(existing_nodes)
         total_duration_ms = max(
             0,

@@ -29,6 +29,9 @@ from nexuspilot_api.features.agent_runtime.services.workflow_query_service impor
 )
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import AgentWorkflowStatus, LlmAgentWorkflowExecution
+from nexuspilot_api.services.model_reasoning_policy_service import (
+    resolve_registered_model_reasoning_configuration,
+)
 
 
 class AgentWorkflowExecutionService:
@@ -90,7 +93,28 @@ class AgentWorkflowExecutionService:
         """Persist or replay a workflow before synchronous execution begins."""
 
         self.workflow_state.set_event_sink(event_sink)
-        return await self.workflow_state.create_workflow(run_id, payload)
+        return await self.workflow_state.create_workflow(
+            run_id,
+            payload,
+            validate_new_workflow=lambda: self._validate_reasoning_bindings(payload),
+        )
+
+    async def _validate_reasoning_bindings(self, payload: AgentWorkflowCreate) -> None:
+        """Require every supplied Agent role model to resolve the shared reasoning choice."""
+
+        validated_model_keys: set[tuple[str, str]] = set()
+        for binding in payload.role_bindings.values():
+            model_key = (binding.provider.value, binding.model)
+            if model_key in validated_model_keys:
+                continue
+            await resolve_registered_model_reasoning_configuration(
+                self.db_session,
+                provider=binding.provider,
+                model=binding.model,
+                requested_reasoning=payload.reasoning,
+                require_registration=True,
+            )
+            validated_model_keys.add(model_key)
 
     async def execute_prepared_workflow(
         self,

@@ -151,7 +151,7 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 
 状态：后端合同已完成，前端未开始。阶段2已完成稳定模型策略字段、默认中等解析、四个官方Provider映射、非法组合拒绝和Attempt证据；本阶段只继续实现Composer选择器、模型切换归一化与浏览器验证。
 
-当前 `ResponsesRequest.reasoning` 已具有 `enabled` 和 `effort`，DeepSeek 与 OpenAI 适配器也已实现部分映射，但 Web 只提供“推理展示”策略，用户不能控制模型是否思考或思考程度。展示策略只决定哪些 Provider 已返回的推理证据可以公开，思考程度才影响模型调用；二者必须作为两个独立控件和两个独立合同保存。
+当前后端已完成`ResponsesRequest.reasoning`、完整统一等级、逐模型策略、四家官方Provider映射、Attempt证据和Agent Workflow工作流级透传，但Web仍只提供“推理展示”策略，用户不能控制模型是否思考或思考程度。展示策略只决定哪些 Provider 已返回的推理证据可以公开，思考程度才影响模型调用；二者必须作为两个独立控件和两个独立合同保存。
 
 统一交互采用“模型默认、关闭、最小、低、中、高、极高、最大”的候选集合，但页面只展示当前 Provider/Model 能力目录明确声明的选项：
 
@@ -159,7 +159,7 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 - “关闭”映射为 `reasoning: {enabled: false}`，只在模型明确支持关闭时显示。不能关闭的模型不显示该选项，手工构造的非法请求由后端拒绝。
 - 选择具体程度时发送 `reasoning: {enabled: true, effort: <level>}`。统一程度枚举扩展为 `minimal | low | medium | high | xhigh | max`；不把一个 Provider 不支持的程度静默向上或向下取整。
 - 用户切换模型后，如果原选择不在新模型的允许集合中，Composer回到新模型的“中等”默认并给出可访问提示；如果该模型无法解析中等等级，则它不应出现在可提交模型列表中。
-- 第一版为整个请求选择一个程度。快速回复直接写入 `/responses`；Agent Workflow 将同一选择复制到本次工作流的各个 `role_bindings`，节点和 Attempt 保存实际请求程度。角色级单独调节留待有评测依据后再设计。
+- 第一版为整个请求选择一个程度。快速回复直接写入 `/responses`；Agent Workflow写入顶层`reasoning`字段，由后端预检全部角色绑定并传给每个模型节点，Attempt保存实际解析程度。角色级单独调节留待有评测依据后再设计。
 
 思考控制的产品配置存放在稳定 `llm_models`：有序 `supported_efforts`、`supports_disable`、固定启用的 `default_enabled`、默认 `medium`、逐Provider映射和稳定策略版本。Model Catalog与Provider适配器继续提供供应商能力证据；`GET /models`返回两者校验后的有效结果，并作为前端唯一事实源。前端不能根据模型名称前缀推断，也不能直接读取映射表构造Provider请求。
 
@@ -172,7 +172,7 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 | Gemini 2.5 | 原生 `thinkingBudget`，官方兼容层给出类别到预算的模型相关映射 | 只由后端版本化能力配置转换，前端不发送 token 预算；未配置中等默认映射时不能作为可提交模型 |
 | OpenAI-compatible 自定义端点 | 不可从协议名称推断 | 管理员必须为具体 Provider/Model 配置并验证至少中等默认映射后才能启用；不能把协议兼容误当成思考能力兼容 |
 
-实现顺序为：先迁移 `llm_models` 思考策略字段并回填当前模型的中等默认；再扩展供应商中立枚举，完成四个官方 Provider 的精确编解码、显式映射和拒绝测试；随后把reasoning加入Agent binding；最后实现Composer选择器、模型切换归一化、快速回复与Agent请求透传。合同测试必须覆盖每个公开选项的原生请求体、缺省时解析为中等默认、非法组合拒绝、模型切换和刷新后的Attempt证据；真实浏览器测试至少覆盖当前DeepSeek Flash的中等默认、高、最大和关闭（若稳定模型声明支持）路径。
+实施进度：`llm_models`字段与当前模型回填、统一枚举、四家官方Provider映射以及Agent Workflow顶层reasoning透传均已完成；本阶段剩余Composer选择器、模型切换归一化、快速回复/Agent请求提交和浏览器验证。合同测试必须覆盖每个公开选项的原生请求体、缺省时解析为中等默认、非法组合拒绝、模型切换和刷新后的Attempt证据；真实浏览器测试至少覆盖当前DeepSeek Flash的中等默认、高、最大和关闭（若稳定模型声明支持）路径。
 
 官方对齐依据：[OpenAI Responses reasoning](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta)、[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Anthropic Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Anthropic Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)、[Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) 与 [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
 
@@ -652,7 +652,7 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
-- 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度的后端接口已有部分实现，但完整程度枚举、逐模型控制映射和用户选择器仍按新增规划实施。
+- 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度后端合同和Agent透传已经完成，用户选择器与浏览器提交尚未实现。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
@@ -671,7 +671,7 @@ apps/web/
 | 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
 | Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端明确引用的Prompt Release/文本Artifact来源 | 未知Attempt的首事件前断线只能读取最终事实；普通产品入口尚未提供Prompt/Artifact绑定，Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
-| 思考程度控制 | HTTP 合同已有 `reasoning.enabled/effort`，DeepSeek 与 OpenAI 具有部分适配 | 用户选择器、完整程度枚举、逐模型控制能力目录、Anthropic/Gemini 映射、Agent binding 透传和真实浏览器验证尚未实现 | 未开始 |
+| 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据和Agent Workflow顶层透传已实现 | Composer用户选择器、模型切换归一化、快速回复/Agent请求提交和真实浏览器验证尚未实现 | 进行中 |
 | Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 240px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键 | 输入区仍需随完整响应式门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
@@ -693,12 +693,12 @@ apps/web/
 | SSE 与回放 | 连接中断、重复事件、序号缺口或终止事件缺失 | 已知 Attempt 时有限回放；无法恢复时不宣称完成 | Attempt 事件的 `sequence`、最终 Attempt 和 Run 状态 |
 | Agent 规划与预算 | 非法角色/能力/依赖、价格缺失、预算不足、节点/调用/时间上限耗尽 | 工作流在对应节点失败并保存稳定错误代码 | Workflow `error_json`、计划校验节点和预算字段 |
 | Worker 与结构化输出 | Provider 返回的 JSON 不符合节点 Schema、完成原因非法或 Provider 结果未知 | Worker 节点失败、取消或结果未知 | Worker Node、Model Attempt 和对应事件 |
-| Handoff | 输出超过 `agent_handoff.v1` 的 1000 UTF-8 字节上限，或 Task/Agent Run 归属冲突 | `handoff_submission` 节点失败且没有输出 | Handoff Node、源 Worker Node 和 `llm_agent_handoffs`；当前超限路径已改为限长投影，完整 Worker 输出保留在源节点 |
+| Handoff | Task/Agent Run归属冲突、字段合同错误或包含禁止的隐藏推理字段 | `handoff_submission`节点失败且没有可提交输出 | Handoff Node、源Worker Node和`llm_agent_handoffs`；Handoff不再设置独立输出上限，完整Worker结构化输出直接保存 |
 | Verification 与 Reviewer | Handoff/Attempt/Task 引用不一致，或 Reviewer 拒绝、要求重试/重规划 | `agent_verification_failed` 或 `agent_review_rejected` | Verification、Reviewer、Evaluation 和 Workflow 错误 |
 | 节点结果合同 | 节点 JSON 超过 64 KiB、`output_type`/Schema 版本不匹配 | `node_output_invalid` 或安全内部错误 | Node `output_type`、`output_schema_version`、`error_json` |
 | 前端恢复与展示 | Summary、事件、节点或 Result 接口局部失败 | 正文继续可读，检查器提示对应证据暂不可用 | 浏览器 Network、页面错误栏和权威 Result 快照 |
 
-2026 年 8 月 20 日本地实际故障记录：某次工作流的前六个节点完成，第七个 `handoff_submission` 节点因待提交 Handoff 为 3352 字节而失败。当前实现会将同一内容投影为 968 字节并记录完整 Worker 输出的源节点。原失败 Workflow 继续作为不可变失败事实保留；新的 Run 使用修复后的路径。
+2026年8月20日本地实际故障记录：某次工作流的前六个节点完成，第七个`handoff_submission`节点因当时待提交Handoff为3352字节而失败。该限制和后续968字节投影逻辑已在2026年8月29日移除；新的Run直接保存完整Worker结构化Handoff。原失败Workflow继续作为不可变历史事实保留。
 
 2026 年 8 月 20 日本地实际故障记录：新会话创建后立即执行 `router.replace` 会让 `/` 页面实例在流式请求期间被 `/c/[sessionId]` 页面实例替换。原实例继续完成 Responses 请求和 Assistant Message 保存，但其 React 状态更新已经不可见，因此首条回复只能在手动刷新后出现。当前实现延迟到 Assistant Message 成功保存后再替换路由；Playwright 使用真实 DeepSeek 创建新会话，确认首条回复在请求完成后立即可见，刷新同一路由后仍可见。
 

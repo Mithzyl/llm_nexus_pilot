@@ -394,6 +394,7 @@ class OpenAIResponsesProvider:
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
             cached_tokens=input_details.get("cached_tokens"),
+            cache_miss_tokens=self._cache_miss_tokens(usage),
             reasoning_tokens=reasoning_tokens,
             reasoning_blocks=reasoning_blocks,
             provider_continuation_state=provider_continuation_state,
@@ -410,8 +411,18 @@ class OpenAIResponsesProvider:
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
             "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens"),
+            "cache_miss_tokens": self._cache_miss_tokens(usage),
             "reasoning_tokens": (usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
         }
+
+    def _cache_miss_tokens(self, usage: dict[str, Any]) -> int | None:
+        """Derive non-cached input from the provider's inclusive input-token total."""
+
+        input_tokens = usage.get("input_tokens")
+        cached_tokens = (usage.get("input_tokens_details") or {}).get("cached_tokens")
+        if isinstance(input_tokens, int) and isinstance(cached_tokens, int):
+            return max(0, input_tokens - cached_tokens)
+        return None
 
     def _headers(self) -> dict[str, str]:
         """Return OpenAI authentication and JSON headers."""

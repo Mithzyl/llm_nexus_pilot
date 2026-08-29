@@ -1,6 +1,5 @@
 """L2 Collaboration Memory HTTP schemas."""
 
-import json
 from datetime import datetime
 from typing import Literal
 
@@ -38,8 +37,6 @@ RUN_MEMORY_STATE_V1_KEYS = {
     "invariants",
 }
 HANDOFF_V1_LIST_KEYS = HANDOFF_V1_KEYS - {"objective", "status"}
-HANDOFF_V1_HARD_CAP_TOKENS = 1_000
-
 PACKET_V1_SECTIONS = {
     "role",
     "objective",
@@ -88,11 +85,6 @@ class AgentHandoffCreate(BaseModel):
                 raise ValueError("Completed Handoff requires a non-empty objective")
         if self.status not in {HandoffStatus.COMPLETED, HandoffStatus.PARTIAL}:
             raise ValueError("New Handoff status must be completed or partial")
-        serialized_handoff = json.dumps(
-            self.handoff_json, ensure_ascii=False, separators=(",", ":")
-        )
-        if len(serialized_handoff.encode()) > HANDOFF_V1_HARD_CAP_TOKENS:
-            raise ValueError("handoff_json exceeds the 1000-token hard cap")
         return self
 
 

@@ -28,10 +28,13 @@ class ModelAttemptCreate(BaseModel):
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
+    agent_role: str | None = Field(default=None, min_length=1, max_length=64)
     status: AttemptStatus
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     cached_tokens: int | None = Field(default=None, ge=0)
+    cache_write_tokens: int | None = Field(default=None, ge=0)
+    cache_miss_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
     reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
     reasoning_enabled: bool | None = None
@@ -74,11 +77,14 @@ class ModelAttemptRead(ApiModel):
     request_type: str
     request_key: str | None
     prompt_prefix_fingerprint: str | None
+    agent_role: str | None
     retry_count: int
     status: AttemptStatus
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    cache_write_tokens: int | None
+    cache_miss_tokens: int | None
     reasoning_tokens: int | None
     reasoning_display_policy: ReasoningDisplayPolicy
     reasoning_enabled: bool | None
@@ -110,11 +116,14 @@ class ModelAttemptSummary(ApiModel):
     model: str
     request_type: str
     prompt_prefix_fingerprint: str | None
+    agent_role: str | None
     retry_count: int
     status: AttemptStatus
     input_tokens: int | None
     output_tokens: int | None
     cached_tokens: int | None
+    cache_write_tokens: int | None
+    cache_miss_tokens: int | None
     reasoning_tokens: int | None
     reasoning_display_policy: ReasoningDisplayPolicy
     reasoning_enabled: bool | None

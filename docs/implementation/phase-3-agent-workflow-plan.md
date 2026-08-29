@@ -1,7 +1,7 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 27 日
-**文档状态：** 已完成（`model_only_v1`同步Agent Runtime基线已实现并通过自动化验证；统一Context Builder接入属于阶段4新增集成工作项）
+**文档日期：** 2026 年 8 月 29 日
+**文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁和自动缓存诊断均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 
@@ -9,7 +9,7 @@
 
 > 2026 年 8 月 19 日路线图重排：本能力由原阶段5调整为阶段3；实现范围和完成状态不变。
 
-> 2026年8月26日新增的统一Context Builder要求不推翻阶段3原完成条件。阶段3文档负责规定Agent节点如何消费统一上下文；实际跨阶段运行时接入纳入正在进行的阶段4，并保留本文件中的实施任务和验证合同。
+> 2026年8月26日新增的统一Context Builder要求不推翻阶段3原完成条件。Agent节点消费统一上下文的后端运行时接入已经完成；Prompt/Artifact产品绑定、对象型Message产品链路和前端证据入口继续由阶段4验收。
 
 本文统一使用以下口径：
 
@@ -36,7 +36,7 @@
 - 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成，真实 Provider 端到端验收仍未完成，工具视图等待阶段7稳定合同。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
-## 当前实施结果（2026 年 8 月 13 日）
+## 当前实施结果（更新至 2026 年 8 月 29 日）
 
 | 能力 | 当前状态 | 已验证行为与边界 |
 |---|---|---|
@@ -47,7 +47,10 @@
 | 审核门禁 | 已实现 | 确定性验证失败不能被 Reviewer 覆盖；无错误级发现且不要求重试或重新规划的 `needs_revision` 进入最终汇总并应用修改，明确失败、错误级发现、重新规划或重试要求会阻止最终汇总；Evaluation 保留候选 Attempt 与 Task 的正确归属 |
 | 最终消息一致性 | 已实现 | Assistant Message 与最终汇总节点的完成事件使用同一事务；节点合同或持久化失败会回滚尚未提交的消息，避免失败工作流留下成功答案 |
 | HTTP 与 SSE | 已实现 | POST 支持同步 JSON 或提交后实时 SSE；GET 支持 Workflow、Result、Node 列表/详情和按序号回放已持久化事件；显式取消接口可阻止后续节点；GET `/events` 按设计只做有限回放 |
+| 事件观察者隔离 | 已实现 | 事件先提交到数据库再通知请求级实时观察者；观察者断开或回调异常只记录警告并解除该观察者，不回滚事实、不使工作流失败；任务取消仍按原取消语义传播 |
 | 幂等和失败收敛 | 已实现核心范围 | 完全相同的幂等请求返回原 Workflow；不同请求或同一 Run 的第二个 Workflow 返回冲突；超时、取消和模型结果校验失败会终结已经启动的 Node、Task、Agent Run 与 Agent Turn，避免遗留虚假的 `running` 状态 |
+| 用量一致性 | 已实现 | 创建 Workflow Completion 前，按工作流模型调用幂等键读取 Model Attempt，独立汇总输入、输出、缓存读取、费用和调用次数，并与已提交节点用量比较；不一致时明确失败，不发布错误聚合 |
+| 自动缓存诊断 | 已实现离线范围 | Attempt 保存 Agent 角色、稳定前缀指纹、缓存读取、缓存写入、缓存未命中、首个可见Token时间和总延迟；内部接口可按 Run、工作流版本、Provider、Model、角色和指纹比较观察窗口内首个与后续请求；Anthropic 输入已归一化为普通输入、缓存读取与缓存创建之和 |
 | 资源限制 | 已实现 | Run 请求最长 100,000 字符；节点数、模型调用数、工作流总时长、单次模型超时和单节点输出大小均有限制；`max_parallel_agents` 范围为 `1`～`2`；并发调用使用原子费用预留避免超卖 |
 | 工具、Memory 与 Knowledge | 明确禁用 | `implementer`、工具、文件写入、命令、网络及外部副作用在 `model_only_v1` 计划校验时被拒绝；Memory 和 Knowledge 不自动注入 |
 
@@ -72,7 +75,7 @@
   ↓
 请求归一化（确定性）
   ↓
-上下文组装（当前仅使用Run请求；目标态由Context Builder组装全部已启用来源）
+上下文组装（以当前User Message锚定，由Context Builder组装本节点已启用来源）
   ↓
 Controller 规划（模型）
   ↓
@@ -110,10 +113,12 @@ Controller 最终汇总
 
 ### 稳定模型思考默认与 Agent 透传（阶段2、阶段4新增集成项）
 
+- 当前状态：已完成阶段3后端集成。`AgentWorkflowCreate.reasoning`是唯一工作流级选择；省略时所有模型节点分别解析各自登记模型的“启用 + medium”默认，显式选择则在所有角色间保持同一个统一配置。
 - Agent Workflow 不定义第二套思考等级。每个角色绑定继续使用阶段2统一的 `ReasoningConfiguration`，有效等级和默认值来自该角色所选 `llm_models` 记录。
 - 调用方未为本次工作流显式选择思考配置时，Controller、Worker、Reviewer和Final synthesis都解析为各自稳定模型的默认策略；当前产品默认固定为 `enabled=true`、`effort=medium`，不能省略字段后退回供应商原生默认。
-- 第一版Composer只提供工作流级选择，并把同一用户选择复制到所有角色绑定。角色绑定使用不同模型时，每个模型都必须能把该统一等级解析为已登记的原生值；任一角色不支持时在创建或Provider调用前返回`unsupported_capability`，不只对部分角色静默降级。
+- 第一版Composer只提供工作流级选择，并把同一用户选择提交为`AgentWorkflowCreate.reasoning`。后端在创建新工作流事实前预检所有已提供角色绑定；角色使用不同模型时，每个模型都必须能把该统一等级解析为已登记的原生值。任一角色未登记、已禁用或不支持时，分别返回`model_not_allowed`或`unsupported_capability`，不会先调用部分角色再失败。
 - 每个模型节点的Model Attempt保存统一等级、稳定模型思考策略版本和Provider实际解析结果；刷新后的节点证据必须能够说明本次调用使用了用户选择还是模型默认。
+- `reasoning`进入工作流请求JSON和幂等请求哈希；同一幂等键改变思考配置会返回冲突。已经完成的精确幂等回放使用原工作流结果，不因模型策略之后变更而重新验证或再次调用模型。
 - 角色级独立调节不在第一版实施范围；后续若开放，仍必须逐角色校验对应稳定模型，而不能把Controller配置无条件复制为不可执行参数。
 
 ## 核心实体边界
@@ -266,7 +271,7 @@ class AgentWorkflowNode(Protocol):
 - `transition.condition_summary` 允许保存简短、可公开的规则依据，不保存模型逐步推理或隐藏思维链。
 - `public_view` 由后端根据节点事实确定性生成，不能让模型自行宣称进度或成功。
 - `error` 固定包含 `error_code`、`error_type`、`public_message`、`is_retryable`、`outcome_is_known` 和 `details_reference_id`；成功时为 `null`。
-- 当前 `64 KiB` 检查只对校验后的节点 `output` JSON 做 UTF-8 字节计数，并未计算整个信封；超限会明确失败。目标态需分别限制完整 HTTP 信封与事件投影。后续大型正文、完整报告和大量证据应保存为 Artifact，并让 `output` 返回 Artifact ID、hash、MIME 和安全预览。“完整参数”不等于无限内联内容。
+- 当前`64 KiB`检查对校验后的节点`output` JSON做UTF-8字节计数，超限会明确失败；其余信封字段分别受固定Schema、列表数量、字符串长度、最大32个节点和有界分页约束，因此完整HTTP结果具有组合上限，但不错误复用单节点的64 KiB阈值。SSE事件只包含状态、节点ID、类型、详情路径和有界错误投影，不内联节点输出。后续工具生成的大型正文、完整报告和大量证据属于阶段7 Artifact工作项，应让`output`返回Artifact ID、hash、MIME和安全预览。“完整参数”不等于无限内联内容。
 - 内部与授权 API 返回所有合同字段；敏感值从形成时就不进入合同，而不是读取时临时删除。
 
 ## 各节点完整输出参数
@@ -422,7 +427,7 @@ supersedes_handoff_id
 ```
 
 - 复用已有 `agent_handoff.v1`，不创建另一套交接 JSON。
-- `agent_handoff.v1` 保持 1000 个 UTF-8 字节上限。Worker 结构化输出超过该上限时，工作流按字段轮转生成限长 Handoff 投影，并在 `invariants_for_next_agent` 记录完整 Worker 输出所在的源节点；完整结果继续保存在 `agent_model_execution` 节点，不通过放宽 Memory 合同或静默丢弃源结果解决。
+- `agent_handoff.v1`不再设置独立字节或Token上限。工作流把Worker的完整类型化`confirmed_facts`、`decisions`、`remaining_work`、`risks`和`unknowns`原样写入Handoff，不再生成限长投影。Worker模型节点本身仍受64 KiB类型化输出上限约束，因此工作流路径不会产生无限内联结果；内部独立Handoff接口继续执行固定字段、状态、归属和禁止隐藏推理校验。
 - 首版没有工具时 `files_read`、`files_changed` 和真实测试证据通常为空；模型不能仅凭描述填入不存在的文件或测试。
 
 ### 8. `deterministic_verification` → `DeterministicVerificationOutput`
@@ -474,7 +479,7 @@ reviewer_model_attempt_id
 
 - Reviewer 只读取用户目标、任务要求、候选结果、确定性检查和明确证据，不读取实现模型隐藏消息或 Working State。
 - 当前为每个候选 Worker Attempt 创建一条 Evaluation，因此返回 `evaluation_ids[]`，不是单个 `evaluation_id`。
-- Reviewer 输出不能覆盖候选结果。当前 `fail`、`needs_revision`、`requires_replan=true` 或 `requires_retry=true` 都会以 `agent_review_rejected` 终止工作流；目标态才创建一次有界修订 Task/Attempt/Node Execution。
+- Reviewer 输出不能覆盖候选结果。当前 `fail`、错误级发现、`requires_replan=true` 或 `requires_retry=true` 会以 `agent_review_rejected` 终止工作流；没有错误级发现且不要求重新规划或重试的`needs_revision`会作为明确输入交给Final synthesis应用。当前不创建新的返工Task、Attempt或Node Execution。
 
 ### 10. `final_synthesis` → `FinalSynthesisOutput`
 
@@ -521,7 +526,7 @@ warnings[]
 errors[]
 ```
 
-该节点只聚合既有节点证据和使用量，不重新生成业务内容。当前 Schema 不包含 `remaining_budget`，只返回 `remaining_model_calls`；费用剩余量由节点 `budget` 投影表达。目标态需增加聚合值与 Attempt 明细的独立一致性检查。
+该节点只聚合既有节点证据和使用量，不重新生成业务内容。当前 Schema 不包含 `remaining_budget`，只返回 `remaining_model_calls`；费用剩余量由节点 `budget` 投影表达。创建该节点前，服务会按工作流调用键独立汇总 Model Attempt，并校验输入、输出、缓存读取、费用和模型调用数与节点聚合一致；不一致时终止完成流程。
 
 ### 阶段7恢复后的 `tool_execution`
 
@@ -737,6 +742,7 @@ workflow_version
 execution_profile
 idempotency_key
 role_bindings（必须包含 controller、至少一个 planner/researcher；review_policy 不是 never 时必须包含 reviewer）
+reasoning（可选；省略时逐角色使用登记模型的启用 + medium 默认）
 review_policy
 max_nodes
 max_model_calls
@@ -745,7 +751,7 @@ wall_time_limit_ms
 stream
 ```
 
-其中只有 `idempotency_key` 和 `role_bindings` 没有默认值；工作流名称、版本与执行配置当前固定为 `model_only`、`1.0.0` 和 `model_only_v1`。`review_policy` 默认为 `always`；`reviewer` 在策略不是 `never` 时必填，`verifier` 可以绑定但当前执行路径不会创建该模型节点。`max_nodes` 默认和最大值均为 `32`，按审核策略最小为 `10` 或 `11`；`max_model_calls` 默认和最大值均为 `16`，按审核策略最小为 `3` 或 `4`；`wall_time_limit_ms` 允许 `1,000`～`600,000`，默认 `600,000`。当前没有 `expected_run_version` 或通用 `budget_overrides` 字段，Run 级唯一约束阻止同一 Run 创建第二个工作流。
+其中只有 `idempotency_key` 和 `role_bindings` 没有默认值；`reasoning`省略时不表示供应商默认，而由每个角色的登记模型解析为版本化默认。工作流名称、版本与执行配置当前固定为 `model_only`、`1.0.0` 和 `model_only_v1`。`review_policy` 默认为 `always`；`reviewer` 在策略不是 `never` 时必填，`verifier` 可以绑定但当前执行路径不会创建该模型节点。`max_nodes` 默认和最大值均为 `32`，按审核策略最小为 `10` 或 `11`；`max_model_calls` 默认和最大值均为 `16`，按审核策略最小为 `3` 或 `4`；`wall_time_limit_ms` 允许 `1,000`～`600,000`，默认 `600,000`。当前没有 `expected_run_version` 或通用 `budget_overrides` 字段，Run 级唯一约束阻止同一 Run 创建第二个工作流。
 
 - `idempotency_key` 长度必须为 `8`～`128`；`stream` 默认 `false`。
 - `role_bindings` 只接受 `controller`、`planner`、`researcher`、`reviewer` 和 `verifier` 键。每个绑定包含 `provider`、`model`、`structured_output_mode`、`timeout_seconds` 和可选的 `max_output_tokens`；结构化输出模式默认为 `native_schema`，超时默认 `60` 秒且范围为 `1`～`600`。平台不提供默认业务输出上限，字段缺省时不主动缩短输出；显式 `max_output_tokens` 的统一允许范围为 `1`～`65536`。具有费用预算的 Run 为了在 Provider 调用前完成保守费用预留，仍必须显式提供 `max_output_tokens` 和模型价格；无预算 Run 可以保持缺省。
@@ -962,7 +968,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 ## 2026 年 8 月 24 日工作流 Token 缓存优化规划
 
-本工作项是阶段3完成后的性能与费用优化，不更改阶段3“已完成”状态，也不改变模型输出、证据合同或审核语义。当前代码已经从 OpenAI 兼容、Anthropic 和 Gemini 响应中归一化读取 `cached_tokens`，并聚合到 Workflow 用量；平台生成的 Agent 输入与Schema已经使用确定性JSON序列化，`llm_attempts.prompt_prefix_fingerprint`保存不含Prompt正文的稳定前缀SHA-256指纹。现有Attempt查询可返回Provider、Model、输入Token、缓存命中Token、延迟和该指纹，但尚未提供按节点角色分组的服务端统计，也没有统一的显式缓存请求策略。DeepSeek 和 OpenAI 兼容调用当前主要依赖供应商自动前缀缓存；Anthropic 适配器只读取 `cache_read_input_tokens`，尚未发送 `cache_control`；Gemini 适配器只读取 `cachedContentTokenCount`，尚未创建或引用显式缓存对象。
+本工作项是阶段3完成后的性能与费用优化，不更改阶段3“已完成”状态，也不改变模型输出、证据合同或审核语义。当前代码已经从 OpenAI、DeepSeek、OpenAI兼容、Anthropic和Gemini响应中归一化读取缓存用量，并聚合到Workflow用量；平台生成的Agent输入与Schema使用确定性JSON序列化，`llm_attempts.prompt_prefix_fingerprint`保存不含Prompt正文的稳定前缀SHA-256指纹。迁移`20260829_0018`增加Agent角色、缓存写入和缓存未命中事实；`GET /api/v1/internal/model-cache-diagnostics?run_id=...`可按Provider、Model、Agent角色和指纹返回观察窗口内首个请求与后续请求的命中基线。DeepSeek和OpenAI兼容调用继续依赖供应商自动前缀缓存；Anthropic适配器归一化读取`input_tokens`、`cache_read_input_tokens`和`cache_creation_input_tokens`，但不发送`cache_control`；Gemini适配器读取`cachedContentTokenCount`，但不创建或引用显式缓存对象。
 
 供应商事实以官方文档为准：
 
@@ -998,12 +1004,14 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 | 步骤 | 修改对象 | 预期结果 | 验证方式 | 状态 |
 |---|---|---|---|---|
-| 1 | 现有 Attempt/Workflow 用量读取与诊断 | 得到按 Provider、Model、节点角色分组的冷/热请求基线，并纠正跨供应商总输入口径 | 固定样本单元测试、原始用量对照和本地查询 | 进行中：Attempt已保存并返回稳定前缀指纹，服务端分组统计和跨供应商输入口径仍未实现 |
+| 1 | 现有 Attempt/Workflow 用量读取与诊断 | 得到按 Provider、Model、节点角色分组的首个/后续请求基线，并纠正跨供应商总输入口径 | 固定样本单元测试、原始用量对照和本地查询 | 已完成：新增Run范围内部诊断、Agent角色、缓存写入/未命中事实和Anthropic总输入归一化 |
 | 2 | Agent 稳定前缀和平台生成 JSON 序列化 | 静态指令与 Schema 在前，动态内容在后；相同语义的稳定前缀字节一致 | 先行失败测试、前缀指纹快照和工作流语义回归 | 已完成：映射键和空白确定性序列化，动态消息不参与稳定前缀指纹 |
-| 3 | Model Gateway 能力目录与 Provider 适配器 | 只在能力明确且有收益时增加 Provider 无关缓存策略，由适配器映射供应商字段 | Provider 请求合同、能力拒绝和用量归一化测试 | 未开始 |
-| 4 | 真实供应商对照与启用决定 | 记录命中、延迟、费用和失效行为；无可重复收益时不启用显式缓存 | 重复请求集成测试、敏感字段扫描和结果等价评估 | 未开始 |
+| 3 | Model Gateway 能力目录与 Provider 适配器 | 只在能力明确且有收益时增加 Provider 无关缓存策略，由适配器映射供应商字段 | Provider 请求合同、能力拒绝和用量归一化测试 | 条件未满足：当前只保留自动缓存和统一用量诊断；在步骤4证明收益前不增加显式缓存请求合同 |
+| 4 | 真实供应商对照与启用决定 | 记录命中、延迟、费用和失效行为；无可重复收益时不启用显式缓存 | 重复请求集成测试、敏感字段扫描和结果等价评估 | 暂停：需要部署凭据、可能产生费用的真实调用授权和已登记模型；不属于阶段3离线完成条件 |
 
-2026年8月27日完成步骤2及步骤1的指纹证据部分：Agent节点对平台生成的模型输入、提示式JSON Schema和原生输出Schema使用统一确定性序列化；Model Gateway根据实际系统指令、工具和输出合同生成稳定前缀指纹，并在Provider调用前保存到Model Attempt。指纹不包含动态消息或Prompt正文，Provider和Model继续使用Attempt已有字段分组。统一上下文定向回归为`70 passed`，完整后端与模型适配层测试为`276 passed, 4 skipped`；4项跳过仍是需要真实MySQL/MinIO环境的基础设施测试。Ruff全量检查及MySQL离线迁移SQL通过，Alembic唯一head为`20260827_0015`。真实供应商缓存收益、服务端分组统计和显式缓存请求策略尚未验证或启用。
+2026年8月27日完成步骤2及步骤1的指纹证据部分：Agent节点对平台生成的模型输入、提示式JSON Schema和原生输出Schema使用统一确定性序列化；Model Gateway根据实际系统指令、工具和输出合同生成稳定前缀指纹，并在Provider调用前保存到Model Attempt。指纹不包含动态消息或Prompt正文。
+
+2026年8月29日完成步骤1剩余离线范围：平台统一`input_tokens`为完整有效输入，Anthropic以普通输入、缓存读取和缓存创建之和计数；`cached_tokens`保持缓存读取的既有含义，新增`cache_write_tokens`和`cache_miss_tokens`。Agent调用把角色保存到Attempt，内部缓存诊断按Run、工作流版本、Provider、Model、角色和稳定前缀分组，并分别返回观察窗口内首个和后续请求的Token命中、首个可见Token延迟和总延迟统计。价格目录可选配置`cache_write_input_per_million`，使缓存创建不再按普通输入或缓存读取重复计价。本地MySQL已从`20260828_0017`向前迁移到唯一head`20260829_0018`。真实供应商缓存收益和显式缓存请求策略仍未验证或启用；这是有意遵守“先证明收益再增加生命周期”的停止条件。
 
 ## 测试设计
 
@@ -1017,7 +1025,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 2026 年 8 月 13 日运行完整后端测试为 `212 passed, 4 skipped`，Model Provider 包测试为 `28 passed`；4 项跳过项是需要真实 MySQL/MinIO 环境变量的基础设施测试。`ruff check` 与本阶段修改文件的格式检查均通过。Alembic 当前唯一 head 为 `20260813_0011`，面向 MySQL 的 `alembic upgrade head --sql` 离线迁移生成通过，并包含工作流费用预留字段。真实供应商调用需要部署环境密钥，保持为可选冒烟验证，不把外部供应商可用性作为离线自动化完成条件。
 
-2026 年 8 月 20 日补充回归确认：真实运行曾产生 3352 字节 Handoff，并因既有 1000 字节合同在 `handoff_submission` 节点失败。新增超长 Worker 输出回归后，工作流会保存完整 Worker 节点并生成不超过合同上限、可追溯源节点的 Handoff 投影；`tests/test_agent_workflows.py` 与 L2 Handoff 上限定向测试共 33 项通过，原有独立 Handoff 超限拒绝行为保持不变。
+2026年8月20日的真实运行曾产生3352字节Handoff，并因当时的1000字节合同在`handoff_submission`节点失败；之后一度通过限长投影规避。2026年8月29日按当前产品决定移除了Handoff独立输出上限和投影逻辑：新工作流会把完整Worker结构化输出写入Handoff，内部独立Handoff接口也不再按字节数拒绝；原失败Workflow仍作为不可变历史事实保留。固定字段、状态、归属、隐藏推理禁入以及Worker节点64 KiB输出合同保持不变。
 
 2026 年 8 月 20 日补充回归确认：DeepSeek prompted JSON 曾仅依赖 Schema 提示词，真实 Worker 响应虽以 `finish_reason=stop` 完成，却因末尾数组缺少 `]` 而产生 `node_output_invalid`。当前 Agent 调用使用独立的 `json_object_output` 合同，DeepSeek 适配器映射为官方 `response_format: {"type":"json_object"}` 并在 Provider 边界解析；节点层继续执行原有 Pydantic Schema 校验。普通 JSON object 与原生 JSON Schema 仍是两个能力，不允许静默降级。真实浏览器回归已完成 10 个节点和 3 次模型调用，刷新后最终消息与节点事实均可恢复。
 
@@ -1026,6 +1034,10 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 2026 年 8 月 21 日补充知识边界修复：统一 Agent 指令原先要求 `Use only the supplied content`，导致普通解释问题也被错误当成必须提供外部资料的证据任务；Worker 只能报告资料缺失，Reviewer 因目标未回答而拒绝。当前 Provider 无关策略将已提供内容视为权威上下文，并允许普通解释问题使用模型已有的通用知识；任务明确限制来源时仍必须遵守，且任何模型都不得伪造工具、文件、测试、网络请求或外部验证事实。Playwright 使用真实 DeepSeek 对同一问题完成 15 个节点和 6 次模型调用，三个 Worker、Reviewer、最终汇总和消息关联全部成功，最终回答无需刷新即可见。后端与模型适配层全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
 
 2026 年 8 月 24 日补充审核门禁修复：Reviewer 返回 `needs_revision` 且不存在错误级发现、重试或重新规划要求时，工作流不再丢弃候选回答，而是把完整审核意见交给 Final synthesis 应用后生成最终消息；明确 `fail`、错误级发现、重试或重新规划仍会阻止汇总。定向回归覆盖上述四类分支，结果为 `4 passed`。
+
+2026年8月29日补充稳定模型思考合同：工作流创建请求新增统一`reasoning`字段，Controller、Worker、Reviewer和Final synthesis均透传同一选择；省略时由各角色登记模型解析为“启用 + medium”。新工作流在写入工作流、事件或可计费调用前预检全部角色模型，未登记、已禁用、不支持等级或不支持关闭均明确失败；精确幂等回放不因模型策略后来变化而重跑。每个Attempt继续保存统一配置、来源、模型策略版本和Provider原生值。Agent定向测试为`55 passed`，后端与模型包全量测试为`295 passed, 4 skipped`，Ruff全量检查通过。
+
+2026年8月29日阶段3收敛验证：新增实时事件observer失败隔离、Workflow节点用量与Attempt明细对账、跨Provider缓存用量归一化、Run范围缓存诊断和`20260829_0018`迁移。后端与模型适配层全量测试为`301 passed, 4 skipped`，4项跳过仍是需要显式真实MySQL/MinIO条件的基础设施测试；Ruff全量检查和迁移离线SQL通过。本地MySQL当前为`20260829_0018 (head)`。`alembic check`只继续报告实验性Memory表历史迁移的`SET NULL`与当前ORM `RESTRICT`差异，没有报告本次Attempt字段或索引漂移；该既有差异不属于阶段3，继续按阶段2Memory暂停边界保留。
 
 以下各节保留阶段3回归边界和后续执行配置扩展时需要补充的测试方向；阶段10的进程恢复、阶段7的工具执行、阶段6的遥测装配和阶段5的用户权限测试不属于阶段3未完成项。
 
@@ -1084,7 +1096,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 9 | 阶段6遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段6装配 | Schema 和持久化字段检查 |
 | 10 | `model_only_v1` 基础设施与供应商验证 | 已完成离线门禁 | 快速测试、迁移链和 MySQL 离线 SQL 可验证；真实供应商调用必须使用部署环境密钥，保持可选 | 完整后端测试、Alembic 检查、可选供应商冒烟 |
 | 11 | 阶段7恢复后的 Tool Runtime 集成 | 不属于阶段3完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段7工具循环、写隔离、取消和未知结果测试 |
-| 12 | 统一Context Builder接入 | 进行中 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build、Prompt Release、受限文本Artifact、Agent/Handoff/Evaluation类型化来源、去重和Attempt/Node证据；Memory、Knowledge、Tool及产品入口绑定仍待各自门禁 | 已有第二轮会话、并发锚点、完整轮次、Prompt/Artifact、Agent协作来源、当前目标单次出现、对象失败和节点证据测试；其余来源门禁与真实Provider矩阵待补 |
+| 12 | 统一Context Builder后端接入 | 已完成阶段3范围 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build、Prompt Release、受限文本Artifact、Agent/Handoff/Evaluation类型化来源、去重和Attempt/Node证据；Memory、Knowledge、Tool和阶段4产品入口不属于本工作项 | 第二轮会话、并发锚点、完整轮次、Prompt/Artifact、Agent协作来源、当前目标单次出现、对象失败和节点证据测试 |
+| 13 | 稳定模型思考配置透传 | 已完成 | 工作流级选择或逐模型medium默认进入所有模型角色；新工作流预检全部角色；Attempt保存最终解析证据；幂等哈希包含思考选择 | 显式等级、默认、关闭、角色不支持、未登记模型、Attempt证据和幂等冲突测试 |
 
 ## 失败与恢复设计
 
@@ -1093,7 +1106,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 节点开始事实和开始事件提交成功后才调用 Provider；提交失败时不进入模型调用。
 - Provider 的超时、网络/连接错误、无法确认的内部错误或请求中取消会使当前 Node 与 Workflow 进入 `outcome_unknown`；已启动的 Task、Agent Run 和 Agent Turn 被收敛到其现有可表达的终态。
 - 节点输出校验失败、计划拒绝、验证失败，以及 Reviewer 的明确失败、错误级发现、重新规划或重试要求会终止当前 Workflow；非阻断的 `needs_revision` 进入最终汇总，不再被当作异常丢弃回答。
-- SSE observer 在事件提交后收到通知；当前 `event_sink` 仍是执行服务上的可变字段，通知自身失败还没有独立隔离合同。
+- SSE observer 在事件提交后收到通知；通知失败会记录工作流、事件和序号后解除当前请求级observer，已提交事实和后续工作流执行不受影响。`asyncio.CancelledError`不被该隔离逻辑吞掉，仍进入既有取消收敛。
 - Final synthesis 的 Assistant Message 与最终汇总节点完成事件共用事务；测试已验证最终节点无法持久化时不会遗留成功消息。
 - 当前没有跨请求继续、等待输入、resume 或启动审计。同步请求所在进程意外退出仍可能留下 `running` 事实；该问题需要阶段10的可靠执行与恢复机制，不能由 API 进程内后台任务安全解决。
 
@@ -1128,6 +1141,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 业务事件保存在 MySQL，trace/span 关联字段已经预留；阶段6装配 exporter 时必须验证故障不影响运行。
 - 两个无依赖模型工作 Agent 可以有界并行。写任务、工具调用和独立 Workspace 仍明确不可用，等待阶段7以新的版本化执行配置实现。
 - Model Attempt、Handoff、Evaluation 和 Node Result 均能从 `run_id` 查询并相互关联；阶段7加入 Tool Call、Artifact 和程序测试证据时沿用同一引用方式。
+- 工作流级思考选择会一致传入Controller、Worker、Reviewer和Final synthesis；省略时每个角色都使用自身登记模型的版本化medium默认。任一角色不支持时在创建工作流事实和调用Provider前失败，Attempt能够重读最终统一等级、来源、策略版本和Provider映射值。
+- Workflow Completion创建前会把全部节点用量与该工作流Model Attempt明细独立对账；缓存诊断可以在不读取Prompt正文的情况下按Run、Provider、Model、Agent角色和稳定前缀查询。
 
 ## 官方依据
 

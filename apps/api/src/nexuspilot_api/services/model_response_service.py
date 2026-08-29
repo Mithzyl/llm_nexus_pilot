@@ -31,6 +31,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.config import Settings, get_settings
+from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.infrastructure.provider_continuation_store import (
     ProviderContinuationStateError,
@@ -455,6 +456,9 @@ class ModelInvocationService:
                         f"Idempotency key already belongs to model attempt {existing.attempt_id}"
                     ),
                 )
+        agent_role = payload.metadata.get("agent_role")
+        if agent_role is not None and not 1 <= len(agent_role) <= 64:
+            raise InvalidRequestError("agent_role metadata must contain 1 to 64 characters")
         model_attempt = LlmModelAttempt(
             attempt_id=attempt_id,
             run_id=payload.run_id,
@@ -465,6 +469,7 @@ class ModelInvocationService:
             request_type="stream" if payload.stream else "generation",
             request_key=payload.idempotency_key,
             prompt_prefix_fingerprint=prompt_prefix_fingerprint,
+            agent_role=agent_role,
             retry_count=0,
             status=AttemptStatus.STARTED,
             reasoning_display_policy=payload.reasoning_display_policy.value,
@@ -803,6 +808,8 @@ class ModelInvocationService:
         model_attempt.input_tokens = response.input_tokens
         model_attempt.output_tokens = response.output_tokens
         model_attempt.cached_tokens = response.cached_tokens
+        model_attempt.cache_write_tokens = response.cache_write_tokens
+        model_attempt.cache_miss_tokens = response.cache_miss_tokens
         model_attempt.reasoning_tokens = response.reasoning_tokens
         model_attempt.estimated_cost = (
             Decimal(response.estimated_cost) if response.estimated_cost is not None else None
@@ -1229,6 +1236,7 @@ class ModelInvocationService:
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
             cached_tokens=response.cached_tokens,
+            cache_write_tokens=response.cache_write_tokens,
         )
         return response.model_copy(
             update={"estimated_cost": str(estimated) if estimated is not None else None}
@@ -1255,6 +1263,8 @@ class ModelInvocationService:
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 cached_tokens=response.cached_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                cache_miss_tokens=response.cache_miss_tokens,
                 reasoning_tokens=response.reasoning_tokens,
                 estimated_cost=response.estimated_cost,
             ),

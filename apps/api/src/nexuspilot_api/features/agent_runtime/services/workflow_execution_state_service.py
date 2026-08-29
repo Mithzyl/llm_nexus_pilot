@@ -1,6 +1,7 @@
 """Persist shared Agent workflow nodes, budgets, and committed public events."""
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -62,6 +63,7 @@ from nexuspilot_api.schemas.sessions import MessageCreate
 from nexuspilot_api.services.session_service import create_message
 
 EventSink = Callable[[AgentWorkflowEventRead], Awaitable[None]]
+logger = logging.getLogger(__name__)
 MAX_NODE_RESULT_BYTES = 65_536
 _TERMINAL_WORKFLOW_STATUSES = frozenset(
     {
@@ -116,8 +118,15 @@ class WorkflowExecutionStateService:
         self,
         run_id: str,
         payload: AgentWorkflowCreate,
+        *,
+        validate_new_workflow: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[LlmAgentWorkflowExecution, bool]:
-        """Validate Run state and atomically create or replay one workflow fact."""
+        """Validate Run state and atomically create or replay one workflow fact.
+
+        The optional validator runs only for a genuinely new workflow, after Run
+        and idempotency checks but before any workflow, event, or billable fact is
+        written. Replays therefore retain their original validated configuration.
+        """
 
         self.workflow_definitions.require_definition(
             payload.workflow_name,
@@ -157,6 +166,8 @@ class WorkflowExecutionStateService:
             raise ResourceConflictError(
                 f"Cannot start an Agent workflow for run in {run.status.value} status"
             )
+        if validate_new_workflow is not None:
+            await validate_new_workflow()
 
         now = utc_now()
         workflow = LlmAgentWorkflowExecution(
@@ -707,6 +718,52 @@ class WorkflowExecutionStateService:
             ),
         )
 
+    async def assert_workflow_usage_matches_model_attempts(
+        self,
+        workflow: LlmAgentWorkflowExecution,
+        nodes: list[LlmAgentWorkflowNodeExecution],
+    ) -> None:
+        """Reject final aggregation when committed node usage diverges from model Attempts."""
+
+        attempts = list(
+            (
+                await self.db_session.scalars(
+                    select(LlmModelAttempt).where(
+                        LlmModelAttempt.request_key.like(
+                            f"agent:{workflow.workflow_execution_id}:%"
+                        )
+                    )
+                )
+            ).all()
+        )
+        node_usages = [NodeUsageRead.model_validate(node.usage_json or {}) for node in nodes]
+        node_totals = NodeUsageRead(
+            input_tokens=sum(item.input_tokens for item in node_usages),
+            output_tokens=sum(item.output_tokens for item in node_usages),
+            cached_tokens=sum(item.cached_tokens for item in node_usages),
+            estimated_cost=sum(
+                (item.estimated_cost for item in node_usages),
+                Decimal("0"),
+            ),
+            model_call_count=sum(item.model_call_count for item in node_usages),
+            tool_call_count=sum(item.tool_call_count for item in node_usages),
+        )
+        attempt_totals = NodeUsageRead(
+            input_tokens=sum(item.input_tokens or 0 for item in attempts),
+            output_tokens=sum(item.output_tokens or 0 for item in attempts),
+            cached_tokens=sum(item.cached_tokens or 0 for item in attempts),
+            estimated_cost=sum(
+                (item.estimated_cost or Decimal("0") for item in attempts),
+                Decimal("0"),
+            ),
+            model_call_count=len(attempts),
+            tool_call_count=0,
+        )
+        if node_totals != attempt_totals:
+            raise InvalidRequestError(
+                "Agent workflow node usage does not match committed model Attempts"
+            )
+
     async def node_has_outcome_unknown_attempt(
         self,
         workflow: LlmAgentWorkflowExecution,
@@ -898,7 +955,7 @@ class WorkflowExecutionStateService:
         self,
         events: list[LlmAgentWorkflowEvent],
     ) -> None:
-        """Notify the execution observer in event-sequence order after one successful commit."""
+        """Notify a best-effort live observer without changing committed workflow state."""
 
         if self.event_sink is None:
             return
@@ -917,7 +974,20 @@ class WorkflowExecutionStateService:
                 public_payload=event.public_payload_json,
                 trace_id=event.trace_id,
             )
-            await self.event_sink(durable_event)
+            try:
+                await self.event_sink(durable_event)
+            except Exception:
+                logger.warning(
+                    "Agent workflow live event observer failed after durable commit",
+                    extra={
+                        "workflow_execution_id": event.workflow_execution_id,
+                        "workflow_event_id": event.event_id,
+                        "workflow_event_sequence": event.event_sequence,
+                    },
+                    exc_info=True,
+                )
+                self.event_sink = None
+                break
 
     async def reserve_model_call(
         self,

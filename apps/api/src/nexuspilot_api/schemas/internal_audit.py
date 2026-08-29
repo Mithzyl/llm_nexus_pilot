@@ -66,3 +66,38 @@ class OutboxEventDetail(OutboxEventSummary):
     """Expose one redacted infrastructure message payload for internal operations."""
 
     payload_json: dict[str, Any]
+
+
+class ModelCacheDiagnosticGroup(ApiModel):
+    """Expose cache observations for one stable Provider, model, role, and prompt prefix."""
+
+    provider: str
+    model: str
+    agent_role: str | None
+    prompt_prefix_fingerprint: str | None
+    request_count: int
+    requests_reporting_cache_usage: int
+    total_input_tokens: int
+    total_cached_tokens: int
+    total_cache_write_tokens: int
+    total_cache_miss_tokens: int
+    first_observed_cached_tokens: int | None
+    first_observed_latency_ms: int | None
+    first_observed_first_visible_token_latency_ms: int | None
+    subsequent_request_count: int
+    subsequent_input_tokens: int
+    subsequent_cached_tokens: int
+    subsequent_cache_hit_ratio: Decimal | None
+    subsequent_average_latency_ms: Decimal | None
+    subsequent_average_first_visible_token_latency_ms: Decimal | None
+
+
+class ModelCacheDiagnosticsRead(ApiModel):
+    """Return bounded run-scoped cache diagnostics without prompt or response content."""
+
+    run_id: str
+    workflow_name: str | None
+    workflow_version: str | None
+    execution_profile: str | None
+    attempt_count: int
+    groups: list[ModelCacheDiagnosticGroup]
