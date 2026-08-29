@@ -85,7 +85,10 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index("ix_llm_models_status", "llm_models", ["status"], unique=False)
-    _backfill_registered_models(registered_models)
+    # Offline SQL generation starts from an empty schema and cannot inspect rows.
+    # Real upgrades keep the data-dependent backfill below.
+    if not op.get_context().as_sql:
+        _backfill_registered_models(registered_models)
 
 
 def _backfill_registered_models(registered_models: sa.Table) -> None:

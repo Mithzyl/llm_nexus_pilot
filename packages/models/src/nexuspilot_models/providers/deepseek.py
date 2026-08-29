@@ -2,18 +2,12 @@
 
 from typing import Any
 
-from nexuspilot_models.contracts import ModelRequest, ProviderName, ReasoningEffort
+from nexuspilot_models.contracts import ModelRequest, ProviderName
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatProvider
 from nexuspilot_models.transport import HttpTransport
 
-
-_REASONING_EFFORTS_BY_MODEL: dict[str, frozenset[ReasoningEffort]] = {
-    "deepseek-v4-flash": frozenset(
-        {ReasoningEffort.LOW, ReasoningEffort.HIGH, ReasoningEffort.MAX}
-    ),
-    "deepseek-v4-pro": frozenset({ReasoningEffort.HIGH, ReasoningEffort.MAX}),
-}
+_NATIVE_REASONING_EFFORTS = frozenset({"low", "high", "max"})
 
 
 class DeepSeekChatProvider(OpenAICompatibleChatProvider):
@@ -45,11 +39,10 @@ class DeepSeekChatProvider(OpenAICompatibleChatProvider):
         payload = super()._build_payload(request, stream=stream)
         if request.reasoning is None:
             return payload
-        payload["thinking"] = {
-            "type": "enabled" if request.reasoning.enabled else "disabled"
-        }
-        if request.reasoning.effort is not None:
-            payload["reasoning_effort"] = request.reasoning.effort.value
+        payload["thinking"] = {"type": "enabled" if request.reasoning.enabled else "disabled"}
+        provider_effort = self._provider_reasoning_effort(request)
+        if provider_effort is not None:
+            payload["reasoning_effort"] = provider_effort
         return payload
 
     def _validate_request(self, request: ModelRequest) -> None:
@@ -67,17 +60,27 @@ class DeepSeekChatProvider(OpenAICompatibleChatProvider):
                 "invalid_request",
                 "DeepSeek temperature is not supported while reasoning is enabled.",
             )
+        provider_effort = self._provider_reasoning_effort(request)
+        if provider_effort is not None and provider_effort not in _NATIVE_REASONING_EFFORTS:
+            raise ModelProviderError(
+                "unsupported_capability",
+                f"DeepSeek does not support native reasoning effort '{provider_effort}'.",
+            )
+
+    @staticmethod
+    def _provider_reasoning_effort(request: ModelRequest) -> str | None:
+        """Return the resolved DeepSeek effort or a direct low-level contract value."""
+
+        if request.resolved_reasoning is not None:
+            provider_value = request.resolved_reasoning.provider_value
+            if provider_value is None:
+                return None
+            if not isinstance(provider_value, str):
+                raise ModelProviderError(
+                    "unsupported_capability",
+                    "DeepSeek reasoning effort mapping must resolve to a string.",
+                )
+            return provider_value
         if request.reasoning is None or request.reasoning.effort is None:
-            return
-        supported_efforts = _REASONING_EFFORTS_BY_MODEL.get(request.model)
-        if supported_efforts is None:
-            raise ModelProviderError(
-                "unsupported_capability",
-                f"DeepSeek model '{request.model}' has no declared reasoning effort profile.",
-            )
-        if request.reasoning.effort not in supported_efforts:
-            raise ModelProviderError(
-                "unsupported_capability",
-                f"DeepSeek model '{request.model}' does not support reasoning effort "
-                f"'{request.reasoning.effort.value}'.",
-            )
+            return None
+        return request.reasoning.effort.value

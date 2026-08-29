@@ -3,7 +3,11 @@
 from datetime import datetime
 from decimal import Decimal
 
-from nexuspilot_models.contracts import ReasoningDisplayPolicy
+from nexuspilot_models.contracts import (
+    ReasoningConfigurationSource,
+    ReasoningDisplayPolicy,
+    ReasoningEffort,
+)
 from pydantic import BaseModel, Field
 
 from nexuspilot_api.models import AttemptStatus
@@ -30,6 +34,11 @@ class ModelAttemptCreate(BaseModel):
     cached_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int | None = Field(default=None, ge=0)
     reasoning_display_policy: ReasoningDisplayPolicy = ReasoningDisplayPolicy.HIDDEN
+    reasoning_enabled: bool | None = None
+    reasoning_effort: ReasoningEffort | None = None
+    reasoning_source: ReasoningConfigurationSource | None = None
+    reasoning_profile_version: str | None = Field(default=None, max_length=64)
+    reasoning_provider_options_json: dict | None = None
     estimated_cost: Decimal | None = Field(default=None, ge=0)
     latency_ms: int | None = Field(default=None, ge=0)
     provider_request_id: str | None = Field(default=None, max_length=255)
@@ -72,6 +81,11 @@ class ModelAttemptRead(ApiModel):
     cached_tokens: int | None
     reasoning_tokens: int | None
     reasoning_display_policy: ReasoningDisplayPolicy
+    reasoning_enabled: bool | None
+    reasoning_effort: ReasoningEffort | None
+    reasoning_source: ReasoningConfigurationSource | None
+    reasoning_profile_version: str | None
+    reasoning_provider_options_json: dict | None
     estimated_cost: Decimal | None
     latency_ms: int | None
     provider_request_id: str | None
@@ -103,6 +117,11 @@ class ModelAttemptSummary(ApiModel):
     cached_tokens: int | None
     reasoning_tokens: int | None
     reasoning_display_policy: ReasoningDisplayPolicy
+    reasoning_enabled: bool | None
+    reasoning_effort: ReasoningEffort | None
+    reasoning_source: ReasoningConfigurationSource | None
+    reasoning_profile_version: str | None
+    reasoning_provider_options_json: dict | None
     estimated_cost: Decimal | None
     latency_ms: int | None
     error_code: str | None

@@ -4,7 +4,11 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from nexuspilot_models.contracts import ModelReasoningCapabilities, ProviderName
+from nexuspilot_models.contracts import (
+    ModelReasoningCapabilities,
+    ProviderName,
+    ReasoningEffort,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -38,9 +42,7 @@ def validate_prompt_variable_contract(
     if len(variable_schema) > 64:
         raise ValueError("Prompt templates support at most 64 variables")
     invalid_names = [
-        name
-        for name in variable_schema
-        if not PROMPT_VARIABLE_NAME_PATTERN.fullmatch(name)
+        name for name in variable_schema if not PROMPT_VARIABLE_NAME_PATTERN.fullmatch(name)
     ]
     if invalid_names:
         raise ValueError(f"Invalid prompt variable names: {sorted(invalid_names)}")
@@ -204,6 +206,38 @@ class RegisteredModelCreate(BaseModel):
     status: ModelRegistrationStatus = ModelRegistrationStatus.ENABLED
     sort_order: int = Field(default=0, ge=-1_000_000, le=1_000_000)
     metadata_json: dict = Field(default_factory=dict)
+    reasoning_supported_efforts: list[ReasoningEffort] | None = None
+    reasoning_supports_disable: bool | None = None
+    reasoning_default_enabled: bool | None = None
+    reasoning_default_effort: ReasoningEffort | None = None
+    reasoning_effort_mapping: dict[ReasoningEffort, StrictStr | StrictInt] | None = None
+    reasoning_profile_version: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_reasoning_policy(self) -> "RegisteredModelCreate":
+        """Reject partial or internally inconsistent explicit reasoning policies."""
+
+        policy_fields = {
+            "reasoning_supported_efforts",
+            "reasoning_supports_disable",
+            "reasoning_default_enabled",
+            "reasoning_default_effort",
+            "reasoning_effort_mapping",
+            "reasoning_profile_version",
+        }
+        supplied_fields = policy_fields & self.model_fields_set
+        if supplied_fields and supplied_fields != policy_fields:
+            raise ValueError("Explicit reasoning policy must provide every policy field")
+        if supplied_fields:
+            if any(getattr(self, field_name) is None for field_name in policy_fields):
+                raise ValueError("Explicit reasoning policy fields cannot be null")
+            validate_model_reasoning_policy(
+                supported_efforts=self.reasoning_supported_efforts or [],
+                default_enabled=bool(self.reasoning_default_enabled),
+                default_effort=self.reasoning_default_effort,
+                effort_mapping=self.reasoning_effort_mapping or {},
+            )
+        return self
 
 
 class RegisteredModelUpdate(BaseModel):
@@ -216,6 +250,12 @@ class RegisteredModelUpdate(BaseModel):
     status: ModelRegistrationStatus | None = None
     sort_order: int | None = Field(default=None, ge=-1_000_000, le=1_000_000)
     metadata_json: dict | None = None
+    reasoning_supported_efforts: list[ReasoningEffort] | None = None
+    reasoning_supports_disable: bool | None = None
+    reasoning_default_enabled: bool | None = None
+    reasoning_default_effort: ReasoningEffort | None = None
+    reasoning_effort_mapping: dict[ReasoningEffort, StrictStr | StrictInt] | None = None
+    reasoning_profile_version: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def require_one_update(self) -> "RegisteredModelUpdate":
@@ -224,9 +264,18 @@ class RegisteredModelUpdate(BaseModel):
         if not self.model_fields_set:
             raise ValueError("At least one registered model field must be supplied")
         non_nullable_fields = {"display_name", "status", "sort_order", "metadata_json"}
+        non_nullable_fields.update(
+            {
+                "reasoning_supported_efforts",
+                "reasoning_supports_disable",
+                "reasoning_default_enabled",
+                "reasoning_default_effort",
+                "reasoning_effort_mapping",
+                "reasoning_profile_version",
+            }
+        )
         if any(
-            field_name in self.model_fields_set
-            and getattr(self, field_name) is None
+            field_name in self.model_fields_set and getattr(self, field_name) is None
             for field_name in non_nullable_fields
         ):
             raise ValueError("Registered model update cannot clear a required field")
@@ -244,6 +293,12 @@ class RegisteredModelRead(ApiModel):
     status: ModelRegistrationStatus
     sort_order: int
     metadata_json: dict
+    reasoning_supported_efforts: list[ReasoningEffort]
+    reasoning_supports_disable: bool
+    reasoning_default_enabled: bool
+    reasoning_default_effort: ReasoningEffort
+    reasoning_effort_mapping: dict[ReasoningEffort, str | int]
+    reasoning_profile_version: str
     created_at: datetime
     updated_at: datetime
 
@@ -264,6 +319,7 @@ ModelUnavailableReason = Literal[
     "structured_output_unsupported",
     "tools_unsupported",
     "vision_unsupported",
+    "reasoning_profile_invalid",
 ]
 
 
@@ -292,3 +348,32 @@ class ModelDirectoryEntryRead(ApiModel):
     tokenizer_name: str | None
     tokenizer_version: str | None
     reasoning_capabilities: ModelReasoningCapabilities
+    reasoning_supported_efforts: list[ReasoningEffort]
+    reasoning_supports_disable: bool
+    reasoning_default_enabled: bool
+    reasoning_default_effort: ReasoningEffort
+    reasoning_profile_version: str
+
+
+def validate_model_reasoning_policy(
+    *,
+    supported_efforts: list[ReasoningEffort],
+    default_enabled: bool,
+    default_effort: ReasoningEffort | None,
+    effort_mapping: dict[ReasoningEffort, str | int],
+) -> None:
+    """Require an enabled medium default and one explicit mapping per exposed effort."""
+
+    if not default_enabled:
+        raise ValueError("Registered models must enable reasoning by default")
+    if default_effort is not ReasoningEffort.MEDIUM:
+        raise ValueError("Registered models must use medium as the default reasoning effort")
+    if len(supported_efforts) != len(set(supported_efforts)):
+        raise ValueError("reasoning_supported_efforts cannot contain duplicates")
+    if supported_efforts:
+        if ReasoningEffort.MEDIUM not in supported_efforts:
+            raise ValueError("Enabled reasoning profiles must support medium")
+        if set(effort_mapping) != set(supported_efforts):
+            raise ValueError("Every supported reasoning effort requires one explicit mapping")
+    elif effort_mapping:
+        raise ValueError("Reasoning mappings require supported efforts")

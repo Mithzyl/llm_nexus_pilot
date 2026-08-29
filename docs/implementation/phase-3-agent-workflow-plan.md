@@ -108,6 +108,14 @@ Controller 最终汇总
 - 阶段7恢复后新增 `tool_enabled_v1` 工作流定义，复用相同节点结果信封，并增加工具节点输出；不能在 `model_only_v1` 中静默改变行为。
 - 阶段3以 `model_only_v1` 作为可独立交付能力。阶段7恢复后新增 `tool_enabled_v1` 并完成工具循环、写隔离与程序测试集成；该新增能力不回退阶段3的完成状态。
 
+### 稳定模型思考默认与 Agent 透传（阶段2、阶段4新增集成项）
+
+- Agent Workflow 不定义第二套思考等级。每个角色绑定继续使用阶段2统一的 `ReasoningConfiguration`，有效等级和默认值来自该角色所选 `llm_models` 记录。
+- 调用方未为本次工作流显式选择思考配置时，Controller、Worker、Reviewer和Final synthesis都解析为各自稳定模型的默认策略；当前产品默认固定为 `enabled=true`、`effort=medium`，不能省略字段后退回供应商原生默认。
+- 第一版Composer只提供工作流级选择，并把同一用户选择复制到所有角色绑定。角色绑定使用不同模型时，每个模型都必须能把该统一等级解析为已登记的原生值；任一角色不支持时在创建或Provider调用前返回`unsupported_capability`，不只对部分角色静默降级。
+- 每个模型节点的Model Attempt保存统一等级、稳定模型思考策略版本和Provider实际解析结果；刷新后的节点证据必须能够说明本次调用使用了用户选择还是模型默认。
+- 角色级独立调节不在第一版实施范围；后续若开放，仍必须逐角色校验对应稳定模型，而不能把Controller配置无条件复制为不可执行参数。
+
 ## 核心实体边界
 
 ```text

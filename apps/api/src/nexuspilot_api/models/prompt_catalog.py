@@ -214,3 +214,21 @@ class LlmRegisteredModel(TimestampMixin, Base):
     )
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    reasoning_supported_efforts_json: Mapped[list[str]] = mapped_column(
+        JSON,
+        default=list,
+    )
+    reasoning_supports_disable: Mapped[bool] = mapped_column(Boolean, default=False)
+    reasoning_default_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reasoning_default_effort: Mapped[str] = mapped_column(
+        String(16),
+        default="medium",
+    )
+    reasoning_effort_mapping_json: Mapped[dict[str, str | int]] = mapped_column(
+        JSON,
+        default=dict,
+    )
+    reasoning_profile_version: Mapped[str] = mapped_column(
+        String(64),
+        default="reasoning.v1",
+    )

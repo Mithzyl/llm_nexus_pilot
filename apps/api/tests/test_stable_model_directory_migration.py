@@ -6,9 +6,6 @@ from pathlib import Path
 import sqlalchemy as sa
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy.orm import Session
-
-from nexuspilot_api.models import LlmRegisteredModel
 
 
 def test_stable_model_directory_migration_deduplicates_capability_history() -> None:
@@ -67,11 +64,9 @@ def test_stable_model_directory_migration_deduplicates_capability_history() -> N
                 "FROM llm_models ORDER BY provider, model_identifier"
             )
         ).all()
-        with Session(bind=connection) as session:
-            orm_registered_model = session.scalar(sa.select(LlmRegisteredModel))
+        stored_provider = connection.execute(
+            sa.text("SELECT provider FROM llm_models")
+        ).scalar_one()
 
-    assert registered_rows == [
-        ("deepseek", "deepseek-v4-flash", "deepseek-v4-flash")
-    ]
-    assert orm_registered_model is not None
-    assert orm_registered_model.provider.value == "deepseek"
+    assert registered_rows == [("deepseek", "deepseek-v4-flash", "deepseek-v4-flash")]
+    assert stored_provider == "deepseek"

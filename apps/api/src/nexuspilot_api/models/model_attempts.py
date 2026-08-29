@@ -4,6 +4,8 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -63,6 +65,11 @@ class LlmModelAttempt(Base):
     cached_tokens: Mapped[int | None]
     reasoning_tokens: Mapped[int | None]
     reasoning_display_policy: Mapped[str] = mapped_column(String(32), default="hidden")
+    reasoning_enabled: Mapped[bool | None] = mapped_column(Boolean)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(16))
+    reasoning_source: Mapped[str | None] = mapped_column(String(32))
+    reasoning_profile_version: Mapped[str | None] = mapped_column(String(64))
+    reasoning_provider_options_json: Mapped[dict | None] = mapped_column(JSON)
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     latency_ms: Mapped[int | None]
     provider_request_id: Mapped[str | None] = mapped_column(String(255))

@@ -302,6 +302,10 @@ async def test_registered_model_bootstrap_is_explicit_idempotent_and_capability_
     assert available_directory.json()[0]["selectable"] is True
     assert available_directory.json()[0]["unavailable_reason"] is None
     assert available_directory.json()[0]["catalog_version"] == "model-directory-v1"
+    assert available_directory.json()[0]["reasoning_supported_efforts"] == ["medium"]
+    assert available_directory.json()[0]["reasoning_default_enabled"] is True
+    assert available_directory.json()[0]["reasoning_default_effort"] == "medium"
+    assert available_directory.json()[0]["reasoning_profile_version"] == "reasoning.v1"
 
 
 async def test_registered_model_directory_distinguishes_disablement_and_registry_failures(
@@ -364,3 +368,27 @@ async def test_registered_model_directory_distinguishes_disablement_and_registry
     ]
     assert directory.json()[0]["unavailable_reason"] == "provider_unavailable"
     assert directory.json()[1]["unavailable_reason"] == "model_disabled"
+
+
+async def test_registered_model_rejects_provider_native_reasoning_mismatch(
+    client: httpx.AsyncClient,
+) -> None:
+    """Verify an invalid native value cannot make an uncallable model selectable."""
+
+    response = await client.post(
+        "/api/v1/internal/models",
+        headers=INTERNAL_HEADERS,
+        json={
+            "provider": "deepseek",
+            "model_identifier": "invalid-reasoning-map",
+            "display_name": "Invalid reasoning map",
+            "reasoning_supported_efforts": ["medium"],
+            "reasoning_supports_disable": True,
+            "reasoning_default_enabled": True,
+            "reasoning_default_effort": "medium",
+            "reasoning_effort_mapping": {"medium": "turbo"},
+            "reasoning_profile_version": "invalid.v1",
+        },
+    )
+
+    assert response.status_code == 422

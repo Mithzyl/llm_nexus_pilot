@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 MAX_PROVIDER_OUTPUT_TOKENS = 65_536
 
 
@@ -37,9 +36,19 @@ class MessageRole(StrEnum):
 class ReasoningEffort(StrEnum):
     """Identify the portable reasoning-strength levels supported by the public contract."""
 
+    MINIMAL = "minimal"
     LOW = "low"
+    MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
     MAX = "max"
+
+
+class ReasoningConfigurationSource(StrEnum):
+    """Identify whether one effective reasoning choice came from the caller or model policy."""
+
+    MODEL_DEFAULT = "model_default"
+    REQUEST = "request"
 
 
 class ReasoningPresentationCapability(StrEnum):
@@ -164,6 +173,24 @@ class ReasoningConfiguration(ContractModel):
         return self
 
 
+class ResolvedReasoningConfiguration(ContractModel):
+    """Carry an audited portable choice and its model-specific provider value internally."""
+
+    source: ReasoningConfigurationSource
+    profile_version: str = Field(min_length=1, max_length=64)
+    provider_value: str | int | None = None
+
+    @model_validator(mode="after")
+    def validate_provider_value(self) -> "ResolvedReasoningConfiguration":
+        """Reject empty strings and booleans that cannot be valid provider effort values."""
+
+        if isinstance(self.provider_value, bool):
+            raise ValueError("provider reasoning value cannot be boolean")
+        if isinstance(self.provider_value, str) and not self.provider_value.strip():
+            raise ValueError("provider reasoning value cannot be empty")
+        return self
+
+
 class Message(ContractModel):
     """Represent one portable conversation turn without provider-native content blocks."""
 
@@ -223,6 +250,10 @@ class ModelRequest(ContractModel):
     output_schema: dict[str, Any] | None = None
     json_object_output: bool = False
     reasoning: ReasoningConfiguration | None = None
+    resolved_reasoning: ResolvedReasoningConfiguration | None = Field(
+        default=None,
+        exclude=True,
+    )
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_output_tokens: int | None = Field(
         default=None,

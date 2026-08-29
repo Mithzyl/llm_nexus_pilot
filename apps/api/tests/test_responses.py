@@ -121,9 +121,7 @@ class CapturingContextProvider:
             latency_ms=4,
             provider_request_id="context-provider-request",
             raw_response={"text": "context answer"},
-            transport_attempts=[
-                TransportAttempt(attempt_index=1, status_code=200, latency_ms=4)
-            ],
+            transport_attempts=[TransportAttempt(attempt_index=1, status_code=200, latency_ms=4)],
         )
 
     async def stream(self, _request: ModelRequest):
@@ -415,18 +413,12 @@ async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
         "What is remembered?",
     ]
     assert "Fixture-only artifact context" in provider_message_texts[3]
-    run_detail = (
-        await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")
-    ).json()
+    run_detail = (await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")).json()
     context_build_id = run_detail["attempts"][0]["context_build_id"]
     assert context_build_id is not None
-    context_build = (
-        await client.get(f"/api/v1/context-builds/{context_build_id}")
-    ).json()
+    context_build = (await client.get(f"/api/v1/context-builds/{context_build_id}")).json()
     assert [
-        message["content"]
-        for message in context_build["messages"]
-        if message["role"] != "system"
+        message["content"] for message in context_build["messages"] if message["role"] != "system"
     ][:3] == ["Remember beta", "Beta is remembered", "What is remembered?"]
 
     evidence = await client.get(
@@ -452,8 +444,28 @@ async def test_response_uses_run_anchored_context_and_records_attempt_lineage(
 async def test_non_streaming_response_persists_attempt_and_cost(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify the facade routes a model and exposes durable normalized accounting."""
+    """Verify the facade applies medium model policy and persists its audit evidence."""
 
+    registered_model = await client.post(
+        "/api/v1/internal/models",
+        headers={"X-Internal-API-Key": "test-internal-key-long-enough"},
+        json={
+            "provider": "openai",
+            "model_identifier": "test-model",
+            "display_name": "Test Model",
+            "reasoning_supported_efforts": ["minimal", "medium", "xhigh"],
+            "reasoning_supports_disable": True,
+            "reasoning_default_enabled": True,
+            "reasoning_default_effort": "medium",
+            "reasoning_effort_mapping": {
+                "minimal": "minimal",
+                "medium": "medium",
+                "xhigh": "xhigh",
+            },
+            "reasoning_profile_version": "openai.test.reasoning.v1",
+        },
+    )
+    assert registered_model.status_code == 200
     run = await create_test_run(client)
     response = await client.post(
         "/api/v1/responses",
@@ -479,6 +491,11 @@ async def test_non_streaming_response_persists_attempt_and_cost(
     assert attempt["request_key"] == "request-key-0001"
     assert len(attempt["prompt_prefix_fingerprint"]) == 64
     assert attempt["retry_count"] == 0
+    assert attempt["reasoning_enabled"] is True
+    assert attempt["reasoning_effort"] == "medium"
+    assert attempt["reasoning_source"] == "model_default"
+    assert attempt["reasoning_profile_version"] == "openai.test.reasoning.v1"
+    assert attempt["reasoning_provider_options_json"] == {"provider_value": "medium"}
     assert len(attempt["retries"]) == 1
     assert attempt["retries"][0]["status_code"] == 200
 
@@ -798,12 +815,8 @@ async def test_deepseek_stream_hides_reasoning_and_completes_attempt(
 
     attempt_id = run_detail["attempts"][0]["attempt_id"]
     replay = (await client.get(f"/api/v1/attempts/{attempt_id}/events")).json()
-    snapshots = (
-        await client.get(f"/api/v1/attempts/{attempt_id}/reasoning-blocks")
-    ).json()
-    assert [item["type"] for item in replay["items"]] == [
-        event["type"] for event in events
-    ]
+    snapshots = (await client.get(f"/api/v1/attempts/{attempt_id}/reasoning-blocks")).json()
+    assert [item["type"] for item in replay["items"]] == [event["type"] for event in events]
     assert snapshots[0]["kind"] == "reasoning.status"
     assert snapshots[0]["text"] is None
 
@@ -832,9 +845,7 @@ async def test_deepseek_provider_visible_stream_exposes_only_authorized_raw_reas
         await provider_http_client.aclose()
 
     events = [
-        json.loads(line[6:])
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
     ]
     assert [event["type"] for event in events] == [
         "response.started",
@@ -858,12 +869,8 @@ async def test_deepseek_provider_visible_stream_exposes_only_authorized_raw_reas
             "source_model_attempt_id": attempt_id,
         },
     )
-    latest_messages = await client.get(
-        f"/api/v1/sessions/{run['session_id']}/messages/latest"
-    )
-    message_detail = await client.get(
-        f"/api/v1/messages/{saved_message.json()['message_id']}"
-    )
+    latest_messages = await client.get(f"/api/v1/sessions/{run['session_id']}/messages/latest")
+    message_detail = await client.get(f"/api/v1/messages/{saved_message.json()['message_id']}")
     assert saved_message.status_code == 201
     assert saved_message.json()["reasoning_blocks"][0]["kind"] == "reasoning.raw"
     assert latest_messages.json()["items"][-1]["reasoning_blocks"][0]["text"] == (
@@ -959,9 +966,7 @@ async def test_stream_timeout_emits_failure_and_finalizes_attempt(
     )
 
     events = [
-        json.loads(line[6:])
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
     ]
     run_detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
     assert [event["type"] for event in events] == [

@@ -28,9 +28,7 @@ class GeminiGenerateContentProvider:
 
     name = ProviderName.GEMINI
 
-    def __init__(
-        self, transport: HttpTransport, *, base_url: str, api_key: str
-    ) -> None:
+    def __init__(self, transport: HttpTransport, *, base_url: str, api_key: str) -> None:
         """Configure Gemini REST access without exposing its URL or credential to callers."""
 
         self.transport = transport
@@ -130,9 +128,7 @@ class GeminiGenerateContentProvider:
         response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
+            structured_output=parse_structured_output(text) if request.output_schema else None,
             finish_reason=self._finish_reason(finish_reason),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -184,9 +180,7 @@ class GeminiGenerateContentProvider:
                 contents.append({"role": role, "parts": [{"text": message.content}]})
         payload: dict[str, Any] = {"contents": contents}
         if request.system_instruction:
-            payload["systemInstruction"] = {
-                "parts": [{"text": request.system_instruction}]
-            }
+            payload["systemInstruction"] = {"parts": [{"text": request.system_instruction}]}
         generation_config: dict[str, Any] = {}
         if request.temperature is not None:
             generation_config["temperature"] = request.temperature
@@ -195,6 +189,8 @@ class GeminiGenerateContentProvider:
         if request.output_schema:
             generation_config["responseMimeType"] = "application/json"
             generation_config["responseJsonSchema"] = request.output_schema
+        if request.reasoning:
+            generation_config["thinkingConfig"] = self._thinking_config(request)
         if generation_config:
             payload["generationConfig"] = generation_config
         if request.tools:
@@ -241,9 +237,7 @@ class GeminiGenerateContentProvider:
                     ToolCall(
                         id=call.get("id") or f"tool-{len(tool_calls)}",
                         name=call.get("name", ""),
-                        arguments=parse_json_arguments(
-                            call.get("args", {}), context="tool call"
-                        ),
+                        arguments=parse_json_arguments(call.get("args", {}), context="tool call"),
                     )
                 )
         text = "".join(text_parts) or None
@@ -251,9 +245,7 @@ class GeminiGenerateContentProvider:
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
+            structured_output=parse_structured_output(text) if request.output_schema else None,
             finish_reason=self._finish_reason(candidate.get("finishReason")),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -298,19 +290,51 @@ class GeminiGenerateContentProvider:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
-            raise ModelProviderError(
-                "invalid_request", "Request was routed to the wrong provider."
-            )
+            raise ModelProviderError("invalid_request", "Request was routed to the wrong provider.")
         if request.json_object_output:
             raise ModelProviderError(
                 "unsupported_capability",
                 "Gemini JSON object output is not implemented by this codec.",
             )
         if request.reasoning:
+            self._thinking_config(request)
+
+    @staticmethod
+    def _thinking_config(request: ModelRequest) -> dict[str, str | int]:
+        """Map one registered Gemini level or budget to GenerateContent JSON."""
+
+        if request.reasoning is None:
+            raise ModelProviderError(
+                "invalid_request",
+                "Gemini thinking configuration requires reasoning controls.",
+            )
+        if not request.reasoning.enabled:
+            return {"thinkingBudget": 0}
+        provider_value = (
+            request.resolved_reasoning.provider_value
+            if request.resolved_reasoning is not None
+            else request.reasoning.effort.value
+            if request.reasoning.effort is not None
+            else "medium"
+        )
+        if isinstance(provider_value, bool):
             raise ModelProviderError(
                 "unsupported_capability",
-                "Gemini reasoning configuration is not implemented by this codec.",
+                "Gemini reasoning mapping cannot resolve to a boolean.",
             )
+        if isinstance(provider_value, int):
+            if provider_value < -1:
+                raise ModelProviderError(
+                    "unsupported_capability",
+                    "Gemini thinking budget must be -1 or a non-negative integer.",
+                )
+            return {"thinkingBudget": provider_value}
+        if provider_value not in {"minimal", "low", "medium", "high"}:
+            raise ModelProviderError(
+                "unsupported_capability",
+                f"Gemini does not support thinking level '{provider_value}'.",
+            )
+        return {"thinkingLevel": provider_value}
 
     def _elapsed_ms(self, started: float) -> int:
         """Return total call latency using a monotonic clock."""

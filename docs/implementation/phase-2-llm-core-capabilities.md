@@ -1,7 +1,7 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 8 月 27 日
-**文档状态：** 已完成（阶段2稳定基线保持完成；2026年8月26日确认统一Context Builder负责全部模型上下文，运行时接入作为阶段4当前集成工作项，不回退本阶段状态）
+**文档日期：** 2026 年 8 月 28 日
+**文档状态：** 已完成（统一Context Builder与跨Provider思考程度后端合同均已完成；Agent角色透传和Web选择器分别留在阶段3、阶段4）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -19,7 +19,7 @@
 ## 当前事实
 
 - 当前实现：阶段1已经完成 User、Session、Message、Run、Task、Model Attempt、Provider Transport Attempt、Run Artifact 以及内部审计资源的新增、查询和必要动作闭环。
-- 当前实现：`llm_attempts` 已保存供应商、模型、token、费用、耗时、供应商请求编号、原始请求/响应 URI、错误和不含Prompt正文的稳定前缀指纹；阶段2及后续工作流应复用该表，不创建第二套调用记录。
+- 当前实现：`llm_attempts` 已保存供应商、模型、token、费用、耗时、供应商请求编号、原始请求/响应 URI、错误、不含Prompt正文的稳定前缀指纹，以及最终生效的思考开关、统一等级、来源、策略版本和Provider映射值；阶段2及后续工作流应复用该表，不创建第二套调用记录。
 - 当前实现：`ObjectStorage` 已能保存二进制内容并返回 SHA-256、大小和 `minio://` URI；原始供应商请求和响应应复用该能力。
 - 当前实现：`ObjectStorage` 已增加受控删除、按前缀列举和内容 hash 复核；Memory 快照会在登记数据库记录前复核对象。自动孤儿对象巡检与补偿任务尚未实现。
 - 当前实现：`POST /api/v1/runs/{run_id}/attempts` 是阶段1的记录写入接口，不具备模型调用能力。阶段2增加统一生成接口后，该接口暂时保留，用于内部迁移和兼容，不作为普通业务调用入口。
@@ -117,7 +117,7 @@ exclusion_reason, content_hash, message_role, content_text
 - `context_policy.v2`保存每个来源的类型、版本、内容哈希、信任级别、必选标记、token估算和纳入/排除结果。运行时只接受明确引用且通过Run归属与完成状态校验的Prompt Release、Artifact、Handoff、工作流节点和Evaluation；Artifact额外校验MIME、100000字节上限、对象大小、SHA-256和UTF-8完整性。
 - Agent节点把已提交Handoff、确定性验证、独立审核和Evaluation作为独立来源交给Context Builder，不再同时复制进自由模型输入；当前User Message已经存在时也不重复附加`Run.user_request`。无Session锚点的低层兼容工作流继续使用原显式输入合同。
 
-2026年8月27日验证结果：统一上下文定向测试为`70 passed`，后端与模型适配层全量测试为`276 passed, 4 skipped`，Ruff全量检查通过；4项跳过仍是需要真实MySQL/MinIO环境的基础设施测试。MySQL开发库已向前迁移到唯一head `20260827_0015`，从空库生成MySQL离线迁移SQL成功。`alembic check`仍报告Memory表三个归属外键在历史迁移中的`SET NULL`与当前ORM `RESTRICT`不一致；该漂移早于本次Context迁移，因Memory仍暂停且改变删除语义不属于本工作项，本次没有顺带修改。
+2026年8月28日验证结果：后端与模型适配层全量测试为`290 passed, 4 skipped`，Ruff全量检查通过；4项跳过仍是需要显式基础设施条件的测试。MySQL开发库已向前迁移到唯一head `20260828_0017`，现有`deepseek-v4-flash`和`deepseek-v4-pro`记录均已回填版本化思考策略；从`20260827_0016`生成MySQL离线迁移SQL成功。`alembic check`仍只报告Memory表三个归属外键在历史迁移中的`SET NULL`与当前ORM `RESTRICT`不一致；该漂移早于本次Context和思考策略迁移，因Memory仍暂停且改变删除语义不属于本工作项，本次没有顺带修改。
 
 #### 对象型Message读取合同（阶段2合同补充，阶段4集成验收）
 
@@ -1120,33 +1120,44 @@ internal_error
 
 - NexusPilot 只调用 DeepSeek `POST /chat/completions`。DeepSeek 的 Responses 端点只作为协议设计参考，本阶段不实现；平台自有 `POST /api/v1/responses` 门面仍由 DeepSeek Chat Completions 适配器完成转换。
 - 官方当前模型值为 `deepseek-v4-flash` 和 `deepseek-v4-pro`。平台仍保留可配置 allowlist，不把模型名散落在业务分支中；后续由 Model Catalog 记录模型能力快照。
-- 统一请求已经具有可选的供应商中立 `reasoning: {enabled, effort}`，当前代码中的 `effort` 只允许 `low | high | max`，且禁用 reasoning 时不允许同时传 effort。DeepSeek 适配器将其转换为顶层 `thinking: {"type": "enabled" | "disabled"}` 和顶层 `reasoning_effort`；未显式提供 `reasoning` 时不额外发送字段，由官方默认为 `thinking=enabled`、`reasoning_effort=high`。阶段4新增的用户控制规划会把统一枚举扩展为 `minimal | low | medium | high | xhigh | max`，但每个 Provider/Model 仍只接受能力目录声明的子集。
-- DeepSeek V4 官方当前真实思考等级为 `high | max`；`low | medium` 只是兼容输入并会被上游映射为 `high`，`xhigh` 会被映射为 `max`。为保持请求语义可审计，平台后续目录只公开 `high | max`，并拒绝其他等级；当前 `deepseek-v4-flash + low` 的允许行为属于待修正兼容缺口，不再作为目标合同。
+- 统一请求的供应商中立 `reasoning: {enabled, effort}` 已支持 `minimal | low | medium | high | xhigh | max`，且禁用reasoning时不允许同时传effort。对已登记模型，即使请求未显式提供reasoning，服务端也会解析为该模型的版本化默认；当前产品默认固定为“启用 + medium”。
+- DeepSeek Chat Completions原生接受`low | high | max`；平台当前为两种DeepSeek V4模型登记`minimal/low → low`、`medium/high/xhigh → high`、`max → max`，并把最终原生值写入Attempt。该转换来自逐模型策略记录，不依赖Provider在收到不匹配值后静默改写。
 - reasoning 启用时 DeepSeek 不支持 `temperature`；平台返回 `invalid_request`，不删除参数后重试。reasoning 显式禁用时才允许传递已验证的 `temperature`。
 - DeepSeek 流式响应必须收到 `data: [DONE]` 才视为完整结束。缺失终止标记或响应提前断开都按 `response_parse_error` 处理，生成 `response.failed` 并将 attempt 结束为失败，不把已收到的部分文本伪装成成功。
 - 官方已标记 `frequency_penalty` 和 `presence_penalty` 弃用且无效，统一 HTTP Schema 不引入这两个参数，未知字段继续由 `extra="forbid"` 拒绝。官方 `user_id` 也不在本次实施范围。
 - 工具或结构化输出中的 `strict` 只能在 Model Catalog 对当前模型明确记录支持时传递。未声明或未验证时必须返回 `unsupported_capability`，不得删除 `strict`、放宽 Schema 或改用普通文本后继续请求。本计划不声称 DeepSeek beta strict 已经完成真实供应商验证。
-- 已验证新参数 Schema 边界、两个模型的参数组合、Pro/low 拒绝、reasoning/temperature 冲突、`[DONE]` 完整/缺失、展示策略裁剪、工具续接完整回放、失败 Attempt 落库、弃用字段拒绝、strict 能力失败和原有 Chat Completions 回归。`reasoning_content` 只在调用方明确选择且模型目录允许 `provider-visible` 时进入公开统一块；默认策略不会暴露。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
+- 已验证新参数Schema边界、逐模型映射、reasoning/temperature冲突、`[DONE]`完整/缺失、展示策略裁剪、工具续接完整回放、失败Attempt落库、弃用字段拒绝、strict能力失败和原有Chat Completions回归。`reasoning_content`只在调用方明确选择且模型目录允许`provider-visible`时进入公开统一块；默认策略不会暴露。真实请求未运行，不能据此声称供应商凭据、网络或账户权限已经可用。
 
-## 跨 Provider 思考程度控制补充规划
+## 跨 Provider 思考程度控制实施结果
 
-阶段2现有 `ModelReasoningCapabilities` 只描述推理内容如何展示、流式传输、续接和计量，不足以驱动用户输入。新增控制合同必须逐 Provider/Model 声明 `supports_reasoning_control`、`supports_disable`、`supported_efforts`、`default_effort` 和 `profile_version`；默认值为空表示保持 Provider 原生默认，不等于关闭。
+状态：已完成。`ModelReasoningCapabilities`继续只描述推理内容如何展示、流式传输、续接和计量；用户可见的思考控制策略已经记录在稳定模型实体`llm_models`。Model Catalog和Provider适配器继续保存、验证供应商能力事实；`llm_models`保存平台实际向用户开放的等级、默认值和显式映射，两者职责不互相替代。
+
+迁移`20260828_0017`已为`llm_models`增加`reasoning_supported_efforts_json`、`reasoning_supports_disable`、`reasoning_default_enabled`、`reasoning_default_effort`、`reasoning_effort_mapping_json`和`reasoning_profile_version`，并为`llm_attempts`增加对应的最终解析证据字段。所有可提交模型的产品默认必须解析为`reasoning.enabled=true`、`reasoning.effort=medium`；缺少原生`medium`时，只能使用该模型记录中经过验证、带版本的显式映射。无法解析`medium`的模型由`GET /models`报告为`reasoning_profile_invalid`。
 
 - 统一程度枚举扩展为 `minimal | low | medium | high | xhigh | max`。`none` 不作为 effort，而由 `enabled=false` 表示，继续保持“是否启用”和“启用后强度”两个正交字段。
-- OpenAI Responses 将目录允许的等级直接写入 `reasoning.effort`；DeepSeek 只允许 `high/max` 并同时维护 `thinking.type`；Anthropic 新模型使用 adaptive thinking 与 `output_config.effort`；Gemini 3.x 使用 `thinkingConfig.thinkingLevel`；Gemini 2.5 的数值预算只能来自逐模型版本化映射。
-- Provider 适配器不得把不支持的程度向最近等级取整。即使供应商兼容层会接受并改写，平台也必须在网络调用前返回稳定 `unsupported_capability`，让 Attempt 和用户选择保持一致。
-- `ProviderCatalogResponse` 返回控制能力，Web 只消费目录，不解析模型名。`ResponsesRequest` 与 Agent `role_bindings` 使用同一 `ReasoningConfiguration`；工作流节点把实际配置保存到模型 Attempt 证据中。
-- Anthropic/Gemini 当前适配器对非空 reasoning 明确返回未实现错误，这一行为在精确映射和合同测试完成前保持；不能为赶 UI 进度静默丢弃字段。
+- OpenAI Responses把映射结果写入`reasoning.effort`，显式关闭写为`none`；DeepSeek写入`thinking.type`和`reasoning_effort`；Anthropic写入`thinking.type=adaptive`与`output_config.effort`；Gemini按模型记录写入`thinkingConfig.thinkingLevel`或数值`thinkingBudget`。
+- Provider 适配器不得把未登记或不支持的程度向最近等级取整。即使供应商兼容层会接受并改写，平台也必须在网络调用前返回稳定 `unsupported_capability`，让 Attempt 和用户选择保持一致。
+- `/models`返回稳定模型的有效等级、关闭能力、中等默认和策略版本，不向前端暴露Provider映射表。普通Responses请求未显式提供配置时，服务端解析稳定模型默认；未登记模型仅为旧内部调用保留原始低层合同，不获得产品默认语义。
+- Model Attempt 必须保存用户选择或稳定模型默认形成的统一配置、思考策略版本和最终解析结果；历史 Attempt 不因 `llm_models` 后续更新而改变解释。
+- OpenAI-compatible自定义端点仍不能从协议名称推断思考字段；在实现专用codec前，内部模型管理接口拒绝为其写入思考映射，其模型不会因伪造策略进入可提交状态。
 
-跨 Provider 对齐和 UI 状态机的完整实施顺序、模型切换行为及浏览器门禁记录在 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md#思考程度选择与跨-provider-对齐新增规划)。
+Agent角色透传属于阶段3集成项；Composer选择器、模型切换行为及浏览器门禁属于阶段4集成项，记录在[`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md#思考程度选择与跨-provider-对齐新增规划)。
 
-## 2026 年 8 月 3 日阶段2最终审查与验证结果
+### 2026 年 8 月 28 日思考程度合同验收
+
+- 统一请求、逐模型策略解析、四家Provider传输映射、Model Attempt证据和模型目录读取均已纳入自动化测试；全量结果为`290 passed, 4 skipped`。
+- 本地MySQL已从`20260827_0016`迁移到`20260828_0017 (head)`；两条现有DeepSeek模型记录均默认启用`medium`，支持的统一等级、关闭能力、Provider映射和`reasoning.v1`策略版本已实际回填。
+- Ruff全量检查通过，`20260827_0016 → 20260828_0017`的MySQL离线迁移SQL生成通过。
+- `alembic check`仍报告实验性Memory表历史外键删除策略与当前ORM不一致。该已知漂移不涉及`llm_models`、`llm_attempts`或本次运行路径，且修正会改变已暂停Memory能力的数据删除语义，因此不并入阶段2思考合同修改。
+- 未发送真实供应商请求，未读取供应商凭据，也未产生模型费用；当前验收证明平台合同、持久化和Provider请求编码，不证明供应商账户与公网链路可用。
+
+## 2026 年 8 月 3 日历史审查与验证记录
 
 - Memory 已迁入 `features/memory`，内部继续按 Model、Schema、Service、Router 分层；架构测试同时检查全局 Router 和 Memory Router 不直接导入 ORM/SQLAlchemy。
 - 快速测试共收集 194 项，其中 190 项通过，4 项真实基础设施测试按默认配置跳过；这 4 项随后在本地 MySQL 8.4 与 MinIO 上显式启用并全部通过。Ruff 全量静态检查通过。
 - 本轮修复了 Session 当前指针先于版本插入导致的外键冲突、Profile 快照/明细/指针写入顺序、L2 合并遗漏 confirmed facts、L0 Schema 接受未知隐藏字段，以及 Agent Run 终止参数和非终止状态校验。
 - Memory 审批与 Profile rebuild 已拆成两个显式操作。审批只在 MySQL 中转换事实状态；调用方按当前 Profile 版本单独重建快照，MinIO 失败不会被吞掉或伪装成审批已完整刷新。
-- 真实 MySQL 验证先发现并修复了唯一 URI 索引过长、MySQL 标识符超过 64 字符，以及外键/索引降级顺序错误。当前迁移已通过空库 `0001 → 0009`、`0009 → 0007` 降级、`0007 → 0009` 再升级和 `alembic check`；检查结果为无待生成迁移。
+- 当时的真实 MySQL 验证先发现并修复了唯一 URI 索引过长、MySQL 标识符超过 64 字符，以及外键/索引降级顺序错误；该记录只描述2026年8月3日的迁移状态，不覆盖上方2026年8月28日记录的已知Memory外键漂移。
 - Context、Prompt/Model Catalog 和 Evaluation 已补齐行为、失败、幂等、历史证据和真实 MySQL 并发测试。Knowledge 已移出阶段2；Memory 只保留规划和实验性准备代码，不进入稳定调用链。
 - 上传文件名同时清理 POSIX 和 Windows 风格路径片段。
 - `get_session()` 在请求异常时显式 rollback，并由异步上下文保证 session 关闭。

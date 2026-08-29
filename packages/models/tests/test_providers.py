@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import httpx
 import pytest
-
 from nexuspilot_models.contracts import (
     Message,
     MessageRole,
@@ -14,10 +13,12 @@ from nexuspilot_models.contracts import (
     ProviderContinuationKind,
     ProviderContinuationState,
     ProviderName,
-    ReasoningContinuationMode,
     ReasoningConfiguration,
+    ReasoningConfigurationSource,
+    ReasoningContinuationMode,
     ReasoningEffort,
     ReasoningPresentationCapability,
+    ResolvedReasoningConfiguration,
     ToolDefinition,
 )
 from nexuspilot_models.errors import ModelProviderError
@@ -233,9 +234,7 @@ async def test_openai_compatible_provider_forwards_an_explicit_output_allowance(
         api_key="test-key",
         supports_json_schema=False,
     )
-    request = model_request(ProviderName.DEEPSEEK).model_copy(
-        update={"max_output_tokens": 321}
-    )
+    request = model_request(ProviderName.DEEPSEEK).model_copy(update={"max_output_tokens": 321})
 
     response = await provider.generate(request)
     await client.aclose()
@@ -385,17 +384,21 @@ def test_reasoning_configuration_rejects_effort_when_disabled() -> None:
         ReasoningConfiguration(enabled=False, effort=ReasoningEffort.HIGH)
 
 
-async def test_deepseek_rejects_low_effort_for_v4_pro_before_network() -> None:
-    """Verify the platform does not silently let DeepSeek map v4-pro low effort to high."""
+async def test_deepseek_uses_resolved_model_mapping_instead_of_portable_effort() -> None:
+    """Verify a portable medium request sends the registered native high value."""
 
-    request_count = 0
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert the resolved native effort and return one completed response."""
 
-    async def handler(_request: httpx.Request) -> httpx.Response:
-        """Record an unexpected provider request made after local capability validation."""
-
-        nonlocal request_count
-        request_count += 1
-        return httpx.Response(500)
+        assert json.loads(request.content)["reasoning_effort"] == "high"
+        return httpx.Response(
+            200,
+            json={
+                "id": "mapped-deepseek-response",
+                "choices": [{"message": {"content": "answer"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+            },
+        )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = DeepSeekChatProvider(
@@ -407,17 +410,20 @@ async def test_deepseek_rejects_low_effort_for_v4_pro_before_network() -> None:
         update={
             "reasoning": ReasoningConfiguration(
                 enabled=True,
-                effort=ReasoningEffort.LOW,
-            )
+                effort=ReasoningEffort.MEDIUM,
+            ),
+            "resolved_reasoning": ResolvedReasoningConfiguration(
+                source=ReasoningConfigurationSource.MODEL_DEFAULT,
+                profile_version="deepseek.reasoning.v1",
+                provider_value="high",
+            ),
         }
     )
 
-    with pytest.raises(ModelProviderError, match="does not support reasoning effort") as caught:
-        await provider.generate(request)
+    response = await provider.generate(request)
     await client.aclose()
 
-    assert caught.value.error_type == "unsupported_capability"
-    assert request_count == 0
+    assert response.text == "answer"
 
 
 @pytest.mark.parametrize(
@@ -637,9 +643,7 @@ async def test_deepseek_tool_continuation_requires_and_replays_private_reasoning
             200,
             json={
                 "id": "deepseek-next",
-                "choices": [
-                    {"message": {"content": "18°C"}, "finish_reason": "stop"}
-                ],
+                "choices": [{"message": {"content": "18°C"}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 4, "completion_tokens": 1},
             },
         )
@@ -715,8 +719,9 @@ async def test_openai_stream_maps_summary_and_keeps_encrypted_items_private() ->
     assert "provider_continuation_state" not in completed_response
     assert "encrypted-secret" not in json.dumps(completed_response)
     assert (
-        events[-1].private_data["provider_continuation_state"]["encrypted_reasoning_items"]
-        [0]["encrypted_content"]
+        events[-1].private_data["provider_continuation_state"]["encrypted_reasoning_items"][0][
+            "encrypted_content"
+        ]
         == "encrypted-secret"
     )
 
@@ -800,9 +805,9 @@ async def test_deepseek_stream_without_done_fails() -> None:
         return httpx.Response(
             200,
             content=(
-                'data: {"id":"chat-1","choices":[{"delta":{"content":"partial"},'
-                '"finish_reason":"stop"}]}\n\n'
-            ).encode(),
+                b'data: {"id":"chat-1","choices":[{"delta":{"content":"partial"},'
+                b'"finish_reason":"stop"}]}\n\n'
+            ),
             headers={"Content-Type": "text/event-stream"},
         )
 
@@ -864,38 +869,153 @@ async def test_deepseek_rejects_strict_tools_before_network() -> None:
     assert request_count == 0
 
 
-async def test_other_providers_reject_unimplemented_reasoning_configuration() -> None:
-    """Verify a portable reasoning request is never silently ignored by another adapter."""
+async def test_anthropic_maps_reasoning_to_adaptive_thinking_and_effort() -> None:
+    """Verify Anthropic receives adaptive thinking plus its native output effort."""
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: None))
-    transport = HttpTransport(client, max_retries=0)
-    providers = [
-        (
-            AnthropicMessagesProvider(
-                transport,
-                base_url="https://api.anthropic.com/v1",
-                api_key="test-key",
-            ),
-            ProviderName.ANTHROPIC,
-        ),
-        (
-            GeminiGenerateContentProvider(
-                transport,
-                base_url="https://generativelanguage.googleapis.com/v1beta",
-                api_key="test-key",
-            ),
-            ProviderName.GEMINI,
-        ),
-    ]
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert the Anthropic wire contract and return a minimal Messages response."""
 
-    for provider, provider_name in providers:
-        request = model_request(provider_name).model_copy(
-            update={"reasoning": ReasoningConfiguration(enabled=True)}
+        body = json.loads(request.content)
+        assert body["thinking"] == {"type": "adaptive"}
+        assert body["output_config"] == {"effort": "medium"}
+        return httpx.Response(
+            200,
+            json={
+                "id": "anthropic-reasoning",
+                "content": [{"type": "text", "text": "answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 2, "output_tokens": 1},
+            },
         )
-        with pytest.raises(ModelProviderError) as caught:
-            await provider.generate(request)
-        assert caught.value.error_type == "unsupported_capability"
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = AnthropicMessagesProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.anthropic.com/v1",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.ANTHROPIC).model_copy(
+        update={
+            "reasoning": ReasoningConfiguration(
+                enabled=True,
+                effort=ReasoningEffort.MEDIUM,
+            )
+        }
+    )
+
+    response = await provider.generate(request)
     await client.aclose()
+
+    assert response.text == "answer"
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "expected_reasoning"),
+    [
+        (
+            ReasoningConfiguration(enabled=True, effort=ReasoningEffort.XHIGH),
+            {"effort": "xhigh", "summary": "auto"},
+        ),
+        (ReasoningConfiguration(enabled=False), {"effort": "none"}),
+    ],
+)
+async def test_openai_maps_enabled_and_disabled_reasoning(
+    reasoning: ReasoningConfiguration,
+    expected_reasoning: dict[str, str],
+) -> None:
+    """Verify OpenAI receives explicit effort and `none` for supported disablement."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert Responses reasoning JSON and return one normalized response."""
+
+        body = json.loads(request.content)
+        assert body["reasoning"] == expected_reasoning
+        assert ("include" in body) is reasoning.enabled
+        return httpx.Response(
+            200,
+            json={
+                "id": "openai-reasoning",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "answer"}],
+                    }
+                ],
+                "usage": {"input_tokens": 2, "output_tokens": 1},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAIResponsesProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://api.openai.com/v1",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.OPENAI).model_copy(update={"reasoning": reasoning})
+
+    response = await provider.generate(request)
+    await client.aclose()
+
+    assert response.text == "answer"
+
+
+@pytest.mark.parametrize(
+    ("provider_value", "expected_thinking_config"),
+    [("medium", {"thinkingLevel": "medium"}), (4096, {"thinkingBudget": 4096})],
+)
+async def test_gemini_maps_level_and_budget_reasoning_profiles(
+    provider_value: str | int,
+    expected_thinking_config: dict[str, str | int],
+) -> None:
+    """Verify Gemini supports both level-based and numeric per-model mappings."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        """Assert GenerateContent thinking JSON and return one candidate."""
+
+        body = json.loads(request.content)
+        assert body["generationConfig"]["thinkingConfig"] == expected_thinking_config
+        return httpx.Response(
+            200,
+            json={
+                "responseId": "gemini-reasoning",
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "answer"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 2,
+                    "candidatesTokenCount": 1,
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = GeminiGenerateContentProvider(
+        HttpTransport(client, max_retries=0),
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key="test-key",
+    )
+    request = model_request(ProviderName.GEMINI).model_copy(
+        update={
+            "reasoning": ReasoningConfiguration(
+                enabled=True,
+                effort=ReasoningEffort.MEDIUM,
+            ),
+            "resolved_reasoning": ResolvedReasoningConfiguration(
+                source=ReasoningConfigurationSource.MODEL_DEFAULT,
+                profile_version="gemini.reasoning.v1",
+                provider_value=provider_value,
+            ),
+        }
+    )
+
+    response = await provider.generate(request)
+    await client.aclose()
+
+    assert response.text == "answer"
 
 
 async def test_openai_responses_codec_parses_text_tools_and_usage() -> None:
@@ -990,9 +1110,7 @@ async def test_gemini_codec_parses_candidate_parts() -> None:
         """Return a representative Gemini GenerateContent response."""
 
         assert request.url.path.endswith("/models/test-model:generateContent")
-        assert "maxOutputTokens" not in json.loads(request.content).get(
-            "generationConfig", {}
-        )
+        assert "maxOutputTokens" not in json.loads(request.content).get("generationConfig", {})
         return httpx.Response(
             200,
             json={

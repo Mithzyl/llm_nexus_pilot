@@ -52,6 +52,9 @@ from nexuspilot_api.schemas.context_builds import (
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
 from nexuspilot_api.services.context_builder_service import build_runtime_context
 from nexuspilot_api.services.lookups import require_run, require_task
+from nexuspilot_api.services.model_reasoning_policy_service import (
+    resolve_registered_model_reasoning,
+)
 from nexuspilot_api.services.model_reasoning_service import (
     project_reasoning_presentation,
     project_reasoning_stream_event,
@@ -72,6 +75,8 @@ def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
         and not request.tools
         and request.output_schema is None
         and not request.json_object_output
+        and request.reasoning is None
+        and request.resolved_reasoning is None
     ):
         return None
     prefix_contract = {
@@ -79,6 +84,12 @@ def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
         "tools": [tool.model_dump(mode="json") for tool in request.tools],
         "output_schema": request.output_schema,
         "json_object_output": request.json_object_output,
+        "reasoning": (request.reasoning.model_dump(mode="json") if request.reasoning else None),
+        "reasoning_resolution": (
+            request.resolved_reasoning.model_dump(mode="json")
+            if request.resolved_reasoning
+            else None
+        ),
     }
     serialized_prefix = json.dumps(
         prefix_contract,
@@ -132,8 +143,10 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
             payload,
+            request=request,
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
             prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
@@ -204,8 +217,10 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
             payload,
+            request=request,
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
             prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
@@ -412,11 +427,12 @@ class ModelInvocationService:
         self,
         payload: ResponsesRequest,
         *,
+        request: ModelRequest,
         attempt_id: str,
         context_build_id: str | None,
         prompt_prefix_fingerprint: str | None,
     ) -> LlmModelAttempt:
-        """Persist a started invocation with Context lineage and safe prefix diagnostics."""
+        """Persist a started invocation with Context and effective reasoning evidence."""
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -452,6 +468,29 @@ class ModelInvocationService:
             retry_count=0,
             status=AttemptStatus.STARTED,
             reasoning_display_policy=payload.reasoning_display_policy.value,
+            reasoning_enabled=(
+                request.reasoning.enabled if request.reasoning is not None else None
+            ),
+            reasoning_effort=(
+                request.reasoning.effort.value
+                if request.reasoning is not None and request.reasoning.effort is not None
+                else None
+            ),
+            reasoning_source=(
+                request.resolved_reasoning.source.value
+                if request.resolved_reasoning is not None
+                else None
+            ),
+            reasoning_profile_version=(
+                request.resolved_reasoning.profile_version
+                if request.resolved_reasoning is not None
+                else None
+            ),
+            reasoning_provider_options_json=(
+                {"provider_value": request.resolved_reasoning.provider_value}
+                if request.resolved_reasoning is not None
+                else None
+            ),
         )
         self.db_session.add(model_attempt)
         await self.db_session.commit()
@@ -520,9 +559,7 @@ class ModelInvocationService:
                     else None
                 ),
                 recent_message_count=100,
-                source_references=(
-                    context_source_references or RuntimeContextSourceReferences()
-                ),
+                source_references=(context_source_references or RuntimeContextSourceReferences()),
                 idempotency_key=self._context_idempotency_key(
                     payload.idempotency_key,
                     model_attempt_id,
@@ -536,9 +573,7 @@ class ModelInvocationService:
             if message.role != "system"
         ]
         system_instructions = [
-            message.content
-            for message in context_build.messages
-            if message.role == "system"
+            message.content for message in context_build.messages if message.role == "system"
         ]
         return (
             request.model_copy(
@@ -569,9 +604,7 @@ class ModelInvocationService:
     ) -> None:
         """Persist raw response, physical attempts, accounting, and completed state atomically."""
 
-        sanitized_raw_response = self._sanitize_raw_response_for_audit(
-            response.raw_response
-        )
+        sanitized_raw_response = self._sanitize_raw_response_for_audit(response.raw_response)
         try:
             stored_raw_response = await self.storage.put_bytes(
                 f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-response.json",
@@ -602,15 +635,13 @@ class ModelInvocationService:
         prepared_continuation_state: LlmProviderContinuationState | None = None
         if response.provider_continuation_state is not None:
             try:
-                prepared_continuation_state = (
-                    await self.continuation_store.prepare_persisted_state(
-                        parent_attempt_id=model_attempt.attempt_id,
-                        run_id=model_attempt.run_id,
-                        task_id=model_attempt.task_id,
-                        provider=ProviderName(model_attempt.provider),
-                        model=model_attempt.model,
-                        state=response.provider_continuation_state,
-                    )
+                prepared_continuation_state = await self.continuation_store.prepare_persisted_state(
+                    parent_attempt_id=model_attempt.attempt_id,
+                    run_id=model_attempt.run_id,
+                    task_id=model_attempt.task_id,
+                    provider=ProviderName(model_attempt.provider),
+                    model=model_attempt.model,
+                    state=response.provider_continuation_state,
                 )
             except Exception as exc:
                 await self._record_response_audit_failure(model_attempt, response)
@@ -1004,9 +1035,7 @@ class ModelInvocationService:
                 str(exc),
                 retryable=False,
             ) from exc
-        return request.model_copy(
-            update={"provider_continuation_state": continuation_state}
-        )
+        return request.model_copy(update={"provider_continuation_state": continuation_state})
 
     def _project_response_reasoning(
         self,
@@ -1123,9 +1152,7 @@ class ModelInvocationService:
         """Persist authoritative partial blocks before emitting a failed stream terminal event."""
 
         interrupted_events: list[StreamEvent] = []
-        for block_index, (block_id, active_block) in enumerate(
-            active_reasoning_blocks.items()
-        ):
+        for block_index, (block_id, active_block) in enumerate(active_reasoning_blocks.items()):
             sequence += 1
             visible_text = active_block["text"] or None
             presentation_kind = active_block["kind"]
@@ -1166,9 +1193,7 @@ class ModelInvocationService:
                     final_event_sequence=sequence,
                     snapshot_version=1,
                     started_at=started_at,
-                    first_visible_token_at=(
-                        first_visible_token_at if visible_text else None
-                    ),
+                    first_visible_token_at=(first_visible_token_at if visible_text else None),
                     completed_at=datetime.now(UTC),
                 )
             )

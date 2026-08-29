@@ -147,30 +147,32 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 - Context、Prompt、Model Catalog 和 Evaluation 视图只显示后端证据，历史版本和未知能力行为与阶段2合同一致。
 - 长响应按批次刷新，不能每个 token 重新解析全部 Markdown；生成期间页面交互和滚动保持可用。
 
-#### 思考程度选择与跨 Provider 对齐（新增规划）
+#### 思考程度选择与跨 Provider 对齐
+
+状态：后端合同已完成，前端未开始。阶段2已完成稳定模型策略字段、默认中等解析、四个官方Provider映射、非法组合拒绝和Attempt证据；本阶段只继续实现Composer选择器、模型切换归一化与浏览器验证。
 
 当前 `ResponsesRequest.reasoning` 已具有 `enabled` 和 `effort`，DeepSeek 与 OpenAI 适配器也已实现部分映射，但 Web 只提供“推理展示”策略，用户不能控制模型是否思考或思考程度。展示策略只决定哪些 Provider 已返回的推理证据可以公开，思考程度才影响模型调用；二者必须作为两个独立控件和两个独立合同保存。
 
 统一交互采用“模型默认、关闭、最小、低、中、高、极高、最大”的候选集合，但页面只展示当前 Provider/Model 能力目录明确声明的选项：
 
-- “模型默认”表示整个 `reasoning` 字段缺省，让 Provider 使用该模型的原生默认值；它不等于关闭，也不应被前端展开成一个猜测值。
+- “模型默认”表示使用 `llm_models` 中经过验证的产品默认，不再表示 Provider 原生默认。所有已启用模型的初始默认必须是“思考已开启 + 中等”，即 `enabled=true`、`effort=medium`；前端可以省略显式覆盖，但服务端必须解析并保存这一默认事实。
 - “关闭”映射为 `reasoning: {enabled: false}`，只在模型明确支持关闭时显示。不能关闭的模型不显示该选项，手工构造的非法请求由后端拒绝。
 - 选择具体程度时发送 `reasoning: {enabled: true, effort: <level>}`。统一程度枚举扩展为 `minimal | low | medium | high | xhigh | max`；不把一个 Provider 不支持的程度静默向上或向下取整。
-- 用户切换模型后，如果原选择不在新模型的允许集合中，Composer 回到“模型默认”并给出可访问提示；不能保留一个会在提交时才失败的隐藏非法值。
+- 用户切换模型后，如果原选择不在新模型的允许集合中，Composer回到新模型的“中等”默认并给出可访问提示；如果该模型无法解析中等等级，则它不应出现在可提交模型列表中。
 - 第一版为整个请求选择一个程度。快速回复直接写入 `/responses`；Agent Workflow 将同一选择复制到本次工作流的各个 `role_bindings`，节点和 Attempt 保存实际请求程度。角色级单独调节留待有评测依据后再设计。
 
-后端 `ModelReasoningCapabilities` 需要在现有展示、流式、续接和 token 统计能力之外增加控制能力：`supports_reasoning_control`、`supports_disable`、有序 `supported_efforts`、可空 `default_effort` 和稳定 `profile_version`。Provider Catalog 是前端唯一事实源；空能力表示只允许“模型默认”，不能根据模型名称前缀推断。
+思考控制的产品配置存放在稳定 `llm_models`：有序 `supported_efforts`、`supports_disable`、固定启用的 `default_enabled`、默认 `medium`、逐Provider映射和稳定策略版本。Model Catalog与Provider适配器继续提供供应商能力证据；`GET /models`返回两者校验后的有效结果，并作为前端唯一事实源。前端不能根据模型名称前缀推断，也不能直接读取映射表构造Provider请求。
 
 | Provider/模型族 | 官方原生控制 | NexusPilot 对齐规则 |
 |---|---|---|
 | OpenAI Responses 推理模型 | `reasoning.effort`，实际集合按模型可能包含 `none/minimal/low/medium/high/xhigh` | `none` 通过“关闭”表达，其余同名直传；每个模型只暴露目录声明的子集，不能假设所有 OpenAI 模型能力一致 |
-| DeepSeek V4 | `thinking.type=enabled/disabled`；`reasoning_effort` 的真实等级为 `high/max`，兼容输入 `low/medium` 会被上游改写为 `high` | 目录只暴露 `high/max` 与模型实际支持的关闭能力；平台拒绝 `minimal/low/medium/xhigh`，避免把用户选择静默改写 |
+| DeepSeek V4 | `thinking.type=enabled/disabled`；`reasoning_effort` 的原生档位和兼容行为按模型验证 | 稳定模型记录必须为产品默认 `medium` 提供显式、版本化的原生映射；只有该映射通过适配器合同和真实调用验证后才能启用，不能依赖上游静默改写 |
 | Anthropic 自适应思考模型 | `thinking.type=adaptive` 与 `output_config.effort=low/medium/high/xhigh/max`，支持集合按模型变化 | 对同名等级直传；启用具体程度时同时使用模型声明的 adaptive thinking 模式。只支持旧式 `budget_tokens` 的模型不得套用类别映射，除非目录为该模型提供经过验证的显式预算表 |
 | Gemini 3.x | `thinkingConfig.thinkingLevel=minimal/low/medium/high`，支持集合按模型变化 | 同名直传并按模型过滤；不支持关闭的模型不显示关闭 |
-| Gemini 2.5 | 原生 `thinkingBudget`，官方兼容层给出类别到预算的模型相关映射 | 只由后端版本化能力配置转换，前端不发送 token 预算；未配置映射时只允许“模型默认” |
-| OpenAI-compatible 自定义端点 | 不可从协议名称推断 | 默认只允许“模型默认”；管理员为具体 Provider/Model 配置并验证映射后才开放其他选项 |
+| Gemini 2.5 | 原生 `thinkingBudget`，官方兼容层给出类别到预算的模型相关映射 | 只由后端版本化能力配置转换，前端不发送 token 预算；未配置中等默认映射时不能作为可提交模型 |
+| OpenAI-compatible 自定义端点 | 不可从协议名称推断 | 管理员必须为具体 Provider/Model 配置并验证至少中等默认映射后才能启用；不能把协议兼容误当成思考能力兼容 |
 
-实现顺序为：先扩展供应商中立枚举与逐模型控制能力；再完成四个官方 Provider 的精确编解码和拒绝测试；随后把 reasoning 加入 Agent binding；最后实现 Composer 选择器、模型切换归一化、快速回复与 Agent 请求透传。合同测试必须覆盖每个公开选项的原生请求体、缺省不发送、非法组合拒绝、模型切换和刷新后的 Attempt 证据；真实浏览器测试至少覆盖当前 DeepSeek Flash 的默认、高、最大和关闭（若目录声明支持）路径。
+实现顺序为：先迁移 `llm_models` 思考策略字段并回填当前模型的中等默认；再扩展供应商中立枚举，完成四个官方 Provider 的精确编解码、显式映射和拒绝测试；随后把reasoning加入Agent binding；最后实现Composer选择器、模型切换归一化、快速回复与Agent请求透传。合同测试必须覆盖每个公开选项的原生请求体、缺省时解析为中等默认、非法组合拒绝、模型切换和刷新后的Attempt证据；真实浏览器测试至少覆盖当前DeepSeek Flash的中等默认、高、最大和关闭（若稳定模型声明支持）路径。
 
 官方对齐依据：[OpenAI Responses reasoning](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta)、[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Anthropic Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Anthropic Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)、[Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) 与 [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
 
@@ -773,7 +775,7 @@ Context证据抽屉读取最新Model Attempt关联的已持久化Context Build�
 
 ### 稳定模型目录与模型选择数据基础
 
-状态：已完成。数据库迁移、历史能力回填、内部管理接口、目录读取、Web选择数据迁移和定向验证均已执行。
+状态：稳定模型目录基线及阶段2后端思考策略扩展已完成；前端思考控制尚未实现。数据库迁移、当前DeepSeek模型的中等默认回填、内部管理校验、目录读取字段、Provider映射和Attempt证据已经完成。
 
 当前系统的 `llm_model_catalog_versions` 只保存某个 `provider + model + catalog_version` 的不可变能力快照；`GET /api/v1/providers` 则读取服务端 Provider Registry 的环境配置。两者都不能作为稳定的模型业务实体，也不能表达“平台当前向用户提供哪些模型”。阶段4先补充稳定模型实体表，供 Web 模型选择器和后续阶段5用户授权复用；不在本工作项中提前实现登录、供应商凭据或用户授权。
 
@@ -794,6 +796,25 @@ Context证据抽屉读取最新Model Attempt关联的已持久化Context Build�
 | `created_at`、`updated_at` | 审计和缓存失效依据 |
 
 现有 `llm_model_catalog_versions` 保持为能力事实表，迁移完成前通过 `llm_models.(provider, model_identifier) = llm_model_catalog_versions.(provider, model)` 解析最新的已启用能力快照。能力快照继续记录上下文窗口、流式、工具、结构化输出、缓存、视觉、Tokenizer 和思考程度等事实；不把这些字段复制成第二套“模型能力”规则。现有表中的 `provider`、`model` 在迁移完成前保留兼容含义，后续可增加 `model_id` 外键，但不能删除已有 Context Build 和 Attempt 的目录版本引用。
+
+#### 思考策略字段扩展（阶段2已完成）
+
+稳定模型需要新增以下产品策略字段；它们描述平台开放给用户的控制面，不替代Model Catalog保存的供应商能力事实：
+
+| 字段 | 含义与约束 |
+|---|---|
+| `reasoning_supported_efforts_json` | 有序的统一等级集合，只能使用 `minimal/low/medium/high/xhigh/max`，且已启用模型必须包含 `medium` |
+| `reasoning_supports_disable` | 是否允许用户明确发送 `enabled=false` |
+| `reasoning_default_enabled` | 产品默认是否启用思考；当前固定为 `true` |
+| `reasoning_default_effort` | 产品默认等级；当前固定为 `medium` |
+| `reasoning_effort_mapping_json` | 统一等级到Provider原生字段或预算的显式映射；只允许后台验证和内部管理接口写入 |
+| `reasoning_profile_version` | 思考策略版本；用于Attempt证据、缓存失效和历史解释 |
+
+- `llm_models` 保存可变但受控的产品策略，Model Catalog保存不可变能力快照；`GET /models`只返回两者交集后可执行的等级和默认值。
+- 迁移必须为现有`deepseek-v4-flash`和`deepseek-v4-pro`建立显式中等默认及经验证的Provider映射。映射尚未验证时，记录可以保留但不得报告为支持中等思考的可提交模型。
+- 内部登记或更新模型时必须验证：默认启用、默认值为`medium`、`medium`存在于支持集合、所有公开等级都有Provider解析路径，并且禁用能力与适配器一致。
+- 请求未显式携带reasoning时，后端仍将稳定模型默认解析进Model Attempt；不能让快速回复、Agent或不同Provider产生不同的隐式默认。
+- 修改稳定模型思考策略不得改写历史Attempt；每次调用保存当时的`reasoning_profile_version`、统一配置和Provider解析结果。
 
 #### 模型目录读取规则
 

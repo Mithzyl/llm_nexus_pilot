@@ -32,9 +32,7 @@ class OpenAIResponsesProvider:
 
     name = ProviderName.OPENAI
 
-    def __init__(
-        self, transport: HttpTransport, *, base_url: str, api_key: str
-    ) -> None:
+    def __init__(self, transport: HttpTransport, *, base_url: str, api_key: str) -> None:
         """Configure the OpenAI endpoint and credential without owning the shared transport."""
 
         self.transport = transport
@@ -156,11 +154,7 @@ class OpenAIResponsesProvider:
                     )
                     sequence += 1
                 elif event_type in {"response.failed", "error"}:
-                    error = (
-                        event.get("error")
-                        or (event.get("response") or {}).get("error")
-                        or {}
-                    )
+                    error = event.get("error") or (event.get("response") or {}).get("error") or {}
                     raise ModelProviderError(
                         "provider_unavailable",
                         str(error.get("message") or "OpenAI stream failed."),
@@ -184,15 +178,11 @@ class OpenAIResponsesProvider:
                     ToolCall(
                         id=value["id"],
                         name=value["name"],
-                        arguments=parse_json_arguments(
-                            value["arguments"], context="tool call"
-                        ),
+                        arguments=parse_json_arguments(value["arguments"], context="tool call"),
                     )
                     for value in tool_parts.values()
                 ],
-                structured_output=parse_structured_output(text)
-                if request.output_schema
-                else None,
+                structured_output=parse_structured_output(text) if request.output_schema else None,
                 finish_reason="stop",
                 latency_ms=self._elapsed_ms(started),
                 raw_response={"streamed": True},
@@ -263,9 +253,7 @@ class OpenAIResponsesProvider:
                     }
                 )
             else:
-                input_items.append(
-                    {"role": message.role.value, "content": message.content}
-                )
+                input_items.append({"role": message.role.value, "content": message.content})
         payload: dict[str, Any] = {
             "model": request.model,
             "input": input_items,
@@ -298,11 +286,14 @@ class OpenAIResponsesProvider:
                     "schema": request.output_schema,
                 }
             }
-        if request.reasoning and request.reasoning.enabled:
-            payload["reasoning"] = {"summary": "auto"}
-            if request.reasoning.effort is not None:
-                payload["reasoning"]["effort"] = request.reasoning.effort.value
-            payload["include"] = ["reasoning.encrypted_content"]
+        if request.reasoning:
+            provider_effort = self._provider_reasoning_effort(request)
+            payload["reasoning"] = {
+                "effort": provider_effort,
+                **({"summary": "auto"} if request.reasoning.enabled else {}),
+            }
+            if request.reasoning.enabled:
+                payload["include"] = ["reasoning.encrypted_content"]
         return payload
 
     def _parse_response(
@@ -398,9 +389,7 @@ class OpenAIResponsesProvider:
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
+            structured_output=parse_structured_output(text) if request.output_schema else None,
             finish_reason=finish_reason or payload.get("status", "stop"),
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
@@ -420,12 +409,8 @@ class OpenAIResponsesProvider:
         return {
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
-            "cached_tokens": (usage.get("input_tokens_details") or {}).get(
-                "cached_tokens"
-            ),
-            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get(
-                "reasoning_tokens"
-            ),
+            "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens"),
+            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
         }
 
     def _headers(self) -> dict[str, str]:
@@ -449,19 +434,51 @@ class OpenAIResponsesProvider:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
-            raise ModelProviderError(
-                "invalid_request", "Request was routed to the wrong provider."
-            )
+            raise ModelProviderError("invalid_request", "Request was routed to the wrong provider.")
         if request.json_object_output:
             raise ModelProviderError(
                 "unsupported_capability",
                 "OpenAI JSON object output is not implemented by this codec.",
             )
-        if request.reasoning and not request.reasoning.enabled:
+        if request.reasoning:
+            provider_effort = self._provider_reasoning_effort(request)
+            if provider_effort not in {
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+            }:
+                raise ModelProviderError(
+                    "unsupported_capability",
+                    f"OpenAI does not support native reasoning effort '{provider_effort}'.",
+                )
+
+    @staticmethod
+    def _provider_reasoning_effort(request: ModelRequest) -> str:
+        """Return the resolved OpenAI effort, including `none` for explicit disablement."""
+
+        if request.reasoning is None:
+            raise ModelProviderError(
+                "invalid_request",
+                "OpenAI reasoning effort requires a reasoning configuration.",
+            )
+        if not request.reasoning.enabled:
+            return "none"
+        provider_value = (
+            request.resolved_reasoning.provider_value
+            if request.resolved_reasoning is not None
+            else request.reasoning.effort.value
+            if request.reasoning.effort is not None
+            else "medium"
+        )
+        if not isinstance(provider_value, str):
             raise ModelProviderError(
                 "unsupported_capability",
-                "OpenAI reasoning models do not support disabling reasoning through this codec.",
+                "OpenAI reasoning effort mapping must resolve to a string.",
             )
+        return provider_value
 
     def _elapsed_ms(self, started: float) -> int:
         """Return total call latency using a monotonic clock."""

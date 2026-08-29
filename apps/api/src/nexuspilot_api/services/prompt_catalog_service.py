@@ -2,7 +2,11 @@
 
 from re import Match
 
-from nexuspilot_models.contracts import ModelReasoningCapabilities
+from nexuspilot_models.contracts import (
+    ModelReasoningCapabilities,
+    ProviderName,
+    ReasoningEffort,
+)
 from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -45,6 +49,10 @@ from nexuspilot_api.schemas.prompt_catalog import (
     RegisteredModelCreate,
     RegisteredModelRead,
     RegisteredModelUpdate,
+    validate_model_reasoning_policy,
+)
+from nexuspilot_api.services.model_reasoning_policy_service import (
+    validate_provider_reasoning_mapping,
 )
 
 MAX_RENDERED_PROMPT_CHARACTERS = 40_000
@@ -117,9 +125,7 @@ async def create_prompt_template(
         await db_session.commit()
     except IntegrityError as exc:
         await db_session.rollback()
-        raise ResourceConflictError(
-            "Prompt template already exists"
-        ) from exc
+        raise ResourceConflictError("Prompt template already exists") from exc
     return await get_prompt_template(db_session, payload.template_name)
 
 
@@ -139,8 +145,7 @@ async def get_prompt_template(
     version = await db_session.scalar(
         select(LlmPromptTemplateVersion).where(
             LlmPromptTemplateVersion.template_name == template_name,
-            LlmPromptTemplateVersion.version_number
-            == template.current_version_number,
+            LlmPromptTemplateVersion.version_number == template.current_version_number,
         )
     )
     if version is None:
@@ -201,9 +206,7 @@ async def create_prompt_template_version(
         await db_session.commit()
     except IntegrityError as exc:
         await db_session.rollback()
-        raise ResourceConflictError(
-            "Prompt template version was created concurrently"
-        ) from exc
+        raise ResourceConflictError("Prompt template version was created concurrently") from exc
     return await get_prompt_template(db_session, template_name)
 
 
@@ -304,13 +307,9 @@ def _validate_prompt_variable_values(
             )
         value = variables[variable_name]
         if declared_type in {"integer", "number"} and isinstance(value, bool):
-            raise InvalidRequestError(
-                f"Prompt variable {variable_name} must be {declared_type}"
-            )
+            raise InvalidRequestError(f"Prompt variable {variable_name} must be {declared_type}")
         if not isinstance(value, expected_type):
-            raise InvalidRequestError(
-                f"Prompt variable {variable_name} must be {declared_type}"
-            )
+            raise InvalidRequestError(f"Prompt variable {variable_name} must be {declared_type}")
 
 
 def _render_prompt_variable(value: PromptVariableValue) -> str:
@@ -406,6 +405,25 @@ async def create_registered_model(
 ) -> RegisteredModelRead:
     """Persist one stable model identity; duplicate provider/model pairs fail explicitly."""
 
+    reasoning_policy = _registration_reasoning_policy(
+        payload.provider,
+        payload.model_identifier,
+        payload=payload,
+    )
+    try:
+        validate_provider_reasoning_mapping(
+            payload.provider,
+            {
+                ReasoningEffort(effort): provider_value
+                for effort, provider_value in reasoning_policy[
+                    "reasoning_effort_mapping_json"
+                ].items()
+            },
+        )
+    except ValueError as exc:
+        raise InvalidRequestError(
+            "Registered model reasoning mapping is invalid for its provider"
+        ) from exc
     registered_model = LlmRegisteredModel(
         model_id=new_id(),
         provider=payload.provider,
@@ -415,6 +433,7 @@ async def create_registered_model(
         status=payload.status,
         sort_order=payload.sort_order,
         metadata_json=payload.metadata_json,
+        **reasoning_policy,
     )
     db_session.add(registered_model)
     try:
@@ -438,7 +457,21 @@ async def update_registered_model(
     registered_model = await db_session.get(LlmRegisteredModel, model_id)
     if registered_model is None:
         raise ResourceNotFoundError("Registered Model")
-    for field_name, field_value in payload.model_dump(exclude_unset=True).items():
+    update_values = payload.model_dump(exclude_unset=True, mode="json")
+    reasoning_update_values = {
+        field_name: update_values.pop(field_name)
+        for field_name in list(update_values)
+        if field_name.startswith("reasoning_")
+    }
+    if reasoning_update_values:
+        current_policy = _registered_model_reasoning_policy_values(registered_model)
+        current_policy.update(reasoning_update_values)
+        _validate_reasoning_policy_values(
+            current_policy,
+            provider=registered_model.provider,
+        )
+        _apply_registered_model_reasoning_policy(registered_model, current_policy)
+    for field_name, field_value in update_values.items():
         setattr(registered_model, field_name, field_value)
     await db_session.commit()
     await db_session.refresh(registered_model)
@@ -475,10 +508,13 @@ async def bootstrap_registered_models(
     }
     missing_pairs = [pair for pair in configured_pairs if pair not in existing_pairs]
     sort_order_by_pair = {
-        pair: sort_order
-        for sort_order, pair in enumerate(configured_pairs, start=1)
+        pair: sort_order for sort_order, pair in enumerate(configured_pairs, start=1)
     }
     for provider, model_identifier in missing_pairs:
+        reasoning_policy = _default_registration_reasoning_policy(
+            provider,
+            model_identifier,
+        )
         db_session.add(
             LlmRegisteredModel(
                 model_id=new_id(),
@@ -489,6 +525,7 @@ async def bootstrap_registered_models(
                 status=ModelRegistrationStatus.ENABLED,
                 sort_order=sort_order_by_pair[(provider, model_identifier)],
                 metadata_json={"registration_source": "provider_registry_bootstrap"},
+                **reasoning_policy,
             )
         )
     try:
@@ -555,9 +592,7 @@ async def list_model_directory(
             )
         )
     ).all()
-    latest_capability_by_provider_model: dict[
-        tuple[str, str], LlmModelCatalogVersion
-    ] = {}
+    latest_capability_by_provider_model: dict[tuple[str, str], LlmModelCatalogVersion] = {}
     for catalog_version in catalog_versions:
         latest_capability_by_provider_model.setdefault(
             (catalog_version.provider, catalog_version.model), catalog_version
@@ -571,8 +606,7 @@ async def list_model_directory(
         configured_models = configured_models_by_provider.get(provider)
         is_provider_registered = provider in registered_provider_names
         is_model_allowed = bool(is_provider_registered) and (
-            not configured_models
-            or registered_model.model_identifier in configured_models
+            not configured_models or registered_model.model_identifier in configured_models
         )
         capability = latest_capability_by_provider_model.get(
             (provider.value, registered_model.model_identifier)
@@ -666,9 +700,7 @@ async def resolve_enabled_model_catalog_version(
         LlmModelCatalogVersion.status == ModelCatalogStatus.ENABLED,
     )
     if catalog_version is not None:
-        statement = statement.where(
-            LlmModelCatalogVersion.catalog_version == catalog_version
-        )
+        statement = statement.where(LlmModelCatalogVersion.catalog_version == catalog_version)
     statement = statement.order_by(
         LlmModelCatalogVersion.confirmed_at.desc(),
         LlmModelCatalogVersion.created_at.desc(),
@@ -709,6 +741,17 @@ def _registered_model_read(registered_model: LlmRegisteredModel) -> RegisteredMo
         status=registered_model.status,
         sort_order=registered_model.sort_order,
         metadata_json=registered_model.metadata_json,
+        reasoning_supported_efforts=[
+            ReasoningEffort(effort) for effort in registered_model.reasoning_supported_efforts_json
+        ],
+        reasoning_supports_disable=registered_model.reasoning_supports_disable,
+        reasoning_default_enabled=registered_model.reasoning_default_enabled,
+        reasoning_default_effort=ReasoningEffort(registered_model.reasoning_default_effort),
+        reasoning_effort_mapping={
+            ReasoningEffort(effort): provider_value
+            for effort, provider_value in registered_model.reasoning_effort_mapping_json.items()
+        },
+        reasoning_profile_version=registered_model.reasoning_profile_version,
         created_at=registered_model.created_at,
         updated_at=registered_model.updated_at,
     )
@@ -735,6 +778,8 @@ def _model_unavailable_reason(
         return "model_not_allowed"
     if capability is None:
         return "capability_unknown"
+    if not _registered_model_reasoning_policy_is_valid(registered_model):
+        return "reasoning_profile_invalid"
     if requires_streaming and not capability.supports_streaming:
         return "streaming_unsupported"
     if requires_structured_output and not capability.supports_structured_output:
@@ -772,13 +817,151 @@ def _model_directory_entry_read(
         catalog_version=(capability.catalog_version if capability else None),
         context_window=(capability.context_window if capability else None),
         supports_tools=(capability.supports_tools if capability else None),
-        supports_structured_output=(
-            capability.supports_structured_output if capability else None
-        ),
+        supports_structured_output=(capability.supports_structured_output if capability else None),
         supports_vision=(capability.supports_vision if capability else None),
         supports_caching=(capability.supports_caching if capability else None),
         supports_streaming=(capability.supports_streaming if capability else None),
         tokenizer_name=(capability.tokenizer_name if capability else None),
         tokenizer_version=(capability.tokenizer_version if capability else None),
         reasoning_capabilities=reasoning_capabilities,
+        reasoning_supported_efforts=[
+            ReasoningEffort(effort) for effort in registered_model.reasoning_supported_efforts_json
+        ],
+        reasoning_supports_disable=registered_model.reasoning_supports_disable,
+        reasoning_default_enabled=registered_model.reasoning_default_enabled,
+        reasoning_default_effort=ReasoningEffort(registered_model.reasoning_default_effort),
+        reasoning_profile_version=registered_model.reasoning_profile_version,
     )
+
+
+def _registration_reasoning_policy(
+    provider: ProviderName,
+    model_identifier: str,
+    *,
+    payload: RegisteredModelCreate,
+) -> dict:
+    """Resolve an explicit policy or safe provider default for one new stable model."""
+
+    if payload.reasoning_supported_efforts is None:
+        return _default_registration_reasoning_policy(provider, model_identifier)
+    return {
+        "reasoning_supported_efforts_json": [
+            effort.value for effort in payload.reasoning_supported_efforts
+        ],
+        "reasoning_supports_disable": payload.reasoning_supports_disable,
+        "reasoning_default_enabled": payload.reasoning_default_enabled,
+        "reasoning_default_effort": payload.reasoning_default_effort.value,
+        "reasoning_effort_mapping_json": {
+            effort.value: provider_value
+            for effort, provider_value in (payload.reasoning_effort_mapping or {}).items()
+        },
+        "reasoning_profile_version": payload.reasoning_profile_version,
+    }
+
+
+def _default_registration_reasoning_policy(
+    provider: ProviderName,
+    _model_identifier: str,
+) -> dict:
+    """Return conservative bootstrap policy without inferring behavior from model names."""
+
+    if provider is ProviderName.DEEPSEEK:
+        efforts = list(ReasoningEffort)
+        mapping = {
+            ReasoningEffort.MINIMAL: "low",
+            ReasoningEffort.LOW: "low",
+            ReasoningEffort.MEDIUM: "high",
+            ReasoningEffort.HIGH: "high",
+            ReasoningEffort.XHIGH: "high",
+            ReasoningEffort.MAX: "max",
+        }
+        supports_disable = True
+    elif provider in {ProviderName.OPENAI, ProviderName.ANTHROPIC}:
+        efforts = [ReasoningEffort.MEDIUM]
+        mapping = {ReasoningEffort.MEDIUM: "medium"}
+        supports_disable = False
+    else:
+        efforts = []
+        mapping = {}
+        supports_disable = False
+    return {
+        "reasoning_supported_efforts_json": [effort.value for effort in efforts],
+        "reasoning_supports_disable": supports_disable,
+        "reasoning_default_enabled": True,
+        "reasoning_default_effort": ReasoningEffort.MEDIUM.value,
+        "reasoning_effort_mapping_json": {
+            effort.value: provider_value for effort, provider_value in mapping.items()
+        },
+        "reasoning_profile_version": "reasoning.v1",
+    }
+
+
+def _registered_model_reasoning_policy_values(
+    registered_model: LlmRegisteredModel,
+) -> dict:
+    """Return one ORM policy using public update-field names for merge validation."""
+
+    return {
+        "reasoning_supported_efforts": list(registered_model.reasoning_supported_efforts_json),
+        "reasoning_supports_disable": registered_model.reasoning_supports_disable,
+        "reasoning_default_enabled": registered_model.reasoning_default_enabled,
+        "reasoning_default_effort": registered_model.reasoning_default_effort,
+        "reasoning_effort_mapping": dict(registered_model.reasoning_effort_mapping_json),
+        "reasoning_profile_version": registered_model.reasoning_profile_version,
+    }
+
+
+def _validate_reasoning_policy_values(
+    policy: dict,
+    *,
+    provider: ProviderName,
+) -> None:
+    """Validate a merged model policy before mutating its stable database row."""
+
+    try:
+        supported_efforts = [
+            ReasoningEffort(effort) for effort in policy["reasoning_supported_efforts"]
+        ]
+        default_effort = ReasoningEffort(policy["reasoning_default_effort"])
+        effort_mapping = {
+            ReasoningEffort(effort): provider_value
+            for effort, provider_value in policy["reasoning_effort_mapping"].items()
+        }
+        validate_model_reasoning_policy(
+            supported_efforts=supported_efforts,
+            default_enabled=policy["reasoning_default_enabled"],
+            default_effort=default_effort,
+            effort_mapping=effort_mapping,
+        )
+        validate_provider_reasoning_mapping(provider, effort_mapping)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidRequestError("Registered model reasoning policy is invalid") from exc
+
+
+def _apply_registered_model_reasoning_policy(
+    registered_model: LlmRegisteredModel,
+    policy: dict,
+) -> None:
+    """Copy one validated public policy representation into ORM storage fields."""
+
+    registered_model.reasoning_supported_efforts_json = list(policy["reasoning_supported_efforts"])
+    registered_model.reasoning_supports_disable = policy["reasoning_supports_disable"]
+    registered_model.reasoning_default_enabled = policy["reasoning_default_enabled"]
+    registered_model.reasoning_default_effort = policy["reasoning_default_effort"]
+    registered_model.reasoning_effort_mapping_json = dict(policy["reasoning_effort_mapping"])
+    registered_model.reasoning_profile_version = policy["reasoning_profile_version"]
+
+
+def _registered_model_reasoning_policy_is_valid(
+    registered_model: LlmRegisteredModel,
+) -> bool:
+    """Return whether one stored policy can resolve the required medium product default."""
+
+    try:
+        _validate_reasoning_policy_values(
+            _registered_model_reasoning_policy_values(registered_model),
+            provider=registered_model.provider,
+        )
+    except InvalidRequestError:
+        return False
+    return True
