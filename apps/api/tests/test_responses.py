@@ -232,12 +232,32 @@ async def test_registry_uses_dedicated_deepseek_chat_provider() -> None:
             deepseek_models="deepseek-v4-flash,deepseek-v4-pro",
         ),
         http_client,
+        {ProviderName.DEEPSEEK: "https://gateway.example.com:8443/deepseek/v1"},
     )
 
     provider = registry.resolve(ProviderName.DEEPSEEK, "deepseek-v4-flash")
     await http_client.aclose()
 
     assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.base_url == "https://gateway.example.com:8443/deepseek/v1"
+
+
+async def test_registry_does_not_register_provider_without_enabled_database_endpoint() -> None:
+    """Keep an environment credential inactive until its Provider has an enabled DB URL."""
+
+    http_client = httpx.AsyncClient()
+    registry = create_provider_registry(
+        Settings(
+            _env_file=None,
+            deepseek_api_key="test-deepseek-key",
+            deepseek_models="deepseek-v4-flash",
+        ),
+        http_client,
+        {},
+    )
+    await http_client.aclose()
+
+    assert ProviderName.DEEPSEEK not in registry.registered_names
 
 
 def test_http_response_request_maps_reasoning_to_provider_contract() -> None:

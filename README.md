@@ -103,7 +103,23 @@ X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 
 ## 统一 Responses 接口
 
-Provider 只在服务端配置相应凭据后注册。可以通过以下接口查看当前可用 Provider：
+Provider 地址与凭据使用不同配置边界：Base URL 从数据库表
+`llm_provider_endpoints` 读取，API Key 只从 `apps/api/.env` 读取。内置 Provider 只有在数据库
+存在启用地址且环境文件存在相应密钥时才注册；`openai_compatible` 保持允许无密钥的本地服务。
+迁移 `20260831_0019` 会创建并启用以下 DeepSeek 记录：
+
+```text
+provider=deepseek
+base_url=https://api.deepseek.com
+enabled=true
+```
+
+Base URL 必须使用 `http` 或 `https`，必须包含主机，不能包含用户名、密码、查询参数或片段；
+允许路径和显式端口，例如 `https://gateway.example.com:8443/deepseek/v1`。同一 Provider
+可以保留多个停用地址，但最多只能有一个启用地址。Registry 只在进程启动时读取这些记录，
+修改后需要重启 API。地址、密钥和内部配置都不会由 Provider 发现接口返回。
+
+可以通过以下接口查看当前实际可用 Provider：
 
 ```http
 GET /api/v1/providers
@@ -159,15 +175,25 @@ response.failed
 
 Reasoning 公开内容分为原始推理、Provider 摘要和无文本状态三种语义。逐模型能力来自 `GET /api/v1/providers`；请求可以用 `reasoning_display_policy` 选择 `hidden`、`summary-only` 或 `provider-visible`，但不能超过服务端登记能力。DeepSeek 工具续接原文和 OpenAI `encrypted_content` 使用独立后端加密状态保存，普通响应、消息正文、SSE 和 Provider 原始审计对象均不返回这些字段。生产环境必须配置至少 32 字符的 `NEXUSPILOT_PROVIDER_CONTINUATION_ENCRYPTION_KEY`。
 
-除四家内置适配器外，OpenAI Chat Completions 风格的本地或第三方服务可配置为：
+除四家内置适配器外，OpenAI Chat Completions 风格的本地或第三方服务需要先由受控数据库
+迁移或管理员操作写入地址，例如：
+
+```sql
+INSERT INTO llm_provider_endpoints (
+  provider_endpoint_id, provider, base_url, enabled, created_at, updated_at
+) VALUES (
+  UUID(), 'openai_compatible', 'http://localhost:11434/v1', TRUE, NOW(), NOW()
+);
+```
+
+其密钥和模型 allowlist 仍在 `apps/api/.env`：
 
 ```text
-NEXUSPILOT_OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
 NEXUSPILOT_OPENAI_COMPATIBLE_API_KEY=
 NEXUSPILOT_OPENAI_COMPATIBLE_MODELS=example-model
 ```
 
-请求时使用 `"provider": "openai_compatible"`。模型 allowlist 留空表示允许该 Provider 下任意非空模型名；生产环境建议显式配置。
+请求时使用 `"provider": "openai_compatible"`。模型 allowlist 留空表示允许该 Provider 下任意非空模型名；生产环境建议显式配置。当前没有公开的 Provider 地址写接口，避免把基础设施地址或敏感配置暴露给普通调用方。
 
 ## 实验性 Memory 管理接口
 

@@ -47,23 +47,18 @@ class Settings(BaseSettings):
         le=2_592_000,
     )
     openai_api_key: SecretStr | None = None
-    openai_base_url: str = "https://api.openai.com/v1"
     openai_models: str = ""
 
     deepseek_api_key: SecretStr | None = None
-    deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_models: str = ""
 
     anthropic_api_key: SecretStr | None = None
-    anthropic_base_url: str = "https://api.anthropic.com/v1"
     anthropic_models: str = ""
 
     gemini_api_key: SecretStr | None = None
-    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_models: str = ""
 
     openai_compatible_api_key: SecretStr | None = None
-    openai_compatible_base_url: str | None = None
     openai_compatible_models: str = ""
 
     @model_validator(mode="after")
@@ -76,9 +71,7 @@ class Settings(BaseSettings):
             self.environment.lower() not in {"development", "test"}
             and self.provider_continuation_encryption_key is None
         ):
-            raise ValueError(
-                "provider_continuation_encryption_key is required outside development"
-            )
+            raise ValueError("provider_continuation_encryption_key is required outside development")
         return self
 
     def continuation_encryption_secret(self) -> str:

@@ -1,6 +1,7 @@
 """Application composition root for provider adapters and pricing configuration."""
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -25,8 +26,9 @@ from nexuspilot_api.core.config import Settings
 def create_provider_registry(
     settings: Settings,
     http_client: httpx.AsyncClient,
+    enabled_base_urls_by_provider: Mapping[ProviderName, str],
 ) -> ProviderRegistry:
-    """Create explicitly configured adapters around one shared HTTP transport."""
+    """Create adapters only when database endpoint and environment credential permit."""
 
     transport = HttpTransport(
         http_client,
@@ -34,13 +36,14 @@ def create_provider_registry(
         backoff_seconds=settings.model_retry_backoff_seconds,
     )
     registry = ProviderRegistry()
-    if settings.openai_api_key:
+    openai_base_url = enabled_base_urls_by_provider.get(ProviderName.OPENAI)
+    if settings.openai_api_key and openai_base_url:
         openai_models = _parse_model_allowlist(settings.openai_models)
         registry.register(
             ProviderName.OPENAI,
             OpenAIResponsesProvider(
                 transport,
-                base_url=settings.openai_base_url,
+                base_url=openai_base_url,
                 api_key=settings.openai_api_key.get_secret_value(),
             ),
             allowed_models=openai_models,
@@ -54,13 +57,14 @@ def create_provider_registry(
                 for model in openai_models
             },
         )
-    if settings.deepseek_api_key:
+    deepseek_base_url = enabled_base_urls_by_provider.get(ProviderName.DEEPSEEK)
+    if settings.deepseek_api_key and deepseek_base_url:
         deepseek_models = _parse_model_allowlist(settings.deepseek_models)
         registry.register(
             ProviderName.DEEPSEEK,
             DeepSeekChatProvider(
                 transport=transport,
-                base_url=settings.deepseek_base_url,
+                base_url=deepseek_base_url,
                 api_key=settings.deepseek_api_key.get_secret_value(),
             ),
             allowed_models=deepseek_models,
@@ -74,33 +78,36 @@ def create_provider_registry(
                 for model in deepseek_models
             },
         )
-    if settings.anthropic_api_key:
+    anthropic_base_url = enabled_base_urls_by_provider.get(ProviderName.ANTHROPIC)
+    if settings.anthropic_api_key and anthropic_base_url:
         registry.register(
             ProviderName.ANTHROPIC,
             AnthropicMessagesProvider(
                 transport,
-                base_url=settings.anthropic_base_url,
+                base_url=anthropic_base_url,
                 api_key=settings.anthropic_api_key.get_secret_value(),
             ),
             allowed_models=_parse_model_allowlist(settings.anthropic_models),
         )
-    if settings.gemini_api_key:
+    gemini_base_url = enabled_base_urls_by_provider.get(ProviderName.GEMINI)
+    if settings.gemini_api_key and gemini_base_url:
         registry.register(
             ProviderName.GEMINI,
             GeminiGenerateContentProvider(
                 transport,
-                base_url=settings.gemini_base_url,
+                base_url=gemini_base_url,
                 api_key=settings.gemini_api_key.get_secret_value(),
             ),
             allowed_models=_parse_model_allowlist(settings.gemini_models),
         )
-    if settings.openai_compatible_base_url:
+    openai_compatible_base_url = enabled_base_urls_by_provider.get(ProviderName.OPENAI_COMPATIBLE)
+    if openai_compatible_base_url:
         registry.register(
             ProviderName.OPENAI_COMPATIBLE,
             OpenAICompatibleChatProvider(
                 name=ProviderName.OPENAI_COMPATIBLE,
                 transport=transport,
-                base_url=settings.openai_compatible_base_url,
+                base_url=openai_compatible_base_url,
                 api_key=(
                     settings.openai_compatible_api_key.get_secret_value()
                     if settings.openai_compatible_api_key

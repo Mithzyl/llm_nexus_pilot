@@ -962,7 +962,7 @@ Provider 工具续接与公开展示相互独立。DeepSeek 实际工具调用�
 
 ## Model Gateway 实施范围（原有基线已完成）
 
-- 需要修改：后端依赖与配置，增加四家供应商凭据、允许的基础 URL、统一超时、重试和价格配置。
+- 需要修改：后端依赖与配置，四家供应商凭据继续来自 API 环境文件，允许的基础 URL 由数据库独立保存；统一超时、重试和价格仍使用服务端配置。
 - 需要修改：数据库模型与 Alembic 迁移，补足调用重试次数、统一错误类型及必要的幂等标识；不复制已有 token、费用、URI 字段。
 - 需要新增：`packages/models` 独立 Python 包，承担统一类型、供应商协议、适配器注册、错误转换、重试、流式事件归一化和费用计算。
 - 需要修改：FastAPI 增加统一 `POST /api/v1/responses` 入口，通过 `stream` 决定普通 JSON 或 SSE，并由应用服务协调调用记录与对象存储。
@@ -994,7 +994,7 @@ packages/models/
 apps/api/src/nexuspilot_api/
 ├── main.py                   # FastAPI 应用组装与资源生命周期
 ├── core/
-│   ├── config.py             # 凭据、端点、超时及功能开关
+│   ├── config.py             # 凭据、超时及功能开关；不保存 Provider 地址
 │   ├── security.py           # API 认证
 │   └── dependencies.py       # Provider 与业务服务依赖注入
 ├── routers/                  # 按业务资源拆分的 HTTP Controller
@@ -1060,7 +1060,7 @@ internal_error
 - 每次物理供应商请求仍应有独立证据。若继续复用一个 `attempt_id`，必须新增可查询的 retry 明细；不能只覆盖最后一次错误。
 - Provider 已返回但 MinIO 原始响应保存失败时，统一调用返回 `response_audit_failed`，Attempt 记为 `failed`，但 token、费用、延迟、供应商请求编号和物理请求证据必须一并保存。完成事务出现一次暂时或不明确失败时先按持久化状态重新读取并安全重试；仍无法确认时记为 `outcome_unknown`，保留已知计费事实，不能再次调用 Provider。
 - 日志、错误文本、原始请求和原始响应在持久化前必须移除 Authorization、API Key 和供应商凭据。
-- 未配置某供应商凭据时，启动可以继续，但调用该供应商必须返回明确配置错误。
+- 未配置某供应商凭据或数据库中没有启用地址时，启动可以继续，但该 Provider 不注册，调用必须返回明确配置错误。非法数据库地址属于启动配置错误，不允许静默回退环境变量。
 
 ## 兼容策略
 
@@ -1091,7 +1091,7 @@ internal_error
 ## Model Gateway 原有基线完成标准（已达到）
 
 - OpenAI、DeepSeek、Anthropic 和 Gemini 均实现 `ModelProvider` 契约并通过同一参数化契约测试。
-- 至少 OpenAI 和 DeepSeek 可在配置凭据后通过同一业务接口切换调用。
+- 至少 OpenAI 和 DeepSeek 可在配置启用地址及对应凭据后通过同一业务接口切换调用。
 - 普通生成和 SSE 流式输出均返回统一协议。
 - 工具调用和结构化 JSON 输出在供应商支持时能被统一解析；不支持时返回明确错误。
 - 成功、失败、超时、重试和客户端取消都有与实际行为一致的 attempt 记录。
@@ -1108,9 +1108,10 @@ internal_error
 - 公共 HTTP 层封装为 `POST /api/v1/responses`，业务方不直接接触任何供应商 payload。
 - `HttpTransport` 统一负责 JSON、SSE、连接超时、HTTP 状态分类和指数退避，Provider 只负责编解码。
 - 每个逻辑调用写入 `llm_attempts`；每个物理网络请求写入 `llm_attempt_retries`。
-- API Key 仅从服务端 `SecretStr` 配置进入认证 Header，不进入公共请求、数据库原始请求或错误响应。
+- API Key 仅从服务端 `SecretStr` 配置进入认证 Header，不进入 Provider 地址表、公共请求、数据库原始请求或错误响应。
 - 价格不内置可能过期的数字，只读取带供应商/模型键的显式 JSON 配置；未知价格保持 `null`。
-- 未配置凭据的 Provider 不注册，服务仍可启动；调用时返回 `provider_not_configured`。
+- Provider Registry 启动时读取 `llm_provider_endpoints` 的启用地址，不再读取 `*_BASE_URL` 环境变量；未配置启用地址或必要凭据的 Provider 不注册，服务仍可启动，调用时返回 `provider_not_configured`。
+- `llm_provider_endpoints` 允许每个 Provider 保留停用历史，但数据库约束保证最多一个启用地址；Base URL 只允许 HTTP(S)、禁止用户名和密码、允许显式端口和路径。迁移为 DeepSeek 创建 `https://api.deepseek.com` 启用记录，既有 `llm_models` 和 `llm_model_catalog_versions` 保持不变。
 - 单元、Provider 契约、SSE、ASGI、迁移一致性和静态检查均为阶段2验收项。
 - 真实供应商连通性测试：未运行。本阶段规划修订没有读取供应商凭据，也没有产生模型费用。
 

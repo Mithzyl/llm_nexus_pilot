@@ -16,12 +16,15 @@ from nexuspilot_api.core.errors import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
-from nexuspilot_api.infrastructure.database import engine
+from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.provider_registry import (
     create_price_catalog,
     create_provider_registry,
 )
 from nexuspilot_api.routers import api_router
+from nexuspilot_api.services.provider_endpoint_service import (
+    load_enabled_provider_base_urls,
+)
 
 
 @asynccontextmanager
@@ -32,9 +35,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     http_client = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
     )
-    app.state.provider_registry = create_provider_registry(settings, http_client)
-    app.state.price_catalog = create_price_catalog(settings)
     try:
+        async with database_session_factory() as database_session:
+            enabled_base_urls_by_provider = await load_enabled_provider_base_urls(database_session)
+        app.state.provider_registry = create_provider_registry(
+            settings,
+            http_client,
+            enabled_base_urls_by_provider,
+        )
+        app.state.price_catalog = create_price_catalog(settings)
         yield
     finally:
         await http_client.aclose()

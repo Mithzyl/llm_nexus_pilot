@@ -1,6 +1,6 @@
 # 阶段5：平台身份、授权与凭据管理规划
 
-**文档日期：** 2026 年 8 月 19 日
+**文档日期：** 2026 年 8 月 31 日
 **文档状态：** 规划中，尚未实现
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -20,7 +20,7 @@
 - 当前 `users` 表及 `User` API 表示业务资源所有者，不包含登录身份、密码、登录会话或授权声明。
 - 当前公共 API 使用部署级 `X-API-Key`，内部接口另加部署级 `X-Internal-API-Key`。它们只能证明调用方是受信服务，不能识别最终用户。
 - 当前请求中的 `user_id` 由调用方传入。Service 会校验资源关系，但不能证明调用方就是该用户。
-- 当前模型供应商密钥来自服务端环境变量，并在应用启动时注册 Provider。数据库没有用户级供应商凭据。
+- 当前模型供应商密钥来自 `apps/api/.env`，Base URL 来自部署级 `llm_provider_endpoints`；应用启动时组合“启用地址 + 部署凭据”注册 Provider。地址表不保存密钥，数据库仍没有用户级供应商凭据。
 - 阶段2、阶段3及后续内部能力可以使用测试 fixture、受控 seed、假 Provider 和环境变量完成验证，不应为了测试增加绕过认证的公开接口。
 - 待确认事项：生产部署是否只允许管理员预置账户；是否需要公开注册；密码找回邮件由哪个服务发送；生产密钥加密使用哪一种密钥管理服务。
 
@@ -138,11 +138,28 @@ DELETE /api/v1/me/provider-credentials/{credential_id}
 | `POST /me/provider-credentials/{credential_id}/verify` | 否；用户凭据进入模型调用链前必须 | 在数据库事务外执行有超时的最小供应商校验；按凭据版本写验证结果，旧请求不能覆盖新版本；不得返回供应商原始敏感错误 |
 | `DELETE /me/provider-credentials/{credential_id}` | 否；用户凭据进入模型调用链前必须 | 立即禁止新解析并撤销/加密擦除密文；已发出的外部请求不能保证停止；跨用户访问返回 404 |
 
-供应商凭据与 NexusPilot 个人 API Key 是两类不同对象：前者必须在调用模型时解密，后者只用于认证 NexusPilot 请求且永不需要恢复明文。两者不能共表、不能共用加密方式，也不能在 API 中统称为 `api_key`。
+供应商凭据与 NexusPilot 个人 API Key 是两类不同对象：前者必须在调用模型时恢复原文并发送给供应商，因此不能只保存哈希；后者只用于认证 NexusPilot 请求且永不需要恢复明文，可以保存不可逆校验值。两者不能共表、不能共用加密方式，也不能在 API 中统称为 `api_key`。
 
 `verify` 的实际网络动作由供应商适配器定义：优先使用不计费的身份或模型可见性端点；供应商没有可靠的免费端点时，必须在界面明确说明可能产生最小费用并取得用户确认，不能暗中发起生成请求。验证通过只证明当时可认证，不保证后续余额、模型权限或网络持续可用。
 
 同一用户可以为同一 provider 保存多个命名凭据，但调用选择必须确定：请求显式提供本人的 `credential_id`，或使用该用户为该 provider 设置的唯一默认凭据；没有默认项或默认项冲突时明确失败，不能按创建时间随机选择。`POST`/`PATCH` 可以设置 `is_default`，数据库约束或事务锁必须保证每个 `(user_id, provider)` 最多一个有效默认项。
+
+### 2026 年 8 月 31 日多用户密钥保存研究结论
+
+需要先区分两类同样常被称作“API Key”的对象：
+
+| 对象 | 运行时是否需要恢复原文 | 保存方式 | 原因 |
+|---|---:|---|---|
+| NexusPilot 个人 API Key | 否 | `key_id` 定位 + 服务端独立 pepper 参与的 HMAC-SHA-256 校验值 | 平台只需验证调用方提交的 secret，泄露数据库不能直接得到可用 key |
+| 用户的 Provider API Key | 是 | 托管 Secret Manager 的不透明引用，或 KMS/HSM 支持的信封加密密文 | 调用 OpenAI、DeepSeek 等服务时必须发送原始 secret，单向哈希无法完成调用 |
+
+Provider API Key 不能采用“只保存哈希”的方案。哈希只能回答“用户提交的值是否相同”，不能恢复供应商请求所需的 Authorization 值。普通 SHA-256 指纹也不能代替密文：它既无法恢复 secret，也会让拿到数据库的人离线验证候选值。指纹只用于重复检测和审计定位，必须使用数据库之外的服务端密钥生成 HMAC，并与加密密钥分离。
+
+生产环境优先使用托管 Secret Manager：数据库只保存 `credential_id`、owner、provider、secret resource/version 引用、状态和审计元数据；模型调用服务以最小权限按版本读取。若采用应用层保存，则每个凭据版本使用独立数据加密密钥（DEK）和 AES-256-GCM，加密附加数据绑定 `credential_id + user_id + provider + version`；密钥加密密钥（KEK）留在 KMS 或硬件安全模块中，数据库只保存密文、随机数、被包裹的 DEK、算法及 KEK 版本。Google Cloud KMS 的[信封加密说明](https://docs.cloud.google.com/kms/docs/envelope-encryption)明确给出了 DEK/KEK 分层、每次写入使用新 DEK、AES-GCM 和不保存明文 DEK 的做法；AWS Secrets Manager 的[加密过程](https://docs.aws.amazon.com/secretsmanager/latest/userguide/security-encryption.html)也采用每个 secret 版本的数据密钥与 KMS 包裹模型。
+
+调用路径必须在解密前重新校验 owner、provider、状态、默认选择和版本；明文及明文 DEK 使用后立即从可控内存对象释放，不进入队列、日志、追踪、错误或持久缓存。访问权限、读取审计、轮换、撤销、到期、备份恢复和密钥管理服务不可用时的明确失败都是完成条件。该生命周期要求与 [OWASP Secrets Management 指南](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)、[NIST SP 800-57 Part 1 Rev.5](https://csrc.nist.gov/pubs/sp/800/57/pt1/r5/final)及 Google Secret Manager 的[最小权限建议](https://docs.cloud.google.com/secret-manager/docs/best-practices)一致。
+
+建议的数据边界不是把所有内容放进单表：`user_provider_credentials` 保存当前选择、owner、provider、状态和默认项；不可变 `user_provider_credential_versions` 保存 Secret Manager 版本引用或信封加密材料、HMAC 指纹和创建证据。轮换先写并验证新版本，再以条件更新切换当前版本；旧版本只在受控回退窗口可用，随后撤销和销毁。当前部署级 `.env` 密钥仍属于 `deployment_config`，不迁入这两张用户表。
 
 ## 相关阶段的测试用户与密钥方案
 
@@ -214,6 +231,8 @@ DELETE /api/v1/me/provider-credentials/{credential_id}
 
 - 创建和轮换请求中的 secret 设置严格字节上限，进入日志与异常处理前完成敏感字段标记。
 - 加密使用数据密钥加密 secret、主密钥加密数据密钥的信封加密；生产主密钥不与数据库同存。开发环境可以使用独立环境密钥，但不得称为生产方案。
+- 供应商 secret 使用带认证的加密算法；数据库保存密文、随机数、算法版本、被主密钥包裹的数据密钥和主密钥版本。另存服务端密钥参与的 HMAC 指纹用于重复检测或定位，不能用普通哈希替代密文，也不能依赖指纹恢复 secret。
+- 解密只发生在经过 owner、Provider、状态和版本校验后的实际调用边界；明文只短时存在内存，不进入队列、缓存、日志、追踪、Attempt、Artifact 或接口响应。生产主密钥由密钥管理服务或硬件安全模块托管，应用数据库备份本身不能解密凭据。
 - API 只接受系统登记的 provider 枚举，不允许调用方提交任意 base URL。OpenAI-compatible 自定义端点属于单独的受控连接配置，需域名允许列表和服务器端请求伪造防护。
 
 ## 失败与恢复设计

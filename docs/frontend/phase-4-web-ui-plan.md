@@ -801,7 +801,7 @@ Context证据抽屉读取最新Model Attempt关联的已持久化Context Build�
 
 状态：稳定模型目录基线、阶段2后端思考策略扩展及阶段4前端思考控制已完成；真实Provider浏览器矩阵待后续执行。数据库迁移、当前DeepSeek模型的中等默认回填、内部管理校验、目录读取字段、Provider映射、Attempt证据、模型切换归一化和请求透传已经完成。
 
-当前系统的 `llm_model_catalog_versions` 只保存某个 `provider + model + catalog_version` 的不可变能力快照；`GET /api/v1/providers` 则读取服务端 Provider Registry 的环境配置。两者都不能作为稳定的模型业务实体，也不能表达“平台当前向用户提供哪些模型”。阶段4先补充稳定模型实体表，供 Web 模型选择器和后续阶段5用户授权复用；不在本工作项中提前实现登录、供应商凭据或用户授权。
+当前系统的 `llm_model_catalog_versions` 只保存某个 `provider + model + catalog_version` 的不可变能力快照；`GET /api/v1/providers` 则读取启动时由数据库启用地址、服务端环境凭据和模型 allowlist 共同形成的 Provider Registry。两者都不能作为稳定的模型业务实体，也不能表达“平台当前向用户提供哪些模型”。阶段4先补充稳定模型实体表，供 Web 模型选择器和后续阶段5用户授权复用；不在本工作项中提前实现登录、供应商凭据或用户授权。
 
 #### 数据职责
 
@@ -893,7 +893,7 @@ GET /api/v1/models
 当前事实：
 1. users 已存在，但最终用户登录和授权属于阶段5，当前 user_id 仍由受信调用方提供。
 2. llm_model_catalog_versions 已存在，它是 provider + model + catalog_version 的不可变能力快照，不是稳定模型业务实体，也不是用户授权表。
-3. GET /api/v1/providers 当前来自服务端 Provider Registry 和环境白名单；环境配置不是数据库模型目录。
+3. GET /api/v1/providers 当前来自服务端 Provider Registry；Registry 组合数据库启用地址、环境凭据和环境模型 allowlist，任何一项都不是数据库模型目录。
 4. 当前不得把 API Key、供应商密钥、Prompt 正文或完整供应商响应写入模型目录。
 
 目标：

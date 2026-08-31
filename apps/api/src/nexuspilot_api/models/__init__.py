@@ -111,6 +111,7 @@ from nexuspilot_api.models.prompt_catalog import (
     LlmPromptTemplateVersion,
     LlmRegisteredModel,
 )
+from nexuspilot_api.models.provider_endpoint import LlmProviderEndpoint
 from nexuspilot_api.models.records import (
     LlmModelToolCall,
     LlmOutboxEvent,
@@ -166,6 +167,7 @@ __all__ = [
     "LlmModelTransportAttempt",
     "LlmModelResponseEvent",
     "LlmProviderContinuationState",
+    "LlmProviderEndpoint",
     "LlmReasoningBlock",
     "LlmModelCatalogVersion",
     "LlmRegisteredModel",
