@@ -50,17 +50,27 @@ async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
-/** Replace the BFF only for deterministic UI tests; BFF ownership remains covered by route tests. */
+/** Replace the BFF with deterministic message, Prompt, and Prompt-failure facts for UI tests. */
 async function installApiMocks(
   page: Page,
-  options: { messages?: unknown[]; promptOptions?: unknown[] } = {},
+  options: {
+    messages?: unknown[];
+    promptOptions?: unknown[];
+    promptOptionsStatus?: number;
+  } = {},
 ) {
   let sessionTitle = "Original title";
   await page.route("**/api/nexus/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/nexus/", "");
     if (path === "models") return fulfillJson(route, [MODEL]);
-    if (path === "prompt-templates") return fulfillJson(route, options.promptOptions ?? []);
+    if (path === "prompt-templates") {
+      return fulfillJson(
+        route,
+        options.promptOptions ?? [],
+        options.promptOptionsStatus ?? 200,
+      );
+    }
     if (path === "sessions") {
       return fulfillJson(route, {
         items: [{
@@ -184,6 +194,37 @@ test("keeps the context trigger in the primary toolbar and the selected Prompt a
   if (testInfo.project.name === "chromium") {
     await page.screenshot({
       path: "../../output/playwright/composer-context-toolbar-corrected.png",
+      fullPage: true,
+    });
+  }
+});
+
+test("keeps Composer controls and the Prompt retry action at legible sizes", async ({
+  page,
+}, testInfo) => {
+  await page.unroute("**/api/nexus/**");
+  await installApiMocks(page, { promptOptionsStatus: 503 });
+  await page.goto("/");
+  await page.getByRole("button", { name: "上下文设置" }).click();
+
+  const controls = page.locator(
+    ".composer-mode-row button, .context-binding-trigger, .reasoning-settings-trigger",
+  );
+  const controlFontSizes = await controls.evaluateAll((elements) =>
+    elements.map((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
+  );
+  expect(controlFontSizes.every((fontSize) => fontSize >= 12)).toBe(true);
+
+  const retryButton = page.getByRole("button", { name: "重试" });
+  await expect(retryButton).toBeVisible();
+  await expect.poll(() => retryButton.evaluate((element) => ({
+    fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
+    height: element.getBoundingClientRect().height,
+  }))).toEqual({ fontSize: 12, height: 30 });
+
+  if (testInfo.project.name === "chromium") {
+    await page.screenshot({
+      path: "../../output/playwright/composer-context-retry-readable.png",
       fullPage: true,
     });
   }
