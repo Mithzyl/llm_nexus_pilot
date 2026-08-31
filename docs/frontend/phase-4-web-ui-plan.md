@@ -153,6 +153,8 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 
 后端已完成`ResponsesRequest.reasoning`、完整统一等级、逐模型策略、四家官方Provider映射、Attempt证据和Agent Workflow工作流级透传。Web从稳定模型目录读取允许等级、是否支持关闭及默认程度，并把“思考程度”和“推理展示”收在同一个Composer入口内；两项设置在界面上合并收纳，但仍分别写入`reasoning`和`reasoning_display_policy`合同。
 
+推理展示的Web默认值按模型目录能力自动匹配：`raw`明确提交`provider-visible`并显示“显示推理”，`summary`明确提交`summary-only`并显示“显示摘要”，`hidden`和`none`保持`hidden`且不展示无效选项。用户手动选择后保留其披露偏好；切换模型时可以把原始推理偏好降为摘要，但不能把“仅摘要”偏好自动升级为原始推理。后端接口缺省值继续保持`hidden`，因此没有Web显式选择的其他客户端不会意外暴露推理内容。
+
 统一交互采用“模型默认、关闭、最小、低、中、高、极高、最大”的候选集合，但页面只展示当前 Provider/Model 能力目录明确声明的选项：
 
 - “模型默认”表示使用 `llm_models` 中经过验证的产品默认，不再表示 Provider 原生默认。所有已启用模型的初始默认必须是“思考已开启 + 中等”，即 `enabled=true`、`effort=medium`；前端可以省略显式覆盖，但服务端必须解析并保存这一默认事实。
@@ -710,7 +712,7 @@ apps/web/
 
 2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而返回 `agent_review_rejected`。当前通用策略允许普通解释任务使用模型已有知识，同时保持“明确来源限制优先、不得伪造外部证据、重要不确定性必须说明”的边界。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；该修复没有前端结果修补或 DeepSeek 专用分支。后端与模型适配层最新全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
 
-2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。2026年8月31日重新设计后，Textarea随内容自动增高至320px后再内部滚动；生产构建中855字符输入使Composer增至493px，消息底部留白同步增至558px。Composer使用细内描边和轻阴影，Prompt、思考及模型列表采用浅底选中行，Agent低频设置进入条件设置栏；交互字号统一为12px、次级说明为11px、弹层标题为13px，恢复操作不再使用8～9px文字。前端78项测试、TypeScript、ESLint、生产构建及桌面和Pixel 7共16项Playwright测试通过。
+2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。2026年8月31日重新设计后，Textarea随内容自动增高至320px后再内部滚动；生产构建中855字符输入使Composer增至493px，消息底部留白同步增至558px。Composer使用细内描边和轻阴影，Prompt、思考及模型列表采用浅底选中行，Agent低频设置进入条件设置栏；交互字号统一为12px、次级说明为11px、弹层标题为13px，恢复操作不再使用8～9px文字。前端80项测试、TypeScript、ESLint、生产构建及桌面和Pixel 7共18项Playwright测试通过。
 
 2026 年 8 月 20 日事实审计确认：当时 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。该段保留为当日审计记录；当前设置页和自动化状态以下方2026年8月31日实现事实为准。
 

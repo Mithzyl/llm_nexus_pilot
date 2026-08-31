@@ -230,6 +230,28 @@ test("keeps Composer controls and the Prompt retry action at legible sizes", asy
   }
 });
 
+test("matches the default reasoning display to the selected model capability", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "思考设置" }).click();
+
+  const displayOptions = page.getByRole("listbox", { name: "推理展示" });
+  await expect(displayOptions.getByRole("option", { name: "显示推理" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(displayOptions.getByRole("option", { name: "隐藏" })).toBeVisible();
+  await expect(displayOptions.getByRole("option", { name: "显示摘要" })).toHaveCount(0);
+
+  if (testInfo.project.name === "chromium") {
+    await page.screenshot({
+      path: "../../output/playwright/composer-reasoning-auto-display.png",
+      fullPage: true,
+    });
+  }
+});
+
 test("shows the read-only server model directory", async ({ page }) => {
   await page.goto("/settings/models");
   await expect(page.getByRole("heading", { name: "模型与能力" })).toBeVisible();

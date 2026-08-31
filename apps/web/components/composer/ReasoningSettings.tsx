@@ -6,15 +6,20 @@ import type {
   ModelReasoningEffort,
   ModelReasoningSelection,
 } from "../../lib/types";
+import {
+  availableReasoningDisplayPolicies,
+  type ReasoningDisplayPolicy,
+  type ReasoningPresentationCapability,
+} from "../../lib/reasoning-settings";
 
-export type ReasoningDisplayPolicy = "hidden" | "summary-only" | "provider-visible";
+export type { ReasoningDisplayPolicy } from "../../lib/reasoning-settings";
 
 type ReasoningSettingsProps = {
   effort: ModelReasoningSelection;
   supportedEfforts: readonly ModelReasoningEffort[];
   supportsDisable: boolean;
   displayPolicy: ReasoningDisplayPolicy;
-  showDisplayPolicy: boolean;
+  presentationCapability: ReasoningPresentationCapability;
   disabled?: boolean;
   onEffortChange: (effort: ModelReasoningSelection) => void;
   onDisplayPolicyChange: (policy: ReasoningDisplayPolicy) => void;
@@ -30,11 +35,11 @@ const EFFORT_LABELS: Record<ModelReasoningSelection, string> = {
   max: "最大",
 };
 
-const DISPLAY_OPTIONS: ReadonlyArray<{ value: ReasoningDisplayPolicy; label: string }> = [
-  { value: "hidden", label: "隐藏" },
-  { value: "summary-only", label: "仅摘要" },
-  { value: "provider-visible", label: "显示可见内容" },
-];
+const DISPLAY_LABELS: Record<ReasoningDisplayPolicy, string> = {
+  hidden: "隐藏",
+  "summary-only": "显示摘要",
+  "provider-visible": "显示推理",
+};
 
 /** Render effort and presentation controls behind one stable Composer entry. */
 export function ReasoningSettings({
@@ -42,7 +47,7 @@ export function ReasoningSettings({
   supportedEfforts,
   supportsDisable,
   displayPolicy,
-  showDisplayPolicy,
+  presentationCapability,
   disabled = false,
   onEffortChange,
   onDisplayPolicyChange,
@@ -53,6 +58,7 @@ export function ReasoningSettings({
     ...supportedEfforts,
     ...(supportsDisable ? (["disabled"] as const) : []),
   ];
+  const displayPolicies = availableReasoningDisplayPolicies(presentationCapability);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -100,24 +106,24 @@ export function ReasoningSettings({
             ))}
           </div>
         </section>
-        {showDisplayPolicy && (
+        {displayPolicies.length > 0 && (
           <section aria-labelledby="reasoning-display-heading">
             <div className="reasoning-settings-heading">
               <strong id="reasoning-display-heading">推理展示</strong>
               <small>只控制可见内容</small>
             </div>
             <div className="reasoning-option-list" role="listbox" aria-label="推理展示">
-              {DISPLAY_OPTIONS.map((option) => (
+              {displayPolicies.map((policy) => (
                 <button
                   type="button"
-                  key={option.value}
+                  key={policy}
                   role="option"
-                  aria-selected={option.value === displayPolicy}
-                  className={option.value === displayPolicy ? "is-selected" : ""}
-                  onClick={() => onDisplayPolicyChange(option.value)}
+                  aria-selected={policy === displayPolicy}
+                  className={policy === displayPolicy ? "is-selected" : ""}
+                  onClick={() => onDisplayPolicyChange(policy)}
                 >
-                  <span>{option.label}</span>
-                  {option.value === displayPolicy && <i aria-hidden="true">✓</i>}
+                  <span>{DISPLAY_LABELS[policy]}</span>
+                  {policy === displayPolicy && <i aria-hidden="true">✓</i>}
                 </button>
               ))}
             </div>

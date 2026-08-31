@@ -64,10 +64,7 @@ import {
 } from "../components/agent-workflow/AgentWorkflowPanel";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { CompactSelect } from "../components/composer/CompactSelect";
-import {
-  ReasoningSettings,
-  type ReasoningDisplayPolicy,
-} from "../components/composer/ReasoningSettings";
+import { ReasoningSettings } from "../components/composer/ReasoningSettings";
 import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
 import {
@@ -85,12 +82,17 @@ import {
   composerTextareaHeight,
 } from "../lib/composer-layout";
 import {
+  createReasoningConfiguration,
+  resolveReasoningDisplayPolicy,
+  type ReasoningDisplayPolicy,
+  type ReasoningPresentationCapability,
+} from "../lib/reasoning-settings";
+import {
   isModelSelectionAllowed,
   modelDirectoryToProviderCatalog,
   resolveModelReasoningSelection,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
-import { createReasoningConfiguration } from "../lib/reasoning-settings";
 import {
   conversationPath,
   resolveWorkspaceRoute,
@@ -117,7 +119,7 @@ import {
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
 const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
@@ -313,6 +315,7 @@ export default function Home() {
   const restoredRouteKey = useRef<string | null>(null);
   const providerCatalogRequestId = useRef(0);
   const providerCatalogRequestController = useRef<AbortController | null>(null);
+  const reasoningDisplayPreference = useRef<ReasoningDisplayPolicy | null>(null);
   const draftStorageKey = useRef(conversationDraftStorageKey(initialDraftSessionId));
   const draftValue = useRef("");
   const submissionInProgress = useRef(false);
@@ -580,7 +583,7 @@ export default function Home() {
    * The timeout prevents a stalled upstream connection from leaving the selector
    * in a permanent loading state.
    */
-  function startProviderCatalogRequest() {
+  const startProviderCatalogRequest = useCallback(() => {
     providerCatalogRequestController.current?.abort();
     const controller = new AbortController();
     providerCatalogRequestController.current = controller;
@@ -591,14 +594,26 @@ export default function Home() {
       PROVIDER_CATALOG_TIMEOUT_MS,
     );
     return { controller, requestId, timeoutId };
-  }
+  }, []);
 
-  /** Apply the catalog's first usable model together with its registered reasoning default. */
-  function applyInitialModelSelection(catalog: ProviderCatalog) {
+  /** Apply the model-matched default or a safe compatible form of the user's explicit preference. */
+  const applyReasoningDisplayPolicyForModel = useCallback((
+    presentation: ReasoningPresentationCapability,
+  ) => {
+    setReasoningDisplayPolicy(
+      resolveReasoningDisplayPolicy(presentation, reasoningDisplayPreference.current),
+    );
+  }, []);
+
+  /** Apply the catalog's first usable model with its effort and presentation defaults. */
+  const applyInitialModelSelection = useCallback((catalog: ProviderCatalog) => {
     const initialSelection = resolveInitialModelSelection(catalog);
     setSelectedProvider(initialSelection.provider);
     setSelectedModel(initialSelection.model);
-    if (!initialSelection.provider || !initialSelection.model) return;
+    if (!initialSelection.provider || !initialSelection.model) {
+      applyReasoningDisplayPolicyForModel("none");
+      return;
+    }
     const initialReasoningPolicy =
       catalog.reasoning_policies_by_provider_model?.[initialSelection.provider]?.[
         initialSelection.model
@@ -610,6 +625,19 @@ export default function Home() {
           : "disabled",
       );
     }
+    const initialReasoningCapabilities =
+      catalog.reasoning_capabilities_by_provider_model?.[initialSelection.provider]?.[
+        initialSelection.model
+      ];
+    applyReasoningDisplayPolicyForModel(
+      initialReasoningCapabilities?.presentation ?? "none",
+    );
+  }, [applyReasoningDisplayPolicyForModel]);
+
+  /** Record an explicit display preference so model switches do not silently increase disclosure. */
+  function handleReasoningDisplayPolicyChange(policy: ReasoningDisplayPolicy) {
+    reasoningDisplayPreference.current = policy;
+    setReasoningDisplayPolicy(policy);
   }
 
   /** Load the provider catalog independently from conversation history for an explicit retry. */
@@ -628,6 +656,7 @@ export default function Home() {
       setProviderCatalog(EMPTY_PROVIDER_CATALOG);
       setSelectedProvider("");
       setSelectedModel("");
+      setReasoningDisplayPolicy("hidden");
       setProviderCatalogState("error");
     } finally {
       window.clearTimeout(timeoutId);
@@ -683,6 +712,7 @@ export default function Home() {
         setProviderCatalog(EMPTY_PROVIDER_CATALOG);
         setSelectedProvider("");
         setSelectedModel("");
+        setReasoningDisplayPolicy("hidden");
         setProviderCatalogState("error");
       })
       .finally(() => {
@@ -695,7 +725,7 @@ export default function Home() {
       controller.abort();
       providerCatalogRequestId.current += 1;
     };
-  }, []);
+  }, [applyInitialModelSelection, startProviderCatalogRequest]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
@@ -1810,13 +1840,14 @@ export default function Home() {
                       supportedEfforts={selectedReasoningPolicy.supported_efforts}
                       supportsDisable={selectedReasoningPolicy.supports_disable}
                       displayPolicy={reasoningDisplayPolicy}
-                      showDisplayPolicy={
-                        executionMode === "response" &&
-                        selectedReasoningCapabilities?.presentation !== "none"
+                      presentationCapability={
+                        executionMode === "response"
+                          ? selectedReasoningCapabilities?.presentation ?? "none"
+                          : "none"
                       }
                       disabled={isSending}
                       onEffortChange={setReasoningEffort}
-                      onDisplayPolicyChange={setReasoningDisplayPolicy}
+                      onDisplayPolicyChange={handleReasoningDisplayPolicyChange}
                     />
                   )}
                 </div>
@@ -1838,6 +1869,13 @@ export default function Home() {
                           resolveModelReasoningSelection(nextReasoningPolicy, current),
                         );
                       }
+                      const nextReasoningCapabilities =
+                        providerCatalog.reasoning_capabilities_by_provider_model?.[provider]?.[
+                          model
+                        ];
+                      applyReasoningDisplayPolicyForModel(
+                        nextReasoningCapabilities?.presentation ?? "none",
+                      );
                     }}
                   />
                   <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
