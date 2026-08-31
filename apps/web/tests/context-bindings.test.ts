@@ -3,7 +3,10 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ContextBindings } from "../components/context/ContextBindings";
+import {
+  ContextBindings,
+  SelectedPromptChip,
+} from "../components/context/ContextBindings";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
 import {
   createContextSourceReferences,
@@ -65,7 +68,7 @@ test("rejects incomplete or invalid Prompt variables before creating a Run", () 
 });
 
 test("renders Prompt controls while keeping file binding unavailable without upload support", () => {
-  const markup = renderToStaticMarkup(
+  const bindingMarkup = renderToStaticMarkup(
     createElement(ContextBindings, {
       promptOptions: [
         {
@@ -84,9 +87,28 @@ test("renders Prompt controls while keeping file binding unavailable without upl
       onRetry: () => undefined,
     }),
   );
+  const chipMarkup = renderToStaticMarkup(
+    createElement(SelectedPromptChip, {
+      prompt: {
+        template_name: "explain-topic",
+        purpose: "Explain one topic",
+        current_version_number: 3,
+        variable_schema: { topic: "string" },
+      },
+      disabled: false,
+      onRemove: () => undefined,
+    }),
+  );
+  const markup = `${bindingMarkup}${chipMarkup}`;
 
   assert.match(markup, /explain-topic · v3/);
+  assert.match(markup, /已选 Prompt/);
+  assert.match(bindingMarkup, />＋<\/span>上下文/);
+  assert.match(bindingMarkup, /context-source-icon[^>]*>P</);
+  assert.match(markup, /role="listbox"/);
   assert.match(markup, /等待上传功能/);
+  assert.doesNotMatch(bindingMarkup, /不使用 Prompt/);
+  assert.doesNotMatch(markup, /<select/);
   assert.doesNotMatch(markup, /type="file"/);
   assert.doesNotMatch(markup, /artifact[_ -]?id/i);
 });

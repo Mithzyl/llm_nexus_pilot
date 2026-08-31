@@ -149,9 +149,9 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 
 #### 思考程度选择与跨 Provider 对齐
 
-状态：后端合同已完成，前端未开始。阶段2已完成稳定模型策略字段、默认中等解析、四个官方Provider映射、非法组合拒绝和Attempt证据；本阶段只继续实现Composer选择器、模型切换归一化与浏览器验证。
+状态：前端实现与确定性浏览器验证已完成，真实 Provider 调用矩阵待后续执行。阶段2已完成稳定模型策略字段、默认中等解析、四个官方Provider映射、非法组合拒绝和Attempt证据；阶段4已实现Composer选择器、模型切换归一化以及快速回复和Agent请求透传。
 
-当前后端已完成`ResponsesRequest.reasoning`、完整统一等级、逐模型策略、四家官方Provider映射、Attempt证据和Agent Workflow工作流级透传，但Web仍只提供“推理展示”策略，用户不能控制模型是否思考或思考程度。展示策略只决定哪些 Provider 已返回的推理证据可以公开，思考程度才影响模型调用；二者必须作为两个独立控件和两个独立合同保存。
+后端已完成`ResponsesRequest.reasoning`、完整统一等级、逐模型策略、四家官方Provider映射、Attempt证据和Agent Workflow工作流级透传。Web从稳定模型目录读取允许等级、是否支持关闭及默认程度，并把“思考程度”和“推理展示”收在同一个Composer入口内；两项设置在界面上合并收纳，但仍分别写入`reasoning`和`reasoning_display_policy`合同。
 
 统一交互采用“模型默认、关闭、最小、低、中、高、极高、最大”的候选集合，但页面只展示当前 Provider/Model 能力目录明确声明的选项：
 
@@ -172,7 +172,7 @@ Context Build、Prompt/Model Catalog和Evaluation在阶段2完成行为验收后
 | Gemini 2.5 | 原生 `thinkingBudget`，官方兼容层给出类别到预算的模型相关映射 | 只由后端版本化能力配置转换，前端不发送 token 预算；未配置中等默认映射时不能作为可提交模型 |
 | OpenAI-compatible 自定义端点 | 不可从协议名称推断 | 管理员必须为具体 Provider/Model 配置并验证至少中等默认映射后才能启用；不能把协议兼容误当成思考能力兼容 |
 
-实施进度：`llm_models`字段与当前模型回填、统一枚举、四家官方Provider映射以及Agent Workflow顶层reasoning透传均已完成；本阶段剩余Composer选择器、模型切换归一化、快速回复/Agent请求提交和浏览器验证。合同测试必须覆盖每个公开选项的原生请求体、缺省时解析为中等默认、非法组合拒绝、模型切换和刷新后的Attempt证据；真实浏览器测试至少覆盖当前DeepSeek Flash的中等默认、高、最大和关闭（若稳定模型声明支持）路径。
+实施进度：`llm_models`字段与当前模型回填、统一枚举、四家官方Provider映射、Agent Workflow顶层reasoning透传、Composer选择器、模型切换归一化及快速回复/Agent请求提交均已完成。确定性浏览器测试覆盖桌面和Pixel 7外壳、稳定模型中等默认和交互布局；真实Provider浏览器矩阵仍需覆盖当前DeepSeek Flash实际声明的中等、较高程度和关闭路径，不在本次无数据库写入的界面验证中伪造完成。
 
 官方对齐依据：[OpenAI Responses reasoning](https://platform.openai.com/docs/api-reference/responses-streaming/response/refusal/delta)、[DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、[Anthropic Effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[Anthropic Adaptive Thinking](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)、[Gemini Thinking](https://ai.google.dev/gemini-api/docs/thinking) 与 [Gemini OpenAI compatibility](https://ai.google.dev/gemini-api/docs/openai)。
 
@@ -652,7 +652,7 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
-- 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。思考程度后端合同和Agent透传已经完成，用户选择器与浏览器提交尚未实现。
+- 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。Composer只展示所选模型声明的思考程度，并把统一`reasoning`合同同时透传给快速回复和Agent Workflow。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
 - 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
@@ -671,9 +671,9 @@ apps/web/
 | 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
 | Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端明确引用的Prompt Release/文本Artifact来源 | 未知Attempt的首事件前断线只能读取最终事实；普通产品入口尚未提供Prompt/Artifact绑定，Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
-| 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据和Agent Workflow顶层透传已实现 | Composer用户选择器、模型切换归一化、快速回复/Agent请求提交和真实浏览器验证尚未实现 | 进行中 |
+| 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据、Composer合并入口、模型切换归一化以及快速回复/Agent Workflow透传已实现 | 真实Provider浏览器矩阵仍待后续执行 | 进行中 |
 | Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
-| 消息输入与发送 | 多行输入、自动增高至 240px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键 | 输入区仍需随完整响应式门禁持续验证 | 已完成 |
+| 消息输入与发送 | 多行输入、自动增高至 320px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键；完整Composer高度驱动消息底部留白 | 输入区仍需随完整跨浏览器门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
 | Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
@@ -710,7 +710,7 @@ apps/web/
 
 2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而返回 `agent_review_rejected`。当前通用策略允许普通解释任务使用模型已有知识，同时保持“明确来源限制优先、不得伪造外部证据、重要不确定性必须说明”的边界。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；该修复没有前端结果修补或 DeepSeek 专用分支。后端与模型适配层最新全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
 
-2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，Textarea 随内容自动增高至 240px 后再内部滚动，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。Playwright 在真实长回复会话中验证：20 行输入使 Composer 增至 419px，消息列表底部预留随之从普通状态的 247px 增至 443px，`message-actions` 始终位于 Composer 上方 24px；按 Enter 只增加第 21 行。前端 54 项测试、TypeScript、ESLint 和生产构建均通过。
+2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。2026年8月31日重新设计后，Textarea随内容自动增高至320px后再内部滚动；生产构建中855字符输入使Composer增至493px，消息底部留白同步增至558px。Composer使用细内描边和轻阴影，Prompt、思考及模型列表采用浅底选中行，Agent低频设置进入条件设置栏。前端78项测试、TypeScript、ESLint、生产构建及桌面和Pixel 7共12项Playwright测试通过。
 
 2026 年 8 月 20 日事实审计确认：当时 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。该段保留为当日审计记录；当前设置页和自动化状态以下方2026年8月31日实现事实为准。
 
@@ -763,7 +763,7 @@ apps/web/
 #### 界面行为
 
 - 用户继续已有会话时不需要额外开启“使用历史”开关；Session历史是两种对话模式的默认语义。无状态模型调试仍属于独立开发接口，不暴露为容易误用的普通聊天选项。
-- Composer继续以模式、Agent配置、模型和发送按钮为主；可选上下文绑定收在默认折叠的“上下文”区域，不增加解释Context Builder内部机制的常驻文案。
+- Composer继续以模式、Agent配置、模型和发送按钮为主；快速回复模式的“＋ 上下文”入口紧跟模式切换，已选Prompt以独立标签显示在输入正文下方，可选绑定收在默认折叠的“添加上下文”浮层中，不增加解释Context Builder内部机制的常驻文案。
 - 后端返回Context Build失败时保留当前输入并显示可行动错误：模型目录不可用时允许重新选择模型；消息归属或并发锚点冲突时要求重新读取会话；必选输入超过模型上下文时明确说明当前输入无法完整发送。
 - Context Build成功而Provider失败时沿用现有Attempt失败和回放行为，不重新提交轮次或创建第二个Context Build。
 - 运行详情可以按来源类型展示纳入和排除数量、版本、信任级别、Context策略版本和模型目录版本；Context Build ID只用于内部请求关联，不作为默认界面内容。完整系统指令、安全指令、来源ID、内容哈希、对象URI和其他敏感正文不进入界面。
@@ -797,7 +797,7 @@ Context证据抽屉读取最新Model Attempt关联的已持久化Context Build�
 
 ### 稳定模型目录与模型选择数据基础
 
-状态：稳定模型目录基线及阶段2后端思考策略扩展已完成；前端思考控制尚未实现。数据库迁移、当前DeepSeek模型的中等默认回填、内部管理校验、目录读取字段、Provider映射和Attempt证据已经完成。
+状态：稳定模型目录基线、阶段2后端思考策略扩展及阶段4前端思考控制已完成；真实Provider浏览器矩阵待后续执行。数据库迁移、当前DeepSeek模型的中等默认回填、内部管理校验、目录读取字段、Provider映射、Attempt证据、模型切换归一化和请求透传已经完成。
 
 当前系统的 `llm_model_catalog_versions` 只保存某个 `provider + model + catalog_version` 的不可变能力快照；`GET /api/v1/providers` 则读取服务端 Provider Registry 的环境配置。两者都不能作为稳定的模型业务实体，也不能表达“平台当前向用户提供哪些模型”。阶段4先补充稳定模型实体表，供 Web 模型选择器和后续阶段5用户授权复用；不在本工作项中提前实现登录、供应商凭据或用户授权。
 
@@ -938,7 +938,7 @@ GET /api/v1/models
 - Composer 已删除“Enter 直接发送、Shift+Enter 换行”的分支；Enter、Shift+Enter 以及输入法组合期间的 Enter 均不提交消息。
 - 消息只通过显式发送按钮提交；没有新增 Command+Enter、Control+Enter 等替代快捷键。
 - 输入区已删除运行机制解释文案，执行模式、Agent 并行度、审核策略分布在左侧，模型和发送动作分布在右侧；原生下拉菜单替换为可访问的项目列表。
-- Textarea 根据内容自动增高，达到 240px 后才使用内部滚动；会话底部间距根据 Composer 实际高度动态更新，长回复的 `message-actions` 始终可滚动到 Composer 上方。
+- Textarea 根据内容自动增高，达到 320px 后才使用内部滚动；会话底部间距根据 Composer 实际高度动态更新，长回复的 `message-actions` 始终可滚动到 Composer 上方。
 - 保留空白输入拒绝、生成中禁用重复提交、发送按钮状态和现有幂等/恢复边界；没有改变请求合同或消息持久化顺序。
 
 完成条件：Enter 与 Shift+Enter 均只产生换行；中文等输入法组合不误发；点击或触摸发送按钮只提交一次；空白文本与生成中重复点击仍被拒绝；刷新恢复和首条回复即时显示行为保持不变。

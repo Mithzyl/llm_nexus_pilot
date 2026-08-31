@@ -37,6 +37,7 @@ import type {
   MessageSummary,
   ProviderCatalog,
   ProviderName,
+  ModelReasoningSelection,
   PromptOption,
   ReasoningPresentation,
   ReasoningBlockSnapshot,
@@ -63,9 +64,16 @@ import {
 } from "../components/agent-workflow/AgentWorkflowPanel";
 import { ModelPicker } from "../components/model-picker/ModelPicker";
 import { CompactSelect } from "../components/composer/CompactSelect";
+import {
+  ReasoningSettings,
+  type ReasoningDisplayPolicy,
+} from "../components/composer/ReasoningSettings";
 import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
-import { ContextBindings } from "../components/context/ContextBindings";
+import {
+  ContextBindings,
+  SelectedPromptChip,
+} from "../components/context/ContextBindings";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
 import Link from "next/link";
 import {
@@ -79,8 +87,10 @@ import {
 import {
   isModelSelectionAllowed,
   modelDirectoryToProviderCatalog,
+  resolveModelReasoningSelection,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
+import { createReasoningConfiguration } from "../lib/reasoning-settings";
 import {
   conversationPath,
   resolveWorkspaceRoute,
@@ -114,6 +124,7 @@ const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
   providers: [],
   models_by_provider: {},
   reasoning_capabilities_by_provider_model: {},
+  reasoning_policies_by_provider_model: {},
 };
 const EMPTY_AGENT_EVENT_STATE: AgentWorkflowEventState = {
   events: [],
@@ -125,7 +136,6 @@ const PROVIDER_CATALOG_TIMEOUT_MS = 10_000;
 type ExecutionMode = "response" | "agent";
 type ReviewPolicy = "always" | "on_verification_failure" | "never";
 type AgentParallelism = 1 | 2;
-type ReasoningDisplayPolicy = "hidden" | "summary-only" | "provider-visible";
 
 type LocalMessage = MessageSummary & {
   local_id: string;
@@ -248,6 +258,8 @@ export default function Home() {
   const [maxParallelAgents, setMaxParallelAgents] = useState<AgentParallelism>(1);
   const [reasoningDisplayPolicy, setReasoningDisplayPolicy] =
     useState<ReasoningDisplayPolicy>("hidden");
+  const [reasoningEffort, setReasoningEffort] =
+    useState<ModelReasoningSelection>("medium");
   const [draft, setDraft] = useState("");
   const [run, setRun] = useState<Run | RunDetail | null>(null);
   const [agentWorkflow, setAgentWorkflow] = useState<
@@ -317,6 +329,12 @@ export default function Home() {
           selectedModel
         ]
       : undefined;
+  const selectedReasoningPolicy =
+    selectedProvider && selectedModel
+      ? providerCatalog.reasoning_policies_by_provider_model?.[selectedProvider]?.[
+          selectedModel
+        ]
+      : undefined;
   const selectedPrompt =
     promptOptions.find((prompt) => prompt.template_name === selectedPromptName) ?? null;
   const latestContextBuildId =
@@ -329,6 +347,7 @@ export default function Home() {
     contextEvidenceResult?.contextBuildId === latestContextBuildId
       ? contextEvidenceResult.errorMessage
       : null;
+
   const contextEvidenceState = !latestContextBuildId
     ? "empty"
     : contextEvidenceResult?.contextBuildId !== latestContextBuildId
@@ -574,6 +593,25 @@ export default function Home() {
     return { controller, requestId, timeoutId };
   }
 
+  /** Apply the catalog's first usable model together with its registered reasoning default. */
+  function applyInitialModelSelection(catalog: ProviderCatalog) {
+    const initialSelection = resolveInitialModelSelection(catalog);
+    setSelectedProvider(initialSelection.provider);
+    setSelectedModel(initialSelection.model);
+    if (!initialSelection.provider || !initialSelection.model) return;
+    const initialReasoningPolicy =
+      catalog.reasoning_policies_by_provider_model?.[initialSelection.provider]?.[
+        initialSelection.model
+      ];
+    if (initialReasoningPolicy) {
+      setReasoningEffort(
+        initialReasoningPolicy.default_enabled
+          ? initialReasoningPolicy.default_effort
+          : "disabled",
+      );
+    }
+  }
+
   /** Load the provider catalog independently from conversation history for an explicit retry. */
   async function loadProviderCatalog() {
     const { controller, requestId, timeoutId } = startProviderCatalogRequest();
@@ -583,9 +621,7 @@ export default function Home() {
       const catalog = modelDirectoryToProviderCatalog(modelDirectory);
       if (providerCatalogRequestId.current !== requestId) return;
       setProviderCatalog(catalog);
-      const initialSelection = resolveInitialModelSelection(catalog);
-      setSelectedProvider(initialSelection.provider);
-      setSelectedModel(initialSelection.model);
+      applyInitialModelSelection(catalog);
       setProviderCatalogState("ready");
     } catch {
       if (providerCatalogRequestId.current !== requestId) return;
@@ -639,9 +675,7 @@ export default function Home() {
         if (providerCatalogRequestId.current !== requestId) return;
         const catalog = modelDirectoryToProviderCatalog(modelDirectory);
         setProviderCatalog(catalog);
-        const initialSelection = resolveInitialModelSelection(catalog);
-        setSelectedProvider(initialSelection.provider);
-        setSelectedModel(initialSelection.model);
+        applyInitialModelSelection(catalog);
         setProviderCatalogState("ready");
       })
       .catch(() => {
@@ -857,6 +891,7 @@ export default function Home() {
           planner: binding,
           ...(reviewPolicy === "never" ? {} : { reviewer: binding }),
         },
+        reasoning: createReasoningConfiguration(reasoningEffort),
         review_policy: reviewPolicy,
         max_nodes: 32,
         max_model_calls: 16,
@@ -1303,6 +1338,7 @@ export default function Home() {
           input,
           context_source_references: contextSourceReferences,
           timeout_seconds: 60,
+          reasoning: createReasoningConfiguration(reasoningEffort),
           reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
           stream: true,
@@ -1691,22 +1727,47 @@ export default function Home() {
                   此会话正在另一个标签页生成；完成后会自动读取最新消息。
                 </p>
               )}
-              {executionMode === "response" && (
-                <ContextBindings
-                  promptOptions={promptOptions}
-                  promptOptionsState={promptOptionsState}
-                  selectedPromptName={selectedPromptName}
-                  promptVariableDrafts={promptVariableDrafts}
+              {executionMode === "response" && selectedPrompt && (
+                <SelectedPromptChip
+                  prompt={selectedPrompt}
                   disabled={isSending}
-                  onPromptChange={handlePromptChange}
-                  onVariableChange={(variableName, value) =>
-                    setPromptVariableDrafts((current) => ({
-                      ...current,
-                      [variableName]: value,
-                    }))
-                  }
-                  onRetry={() => void loadProductPromptOptions()}
+                  onRemove={() => handlePromptChange("")}
                 />
+              )}
+              {executionMode === "agent" && (
+                <div className="agent-config-shelf" aria-label="Agent 工作流设置">
+                  <div className="agent-config-item">
+                    <span>执行</span>
+                    <CompactSelect
+                      label="工作 Agent 最大并行数"
+                      value={String(maxParallelAgents)}
+                      options={[
+                        { value: "1", label: "串行" },
+                        { value: "2", label: "并行 2" },
+                      ]}
+                      disabled={isSending}
+                      onChange={(value) => setMaxParallelAgents(value === "2" ? 2 : 1)}
+                    />
+                  </div>
+                  <div className="agent-config-item">
+                    <span>审核</span>
+                    <CompactSelect
+                      label="Agent 审核策略"
+                      value={reviewPolicy}
+                      options={[
+                        { value: "always", label: "始终审核" },
+                        { value: "on_verification_failure", label: "失败时审核" },
+                        { value: "never", label: "不审核" },
+                      ]}
+                      disabled={isSending}
+                      onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
+                    />
+                  </div>
+                  <div className="agent-config-item agent-model-role">
+                    <span>模型角色</span>
+                    <strong>所有角色使用当前模型</strong>
+                  </div>
+                </div>
               )}
               <div className="composer-toolbar">
                 <div className="composer-config-controls">
@@ -1726,47 +1787,38 @@ export default function Home() {
                       Agent
                     </button>
                   </div>
-                  {executionMode === "agent" && (
-                    <div className="agent-option-controls">
-                      <CompactSelect
-                        label="工作 Agent 最大并行数"
-                        value={String(maxParallelAgents)}
-                        options={[
-                          { value: "1", label: "串行" },
-                          { value: "2", label: "并行 2" },
-                        ]}
-                        disabled={isSending}
-                        onChange={(value) => setMaxParallelAgents(value === "2" ? 2 : 1)}
-                      />
-                      <CompactSelect
-                        label="Agent 审核策略"
-                        value={reviewPolicy}
-                        options={[
-                          { value: "always", label: "始终审核" },
-                          { value: "on_verification_failure", label: "失败时审核" },
-                          { value: "never", label: "不审核" },
-                        ]}
-                        disabled={isSending}
-                        onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
-                      />
-                    </div>
+                  {executionMode === "response" && (
+                    <ContextBindings
+                      promptOptions={promptOptions}
+                      promptOptionsState={promptOptionsState}
+                      selectedPromptName={selectedPromptName}
+                      promptVariableDrafts={promptVariableDrafts}
+                      disabled={isSending}
+                      onPromptChange={handlePromptChange}
+                      onVariableChange={(variableName, value) =>
+                        setPromptVariableDrafts((current) => ({
+                          ...current,
+                          [variableName]: value,
+                        }))
+                      }
+                      onRetry={() => void loadProductPromptOptions()}
+                    />
                   )}
-                  {executionMode === "response" &&
-                    selectedReasoningCapabilities?.presentation !== "none" && (
-                      <CompactSelect
-                        label="推理展示策略"
-                        value={reasoningDisplayPolicy}
-                        options={[
-                          { value: "hidden", label: "隐藏推理" },
-                          { value: "summary-only", label: "仅摘要" },
-                          { value: "provider-visible", label: "显示推理" },
-                        ]}
-                        disabled={isSending}
-                        onChange={(value) =>
-                          setReasoningDisplayPolicy(value as ReasoningDisplayPolicy)
-                        }
-                      />
-                    )}
+                  {selectedReasoningPolicy && (
+                    <ReasoningSettings
+                      effort={reasoningEffort}
+                      supportedEfforts={selectedReasoningPolicy.supported_efforts}
+                      supportsDisable={selectedReasoningPolicy.supports_disable}
+                      displayPolicy={reasoningDisplayPolicy}
+                      showDisplayPolicy={
+                        executionMode === "response" &&
+                        selectedReasoningCapabilities?.presentation !== "none"
+                      }
+                      disabled={isSending}
+                      onEffortChange={setReasoningEffort}
+                      onDisplayPolicyChange={setReasoningDisplayPolicy}
+                    />
+                  )}
                 </div>
                 <div className="composer-actions">
                   <ModelPicker
@@ -1779,6 +1831,13 @@ export default function Home() {
                     onChange={(provider, model) => {
                       setSelectedProvider(provider);
                       setSelectedModel(model);
+                      const nextReasoningPolicy =
+                        providerCatalog.reasoning_policies_by_provider_model?.[provider]?.[model];
+                      if (nextReasoningPolicy) {
+                        setReasoningEffort((current) =>
+                          resolveModelReasoningSelection(nextReasoningPolicy, current),
+                        );
+                      }
                     }}
                   />
                   <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>

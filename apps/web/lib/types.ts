@@ -21,6 +21,9 @@ export type ProviderCatalog = {
   reasoning_capabilities_by_provider_model?: Partial<
     Record<ProviderName, Record<string, ModelReasoningCapabilities>>
   >;
+  reasoning_policies_by_provider_model?: Partial<
+    Record<ProviderName, Record<string, ModelReasoningPolicy>>
+  >;
 };
 
 export type ModelUnavailableReason =
@@ -41,6 +44,21 @@ export type ModelReasoningEffort =
   | "high"
   | "xhigh"
   | "max";
+
+export type ModelReasoningSelection = ModelReasoningEffort | "disabled";
+
+export type ModelReasoningPolicy = {
+  supported_efforts: readonly ModelReasoningEffort[];
+  supports_disable: boolean;
+  default_enabled: boolean;
+  default_effort: ModelReasoningEffort;
+  profile_version: string;
+};
+
+export type ReasoningConfiguration = {
+  enabled: boolean;
+  effort?: ModelReasoningEffort;
+};
 
 export type ModelDirectoryEntry = {
   model_id: string;
@@ -370,6 +388,7 @@ export type AgentWorkflowCreate = {
   role_bindings: Partial<
     Record<"controller" | "planner" | "researcher" | "reviewer" | "verifier", AgentModelBinding>
   >;
+  reasoning?: ReasoningConfiguration;
   review_policy: "always" | "on_verification_failure" | "never";
   max_nodes: number;
   max_model_calls: number;

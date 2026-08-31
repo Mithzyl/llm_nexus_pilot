@@ -1,5 +1,5 @@
 const COMPOSER_TEXTAREA_MIN_HEIGHT_PX = 44;
-const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 240;
+const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 320;
 const COMPOSER_CONVERSATION_GAP_PX = 24;
 
 /** Clamp the growing textarea to a readable height before enabling internal scrolling. */

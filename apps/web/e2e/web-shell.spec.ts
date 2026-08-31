@@ -38,19 +38,29 @@ const MODEL = {
   reasoning_profile_version: "reasoning-policy.v1",
 };
 
+const PROMPT = {
+  template_name: "technical-review",
+  purpose: "Review one technical proposal",
+  current_version_number: 3,
+  variable_schema: {},
+};
+
 /** Fulfill one browser-facing API request with deterministic public facts. */
 async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
 /** Replace the BFF only for deterministic UI tests; BFF ownership remains covered by route tests. */
-async function installApiMocks(page: Page, options: { messages?: unknown[] } = {}) {
+async function installApiMocks(
+  page: Page,
+  options: { messages?: unknown[]; promptOptions?: unknown[] } = {},
+) {
   let sessionTitle = "Original title";
   await page.route("**/api/nexus/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/nexus/", "");
     if (path === "models") return fulfillJson(route, [MODEL]);
-    if (path === "prompt-templates") return fulfillJson(route, []);
+    if (path === "prompt-templates") return fulfillJson(route, options.promptOptions ?? []);
     if (path === "sessions") {
       return fulfillJson(route, {
         items: [{
@@ -149,6 +159,34 @@ test("renames an active conversation and restores the paired question without se
   await page.getByRole("textbox", { name: "会话标题" }).fill("Renamed conversation");
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByRole("heading", { name: "Renamed conversation" })).toBeVisible();
+});
+
+test("keeps the context trigger in the primary toolbar and the selected Prompt above it", async ({
+  page,
+}, testInfo) => {
+  await page.unroute("**/api/nexus/**");
+  await installApiMocks(page, { promptOptions: [PROMPT] });
+  await page.goto("/");
+
+  const contextTrigger = page.locator(
+    ".composer-mode-row + .context-bindings > .context-binding-trigger",
+  );
+  await expect(contextTrigger).toBeVisible();
+  await contextTrigger.click();
+  await expect(page.getByText("添加上下文", { exact: true })).toBeVisible();
+  await expect(page.locator(".context-source-icon", { hasText: "P" })).toBeVisible();
+  await expect(page.locator(".context-file-status .context-source-icon", { hasText: "F" })).toBeVisible();
+
+  await page.getByRole("option", { name: /technical-review/ }).click();
+  await expect(page.locator(".composer > .context-chip")).toContainText("technical-review");
+  await expect(page.locator(".composer-toolbar .context-chip")).toHaveCount(0);
+
+  if (testInfo.project.name === "chromium") {
+    await page.screenshot({
+      path: "../../output/playwright/composer-context-toolbar-corrected.png",
+      fullPage: true,
+    });
+  }
 });
 
 test("shows the read-only server model directory", async ({ page }) => {

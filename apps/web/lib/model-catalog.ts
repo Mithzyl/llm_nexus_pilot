@@ -1,4 +1,10 @@
-import type { ModelDirectoryEntry, ProviderCatalog, ProviderName } from "./types";
+import type {
+  ModelDirectoryEntry,
+  ModelReasoningPolicy,
+  ModelReasoningSelection,
+  ProviderCatalog,
+  ProviderName,
+} from "./types";
 
 export type ModelSelection = {
   provider: ProviderName | "";
@@ -14,24 +20,52 @@ export function modelDirectoryToProviderCatalog(
   const reasoningByProviderModel: NonNullable<
     ProviderCatalog["reasoning_capabilities_by_provider_model"]
   > = {};
+  const reasoningPoliciesByProviderModel: NonNullable<
+    ProviderCatalog["reasoning_policies_by_provider_model"]
+  > = {};
   for (const entry of entries) {
     if (!entry.selectable) continue;
     if (!providers.includes(entry.provider)) {
       providers.push(entry.provider);
       modelsByProvider[entry.provider] = [];
       reasoningByProviderModel[entry.provider] = {};
+      reasoningPoliciesByProviderModel[entry.provider] = {};
     }
     modelsByProvider[entry.provider]?.push(entry.model_identifier);
     const providerReasoning = reasoningByProviderModel[entry.provider];
     if (providerReasoning) {
       providerReasoning[entry.model_identifier] = entry.reasoning_capabilities;
     }
+    const providerReasoningPolicies = reasoningPoliciesByProviderModel[entry.provider];
+    if (providerReasoningPolicies) {
+      providerReasoningPolicies[entry.model_identifier] = {
+        supported_efforts: entry.reasoning_supported_efforts,
+        supports_disable: entry.reasoning_supports_disable,
+        default_enabled: entry.reasoning_default_enabled,
+        default_effort: entry.reasoning_default_effort,
+        profile_version: entry.reasoning_profile_version,
+      };
+    }
   }
   return {
     providers,
     models_by_provider: modelsByProvider,
     reasoning_capabilities_by_provider_model: reasoningByProviderModel,
+    reasoning_policies_by_provider_model: reasoningPoliciesByProviderModel,
   };
+}
+
+/** Keep a reasoning choice only when the newly selected model supports it. */
+export function resolveModelReasoningSelection(
+  policy: ModelReasoningPolicy,
+  currentSelection: ModelReasoningSelection,
+): ModelReasoningSelection {
+  if (currentSelection === "disabled") {
+    if (policy.supports_disable) return currentSelection;
+  } else if (policy.supported_efforts.includes(currentSelection)) {
+    return currentSelection;
+  }
+  return policy.default_enabled ? policy.default_effort : "disabled";
 }
 
 /** Resolve a usable first selection without inventing models outside the server catalog. */

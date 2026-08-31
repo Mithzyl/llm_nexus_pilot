@@ -5,6 +5,7 @@ import {
   filterProviderModels,
   isModelSelectionAllowed,
   modelDirectoryToProviderCatalog,
+  resolveModelReasoningSelection,
   resolveInitialModelSelection,
 } from "../lib/model-catalog";
 import type { ModelDirectoryEntry, ProviderCatalog } from "../lib/types";
@@ -101,5 +102,43 @@ test("builds selectable provider options only from stable available model record
         "deepseek-v4-flash": baseEntry.reasoning_capabilities,
       },
     },
+    reasoning_policies_by_provider_model: {
+      deepseek: {
+        "deepseek-v4-flash": {
+          supported_efforts: ["minimal", "medium", "xhigh"],
+          supports_disable: true,
+          default_enabled: true,
+          default_effort: "medium",
+          profile_version: "reasoning-policy.v1",
+        },
+      },
+    },
   });
+});
+
+test("uses the registered model default when the previous reasoning choice is unsupported", () => {
+  const policy = {
+    supported_efforts: ["minimal", "medium", "xhigh"] as const,
+    supports_disable: false,
+    default_enabled: true,
+    default_effort: "medium" as const,
+    profile_version: "reasoning-policy.v1",
+  };
+
+  assert.equal(resolveModelReasoningSelection(policy, "high"), "medium");
+  assert.equal(resolveModelReasoningSelection(policy, "minimal"), "minimal");
+  assert.equal(resolveModelReasoningSelection(policy, "disabled"), "medium");
+});
+
+test("preserves disabled reasoning only for models that explicitly support it", () => {
+  const policy = {
+    supported_efforts: ["medium"] as const,
+    supports_disable: true,
+    default_enabled: false,
+    default_effort: "medium" as const,
+    profile_version: "reasoning-policy.v1",
+  };
+
+  assert.equal(resolveModelReasoningSelection(policy, "disabled"), "disabled");
+  assert.equal(resolveModelReasoningSelection(policy, "xhigh"), "disabled");
 });

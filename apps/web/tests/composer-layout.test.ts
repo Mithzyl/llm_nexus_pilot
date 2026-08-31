@@ -14,7 +14,7 @@ import {
 test("expands the composer for long drafts while keeping a bounded internal scroll area", () => {
   assert.equal(composerTextareaHeight(18), 44);
   assert.equal(composerTextareaHeight(156), 156);
-  assert.equal(composerTextareaHeight(480), 240);
+  assert.equal(composerTextareaHeight(480), 320);
 });
 
 test("keeps conversation actions above the complete measured composer", () => {
