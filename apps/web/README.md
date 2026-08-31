@@ -24,8 +24,8 @@ make web-run
 
 ## 设计边界
 
-- Provider 和模型选项来自 `GET /api/v1/providers` 的 `providers` 与 `models_by_provider`，不在浏览器硬编码可用状态。Composer 使用自定义可搜索选择器；某个 Provider 的模型列表为空时，按服务端合同允许输入自定义模型标识。
-- `/api/nexus/*` 不是通用 API 代理，只允许当前页面所需的 Provider、User、Session、Message、Run、Response、Attempt Reasoning/事件和八个 Agent Workflow 路径；Session、Message、Run、Attempt、Workflow 和 Node 会沿所属 Run 在服务端按固定开发用户校验归属。正式多用户部署前必须替换为登录身份和资源授权。
+- Composer 的 Provider 和模型选项来自 `GET /api/v1/models?requires_streaming=true`，不在浏览器硬编码可用状态；`/settings/models` 使用同一合同只读展示全部已登记模型及不可用原因。`GET /api/v1/providers` 仅作为旧客户端兼容接口保留。
+- `/api/nexus/*` 不是通用 API 代理，只允许当前页面所需的 Provider、Model、User、Session、Message、Run、Response、Attempt Reasoning/事件和八个 Agent Workflow 路径；Session、Message、Run、Attempt、Workflow 和 Node 会沿所属 Run 在服务端按固定开发用户校验归属。会话重命名只开放精确的 Session `PATCH` 路径并执行同一归属校验。正式多用户部署前必须替换为登录身份和资源授权。
 - 发送消息前创建或复用用户、Session 和 Run；响应通过 `POST /api/v1/responses` 的 SSE 事件增量渲染。
 - Provider Catalog 同时返回逐模型推理能力。页面只渲染服务端统一的 `reasoning.raw`、`reasoning.summary` 或 `reasoning.status`，不会根据 Provider 名称推断内容；公开推理默认折叠，隐藏推理在 Chat 完成后移除空状态，在运行轨迹中保留状态与指标。
 - Responses 事件使用 `conversation-stream.v2` 和单调 `sequence`。已取得 Attempt 标识后发生断线或序号缺口时，页面通过受归属检查的 `/attempts/{attempt_id}/events` 从最后确认序号回放；缺失事件不会被跳过，用户主动停止不会触发自动恢复。
@@ -33,6 +33,8 @@ make web-run
 - 流式响应和历史 Assistant Message 使用同一安全 Markdown 渲染入口，支持 GitHub Flavored Markdown 的标题、强调、列表、引用、表格与代码；不执行原始 HTML，不允许危险协议链接，也不由消息内容自动加载远程图片。
 - 浏览器不保存 `X-API-Key`、供应商凭据、内部对象 URI 或原始供应商响应。
 - 会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；刷新、前进和后退会从消息窗口与对应 RunDetail/Attempt 事实恢复，运行地址不会被会话的最新 Run 替换。完整消息分页由服务端单次批量返回正文，用户可通过游标按钮继续加载更早页；SSE 中途断开不会被标记为已完成。
+- 未发送文本按新会话或具体 Session 保存在当前标签页的 `sessionStorage`；刷新和会话切换后恢复，User Message 持久化成功后才清除。同一浏览器内同一 Session 使用 Web Locks 阻止两个标签页同时进入计费提交，并通过不含正文的 `BroadcastChannel` 通知其他标签页刷新服务端事实。
+- “再次提问”只恢复所选 Assistant 回复对应的用户问题，不自动发送、不修改历史，也不创建计费调用。会话归档、取消归档和永久删除当前没有实现。
 - 模型响应完成和 Assistant Message 保存是两个独立状态；只有写入成功才显示“响应已保存”，保存失败时保留文本并明确提示。
 - Composer 可以显式切换“快速回复”和 `model_only_v1` Agent Workflow。Agent 模式使用当前 Provider/Model 绑定 Controller、Planner 和按策略启用的 Reviewer，并允许选择串行或最多两个无依赖工作 Agent 并行；DeepSeek 使用 prompted JSON，其他当前 Provider 使用原生 Schema。
 - Agent Workflow 通过 POST SSE 接收实时持久化事件，按 `event_sequence` 去重和检测缺口；刷新或断线后使用 Run 发现、有限事件回放和 Result 快照恢复，不把 GET `/events` 描述为持续订阅。运行中可以通过独立 `/cancel` 动作持久取消后续节点，关闭 SSE 不会被误当成服务器端取消。
@@ -40,3 +42,15 @@ make web-run
 - 桌面端默认打开运行详情，窄屏默认收起但保留顶部“运行详情”入口。
 - 桌面端输入区保持为对话主区约 80% 宽度，Provider/Model 选择位于输入框右下角；三栏共享同一动态视口高度，避免侧栏、对话区和运行详情底部错位。
 - 恢复、等待用户输入、工具、Memory、Knowledge 和大型节点 Artifact 降级仍未开放；界面不生成相应按钮或虚假执行状态。
+
+## 验证
+
+```bash
+npm --prefix apps/web test
+npm --prefix apps/web run typecheck
+npm --prefix apps/web run lint
+npm --prefix apps/web run build
+npm --prefix apps/web run test:e2e
+```
+
+`test:e2e` 在固定测试端口运行桌面与移动 Chromium，并用确定性的浏览器后端代理（BFF）响应验证草稿、会话重命名、“再次提问”、模型目录、路由边界、多标签页互斥和100条消息恢复门槛。默认测试不会调用真实 Provider，也不会产生模型费用；真实 Provider 矩阵必须单独显式执行。

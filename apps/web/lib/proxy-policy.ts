@@ -1,7 +1,7 @@
 type RoutePatternSegment = string | ":id";
 
 type AllowedRoute = {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH";
   pattern: readonly RoutePatternSegment[];
 };
 
@@ -20,6 +20,7 @@ const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "GET", pattern: ["sessions"] },
   { method: "POST", pattern: ["sessions"] },
   { method: "GET", pattern: ["sessions", ":id"] },
+  { method: "PATCH", pattern: ["sessions", ":id"] },
   { method: "GET", pattern: ["sessions", ":id", "messages"] },
   { method: "GET", pattern: ["sessions", ":id", "messages", "full"] },
   { method: "GET", pattern: ["sessions", ":id", "messages", "latest"] },

@@ -77,6 +77,11 @@ test("builds selectable provider options only from stable available model record
       continuation: "raw-reasoning-replay",
       supports_reasoning_tokens: true,
     },
+    reasoning_supported_efforts: ["minimal", "medium", "xhigh"],
+    reasoning_supports_disable: true,
+    reasoning_default_enabled: true,
+    reasoning_default_effort: "medium",
+    reasoning_profile_version: "reasoning-policy.v1",
   };
   const unavailableEntry: ModelDirectoryEntry = {
     ...baseEntry,

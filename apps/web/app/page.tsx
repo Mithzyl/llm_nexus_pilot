@@ -24,6 +24,7 @@ import {
   openAgentWorkflowStream,
   replayAgentWorkflowEvents,
   replayModelResponseEvents,
+  updateSessionTitle,
 } from "../lib/api";
 import type {
   AgentWorkflowEvent,
@@ -66,6 +67,7 @@ import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
 import { ContextBindings } from "../components/context/ContextBindings";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
+import Link from "next/link";
 import {
   ContextBindingValidationError,
   createContextSourceReferences,
@@ -92,6 +94,18 @@ import {
   isResponseOutputTruncated,
   responseMessageMetadata,
 } from "../lib/response-outcome";
+import {
+  clearConversationDraft,
+  conversationDraftStorageKey,
+  readConversationDraft,
+  writeConversationDraft,
+} from "../lib/conversation-drafts";
+import {
+  isConversationSyncEvent,
+  runWithConversationSubmissionLock,
+  type ConversationSyncEvent,
+} from "../lib/conversation-submission";
+import { repeatableUserPrompt } from "../lib/message-actions";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
@@ -206,6 +220,9 @@ export default function Home() {
   const routeParams = useParams<{ sessionId?: string; runId?: string }>();
   const workspaceRoute = resolveWorkspaceRoute(routeParams);
   const currentRouteKey = workspaceRouteKey(workspaceRoute);
+  const initialDraftSessionId = workspaceRoute.kind === "conversation"
+    ? workspaceRoute.sessionId
+    : null;
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -264,6 +281,12 @@ export default function Home() {
   const [connectionState, setConnectionState] = useState<ConnectionState>("checking");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [isRenamingSession, setIsRenamingSession] = useState(false);
+  const [sessionTitleDraft, setSessionTitleDraft] = useState("");
+  const [isSavingSessionTitle, setIsSavingSessionTitle] = useState(false);
+  const [remoteBusySessionIds, setRemoteBusySessionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [composerClearancePx, setComposerClearancePx] = useState(180);
   const latestAssistantText = useRef("");
   const latestReasoningBlocks = useRef<ReasoningPresentation[]>([]);
@@ -278,6 +301,15 @@ export default function Home() {
   const restoredRouteKey = useRef<string | null>(null);
   const providerCatalogRequestId = useRef(0);
   const providerCatalogRequestController = useRef<AbortController | null>(null);
+  const draftStorageKey = useRef(conversationDraftStorageKey(initialDraftSessionId));
+  const draftValue = useRef("");
+  const submissionInProgress = useRef(false);
+  const conversationSyncChannel = useRef<BroadcastChannel | null>(null);
+  const conversationSyncSenderId = useRef<string | null>(null);
+  const remoteBusyTimers = useRef<Map<string, number>>(new Map());
+  const activeSessionIdValue = useRef<string | null>(null);
+  const isSendingValue = useRef(false);
+  const restoreSessionHandler = useRef<(sessionId: string) => Promise<void>>(async () => {});
 
   const selectedReasoningCapabilities =
     selectedProvider && selectedModel
@@ -330,6 +362,57 @@ export default function Home() {
     // localStorage is the explicitly local theme preference; sync it once after hydration.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsDark(savedTheme === "dark");
+  }, []);
+
+  useEffect(() => {
+    if (draftValue.current) return;
+    const restoredDraft = readConversationDraft(window.sessionStorage, draftStorageKey.current);
+    draftValue.current = restoredDraft;
+    setDraft(restoredDraft);
+  }, []);
+
+  useEffect(() => {
+    conversationSyncSenderId.current = crypto.randomUUID();
+    if (!("BroadcastChannel" in window)) return;
+    const channel = new BroadcastChannel("nexuspilot:conversation-sync");
+    const busyTimers = remoteBusyTimers.current;
+    conversationSyncChannel.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (!isConversationSyncEvent(event.data)) return;
+      const syncEvent = event.data;
+      if (syncEvent.senderId === conversationSyncSenderId.current) return;
+      const sessionId = syncEvent.sessionId;
+      const previousTimer = remoteBusyTimers.current.get(sessionId);
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      setRemoteBusySessionIds((current) => {
+        const next = new Set(current);
+        if (syncEvent.type === "submission-started") next.add(sessionId);
+        else next.delete(sessionId);
+        return next;
+      });
+      if (syncEvent.type === "submission-started") {
+        const timer = window.setTimeout(() => {
+          remoteBusyTimers.current.delete(sessionId);
+          setRemoteBusySessionIds((current) => {
+            const next = new Set(current);
+            next.delete(sessionId);
+            return next;
+          });
+        }, 660_000);
+        remoteBusyTimers.current.set(sessionId, timer);
+        return;
+      }
+      remoteBusyTimers.current.delete(sessionId);
+      if (activeSessionIdValue.current === sessionId && !isSendingValue.current) {
+        void restoreSessionHandler.current(sessionId);
+      }
+    };
+    return () => {
+      channel.close();
+      conversationSyncChannel.current = null;
+      for (const timer of busyTimers.values()) window.clearTimeout(timer);
+      busyTimers.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -585,8 +668,47 @@ export default function Home() {
     [activeSessionId, sessions],
   );
 
-  const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  const isActiveSessionBusyInAnotherTab = Boolean(
+    activeSessionId && remoteBusySessionIds.has(activeSessionId),
+  );
+
   const lastAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
+
+  /** Save the current draft and restore the draft belonging to the next conversation route. */
+  function switchDraftContext(sessionId: string | null) {
+    const nextStorageKey = conversationDraftStorageKey(sessionId);
+    if (draftStorageKey.current !== nextStorageKey) {
+      writeConversationDraft(window.sessionStorage, draftStorageKey.current, draftValue.current);
+    }
+    draftStorageKey.current = nextStorageKey;
+    const restoredDraft = readConversationDraft(window.sessionStorage, nextStorageKey);
+    draftValue.current = restoredDraft;
+    setDraft(restoredDraft);
+  }
+
+  /** Update the visible draft and its tab-local recovery copy together. */
+  function updateDraft(nextDraft: string) {
+    draftValue.current = nextDraft;
+    setDraft(nextDraft);
+    writeConversationDraft(window.sessionStorage, draftStorageKey.current, nextDraft);
+  }
+
+  /** Remove the submitted draft only after the current User Message is durable. */
+  function clearCommittedDraft() {
+    clearConversationDraft(window.sessionStorage, draftStorageKey.current);
+    draftValue.current = "";
+    setDraft("");
+  }
+
+  /** Publish a bounded same-session refresh hint without transferring message content. */
+  function publishConversationSyncEvent(
+    type: ConversationSyncEvent["type"],
+    sessionId: string,
+  ) {
+    const senderId = conversationSyncSenderId.current;
+    if (!senderId) return;
+    conversationSyncChannel.current?.postMessage({ type, sessionId, senderId });
+  }
 
   /** Restore the inspector from the newest persisted attempt rather than local defaults. */
   function restoreRunFacts(runDetail: RunDetail | null) {
@@ -804,6 +926,8 @@ export default function Home() {
    * Load one immutable conversation history and either its latest or explicitly requested Run.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
+    const nextDraftStorageKey = conversationDraftStorageKey(sessionId);
+    if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
     setActiveSessionId(sessionId);
     setIsSidebarOpen(false);
@@ -846,6 +970,7 @@ export default function Home() {
 
   /** Navigate to and restore one owned conversation from its stable URL. */
   async function handleSelectSession(sessionId: string) {
+    switchDraftContext(sessionId);
     restoredRouteKey.current = workspaceRouteKey({ kind: "conversation", sessionId });
     router.push(conversationPath(sessionId));
     await restoreSession(sessionId);
@@ -911,12 +1036,12 @@ export default function Home() {
     setMessageCursor(null);
     setHasMoreMessages(false);
     setErrorMessage(null);
-    setDraft("");
     setIsSidebarOpen(false);
   }
 
   /** Navigate to the stable empty-workspace route without deleting persisted data. */
   function handleNewConversation() {
+    switchDraftContext(null);
     restoredRouteKey.current = "home";
     router.push("/");
     resetConversationView();
@@ -929,6 +1054,7 @@ export default function Home() {
       restoredRouteKey.current = currentRouteKey;
 
       if (workspaceRoute.kind === "home") {
+        switchDraftContext(null);
         resetConversationView();
         return;
       }
@@ -942,6 +1068,12 @@ export default function Home() {
     // The stable route key is the intended reload trigger; state setters and helpers are local.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentRouteKey]);
+
+  useEffect(() => {
+    activeSessionIdValue.current = activeSessionId;
+    isSendingValue.current = isSending;
+    restoreSessionHandler.current = restoreSession;
+  });
 
   /** Open the current persisted Run at a shareable route while retaining loaded evidence. */
   function handleOpenRunEvidence() {
@@ -959,6 +1091,47 @@ export default function Home() {
     await navigator.clipboard.writeText(message.content);
     setCopiedMessageId(message.local_id);
     window.setTimeout(() => setCopiedMessageId(null), 1400);
+  }
+
+  /** Restore the prompt paired with one Assistant response without submitting or mutating history. */
+  function handleRepeatQuestion(message: LocalMessage) {
+    const prompt = repeatableUserPrompt(messages, message.local_id);
+    if (prompt === null) {
+      setErrorMessage("找不到这条回复对应的用户问题。");
+      return;
+    }
+    updateDraft(prompt);
+    composerTextarea.current?.focus();
+  }
+
+  /** Open the active conversation title as an explicit bounded rename form. */
+  function beginSessionRename() {
+    if (!activeSession) return;
+    setSessionTitleDraft(activeSession.title ?? "");
+    setIsRenamingSession(true);
+  }
+
+  /** Persist an owned conversation title without changing its active lifecycle state. */
+  async function saveSessionTitle() {
+    if (!activeSession || isSavingSessionTitle) return;
+    const title = sessionTitleDraft.trim();
+    if (!title || title.length > 255) {
+      setErrorMessage("会话标题必须为 1 至 255 个字符。");
+      return;
+    }
+    setIsSavingSessionTitle(true);
+    setErrorMessage(null);
+    try {
+      const updatedSession = await updateSessionTitle(activeSession.session_id, title);
+      setSessions((current) => current.map((session) =>
+        session.session_id === updatedSession.session_id ? updatedSession : session,
+      ));
+      setIsRenamingSession(false);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "无法更新会话标题。");
+    } finally {
+      setIsSavingSessionTitle(false);
+    }
   }
 
   /** Durably cancel future Agent nodes while keeping any active Provider call auditable. */
@@ -1027,7 +1200,7 @@ export default function Home() {
   /**
    * Submit one atomic Run/Message turn, then stream its anchored quick or Agent response.
    */
-  async function handleSend() {
+  async function submitCurrentDraft() {
     const input = draft.trim();
     if (
       !input ||
@@ -1053,6 +1226,11 @@ export default function Home() {
     let submittedAssistantLocalId: string | null = null;
     let submittedSessionId: string | null = null;
     let hasRestorableTerminalFacts = false;
+    let syncNotificationSessionId = activeSessionId;
+
+    if (syncNotificationSessionId) {
+      publishConversationSyncEvent("submission-started", syncNotificationSessionId);
+    }
 
     setIsSending(true);
     setErrorMessage(null);
@@ -1070,7 +1248,6 @@ export default function Home() {
     }
     const userMessage = createLocalMessage("user", input);
     setMessages((current) => [...current, userMessage]);
-    setDraft("");
 
     try {
       try {
@@ -1085,6 +1262,8 @@ export default function Home() {
         session = await createSession(DEVELOPMENT_USER_ID, input.slice(0, 42));
         setSessions((current) => [session as Session, ...current]);
         setActiveSessionId(session.session_id);
+        syncNotificationSessionId = session.session_id;
+        publishConversationSyncEvent("submission-started", session.session_id);
       }
       submittedSessionId = session.session_id;
 
@@ -1092,6 +1271,7 @@ export default function Home() {
         user_id: DEVELOPMENT_USER_ID,
         content_text: input,
       });
+      clearCommittedDraft();
       const createdRun = createdTurn.run;
       submittedRunId = createdRun.run_id;
       setRun(createdRun);
@@ -1281,6 +1461,9 @@ export default function Home() {
     } finally {
       activeRequestController.current = null;
       setIsSending(false);
+      if (syncNotificationSessionId) {
+        publishConversationSyncEvent("submission-finished", syncNotificationSessionId);
+      }
       if (submittedSessionId) {
         const navigationTarget = terminalConversationNavigationTarget(
           workspaceRoute,
@@ -1295,6 +1478,29 @@ export default function Home() {
           router.replace(navigationTarget);
         }
       }
+    }
+  }
+
+  /** Serialize same-session submissions across tabs before entering the billable request flow. */
+  async function handleSend() {
+    if (submissionInProgress.current) return;
+    if (isActiveSessionBusyInAnotherTab) {
+      setErrorMessage("此会话正在另一个标签页生成回复，请等待完成后再发送。");
+      return;
+    }
+    submissionInProgress.current = true;
+    try {
+      const lockManager = "locks" in navigator ? navigator.locks : null;
+      const result = await runWithConversationSubmissionLock(
+        lockManager,
+        activeSessionId,
+        submitCurrentDraft,
+      );
+      if (!result.acquired) {
+        setErrorMessage("此会话正在另一个标签页生成回复，请等待完成后再发送。");
+      }
+    } finally {
+      submissionInProgress.current = false;
     }
   }
 
@@ -1349,6 +1555,7 @@ export default function Home() {
         </div>
 
         <div className="sidebar-footer">
+          <Link className="settings-link" href="/settings/models">模型目录</Link>
           <div className="environment-dot"><span />开发环境</div>
           <span className={`connection-label ${connectionState}`}>
             {connectionState === "connected" ? "API 已连接" : connectionState === "checking" ? "检查中" : "API 未连接"}
@@ -1361,9 +1568,32 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="打开会话列表">☰</button>
-          <div>
+          <div className="conversation-title-block">
             <p className="eyebrow">当前会话</p>
-            <h1>{activeSession?.title ?? "新对话"}</h1>
+            {isRenamingSession && activeSession ? (
+              <form
+                className="conversation-title-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveSessionTitle();
+                }}
+              >
+                <input
+                  value={sessionTitleDraft}
+                  onChange={(event) => setSessionTitleDraft(event.target.value)}
+                  maxLength={255}
+                  autoFocus
+                  aria-label="会话标题"
+                />
+                <button type="submit" disabled={isSavingSessionTitle}>保存</button>
+                <button type="button" onClick={() => setIsRenamingSession(false)}>取消</button>
+              </form>
+            ) : (
+              <div className="conversation-title-row">
+                <h1>{activeSession?.title ?? "新对话"}</h1>
+                {activeSession && <button type="button" onClick={beginSessionRename}>重命名</button>}
+              </div>
+            )}
           </div>
           <div className="topbar-actions">
             <button className="icon-button" onClick={() => setIsDark((current) => !current)} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
@@ -1390,7 +1620,7 @@ export default function Home() {
                 <p>每次请求都会关联会话、运行与模型调用证据。当前上下文只来自你明确提交的内容。</p>
                 <div className="suggestion-row" aria-label="快速开始建议">
                   {["比较当前模型路由策略", "解释一次请求的失败边界", "规划长文本任务的模型选择"].map((suggestion) => (
-                    <button key={suggestion} onClick={() => setDraft(suggestion)}>{suggestion}</button>
+                    <button key={suggestion} onClick={() => updateDraft(suggestion)}>{suggestion}</button>
                   ))}
                 </div>
               </div>
@@ -1434,7 +1664,7 @@ export default function Home() {
                     {!message.pending && !message.saving && (
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
-                        <button onClick={() => setDraft(lastUserMessage?.content ?? "")}>重新生成</button>
+                        <button onClick={() => handleRepeatQuestion(message)}>再次提问</button>
                         <button onClick={handleOpenRunEvidence}>查看运行证据 ↗</button>
                       </div>
                     )}
@@ -1451,11 +1681,16 @@ export default function Home() {
               <textarea
                 ref={composerTextarea}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => updateDraft(event.target.value)}
                 placeholder="继续对话…"
                 aria-label="消息内容"
                 rows={1}
               />
+              {isActiveSessionBusyInAnotherTab && (
+                <p className="composer-sync-note" role="status">
+                  此会话正在另一个标签页生成；完成后会自动读取最新消息。
+                </p>
+              )}
               {executionMode === "response" && (
                 <ContextBindings
                   promptOptions={promptOptions}
@@ -1546,7 +1781,7 @@ export default function Home() {
                       setSelectedModel(model);
                     }}
                   />
-                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (!draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>

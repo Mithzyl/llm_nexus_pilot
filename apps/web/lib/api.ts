@@ -74,9 +74,13 @@ export function listProviders(signal?: AbortSignal): Promise<ProviderCatalog> {
   return nexusFetch<ProviderCatalog>("providers", { signal });
 }
 
-/** Load stable models that satisfy the Web conversation streaming contract. */
-export function listModels(signal?: AbortSignal): Promise<ModelDirectoryEntry[]> {
-  return nexusFetch<ModelDirectoryEntry[]>("models?requires_streaming=true", { signal });
+/** Load the stable model directory, optionally restricted to the conversation streaming contract. */
+export function listModels(
+  signal?: AbortSignal,
+  requiresStreaming = true,
+): Promise<ModelDirectoryEntry[]> {
+  const query = requiresStreaming ? "?requires_streaming=true" : "";
+  return nexusFetch<ModelDirectoryEntry[]>(`models${query}`, { signal });
 }
 
 /** Load enabled Prompt choices without downloading immutable Prompt source bodies. */
@@ -112,6 +116,14 @@ export function createSession(userId: string, title: string): Promise<Session> {
   return nexusFetch<Session>("sessions", {
     method: "POST",
     body: JSON.stringify({ user_id: userId, title }),
+  });
+}
+
+/** Rename one owned active conversation without changing its lifecycle status. */
+export function updateSessionTitle(sessionId: string, title: string): Promise<Session> {
+  return nexusFetch<Session>(`sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
   });
 }
 

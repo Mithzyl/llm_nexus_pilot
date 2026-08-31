@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 27 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、显式按钮发送、Session文本上下文运行时接入及稳定模型目录已实现；其他Context来源、代码块工具栏以及完整Agent与浏览器门禁仍待完成）
+**文档日期：** 2026 年 8 月 31 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入及稳定模型目录已实现；会话归档按当前决定暂停，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -666,8 +666,8 @@ apps/web/
 
 | 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
 |---|---|---|---|
-| 会话与路由 | 创建和选择会话、原子创建Run与当前User Message、最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息和 Run | 轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
-| Provider 与模型选择 | Web读取稳定模型目录，支持搜索、键盘选择、加载/失败/空目录状态，并保留旧Provider目录兼容接口 | 最终用户自己的Provider凭据、设置页和模型授权过滤等待阶段5 | 进行中 |
+| 会话与路由 | 创建、选择和重命名会话，原子创建Run与当前User Message，最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息、按会话隔离的标签页草稿、同会话多标签页提交互斥，以及不自动发送的“再次提问” | 会话归档/取消归档按当前决定暂停；轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
+| Provider 与模型选择 | Web读取稳定模型目录，支持搜索、键盘选择、加载/失败/空目录状态，并提供只读 `/settings/models` 服务端模型事实页；保留旧Provider目录兼容接口 | 最终用户自己的Provider凭据和模型授权过滤等待阶段5；当前设置页不提供登记、密钥或启停操作 | 进行中 |
 | 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
 | Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端明确引用的Prompt Release/文本Artifact来源 | 未知Attempt的首事件前断线只能读取最终事实；普通产品入口尚未提供Prompt/Artifact绑定，Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
@@ -677,7 +677,7 @@ apps/web/
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
 | Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
-| 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离 | 真实 Provider 浏览器端到端、可访问性、响应式、性能、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
+| 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离、Next.js加载/错误/不存在边界，以及桌面和移动Chromium的可复现Playwright基线 | 真实 Provider 浏览器端到端、完整可访问性、跨浏览器、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
 | 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
 
 ### 当前故障定位索引
@@ -712,9 +712,31 @@ apps/web/
 
 2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，Textarea 随内容自动增高至 240px 后再内部滚动，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。Playwright 在真实长回复会话中验证：20 行输入使 Composer 增至 419px，消息列表底部预留随之从普通状态的 247px 增至 443px，`message-actions` 始终位于 Composer 上方 24px；按 Enter 只增加第 21 行。前端 54 项测试、TypeScript、ESLint 和生产构建均通过。
 
-2026 年 8 月 20 日事实审计确认：当前 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。多模型、多审核策略和并行 Agent 的真实 Provider 矩阵以及完整浏览器门禁仍未完成。设置页仍未实现，代码块复制与可选语法高亮尚未实现，运行检查器也没有完整 Task/Attempt/Retry/Artifact 视图。
+2026 年 8 月 20 日事实审计确认：当时 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。该段保留为当日审计记录；当前设置页和自动化状态以下方2026年8月31日实现事实为准。
 
-当前明确不宣称完成的内容：最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块复制与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/响应式/性能/敏感字段浏览器门禁，以及 Agent 跨请求恢复和工具时间线。它们仍按下方工作项和后端能力依赖继续推进。
+当前明确不宣称完成的内容：会话归档/取消归档、最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块完整浏览器门禁与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/跨浏览器/敏感字段门禁，以及 Agent 跨请求恢复和工具时间线。会话归档按用户当前决定暂停，不以隐藏按钮或临时本地状态代替服务端合同。
+
+## 2026 年 8 月 31 日新增并完成的阶段4工作项
+
+### 会话可靠性与可恢复输入
+
+状态：已完成。
+
+- 会话标题通过受固定用户归属校验的精确 `PATCH /api/nexus/sessions/{session_id}` 路径更新；输入只接受去除首尾空白后的 1～255 个字符，不改变消息、Run 或历史证据。
+- 未发送文本按“新会话”或具体 Session 分别保存在当前标签页的 `sessionStorage` 中，刷新和会话切换后恢复；持久化用户 Message 成功后才清除草稿。草稿最多保存100000个字符，不写入 `localStorage`，不承诺关闭标签页后的长期恢复，也不把草稿当作服务端消息事实。
+- 同一浏览器的同一 Session 使用 Web Locks 保证一次只有一个标签页进入计费提交区；`BroadcastChannel` 只广播 Session 标识、开始/结束和发送方标识，用于其他标签页显示忙碌状态并在完成后读取服务端事实，不传输消息正文、模型输出或凭据。缺少 Web Locks 的浏览器不宣称具备硬互斥，仍依赖后端幂等与事实查询边界。
+- “再次提问”只把所选 Assistant 回复前一条配对的用户问题恢复到 Composer，不自动创建 Message、Run、Attempt 或模型调用，不修改历史消息，也不会仅因点击而产生费用。
+- 会话归档、取消归档和永久删除没有实现。归档工作项按当前决定暂停；恢复时必须先定义服务端状态、列表过滤、并发更新、历史可读性与授权合同。
+
+### 路由边界、模型事实页与可复现浏览器门禁
+
+状态：已完成。
+
+- App Router 增加加载、页面级错误、全局错误和不存在边界；局部读取失败继续保留已经加载的对话正文，不通过整页回到默认会话掩盖失败。
+- `/settings/models` 是只读服务端模型目录：展示登记状态、是否可选择、Provider、模型标识、上下文窗口、默认思考程度和已确认能力；不提供模型登记、启停、供应商密钥或最终用户授权操作。
+- Playwright 配置以固定测试端口运行桌面 Chromium 与 Pixel 7 视口，默认拦截浏览器后端代理（BFF）并使用确定性事实，不调用真实 Provider、不会产生模型费用。真实 Provider 矩阵仍是单独的显式验收，不能由模拟测试替代。
+- 浏览器性能门槛固定为：恢复单页最多100条消息后，目标消息在5000毫秒内可见；刷新后的草稿在2000毫秒内可见。门槛是回归失败条件，不是生产性能承诺。
+- 模型提示词缓存命中率、逐调用缓存 Token 和稳定前缀诊断属于阶段6内部诊断；阶段4普通对话页不暴露原始 Provider 请求或缓存敏感细节。
 
 ## 2026 年 8 月 26 日新增阶段4工作项
 
@@ -926,11 +948,13 @@ GET /api/v1/models
 - 组件测试：空状态、消息角色、Markdown、代码块语言标签、复制原文、错误提示、生成中与完成状态。
 - SSE 测试：sequence 顺序、重复事件、缺失终止、失败事件、取消和断线。
 - 页面集成测试：新建会话、追加用户消息、普通响应、流式响应、保存 Assistant Message、打开 Attempt 详情。
+- 会话可靠性测试：按Session隔离草稿、刷新恢复、持久化成功后清除、标题归属与长度校验、“再次提问”不提交、同会话多标签页互斥和完成后事实刷新。
 - 上下文测试：第二轮快速对话、Agent消息锚点、当前输入单次出现、历史分页独立性、Prompt版本、Memory/Knowledge/Artifact/Agent来源门禁、信任标记、并发提交隔离、Context Build重放和必选来源超限不调用Provider。
 - 上下文产品测试：对象型Message的允许类型与失败恢复、Prompt版本和变量选择、Artifact归属与状态变化、Context证据抽屉的纳入/排除事实、敏感正文不进入浏览器，以及证据查询失败不遮挡对话。
 - 安全测试：浏览器响应和静态资源不包含平台 API Key、内部 API Key、供应商凭据或 MinIO URI。
 - 可访问性测试：Enter/Shift+Enter 换行、仅按钮发送、输入法组合、焦点管理、屏幕阅读器状态、颜色对比和 reduced motion。
 - 响应式测试：桌面侧栏、移动端覆盖层、长代码块和长单词不会破坏布局。
+- 可复现浏览器测试：桌面与移动Chromium覆盖草稿、重命名、“再次提问”、只读模型目录、路由不存在边界、同会话多标签页互斥和100条消息恢复门槛；默认使用确定性BFF响应，不产生Provider费用。
 - 恢复测试：刷新页面、SSE 中断、保存失败和重复提交不会重复产生计费调用。
 - 阶段10测试：重复/乱序任务事件、有限重试、死信、Worker 崩溃、取消竞争和刷新恢复。
 - 阶段7测试：工具提议与执行区分、允许/拒绝、批准过期、重复批准、工具超时、部分 Artifact 和敏感输出脱敏。
@@ -951,7 +975,7 @@ GET /api/v1/models
 | 阶段4 | Artifact普通产品绑定 | 已实现的受限文本Artifact读取与普通Responses引用合同 | 内存对象存储合同测试已通过；正式文件上传、受控选择和浏览器恢复尚未完成 | 进行中 |
 | 阶段2 + 阶段4 | 稳定模型目录、数据库模型实体、Provider Registry 交集和 `/models` 选择数据 | `llm_models`、`llm_model_catalog_versions`与Provider Registry | 空库/存量库回填、唯一约束、启用/禁用、能力缺失、稳定排序、BFF固定路由和前端不可静默切换测试通过 | 已完成 |
 | 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
-| 阶段4 | Next.js、BFF、主题、响应式、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 代码块复制/长行/流式性能、Enter 只换行、按钮单次提交，以及构建、Lint、类型、浏览器、安全和性能门禁持续通过 | 进行中 |
+| 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 本轮会话可靠性及桌面/移动确定性浏览器基线已通过；归档暂停，代码块完整门禁、真实Provider、跨浏览器、安全和可访问性门禁继续实施 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |
 | 阶段7 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段7完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |

@@ -31,7 +31,16 @@ export type ModelUnavailableReason =
   | "streaming_unsupported"
   | "structured_output_unsupported"
   | "tools_unsupported"
-  | "vision_unsupported";
+  | "vision_unsupported"
+  | "reasoning_profile_invalid";
+
+export type ModelReasoningEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 export type ModelDirectoryEntry = {
   model_id: string;
@@ -56,6 +65,11 @@ export type ModelDirectoryEntry = {
   tokenizer_name: string | null;
   tokenizer_version: string | null;
   reasoning_capabilities: ModelReasoningCapabilities;
+  reasoning_supported_efforts: ModelReasoningEffort[];
+  reasoning_supports_disable: boolean;
+  reasoning_default_enabled: boolean;
+  reasoning_default_effort: ModelReasoningEffort;
+  reasoning_profile_version: string;
 };
 
 export type PromptVariableType = "string" | "integer" | "number" | "boolean";

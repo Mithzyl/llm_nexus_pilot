@@ -141,7 +141,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .session-copy small { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-item time { margin-left: auto; flex: 0 0 auto; font-size: 9px; color: var(--muted); }
 .empty-sessions { padding: 0 9px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.sidebar-footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 14px 7px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.sidebar-footer { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin-top: auto; padding: 14px 7px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.settings-link { grid-column: 1 / -1; color: var(--muted); font-size: 10px; text-decoration: none; }
+.settings-link:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .environment-dot { display: flex; align-items: center; gap: 7px; }
 .environment-dot span, .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 4px color-mix(in srgb, var(--text) 11%, transparent); }
 .connection-label { margin-left: auto; font-size: 9px; }
@@ -150,6 +152,14 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--page); }
 .topbar { height: 72px; flex: 0 0 72px; display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid var(--line); }
 .topbar h1 { margin: 4px 0 0; font-size: 15px; line-height: 1; letter-spacing: -.02em; }
+.conversation-title-block { min-width: 0; }
+.conversation-title-row { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.conversation-title-row h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-title-row button, .conversation-title-form button { border: 0; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
+.conversation-title-row button:hover, .conversation-title-form button:hover { color: var(--text); }
+.conversation-title-form { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.conversation-title-form input { width: min(330px, 36vw); min-height: 30px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; background: var(--panel-strong); color: var(--text); outline: 0; }
+.conversation-title-form input:focus { border-color: var(--text); }
 .topbar-actions { display: flex; align-items: center; gap: 7px; margin-left: auto; }
 .provider-orb { position: relative; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 8px; background: var(--text); }
 .provider-orb i { width: 6px; height: 6px; border: 1px solid var(--accent-contrast); border-radius: 50%; box-shadow: 6px 0 0 -2px var(--accent-contrast), -6px 0 0 -2px var(--accent-contrast); }
@@ -234,6 +244,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .composer:focus-within { border-color: var(--text); box-shadow: 0 12px 42px var(--shadow), 0 0 0 3px color-mix(in srgb, var(--text) 8%, transparent); }
 .composer textarea { display: block; width: 100%; min-height: 44px; max-height: 240px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; }
 .composer textarea::placeholder { color: var(--muted); }
+.composer-sync-note { margin: 7px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .context-bindings { margin-top: 8px; border-top: 1px solid var(--line); }
 .context-bindings summary { display: flex; align-items: center; gap: 8px; min-height: 34px; color: var(--muted); cursor: pointer; list-style: none; font-size: 10px; }
 .context-bindings summary::-webkit-details-marker { display: none; }
@@ -474,6 +485,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .topbar { height: 64px; }
   .topbar > div:nth-child(2) { min-width: 0; }
   .topbar h1 { max-width: 135px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conversation-title-form input { width: 130px; }
   .detail-toggle { width: 36px; min-width: 36px; padding: 9px; justify-content: center; font-size: 0; }
   .detail-toggle .status-dot { margin: 0; }
   .topbar-actions { gap: 1px; }
@@ -481,7 +493,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .user-message { margin-bottom: 30px; }
   .assistant-content { padding-left: 0; }
   .message-actions { padding-left: 0; }
-  .message-actions button:nth-child(2) { display: none; }
   .composer-wrap { padding: 22px 12px max(10px, env(safe-area-inset-bottom)); }
   .composer { width: 100%; }
   .agent-option-controls { flex-wrap: wrap; }
@@ -491,4 +502,39 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+.route-state-page, .settings-page { min-height: 100dvh; background: var(--page); color: var(--text); }
+.route-state-page { display: grid; place-items: center; padding: 24px; }
+.route-state { max-width: 520px; margin: 40px auto; padding: 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-strong); color: var(--text); }
+.route-state strong { font-size: 15px; }
+.route-state p { color: var(--muted); line-height: 1.6; }
+.route-state button, .route-state a { display: inline-flex; min-height: 36px; align-items: center; border: 1px solid var(--line); border-radius: 9px; padding: 7px 11px; background: var(--text); color: var(--accent-contrast); font-size: 11px; text-decoration: none; cursor: pointer; }
+.settings-page { padding: 48px max(24px, calc((100% - 1040px) / 2)) 72px; }
+.settings-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
+.settings-header h1 { margin: 8px 0 10px; font-size: clamp(25px, 4vw, 42px); letter-spacing: -.04em; }
+.settings-header p:not(.eyebrow) { max-width: 650px; margin: 0; color: var(--muted); line-height: 1.65; }
+.settings-header > a { flex: 0 0 auto; color: var(--text); font-size: 11px; text-underline-offset: 4px; }
+.model-directory-list { display: grid; gap: 0; }
+.model-directory-item { padding: 27px 0; border-bottom: 1px solid var(--line); }
+.model-directory-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.model-directory-heading small { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.model-directory-heading h2 { margin: 5px 0 4px; font-size: 18px; }
+.model-directory-heading code { color: var(--muted); font: 500 10px var(--font-geist-mono); }
+.model-directory-heading > span { border: 1px solid var(--line); border-radius: 999px; padding: 6px 9px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.model-directory-heading > span[data-selectable="true"] { border-color: var(--text); color: var(--text); }
+.model-directory-item > p { max-width: 720px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.model-directory-item dl { display: grid; grid-template-columns: repeat(4, minmax(100px, 1fr)); gap: 12px; margin: 19px 0; }
+.model-directory-item dl div { display: grid; gap: 5px; }
+.model-directory-item dt { color: var(--muted); font-size: 9px; }
+.model-directory-item dd { margin: 0; font-size: 11px; overflow-wrap: anywhere; }
+.model-directory-item ul { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.model-directory-item li { border-radius: 7px; padding: 5px 7px; background: var(--soft); color: var(--muted); font-size: 9px; }
+
+@media (max-width: 700px) {
+  .settings-page { padding-top: 28px; }
+  .settings-header { align-items: stretch; flex-direction: column; }
+  .model-directory-heading { align-items: stretch; flex-direction: column; gap: 12px; }
+  .model-directory-heading > span { align-self: flex-start; }
+  .model-directory-item dl { grid-template-columns: 1fr 1fr; }
 }

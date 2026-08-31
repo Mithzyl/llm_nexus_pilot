@@ -18,6 +18,7 @@ import {
   listSessions,
   openAgentWorkflowStream,
   replayAgentWorkflowEvents,
+  updateSessionTitle,
 } from "../lib/api";
 
 const originalFetch = globalThis.fetch;
@@ -77,6 +78,11 @@ test("loads the stable model directory with the Web streaming contract", async (
           continuation: "raw-reasoning-replay",
           supports_reasoning_tokens: true,
         },
+        reasoning_supported_efforts: ["minimal", "medium", "xhigh"],
+        reasoning_supports_disable: true,
+        reasoning_default_enabled: true,
+        reasoning_default_effort: "medium",
+        reasoning_profile_version: "reasoning-policy.v1",
       },
     ]);
   }) as typeof fetch;
@@ -84,7 +90,23 @@ test("loads the stable model directory with the Web streaming contract", async (
   try {
     const models = await listModels();
     assert.equal(models[0].model_id, "model-1");
+    assert.equal(models[0].reasoning_default_effort, "medium");
     assert.deepEqual(requests, ["/api/nexus/models?requires_streaming=true"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("loads the complete read-only model directory without a streaming filter", async () => {
+  const requests: string[] = [];
+  globalThis.fetch = (async (input) => {
+    requests.push(String(input));
+    return Response.json([]);
+  }) as typeof fetch;
+
+  try {
+    await listModels(undefined, false);
+    assert.deepEqual(requests, ["/api/nexus/models"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -136,6 +158,24 @@ test("filters session list by the development user", async () => {
   try {
     await listSessions();
     assert.match(requests[0], /sessions\?user_id=nexuspilot-web&limit=50$/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("updates only the owned conversation title through the explicit session route", async () => {
+  let request: { url: string; init?: RequestInit } | null = null;
+  globalThis.fetch = (async (input, init) => {
+    request = { url: String(input), init };
+    return Response.json({ session_id: "session-1", title: "Renamed" });
+  }) as typeof fetch;
+
+  try {
+    const session = await updateSessionTitle("session-1", "Renamed");
+    assert.equal(session.title, "Renamed");
+    assert.equal(request!.url, "/api/nexus/sessions/session-1");
+    assert.equal(request!.init?.method, "PATCH");
+    assert.deepEqual(JSON.parse(String(request!.init?.body)), { title: "Renamed" });
   } finally {
     globalThis.fetch = originalFetch;
   }

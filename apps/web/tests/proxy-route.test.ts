@@ -7,12 +7,14 @@ process.env.NEXUSPILOT_API_URL = "https://nexus.test";
 
 let GET: typeof import("../app/api/nexus/[...path]/route").GET;
 let POST: typeof import("../app/api/nexus/[...path]/route").POST;
+let PATCH: typeof import("../app/api/nexus/[...path]/route").PATCH;
 const originalFetch = globalThis.fetch;
 
 test.before(async () => {
   const route = await import("../app/api/nexus/[...path]/route");
   GET = route.GET;
   POST = route.POST;
+  PATCH = route.PATCH;
 });
 
 /** Build a same-origin request for one proxy path. */
@@ -85,6 +87,63 @@ test("rejects an oversized declared body before reading or forwarding it", async
       createContext("responses"),
     );
     assert.equal(response.status, 413);
+    assert.equal(upstreamCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("renames an owned session without allowing the browser to change ownership", async () => {
+  const upstreamCalls: Array<{ url: string; method: string | undefined; body: BodyInit | null | undefined }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamCalls.push({ url, method: init?.method, body: init?.body });
+    if (url.endsWith("/sessions/session-1") && init?.method === "GET") {
+      return Response.json({ session_id: "session-1", user_id: "nexuspilot-web" });
+    }
+    if (url.endsWith("/sessions/session-1") && init?.method === "PATCH") {
+      return Response.json({ session_id: "session-1", user_id: "nexuspilot-web", title: "Renamed" });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await PATCH(
+      createRequest("sessions/session-1", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Renamed" }),
+      }),
+      createContext("sessions/session-1"),
+    );
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).title, "Renamed");
+    assert.deepEqual(upstreamCalls.map(({ url, method }) => ({ url, method })), [
+      { url: "https://nexus.test/api/v1/sessions/session-1", method: "GET" },
+      { url: "https://nexus.test/api/v1/sessions/session-1", method: "PATCH" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects session lifecycle fields while conversation archiving is paused", async () => {
+  let upstreamCalled = false;
+  globalThis.fetch = (async () => {
+    upstreamCalled = true;
+    return Response.json({});
+  }) as typeof fetch;
+
+  try {
+    const response = await PATCH(
+      createRequest("sessions/session-1", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: "Renamed", status: "archived" }),
+      }),
+      createContext("sessions/session-1"),
+    );
+    assert.equal(response.status, 400);
     assert.equal(upstreamCalled, false);
   } finally {
     globalThis.fetch = originalFetch;

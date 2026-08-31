@@ -241,6 +241,32 @@ function requiresJsonRequestBody(method: string, path: readonly string[]): boole
   return !(method === "POST" && path.length === 3 && path[0] === "agent-workflows" && path[2] === "cancel");
 }
 
+/** Accept only a bounded title update so the Web proxy cannot expose Session lifecycle changes. */
+function normalizeSessionTitlePatch(
+  payload: JsonObject,
+): { payload: JsonObject; body: string } | { error: Response } {
+  const fields = Object.keys(payload);
+  const title = typeof payload.title === "string" ? payload.title.trim() : "";
+  if (fields.length !== 1 || fields[0] !== "title") {
+    return {
+      error: Response.json(
+        { detail: "当前前端只允许更新会话标题。" },
+        { status: 400 },
+      ),
+    };
+  }
+  if (!title || title.length > 255) {
+    return {
+      error: Response.json(
+        { detail: "会话标题必须为 1 至 255 个字符。" },
+        { status: 400 },
+      ),
+    };
+  }
+  const normalizedPayload: JsonObject = { title };
+  return { payload: normalizedPayload, body: JSON.stringify(normalizedPayload) };
+}
+
 /**
  * Forward only the UI's explicitly allow-listed resources and force every
  * browser request into the current development user's ownership boundary.
@@ -273,6 +299,18 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     if ("error" in parsedBody) return parsedBody.error;
     body = parsedBody.body;
     payload = parsedBody.payload;
+  }
+
+  if (
+    path[0] === "sessions" &&
+    path.length === 2 &&
+    request.method === "PATCH" &&
+    payload
+  ) {
+    const normalizedTitlePatch = normalizeSessionTitlePatch(payload);
+    if ("error" in normalizedTitlePatch) return normalizedTitlePatch.error;
+    payload = normalizedTitlePatch.payload;
+    body = normalizedTitlePatch.body;
   }
 
   if (path[0] === "users" && request.method === "POST" && payload?.user_id !== DEVELOPMENT_USER_ID) {
@@ -351,3 +389,4 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
 
 export const GET = proxy;
 export const POST = proxy;
+export const PATCH = proxy;

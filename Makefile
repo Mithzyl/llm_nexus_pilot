@@ -1,4 +1,4 @@
-.PHONY: api-install api-test api-lint api-migrate api-run web-run
+.PHONY: api-install api-test api-lint api-migrate api-run web-run web-test web-check web-e2e
 
 api-install:
 	python3 -m venv apps/api/.venv
@@ -23,3 +23,14 @@ api-run: api-migrate
 web-run:
 	test -f apps/web/.env.local
 	cd apps/web && npm run dev
+
+web-test:
+	npm --prefix apps/web test
+
+web-check:
+	npm --prefix apps/web run typecheck
+	npm --prefix apps/web run lint
+	npm --prefix apps/web run build
+
+web-e2e:
+	npm --prefix apps/web run test:e2e
