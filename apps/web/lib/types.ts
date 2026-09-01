@@ -90,25 +90,6 @@ export type ModelDirectoryEntry = {
   reasoning_profile_version: string;
 };
 
-export type PromptVariableType = "string" | "integer" | "number" | "boolean";
-export type PromptVariableValue = string | number | boolean;
-
-export type PromptOption = {
-  template_name: string;
-  purpose: string | null;
-  current_version_number: number;
-  variable_schema: Record<string, PromptVariableType>;
-};
-
-export type RuntimeContextSourceReferences = {
-  prompt?: {
-    template_name: string;
-    version_number: number;
-    variables: Record<string, PromptVariableValue>;
-  };
-  artifact_ids: string[];
-};
-
 export type ContextSourceEvidence = {
   source_type: string;
   source_id: string;

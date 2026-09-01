@@ -12,7 +12,6 @@ import {
   getRunAgentWorkflow,
   listAgentWorkflowNodes,
   listLatestMessagePage,
-  listPromptOptions,
   listModels,
   listProviders,
   listSessions,
@@ -112,21 +111,11 @@ test("loads the complete read-only model directory without a streaming filter", 
   }
 });
 
-test("loads safe Prompt options and owner-scoped Context evidence", async () => {
+test("loads owner-scoped Context evidence without requesting System Prompt options", async () => {
   const requests: string[] = [];
   globalThis.fetch = (async (input) => {
     const url = String(input);
     requests.push(url);
-    if (url.endsWith("/prompt-templates")) {
-      return Response.json([
-        {
-          template_name: "explain-topic",
-          purpose: "Explain one topic",
-          current_version_number: 2,
-          variable_schema: { topic: "string" },
-        },
-      ]);
-    }
     return Response.json({
       context_build_id: "context-1",
       user_id: "nexuspilot-web",
@@ -135,12 +124,9 @@ test("loads safe Prompt options and owner-scoped Context evidence", async () => 
   }) as typeof fetch;
 
   try {
-    const prompts = await listPromptOptions();
     const evidence = await getContextBuildEvidence("context-1");
-    assert.equal(prompts[0].current_version_number, 2);
     assert.equal(evidence.context_build_id, "context-1");
     assert.deepEqual(requests, [
-      "/api/nexus/prompt-templates",
       "/api/nexus/context-builds/context-1/evidence?user_id=nexuspilot-web",
     ]);
   } finally {

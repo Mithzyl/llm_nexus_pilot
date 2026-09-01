@@ -16,7 +16,6 @@ import {
   getRun,
   getRunAgentWorkflow,
   listLatestMessagePage,
-  listPromptOptions,
   listModels,
   listSessions,
   NexusApiError,
@@ -38,7 +37,6 @@ import type {
   ProviderCatalog,
   ProviderName,
   ModelReasoningSelection,
-  PromptOption,
   ReasoningPresentation,
   ReasoningBlockSnapshot,
   Run,
@@ -68,15 +66,12 @@ import { ReasoningSettings } from "../components/composer/ReasoningSettings";
 import { ReasoningView } from "../components/reasoning/ReasoningView";
 import { MarkdownContent } from "../components/markdown/MarkdownContent";
 import {
-  ContextBindings,
-  SelectedPromptChip,
-} from "../components/context/ContextBindings";
+  FilePickerButton,
+  PendingUploadFiles,
+  pendingUploadFileKey,
+} from "../components/composer/FilePickerButton";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
 import Link from "next/link";
-import {
-  ContextBindingValidationError,
-  createContextSourceReferences,
-} from "../lib/context-bindings";
 import {
   composerConversationClearance,
   composerTextareaHeight,
@@ -246,12 +241,7 @@ export default function Home() {
   >("loading");
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
   const [selectedModel, setSelectedModel] = useState("");
-  const [promptOptions, setPromptOptions] = useState<PromptOption[]>([]);
-  const [promptOptionsState, setPromptOptionsState] = useState<
-    "loading" | "ready" | "error"
-  >("loading");
-  const [selectedPromptName, setSelectedPromptName] = useState("");
-  const [promptVariableDrafts, setPromptVariableDrafts] = useState<Record<string, string>>({});
+  const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
   const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
     null,
   );
@@ -338,8 +328,6 @@ export default function Home() {
           selectedModel
         ]
       : undefined;
-  const selectedPrompt =
-    promptOptions.find((prompt) => prompt.template_name === selectedPromptName) ?? null;
   const latestContextBuildId =
     run && "attempts" in run ? run.attempts.at(-1)?.context_build_id ?? null : null;
   const contextEvidence =
@@ -435,22 +423,6 @@ export default function Home() {
       for (const timer of busyTimers.values()) window.clearTimeout(timer);
       busyTimers.clear();
     };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void listPromptOptions(controller.signal)
-      .then((options) => {
-        setPromptOptions(options);
-        setPromptOptionsState("ready");
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setPromptOptions([]);
-          setPromptOptionsState("error");
-        }
-      });
-    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -666,34 +638,26 @@ export default function Home() {
     }
   }
 
-  /** Reload product-safe Prompt options without affecting model selection or messages. */
-  async function loadProductPromptOptions() {
-    setPromptOptionsState("loading");
-    try {
-      const options = await listPromptOptions();
-      setPromptOptions(options);
-      setPromptOptionsState("ready");
-      if (
-        selectedPromptName &&
-        !options.some((option) => option.template_name === selectedPromptName)
-      ) {
-        setSelectedPromptName("");
-        setPromptVariableDrafts({});
+  /** Add newly selected files without duplicating the same browser-local file identity. */
+  function handlePendingFilesSelected(files: File[]) {
+    setPendingUploadFiles((currentFiles) => {
+      const currentFileKeys = new Set(currentFiles.map(pendingUploadFileKey));
+      const nextFiles = [...currentFiles];
+      for (const file of files) {
+        const fileKey = pendingUploadFileKey(file);
+        if (currentFileKeys.has(fileKey)) continue;
+        currentFileKeys.add(fileKey);
+        nextFiles.push(file);
       }
-    } catch {
-      setPromptOptions([]);
-      setPromptOptionsState("error");
-    }
+      return nextFiles;
+    });
+    setErrorMessage(null);
   }
 
-  /** Select one immutable Prompt version and initialize its variable controls. */
-  function handlePromptChange(templateName: string) {
-    setSelectedPromptName(templateName);
-    const prompt = promptOptions.find((option) => option.template_name === templateName);
-    setPromptVariableDrafts(
-      prompt
-        ? Object.fromEntries(Object.keys(prompt.variable_schema).map((name) => [name, ""]))
-        : {},
+  /** Remove one pending local file without reading or uploading its contents. */
+  function handlePendingFileRemove(fileKey: string) {
+    setPendingUploadFiles((currentFiles) =>
+      currentFiles.filter((file) => pendingUploadFileKey(file) !== fileKey),
     );
   }
 
@@ -1117,6 +1081,7 @@ export default function Home() {
     const restoreFrame = window.requestAnimationFrame(() => {
       if (restoredRouteKey.current === currentRouteKey) return;
       restoredRouteKey.current = currentRouteKey;
+      setPendingUploadFiles([]);
 
       if (workspaceRoute.kind === "home") {
         switchDraftContext(null);
@@ -1272,21 +1237,11 @@ export default function Home() {
       isSending ||
       !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
     ) return;
-    const submittedMode = executionMode;
-    let contextSourceReferences;
-    try {
-      contextSourceReferences = createContextSourceReferences(
-        submittedMode === "response" ? selectedPrompt : null,
-        promptVariableDrafts,
-      );
-    } catch (error) {
-      setErrorMessage(
-        error instanceof ContextBindingValidationError
-          ? error.message
-          : "无法校验上下文绑定。",
-      );
+    if (pendingUploadFiles.length > 0) {
+      setErrorMessage("文件上传服务尚未启用，请移除待上传文件后再发送。");
       return;
     }
+    const submittedMode = executionMode;
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
     let submittedSessionId: string | null = null;
@@ -1366,7 +1321,6 @@ export default function Home() {
           provider: selectedProvider,
           model: selectedModel,
           input,
-          context_source_references: contextSourceReferences,
           timeout_seconds: 60,
           reasoning: createReasoningConfiguration(reasoningEffort),
           reasoning_display_policy: reasoningDisplayPolicy,
@@ -1757,12 +1711,15 @@ export default function Home() {
                   此会话正在另一个标签页生成；完成后会自动读取最新消息。
                 </p>
               )}
-              {executionMode === "response" && selectedPrompt && (
-                <SelectedPromptChip
-                  prompt={selectedPrompt}
-                  disabled={isSending}
-                  onRemove={() => handlePromptChange("")}
-                />
+              <PendingUploadFiles
+                files={pendingUploadFiles}
+                disabled={isSending}
+                onRemove={handlePendingFileRemove}
+              />
+              {pendingUploadFiles.length > 0 && (
+                <p className="composer-file-notice" role="status">
+                  文件上传尚未启用，移除文件后可发送。
+                </p>
               )}
               {executionMode === "agent" && (
                 <div className="agent-config-shelf" aria-label="Agent 工作流设置">
@@ -1818,20 +1775,10 @@ export default function Home() {
                     </button>
                   </div>
                   {executionMode === "response" && (
-                    <ContextBindings
-                      promptOptions={promptOptions}
-                      promptOptionsState={promptOptionsState}
-                      selectedPromptName={selectedPromptName}
-                      promptVariableDrafts={promptVariableDrafts}
+                    <FilePickerButton
+                      selectedFileCount={pendingUploadFiles.length}
                       disabled={isSending}
-                      onPromptChange={handlePromptChange}
-                      onVariableChange={(variableName, value) =>
-                        setPromptVariableDrafts((current) => ({
-                          ...current,
-                          [variableName]: value,
-                        }))
-                      }
-                      onRetry={() => void loadProductPromptOptions()}
+                      onFilesSelected={handlePendingFilesSelected}
                     />
                   )}
                   {selectedReasoningPolicy && (
@@ -1878,7 +1825,7 @@ export default function Home() {
                       );
                     }}
                   />
-                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (pendingUploadFiles.length > 0 || isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>

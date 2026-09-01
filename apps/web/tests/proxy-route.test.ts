@@ -93,6 +93,35 @@ test("rejects an oversized declared body before reading or forwarding it", async
   }
 });
 
+test("rejects browser-supplied System Prompt references before forwarding a response", async () => {
+  let upstreamCalled = false;
+  globalThis.fetch = (async () => {
+    upstreamCalled = true;
+    return Response.json({});
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          run_id: "run-1",
+          context_source_references: {
+            prompt: { template_name: "internal", version_number: 1, variables: {} },
+          },
+        }),
+      }),
+      createContext("responses"),
+    );
+
+    assert.equal(response.status, 400);
+    assert.equal(upstreamCalled, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("renames an owned session without allowing the browser to change ownership", async () => {
   const upstreamCalls: Array<{ url: string; method: string | undefined; body: BodyInit | null | undefined }> = [];
   globalThis.fetch = (async (input, init) => {
@@ -184,11 +213,17 @@ test("checks model invocation ownership before forwarding reasoning history", as
   }
 });
 
-test("forces Context evidence reads into the development-user scope", async () => {
+test("forces Context evidence into the user scope and removes System Prompt sources", async () => {
   const upstreamUrls: string[] = [];
   globalThis.fetch = (async (input) => {
     upstreamUrls.push(String(input));
-    return Response.json({ context_build_id: "context-1", sources: [] });
+    return Response.json({
+      context_build_id: "context-1",
+      sources: [
+        { source_type: "prompt_release", source_id: "system-prompt-1" },
+        { source_type: "message", source_id: "message-1" },
+      ],
+    });
   }) as typeof fetch;
 
   try {
@@ -198,9 +233,31 @@ test("forces Context evidence reads into the development-user scope", async () =
     );
 
     assert.equal(response.status, 200);
+    assert.deepEqual((await response.json()).sources, [
+      { source_type: "message", source_id: "message-1" },
+    ]);
     assert.deepEqual(upstreamUrls, [
       "https://nexus.test/api/v1/context-builds/context-1/evidence?user_id=nexuspilot-web",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects malformed upstream Context evidence instead of exposing an ambiguous projection", async () => {
+  globalThis.fetch = (async () => new Response("not-json", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+
+  try {
+    const response = await GET(
+      createRequest("context-builds/context-1/evidence"),
+      createContext("context-builds/context-1/evidence"),
+    );
+
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { detail: "上下文证据响应格式无效。" });
   } finally {
     globalThis.fetch = originalFetch;
   }

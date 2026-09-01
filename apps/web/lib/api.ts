@@ -10,7 +10,6 @@ import type {
   ModelDirectoryEntry,
   ModelResponseEventPage,
   ProviderCatalog,
-  PromptOption,
   ReasoningBlockSnapshot,
   Run,
   RunDetail,
@@ -81,11 +80,6 @@ export function listModels(
 ): Promise<ModelDirectoryEntry[]> {
   const query = requiresStreaming ? "?requires_streaming=true" : "";
   return nexusFetch<ModelDirectoryEntry[]>(`models${query}`, { signal });
-}
-
-/** Load enabled Prompt choices without downloading immutable Prompt source bodies. */
-export function listPromptOptions(signal?: AbortSignal): Promise<PromptOption[]> {
-  return nexusFetch<PromptOption[]>("prompt-templates", { signal });
 }
 
 /** Read the content-free Context evidence projection for the development user. */

@@ -7,7 +7,7 @@
 
 ## 目标
 
-- 提供可独立调用的Model Gateway、统一Context Builder、Prompt/模型能力目录和Evaluation/Guardrail。Context Builder是所有模型可见上下文的唯一组装入口，不只负责Session消息。
+- 提供可独立调用的Model Gateway、统一Context Builder、System Prompt/模型能力目录和Evaluation/Guardrail。Context Builder是所有模型可见上下文的唯一组装入口，不只负责Session消息。
 - Memory按L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project和L4 User分层记录；Memory Service负责事实、权限、版本和检索，正式启用的结果必须作为类型化来源进入Context Builder，不能由`/responses`或Agent直接读取。
 - Knowledge是独立知识库能力；Knowledge Service负责文档、版本、检索和权限，正式启用的检索片段必须由Context Builder统一选择、预算和记录来源。
 - Agent只组合已经完成验收的稳定单元，不在工作流节点中临时实现Session历史、Prompt、Memory、Knowledge、Artifact、Handoff或工具结果的拼接与裁剪。
@@ -28,7 +28,7 @@
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
 - 当前实现：平台只有公共 API Key 与内部 API Key，没有可验证的最终用户认证主体；现有 Memory 详情、纠正和删除按 `memory_id` 与受信调用方边界工作，不能声称已完成用户本人越权隔离。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
-- 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时明确引用的Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。Memory、Knowledge和Tool来源仍未通过正式启用门禁。
+- 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时引用的System Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。System Prompt引用只允许由后端策略或受信内部调用生成，普通浏览器不能选择、提交或查看。Memory、Knowledge和Tool来源仍未通过正式启用门禁。
 - 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
 - 已验证：Evaluation/Guardrail 拒绝未知或非法规则，同一幂等键只允许相同输入重放，候选 Attempt 必须属于指定 Task，历史非法规则安全失败。
 - 当前结论：阶段2稳定范围已满足完成条件。Memory 仍是规划和实验性准备代码，Knowledge 仍等待独立知识库规划；两者均不因阶段2完成而成为运行时能力。
@@ -104,7 +104,7 @@ exclusion_reason, content_hash, message_role, content_text
 
 ### 统一模型上下文构建与阶段3、阶段4运行时集成设计
 
-状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入、普通Responses的Prompt/Artifact引用合同、明确绑定的Prompt Release、受限文本Artifact读取、Agent/Handoff/Evaluation类型化来源、Attempt/Node证据以及脱敏浏览器证据投影已经实现；Memory、Knowledge、Tool来源、对象型Message生产读取和Artifact产品选择仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
+状态：进行中。Run与User Message原子提交、消息序号锚点、文本Session历史、幂等重放、Responses与Agent模型节点接入、System Prompt/Artifact引用合同、受限文本Artifact读取、Agent/Handoff/Evaluation类型化来源、Attempt/Node证据以及脱敏浏览器证据投影已经实现；普通Web已经停止读取Prompt目录、提交Prompt引用和显示Prompt证据，BFF也会拒绝浏览器伪造的Prompt引用。System Prompt具体选择策略仍需由后端按调用场景定义，当前快速回复不猜测默认版本。Memory、Knowledge、Tool来源、对象型Message生产读取和Artifact产品选择仍未实现。本工作项不改变阶段2已经完成的独立预览基线。
 
 #### 2026年8月26日已实现基线
 
@@ -114,19 +114,19 @@ exclusion_reason, content_hash, message_role, content_text
 - 快速Responses以Context Build消息替换单条Composer输入；Agent各模型节点在Session历史之后追加本节点类型化输入。Model Attempt、Agent Node Input和`context_assembly`分别保存`context_build_id`及实际选中的Message ID。
 - 当前User Message若只有`content_uri`会在Provider调用前明确失败，不能转换为空文本。旧的对象消息仍记录为未支持来源；明确引用的Run Artifact已经支持受限文本读取，但Message对象内容尚未建立等价的类型、大小与归属合同。
 - 当前兼容入口仍允许不带消息锚点的低层Responses请求，此时不会创建Context Build，也不会读取Session历史；Web普通对话已经迁移到原子轮次与消息锚点合同。
-- `context_policy.v2`保存每个来源的类型、版本、内容哈希、信任级别、必选标记、token估算和纳入/排除结果。运行时只接受明确引用且通过Run归属与完成状态校验的Prompt Release、Artifact、Handoff、工作流节点和Evaluation；Artifact额外校验MIME、100000字节上限、对象大小、SHA-256和UTF-8完整性。
+- `context_policy.v2`保存每个来源的类型、版本、内容哈希、信任级别、必选标记、token估算和纳入/排除结果。运行时只接受后端选择的System Prompt Release，以及明确引用且通过Run归属与完成状态校验的Artifact、Handoff、工作流节点和Evaluation；Artifact额外校验MIME、100000字节上限、对象大小、SHA-256和UTF-8完整性。
 - Agent节点把已提交Handoff、确定性验证、独立审核和Evaluation作为独立来源交给Context Builder，不再同时复制进自由模型输入；当前User Message已经存在时也不重复附加`Run.user_request`。无Session锚点的低层兼容工作流继续使用原显式输入合同。
 
 2026年8月28日验证结果：后端与模型适配层全量测试为`290 passed, 4 skipped`，Ruff全量检查通过；4项跳过仍是需要显式基础设施条件的测试。MySQL开发库已向前迁移到唯一head `20260828_0017`，现有`deepseek-v4-flash`和`deepseek-v4-pro`记录均已回填版本化思考策略；从`20260827_0016`生成MySQL离线迁移SQL成功。`alembic check`仍只报告Memory表三个归属外键在历史迁移中的`SET NULL`与当前ORM `RESTRICT`不一致；该漂移早于本次Context和思考策略迁移，因Memory仍暂停且改变删除语义不属于本工作项，本次没有顺带修改。
 
 #### 对象型Message读取合同（阶段2合同补充，阶段4集成验收）
 
-状态：进行中。当前只完成测试方式验证，不提供生产对象型Message读取。Web尚未提供文件上传功能，因此自动化测试通过内存对象存储夹具创建Run Artifact，验证普通Responses会把显式Artifact引用交给统一Context Builder；真实用户文件、对象型Message和上传后的产品选择等待正式上传合同。本工作项不更改阶段2原有稳定范围的完成状态。
+状态：进行中。当前只完成测试方式验证，不提供生产对象型Message读取。Web已提供浏览器本地文件选择、待上传展示和删除，但后端尚未提供上传及Artifact创建，因此选择文件后必须阻止发送。自动化测试仍通过内存对象存储夹具创建Run Artifact，验证普通Responses会把显式Artifact引用交给统一Context Builder；真实用户文件、对象型Message和上传后的产品选择等待正式上传合同。本工作项不更改阶段2原有稳定范围的完成状态。
 
 - 对象型Message是正文保存在受控对象存储、Message只保存引用的消息，不等同于已经实现的Run Artifact。它必须复用Artifact读取时已经验证的归属、对象大小、内容哈希、UTF-8完整性和受控存储访问方式，不能让Context Builder直接读取任意`content_uri`。
 - Message来源服务必须明确允许的内容类型、最大字节数、Message与User/Session/Run的归属关系、对象不存在或哈希不一致时的稳定错误，以及内容是否作为完整消息或有界片段进入上下文。未通过合同的对象类型继续在Provider调用前明确失败，不能退化为空文本。
 - Context Build证据至少记录Message ID、对象内容类型、内容大小、内容哈希、读取结果、纳入或排除原因；浏览器和公开错误不得暴露MinIO对象键、签名地址或内部路径。
-- 当前测试事实：ASGI测试使用`FakeObjectStorage`保存受限文本Artifact，普通`/responses`请求携带`context_source_references`后，Provider输入包含固定Prompt版本和Artifact正文各一次；跨Run Artifact仍明确拒绝。对象型当前User Message继续返回`Current user message must contain readable text`，没有把`content_uri`转换为空文本。
+- 历史测试事实：ASGI测试使用`FakeObjectStorage`保存受限文本Artifact，普通`/responses`请求携带`context_source_references`后，Provider输入包含固定Prompt版本和Artifact正文各一次；跨Run Artifact仍明确拒绝。2026年8月31日确认Prompt属于System Prompt后，后续测试必须改为由后端选择Prompt，并断言普通浏览器不能提交或读取Prompt引用。对象型当前User Message继续返回`Current user message must contain readable text`，没有把`content_uri`转换为空文本。
 - 正式实现前继续补齐合同测试：合法对象型Message、跨用户/Session/Run引用、对象缺失、大小超限、哈希不匹配、非UTF-8、未允许MIME、幂等重放和Provider未被调用。阶段4再覆盖上传、普通对话选择、错误可见性和刷新恢复。
 - 阶段3不新增第二套读取器。Agent模型节点需要对象型Message时，必须通过同一个Context Builder和Message来源合同读取；合同未启用前继续明确拒绝。
 
@@ -142,7 +142,7 @@ exclusion_reason, content_hash, message_role, content_text
 | 来源类型 | 权威来源服务 | Context Builder职责 | 启用条件 |
 |---|---|---|---|
 | 平台安全与系统指令 | 平台策略、调用入口 | 作为最高优先级指令，单独映射为Provider系统指令 | 始终启用或由明确策略启用 |
-| Prompt Release | Prompt Catalog | 固定模板版本、渲染变量和内容哈希 | 用例绑定已启用Prompt版本 |
+| System Prompt Release | System Prompt Catalog | 固定模板版本、渲染变量和内容哈希 | 后端运行策略绑定已启用System Prompt版本；普通前端不可选择或感知 |
 | 当前用户请求 | Run与当前User Message | 校验Run/Session/Message归属并作为必选来源 | 所有会话和Agent调用 |
 | Session历史 | Session Message | 以当前Message序号为锚点，按完整轮次选择 | Session调用 |
 | Session Summary与Working State | Session/Agent State Service | 作为带版本和覆盖范围的类型化摘要来源 | 对应能力通过启用门禁 |
@@ -201,7 +201,7 @@ Provider私有continuation不属于业务上下文来源，只用于同一Run、
 - 预算不足时优先保留当前User和最新完整轮次，不出现孤立Assistant/Tool Message；必选来源超限时不调用Provider。
 - 文本、暂不支持的对象消息、对象读取失败、跨Session/Run/用户引用和非法角色序列均有合同测试。
 - OpenAI、DeepSeek、Anthropic、Gemini和OpenAI-compatible的Provider codec验证系统指令与消息角色映射一致；真实Provider验证保持显式开启，不默认产生费用。
-- Attempt、Agent Node和Context Build查询能够回答本次调用使用了哪些Prompt、Message、Memory、Knowledge片段、Artifact、Handoff、Evaluation和Tool结果，排除了哪些来源，以及使用哪个模型目录和Context策略版本。
+- 内部Attempt、Agent Node和Context Build审计能够回答本次调用使用了哪些System Prompt、Message、Memory、Knowledge片段、Artifact、Handoff、Evaluation和Tool结果，排除了哪些来源，以及使用哪个模型目录和Context策略版本；普通前端证据必须过滤System Prompt的存在性和全部元数据。
 
 ### Memory：规划边界与实验性准备代码
 
@@ -842,10 +842,10 @@ apps/api/src/nexuspilot_api/features/memory/
 - 后续必须先单独讨论资料来源、上传与 Artifact 关系、解析器、分块、检索质量、向量方案、引用展示、用户/项目权限、版本切换、删除和失败恢复，再建立知识库实施文档。
 - 在独立规划批准前不启用Knowledge运行时来源；批准并完成权限、检索和引用门禁后，只能通过Context Builder接入`/responses`和Agent，前端不能直接把Knowledge结果拼入Prompt。
 
-### Prompt 与模型能力目录
+### System Prompt 与模型能力目录
 
-- Prompt Template 具有稳定名称、不可变版本、用途、变量 Schema、启用状态和变更记录；Model Catalog 记录 provider/model 的 context window、工具、结构化输出、视觉、缓存和流式能力。
-- 内部管理接口负责新增版本、启用和停用；受信公共接口只允许读取有效模型能力和渲染已启用 Prompt。
+- System Prompt Template 具有稳定名称、不可变版本、用途、变量 Schema、启用状态和变更记录；Model Catalog 记录 provider/model 的 context window、工具、结构化输出、视觉、缓存和流式能力。
+- 内部管理接口负责新增版本、启用和停用；System Prompt渲染只供后端运行策略或受信内部调用使用。普通前端只读取有效模型能力，不读取Prompt候选、元数据或渲染结果。
 
 ```text
 POST /api/v1/prompt-renders

@@ -10,7 +10,6 @@ const SOURCE_LABELS: Record<string, string> = {
   safety_instruction: "安全指令",
   system_instruction: "系统指令",
   message: "会话消息",
-  prompt_release: "Prompt",
   artifact: "Artifact",
   agent_handoff: "Agent 交接",
   agent_node: "Agent 节点",
@@ -23,10 +22,12 @@ export function ContextEvidencePanel({
   state,
   errorMessage,
 }: ContextEvidencePanelProps) {
+  const browserVisibleSources =
+    evidence?.sources.filter((source) => source.source_type !== "prompt_release") ?? [];
   const selectedCount =
-    evidence?.sources.filter((source) => source.selection_status === "selected").length ?? 0;
+    browserVisibleSources.filter((source) => source.selection_status === "selected").length;
   const excludedCount =
-    evidence?.sources.filter((source) => source.selection_status === "excluded").length ?? 0;
+    browserVisibleSources.filter((source) => source.selection_status === "excluded").length;
 
   return (
     <section className="inspector-section context-evidence-section">
@@ -52,7 +53,7 @@ export function ContextEvidencePanel({
             <div><dt>模型目录</dt><dd>{evidence.catalog_version_id.slice(0, 8)}</dd></div>
           </dl>
           <ul className="context-source-list">
-            {evidence.sources.map((source) => (
+            {browserVisibleSources.map((source) => (
               <li key={`${source.source_type}-${source.source_id}`}>
                 <div>
                   <strong>{SOURCE_LABELS[source.source_type] ?? source.source_type}</strong>

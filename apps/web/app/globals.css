@@ -249,45 +249,23 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .composer textarea { display: block; width: 100%; min-height: 44px; max-height: 320px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-sync-note { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
-.context-bindings { position: relative; flex: 0 0 auto; }
-.context-chip { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; margin-top: 8px; padding: 6px 8px; border-radius: 8px; background: var(--soft); color: var(--muted); font-size: var(--ui-caption-size); }
-.context-chip strong { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--ui-control-size); text-overflow: ellipsis; white-space: nowrap; }
-.context-chip small { font: 500 var(--ui-caption-size) var(--font-geist-mono); }
-.context-chip button, .context-binding-trigger, .context-binding-heading > button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
-.context-chip button { display: grid; place-items: center; width: 18px; height: 18px; margin-left: 2px; border-radius: 5px; }
-.context-chip button:hover { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
-.context-binding-trigger { display: flex; align-items: center; gap: 5px; min-height: 30px; padding: 5px 7px; border-radius: 8px; font-size: var(--ui-control-size); }
-.context-binding-trigger:hover, .context-binding-trigger[aria-expanded="true"] { background: var(--soft); color: var(--text); }
-.context-binding-trigger i { color: var(--muted); font: normal var(--ui-caption-size) var(--font-geist-mono); }
-.context-binding-popover { position: absolute; left: 0; bottom: calc(100% + 9px); z-index: 75; display: grid; width: min(420px, calc(100vw - 72px)); max-height: min(460px, 64vh); padding: 12px; overflow-y: auto; border-radius: 15px; background: var(--panel-strong); box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--text) 32%, transparent), 0 20px 55px color-mix(in srgb, var(--text) 14%, transparent); animation: modelPickerIn 150ms both cubic-bezier(.2,.8,.2,1); }
-.context-binding-popover[hidden] { display: none; }
-.context-binding-heading { display: flex; align-items: flex-start; padding: 2px 2px 10px; }
-.context-binding-heading > div { display: grid; gap: 3px; }
-.context-binding-heading strong { font-size: var(--ui-heading-size); }
-.context-binding-heading small { color: var(--muted); font-size: var(--ui-caption-size); }
-.context-binding-heading > button { display: grid; place-items: center; width: 24px; height: 24px; margin-left: auto; border-radius: 7px; }
-.context-binding-heading > button:hover { background: var(--soft); color: var(--text); }
-.context-prompt-list { display: grid; gap: 2px; padding: 4px 0 8px; }
-.context-prompt-list > button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 8px; border: 0; border-radius: 9px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.context-prompt-list > button:hover, .context-prompt-list > button.is-selected { background: var(--soft); }
-.context-source-icon { display: grid; flex: 0 0 30px; width: 30px; height: 30px; place-items: center; border-radius: 8px; background: var(--soft); color: var(--muted); font: 600 var(--ui-caption-size) var(--font-geist-mono); }
-.context-prompt-list > button.is-selected .context-source-icon { background: var(--panel-strong); color: var(--text); }
-.context-source-copy { display: grid; flex: 1 1 auto; gap: 3px; min-width: 0; }
-.context-prompt-list strong { overflow: hidden; font-size: var(--ui-control-size); text-overflow: ellipsis; white-space: nowrap; }
-.context-prompt-list small { overflow: hidden; color: var(--muted); font-size: var(--ui-caption-size); text-overflow: ellipsis; white-space: nowrap; }
-.context-prompt-list i { margin-left: auto; font-style: normal; }
-.context-binding-state { display: flex; align-items: center; justify-content: space-between; margin: 0; padding: 10px; color: var(--muted); font-size: var(--ui-control-size); }
-.context-binding-state button { min-height: 30px; border: 0; border-radius: 7px; padding: 5px 8px; background: var(--soft); color: var(--text); cursor: pointer; font-size: var(--ui-control-size); font-weight: 620; }
-.context-binding-state button:hover { background: color-mix(in srgb, var(--text) 12%, var(--soft)); }
-.context-binding-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: var(--ui-control-size); }
-.context-binding-field input { min-width: 0; width: 100%; min-height: 34px; border: 0; border-radius: 8px; padding: 7px 9px; background: var(--soft); color: var(--text); font: inherit; outline: 0; box-shadow: inset 0 0 0 .5px var(--line); }
-.context-binding-field input:focus { box-shadow: inset 0 0 0 .5px var(--text); }
-.context-binding-field .compact-select-trigger { width: 100%; justify-content: space-between; background: var(--soft); }
-.context-variable-list { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 9px; padding: 10px 2px; }
-.context-file-status { display: flex; align-items: center; gap: 10px; min-height: 48px; margin-top: 3px; padding: 8px; border-top: .5px solid var(--line); color: var(--muted); font-size: var(--ui-control-size); }
-.context-file-status strong { color: var(--muted); font-size: var(--ui-control-size); }
-.context-file-status small { color: var(--muted); font-size: var(--ui-caption-size); }
-.context-file-status i { margin-left: auto; font-style: normal; }
+.composer-file-notice { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
+.file-picker { position: relative; flex: 0 0 auto; }
+.file-picker-button { position: relative; display: flex; min-height: 44px; align-items: center; gap: 5px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: var(--ui-control-size); cursor: pointer; }
+.file-picker-button:hover:not([data-disabled="true"]) { background: var(--soft); color: var(--text); }
+.file-picker-button[data-disabled="true"] { cursor: wait; opacity: .55; }
+.file-picker-input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.file-picker-input:disabled { cursor: wait; }
+.file-picker-button i { color: var(--muted); font: normal var(--ui-caption-size) var(--font-geist-mono); }
+.pending-file-list { display: flex; gap: 7px; margin-top: 9px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: thin; }
+.pending-file-chip { display: flex; flex: 0 0 min(245px, 78vw); align-items: center; gap: 8px; min-width: 0; padding: 7px 8px; border-radius: 9px; background: var(--soft); }
+.pending-file-glyph { display: grid; flex: 0 0 28px; width: 28px; height: 28px; place-items: center; border-radius: 7px; background: var(--panel-strong); color: var(--muted); font: 600 var(--ui-caption-size) var(--font-geist-mono); }
+.pending-file-copy { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; }
+.pending-file-copy strong { overflow: hidden; color: var(--text); font-size: var(--ui-control-size); text-overflow: ellipsis; white-space: nowrap; }
+.pending-file-copy small { color: var(--muted); font-size: var(--ui-caption-size); }
+.pending-file-chip button { display: grid; flex: 0 0 22px; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.pending-file-chip button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 8%, transparent); color: var(--text); }
+.pending-file-chip button:disabled { cursor: wait; opacity: .55; }
 .agent-config-shelf { display: flex; align-items: center; gap: 18px; margin-top: 9px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--soft) 72%, transparent); }
 .agent-config-item { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .agent-config-item > span { color: var(--muted); font-size: var(--ui-caption-size); }
@@ -548,7 +526,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .composer-wrap { padding: 22px 12px max(10px, env(safe-area-inset-bottom)); }
   .composer { width: 100%; }
   .context-chip { max-width: 100%; }
-  .context-binding-popover { width: calc(100vw - 48px); }
   .reasoning-settings-popover { left: 0; width: min(260px, calc(100vw - 48px)); }
   .recommendation-row { grid-template-columns: 29px 1fr; }
   .empty-state { margin-top: 5vh; }

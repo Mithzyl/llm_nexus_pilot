@@ -38,25 +38,16 @@ const MODEL = {
   reasoning_profile_version: "reasoning-policy.v1",
 };
 
-const PROMPT = {
-  template_name: "technical-review",
-  purpose: "Review one technical proposal",
-  current_version_number: 3,
-  variable_schema: {},
-};
-
 /** Fulfill one browser-facing API request with deterministic public facts. */
 async function fulfillJson(route: Route, body: unknown, status = 200) {
   await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 }
 
-/** Replace the BFF with deterministic message, Prompt, and Prompt-failure facts for UI tests. */
+/** Replace the BFF with deterministic conversation and model facts for UI tests. */
 async function installApiMocks(
   page: Page,
   options: {
     messages?: unknown[];
-    promptOptions?: unknown[];
-    promptOptionsStatus?: number;
   } = {},
 ) {
   let sessionTitle = "Original title";
@@ -64,13 +55,6 @@ async function installApiMocks(
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/nexus/", "");
     if (path === "models") return fulfillJson(route, [MODEL]);
-    if (path === "prompt-templates") {
-      return fulfillJson(
-        route,
-        options.promptOptions ?? [],
-        options.promptOptionsStatus ?? 200,
-      );
-    }
     if (path === "sessions") {
       return fulfillJson(route, {
         items: [{
@@ -171,60 +155,72 @@ test("renames an active conversation and restores the paired question without se
   await expect(page.getByRole("heading", { name: "Renamed conversation" })).toBeVisible();
 });
 
-test("keeps the context trigger in the primary toolbar and the selected Prompt above it", async ({
+test("opens the native chooser directly from the file button", async ({
   page,
 }, testInfo) => {
   await page.unroute("**/api/nexus/**");
-  await installApiMocks(page, { promptOptions: [PROMPT] });
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => requestedPaths.push(new URL(request.url()).pathname));
+  await installApiMocks(page);
   await page.goto("/");
 
-  const contextTrigger = page.locator(
-    ".composer-mode-row + .context-bindings > .context-binding-trigger",
-  );
-  await expect(contextTrigger).toBeVisible();
-  await contextTrigger.click();
-  await expect(page.getByText("添加上下文", { exact: true })).toBeVisible();
-  await expect(page.locator(".context-source-icon", { hasText: "P" })).toBeVisible();
-  await expect(page.locator(".context-file-status .context-source-icon", { hasText: "F" })).toBeVisible();
+  const fileInput = page.locator('input[type="file"][aria-label="选择文件"]');
+  const fileAction = page.locator(".file-picker-button");
+  await expect(fileInput).toBeVisible();
+  await expect(fileAction).toContainText("文件");
+  await expect(page.getByText("上下文", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("添加文件", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Prompt/i)).toHaveCount(0);
 
-  await page.getByRole("option", { name: /technical-review/ }).click();
-  await expect(page.locator(".composer > .context-chip")).toContainText("technical-review");
-  await expect(page.locator(".composer-toolbar .context-chip")).toHaveCount(0);
+  const fileChooserPromise = page.waitForEvent("filechooser");
+  await fileInput.click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles([]);
+  await fileInput.setInputFiles({
+    name: "notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("local pending file"),
+  });
+  await expect(page.locator(".composer > .pending-file-list")).toContainText("notes.txt");
+  await expect(page.locator(".composer > .pending-file-list")).toContainText("待上传");
+  await expect(page.getByRole("button", { name: "发送消息" })).toBeDisabled();
+  expect(requestedPaths.some((path) => path.endsWith("/prompt-templates"))).toBe(false);
 
   if (testInfo.project.name === "chromium") {
     await page.screenshot({
-      path: "../../output/playwright/composer-context-toolbar-corrected.png",
+      path: "../../output/playwright/composer-file-button-direct.png",
       fullPage: true,
     });
   }
 });
 
-test("keeps Composer controls and the Prompt retry action at legible sizes", async ({
+test("keeps Composer controls and the file action at legible sizes", async ({
   page,
 }, testInfo) => {
   await page.unroute("**/api/nexus/**");
-  await installApiMocks(page, { promptOptionsStatus: 503 });
+  await installApiMocks(page);
   await page.goto("/");
-  await page.getByRole("button", { name: "上下文设置" }).click();
 
   const controls = page.locator(
-    ".composer-mode-row button, .context-binding-trigger, .reasoning-settings-trigger",
+    ".composer-mode-row button, .file-picker-button, .reasoning-settings-trigger",
   );
   const controlFontSizes = await controls.evaluateAll((elements) =>
     elements.map((element) => Number.parseFloat(getComputedStyle(element).fontSize)),
   );
   expect(controlFontSizes.every((fontSize) => fontSize >= 12)).toBe(true);
 
-  const retryButton = page.getByRole("button", { name: "重试" });
-  await expect(retryButton).toBeVisible();
-  await expect.poll(() => retryButton.evaluate((element) => ({
+  const fileButton = page.locator(".file-picker-button");
+  await expect(fileButton).toBeVisible();
+  const fileButtonMetrics = await fileButton.evaluate((element) => ({
     fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
     height: element.getBoundingClientRect().height,
-  }))).toEqual({ fontSize: 12, height: 30 });
+  }));
+  expect(fileButtonMetrics.fontSize).toBeGreaterThanOrEqual(12);
+  expect(fileButtonMetrics.height).toBeGreaterThanOrEqual(44);
 
   if (testInfo.project.name === "chromium") {
     await page.screenshot({
-      path: "../../output/playwright/composer-context-retry-readable.png",
+      path: "../../output/playwright/composer-file-action-readable.png",
       fullPage: true,
     });
   }

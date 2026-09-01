@@ -4,112 +4,36 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
-  ContextBindings,
-  SelectedPromptChip,
-} from "../components/context/ContextBindings";
+  FilePickerButton,
+  PendingUploadFiles,
+} from "../components/composer/FilePickerButton";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
-import {
-  createContextSourceReferences,
-  ContextBindingValidationError,
-} from "../lib/context-bindings";
 
-test("creates version-pinned Prompt references with typed variables", () => {
-  const references = createContextSourceReferences(
-    {
-      template_name: "explain-topic",
-      purpose: "Explain one topic",
-      current_version_number: 3,
-      variable_schema: {
-        topic: "string",
-        count: "integer",
-        confidence: "number",
-        concise: "boolean",
-      },
-    },
-    {
-      topic: "cache behavior",
-      count: "4",
-      confidence: "0.75",
-      concise: "true",
-    },
-  );
-
-  assert.deepEqual(references, {
-    prompt: {
-      template_name: "explain-topic",
-      version_number: 3,
-      variables: {
-        topic: "cache behavior",
-        count: 4,
-        confidence: 0.75,
-        concise: true,
-      },
-    },
-    artifact_ids: [],
-  });
-});
-
-test("rejects incomplete or invalid Prompt variables before creating a Run", () => {
-  const prompt = {
-    template_name: "count-items",
-    purpose: null,
-    current_version_number: 1,
-    variable_schema: { count: "integer" as const },
-  };
-
-  assert.throws(
-    () => createContextSourceReferences(prompt, { count: "three" }),
-    ContextBindingValidationError,
-  );
-  assert.throws(
-    () => createContextSourceReferences(prompt, {}),
-    ContextBindingValidationError,
-  );
-});
-
-test("renders Prompt controls while keeping file binding unavailable without upload support", () => {
-  const bindingMarkup = renderToStaticMarkup(
-    createElement(ContextBindings, {
-      promptOptions: [
-        {
-          template_name: "explain-topic",
-          purpose: "Explain one topic",
-          current_version_number: 3,
-          variable_schema: { topic: "string" },
-        },
-      ],
-      promptOptionsState: "ready",
-      selectedPromptName: "explain-topic",
-      promptVariableDrafts: { topic: "cache" },
+test("renders one direct file picker button without a deprecated context menu", () => {
+  const pickerMarkup = renderToStaticMarkup(
+    createElement(FilePickerButton, {
+      selectedFileCount: 1,
       disabled: false,
-      onPromptChange: () => undefined,
-      onVariableChange: () => undefined,
-      onRetry: () => undefined,
+      onFilesSelected: () => undefined,
     }),
   );
-  const chipMarkup = renderToStaticMarkup(
-    createElement(SelectedPromptChip, {
-      prompt: {
-        template_name: "explain-topic",
-        purpose: "Explain one topic",
-        current_version_number: 3,
-        variable_schema: { topic: "string" },
-      },
+  const fileMarkup = renderToStaticMarkup(
+    createElement(PendingUploadFiles, {
+      files: [{ name: "design.pdf", size: 2048, lastModified: 1 }],
       disabled: false,
       onRemove: () => undefined,
     }),
   );
-  const markup = `${bindingMarkup}${chipMarkup}`;
+  const markup = `${pickerMarkup}${fileMarkup}`;
 
-  assert.match(markup, /explain-topic · v3/);
-  assert.match(markup, /已选 Prompt/);
-  assert.match(bindingMarkup, />＋<\/span>上下文/);
-  assert.match(bindingMarkup, /context-source-icon[^>]*>P</);
-  assert.match(markup, /role="listbox"/);
-  assert.match(markup, /等待上传功能/);
-  assert.doesNotMatch(bindingMarkup, /不使用 Prompt/);
-  assert.doesNotMatch(markup, /<select/);
-  assert.doesNotMatch(markup, /type="file"/);
+  assert.match(pickerMarkup, />＋<\/span>文件/);
+  assert.match(pickerMarkup, /type="file"/);
+  assert.match(pickerMarkup, /aria-label="选择文件"/);
+  assert.doesNotMatch(pickerMarkup, /上下文|添加文件|aria-expanded|popover/i);
+  assert.match(markup, /design\.pdf/);
+  assert.match(markup, /2 KB/);
+  assert.match(markup, /待上传/);
+  assert.doesNotMatch(markup, /Prompt/i);
   assert.doesNotMatch(markup, /artifact[_ -]?id/i);
 });
 
@@ -145,13 +69,27 @@ test("renders Context evidence metadata without source content or identifiers", 
             exclusion_reason: null,
             content_hash: "secret-hash",
           },
+          {
+            source_type: "message",
+            source_id: "message-secret-id",
+            source_version: null,
+            trust_level: "user_input",
+            is_required: true,
+            token_estimate: 12,
+            selection_status: "selected",
+            exclusion_reason: null,
+            content_hash: "message-secret-hash",
+          },
         ],
       },
     }),
   );
 
   assert.match(markup, /模型上下文/);
-  assert.match(markup, /platform_instruction/);
+  assert.match(markup, /会话消息/);
+  assert.match(markup, /user_input/);
+  assert.doesNotMatch(markup, /Prompt/i);
+  assert.doesNotMatch(markup, /platform_instruction/);
   assert.doesNotMatch(markup, /source-secret-id/);
   assert.doesNotMatch(markup, /secret-hash/);
   assert.doesNotMatch(markup, /context-secret-id/);

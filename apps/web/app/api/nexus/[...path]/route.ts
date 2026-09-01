@@ -33,6 +33,35 @@ function copyUpstreamResponse(upstream: Response): Promise<Response> {
   );
 }
 
+/** Remove platform System Prompt evidence before a Context projection reaches the browser. */
+async function projectContextEvidenceResponse(upstream: Response): Promise<Response> {
+  if (!upstream.ok) return copyUpstreamResponse(upstream);
+  let upstreamPayload: unknown;
+  try {
+    upstreamPayload = await upstream.json();
+  } catch {
+    return Response.json({ detail: "上下文证据响应格式无效。" }, { status: 502 });
+  }
+  if (!upstreamPayload || typeof upstreamPayload !== "object" || Array.isArray(upstreamPayload)) {
+    return Response.json({ detail: "上下文证据响应格式无效。" }, { status: 502 });
+  }
+  const evidence = upstreamPayload as JsonObject;
+  const sources = Array.isArray(evidence.sources)
+    ? evidence.sources.filter((source) => (
+        !source ||
+        typeof source !== "object" ||
+        (source as JsonObject).source_type !== "prompt_release"
+      ))
+    : [];
+  return Response.json(
+    { ...evidence, sources },
+    {
+      status: upstream.status,
+      headers: { "Cache-Control": upstream.headers.get("cache-control") ?? "no-store" },
+    },
+  );
+}
+
 /** Use one neutral not-found response for resources outside the development user. */
 function resourceNotFoundResponse(): Response {
   return Response.json({ detail: "资源不存在。" }, { status: 404 });
@@ -267,6 +296,28 @@ function normalizeSessionTitlePatch(
   return { payload: normalizedPayload, body: JSON.stringify(normalizedPayload) };
 }
 
+/** Reject browser attempts to select a platform System Prompt through the Responses proxy. */
+function browserSystemPromptReferenceError(
+  method: string,
+  path: readonly string[],
+  payload: JsonObject | undefined,
+): Response | null {
+  if (method !== "POST" || path.length !== 1 || path[0] !== "responses") return null;
+  const contextReferences = payload?.context_source_references;
+  if (
+    !contextReferences ||
+    typeof contextReferences !== "object" ||
+    Array.isArray(contextReferences) ||
+    !("prompt" in contextReferences)
+  ) {
+    return null;
+  }
+  return Response.json(
+    { detail: "当前前端不能选择或覆盖平台系统指令。" },
+    { status: 400 },
+  );
+}
+
 /**
  * Forward only the UI's explicitly allow-listed resources and force every
  * browser request into the current development user's ownership boundary.
@@ -316,6 +367,13 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   if (path[0] === "users" && request.method === "POST" && payload?.user_id !== DEVELOPMENT_USER_ID) {
     return Response.json({ detail: "只能创建当前开发用户。" }, { status: 403 });
   }
+
+  const systemPromptReferenceError = browserSystemPromptReferenceError(
+    request.method,
+    path,
+    payload,
+  );
+  if (systemPromptReferenceError) return systemPromptReferenceError;
 
   if (path[0] === "sessions" && path.length === 1 && request.method === "POST") {
     payload = { ...payload, user_id: DEVELOPMENT_USER_ID };
@@ -367,6 +425,15 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
       signal: request.signal,
       cache: "no-store",
     });
+
+    if (
+      path.length === 3 &&
+      path[0] === "context-builds" &&
+      path[2] === "evidence" &&
+      request.method === "GET"
+    ) {
+      return projectContextEvidenceResponse(upstream);
+    }
 
     const responseHeaders = new Headers();
     for (const headerName of ["content-type", "cache-control", "x-accel-buffering"]) {

@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform 总体规划
 
-**文档日期：** 2026 年 8 月 19 日
+**文档日期：** 2026 年 8 月 31 日
 **文档状态：** 当前总体规划（权威入口）
 **当前实施焦点：** 阶段1～3已完成；阶段4前端继续实施，优先形成稳定可用的内部服务；随后完成阶段5身份与凭据、阶段6可观测性，再进入阶段7工具、阶段8代码搜索和阶段9 MCP；阶段10异步执行仅在出现可靠后台任务需求时恢复
 
@@ -52,7 +52,7 @@
 | Tool Call、Evaluation、Outbox 查询 | 已形成内部查询闭环 | 使用独立内部密钥、查询绑定 cursor、归属校验和递归脱敏详情 |
 | 多供应商 Model Gateway、Responses、SSE | 已完成 | DeepSeek 最新 Chat Completions 思考与流式约束已通过契约和 API 集成测试；真实供应商连通性未运行 |
 | Memory 设计与实验性准备代码 | 规划中 | 已固定 L0～L4 边界并存在同步接口和快速测试；本轮不继续扩展，不接入实际 `/responses` 调用链，也不作为阶段2运行能力验收 |
-| Conversation Context、Prompt、模型能力目录、Evaluation 单元 | 已完成 | 已通过行为、失败、幂等、历史快照、MySQL 并发和迁移门禁；保持可独立调用，不隐式拼接 Memory |
+| Conversation Context、System Prompt、模型能力目录、Evaluation 单元 | 已完成 | 后端 Prompt 是模型运行使用的 System Prompt，已通过行为、失败、幂等、历史快照、MySQL 并发和迁移门禁；保持可独立调用，不隐式拼接 Memory，也不作为普通前端可选资源 |
 | Knowledge 知识库 | 暂停 | Knowledge 属于独立知识库能力；现有结构代码仅作实验性准备，需求、数据来源、解析、检索和权限将在后续单独规划，不计入阶段2 |
 | RabbitMQ、Publisher、Worker | 暂停 | 当前同步调用和内部开发没有持久异步执行需求；保留阶段10规划，达到长任务、恢复或多 Worker 触发条件后再继续 |
 | Agent、工具、MCP、OpenTelemetry、Web | Agent 模型工作流已完成、可观测性优先级提高、工具暂停、Web 第一版进行中 | 阶段3已实现 `model_only_v1` 同步协调器、最多两个无依赖工作 Agent 并行、费用预留、显式取消、完整节点结果、持久事件、核心查询与实时 POST SSE；跨进程恢复、工具和遥测分别由阶段10、阶段7和阶段6负责 |
@@ -101,9 +101,9 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
 | 阶段1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | 已完成 | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、受信调用方权限边界和脱敏门禁 |
-| 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 已完成 | 运行能力可脱离 Agent 单独调用、测试和观测；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
+| 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、System Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 已完成 | 运行能力可脱离 Agent 单独调用、测试和观测；System Prompt 只由后端策略选择，普通前端不能查看、选择或覆盖；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
 | 阶段3：Agent Runtime 与工作流 | 完整节点结果、Controller/工作模型、依赖分组、有界并行、确定性验证、独立审核和显式取消 | 已完成 | `model_only_v1` 主流程、数据库事实、核心 HTTP/SSE、原子费用预留、终态一致提交和失败收敛已通过自动化验证；工具恢复后以新的执行配置扩展，不回退本阶段；详见 [`phase-3-agent-workflow-plan.md`](../implementation/phase-3-agent-workflow-plan.md) |
-| 阶段4：Web 前端 | 建设类似 ChatGPT 交互方式的对话平台，并逐步展示 Run、Agent、模型与工具执行过程 | 进行中 | 第一版工程、核心对话外壳、会话重命名与标签页草稿、同会话多标签页提交互斥、只读模型目录、路由边界、Agent 轨迹和统一 Reasoning 流/历史展示已实现；会话归档按当前决定暂停，后续 Tool 状态仍必须等待稳定事实；详见 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md) |
+| 阶段4：Web 前端 | 建设类似 ChatGPT 交互方式的对话平台，并逐步展示 Run、Agent、模型与工具执行过程 | 进行中 | 第一版工程、核心对话外壳、会话重命名与标签页草稿、同会话多标签页提交互斥、只读模型目录、路由边界、Agent 轨迹和统一 Reasoning 流/历史展示已实现；普通Web已移除System Prompt选择、提交和运行提示，废弃“上下文”按钮并改为单击即打开系统选择器的“文件”按钮，在上传服务启用前阻止携带待上传文件发送；会话归档按当前决定暂停，后续 Tool 状态仍必须等待稳定事实；详见 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md) |
 | 阶段5：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 规划中 | Cookie/Bearer 身份、撤销、scope、跨用户隔离、凭据加密/轮换/验证及 Worker 撤权测试通过；详见 [`phase-5-platform-identity-credentials.md`](../implementation/phase-5-platform-identity-credentials.md) |
 | 阶段6：可观测性 | API、工作流节点、模型、未来消息/Worker/工具的 trace、metrics 和关联 | 未开始 | 阶段3已固定 ID、span 层级和敏感字段边界；本阶段完成遥测装配、采样、指标、导出、安全诊断及模型提示词缓存命中诊断，MySQL 始终是事实源 |
 | 阶段7：工具能力 | 工具契约、权限、Workspace、文件、搜索、隔离命令、Git 和调用证据 | 暂停 | 阶段5授权边界和阶段6诊断能力稳定后恢复；阶段3不得绕过该阶段执行工具；详见 [`phase-7-tool-runtime-plan.md`](../implementation/phase-7-tool-runtime-plan.md) |
@@ -119,6 +119,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 - 阶段4～6优先解决服务是否可被人使用、是否具备最终用户安全边界、是否能够运维诊断。阶段7～9才扩展代码工具、语义搜索和外部 MCP 能力。
 - 阶段10解决可靠异步执行，当前没有消息队列收益，继续暂停。需要后台恢复或工具时必须分别恢复阶段10或阶段7，不能在 Agent Runtime 内复制这些能力。
 - 阶段5不回退阶段1、阶段2在受信调用方边界内的完成状态。阶段4当前内部开发界面可以继续使用服务端部署级 key；任何最终用户公开发布、用户自带供应商密钥、L3/L4 Memory 或多用户 Project 都必须先通过阶段5。
+- 阶段2现有 `llm_prompt_templates` 及版本表表达平台内部 System Prompt，不是用户自定义 Prompt。阶段4普通产品界面不得列出其名称、用途、版本、变量或是否纳入本次调用，也不得允许浏览器选择或覆盖。若未来规划用户自定义 Prompt，必须在阶段5身份边界之后建立独立的用户归属、授权和接口合同，不能复用 System Prompt 表或内部管理接口伪装为用户资源。
 - Memory 不是 Agent 工作流中的一个临时字典，而是 L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project 和 L4 User 五层设计。当前只保留边界、数据合同和实验性管理接口，不继续扩展，不由 `/responses` 自动读取；Context Preview 中现存的可选候选分支应在阶段2验收前禁用或移出稳定合同。未来启用前必须重新确认形成策略、权限、删除语义和评估门禁。
 - MySQL 保存五层 Memory 的事实、状态、版本和当前指针；L1～L4 使用 MinIO 不可变 JSON/Markdown 快照，L0 只保存有界 MySQL 检查点。现有 `llm_memories` 继续承担细粒度长期事实，不用一个通用状态对象代替所有层级。
 - Project Memory 默认关闭，只服务显式绑定的 Session/Run；它是最小记忆 scope，不建设看板、排期或项目管理业务。多用户共享必须等待最终用户认证与 Membership 权限模型。
@@ -169,7 +170,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 - 阶段1已完成：核心数据资源、内部审计、事务、分页、归属、脱敏和真实基础设施门禁均已通过。
 - 阶段2已完成：Model Gateway、Context、Prompt/模型能力目录和 Evaluation 已通过快速测试、真实基础设施与迁移门禁。Memory 当前只保留规划和实验性准备代码，不进入实际模型响应链路；Knowledge 已移出本阶段，等待独立规划。
 - 阶段3已完成：同步 `model_only_v1` 编排、完整节点返回参数、最多两个无依赖工作 Agent 并行、业务事件、原子费用预留、显式取消、审核门禁、完成事务和核心查询接口已经实现并验证。跨进程恢复、工具运行和遥测分别留在阶段10、阶段7和阶段6。
-- 阶段4进行中：当前内部 Web 已具备核心对话外壳、Agent 合同适配、统一 Reasoning 展示、Responses 事件回放、会话重命名、标签页草稿、同会话多标签页提交互斥、只读模型目录以及会话/运行稳定路由和刷新恢复；会话归档按当前决定暂停，继续优先完成真实 Provider/浏览器端到端验收、完整运行证据和公开发布前安全门禁。
+- 阶段4进行中：当前内部 Web 已具备核心对话外壳、Agent 合同适配、统一 Reasoning 展示、Responses 事件回放、会话重命名、标签页草稿、同会话多标签页提交互斥、只读模型目录以及会话/运行稳定路由和刷新恢复；Composer已删除废弃的“上下文”入口和二级弹层，工具栏“文件”按钮单击后直接调用系统文件选择器。后端文件上传未实现前，前端只显示本地待上传列表，不读取文件内容、不伪造Artifact引用，并阻止携带待上传文件的消息发送；会话归档按当前决定暂停，继续优先完成真实 Provider/浏览器端到端验收、完整运行证据和公开发布前安全门禁。
 - 阶段5规划中：相关内部开发继续使用隔离测试身份、动态测试 key、假 Provider 和可选环境凭据；最终用户公开 API、个人 API Key 和用户供应商凭据尚未实现。
 - 阶段6未开始：下一步在服务可用闭环上补齐 trace、metrics、导出和内部诊断，并按Provider已确认字段记录缓存输入Token、命中Token与稳定前缀版本；普通阶段4页面不展示原始Provider请求，不以遥测替代MySQL业务事实。
 - 阶段7暂停：规划已固定，但必须等待服务授权和运维边界稳定；阶段3不得绕过工具权限和隔离边界。

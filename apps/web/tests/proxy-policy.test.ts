@@ -6,7 +6,7 @@ import { isAllowedProxyRoute } from "../lib/proxy-policy";
 test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("GET", ["providers"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["models"]), true);
-  assert.equal(isAllowedProxyRoute("GET", ["prompt-templates"]), true);
+  assert.equal(isAllowedProxyRoute("GET", ["prompt-templates"]), false);
   assert.equal(
     isAllowedProxyRoute("GET", ["context-builds", "context-1", "evidence"]),
     true,
