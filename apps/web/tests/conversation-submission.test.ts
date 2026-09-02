@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   conversationSubmissionLockName,
+  isConversationExecutionActive,
   isConversationSyncEvent,
   runWithConversationSubmissionLock,
 } from "../lib/conversation-submission";
@@ -41,4 +42,13 @@ test("allows new conversations and validates only bounded cross-tab messages", a
     senderId: "tab-1",
   }), true);
   assert.equal(isConversationSyncEvent({ type: "submission-finished", sessionId: "" }), false);
+});
+
+test("keeps a restored conversation read-only while its latest server execution is active", () => {
+  assert.equal(isConversationExecutionActive("pending", null), true);
+  assert.equal(isConversationExecutionActive("running", "running"), true);
+  assert.equal(isConversationExecutionActive("cancel_requested", "waiting_for_input"), true);
+  assert.equal(isConversationExecutionActive("completed", "completed"), false);
+  assert.equal(isConversationExecutionActive("failed", "failed"), false);
+  assert.equal(isConversationExecutionActive(null, null), false);
 });

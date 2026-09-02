@@ -55,7 +55,10 @@ import {
   type AgentWorkflowEventState,
 } from "../lib/agent-workflow";
 import { isAgentWorkflowCancellable } from "../lib/agent-workflow-view";
-import { hasSavedAssistantForLatestTurn } from "../lib/history";
+import {
+  hasSavedAssistantForLatestTurn,
+  pendingAssistantRunIdForLatestTurn,
+} from "../lib/history";
 import {
   AgentWorkflowPanel,
   agentWorkflowStatusLabel,
@@ -91,10 +94,8 @@ import {
 import {
   conversationPath,
   resolveWorkspaceRoute,
-  runPath,
   terminalConversationNavigationTarget,
   workspaceRouteKey,
-  type NexusWorkspaceRoute,
 } from "../lib/routes";
 import {
   isPersistedResponseOutputTruncated,
@@ -108,11 +109,13 @@ import {
   writeConversationDraft,
 } from "../lib/conversation-drafts";
 import {
+  isConversationExecutionActive,
   isConversationSyncEvent,
   runWithConversationSubmissionLock,
   type ConversationSyncEvent,
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
+import { runEvidenceTargetForMessage } from "../lib/run-evidence";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
@@ -148,6 +151,19 @@ type LocalMessage = MessageSummary & {
 };
 
 type ConnectionState = "checking" | "connected" | "unavailable";
+
+type RunEvidenceSnapshot = {
+  run: RunDetail;
+  workflow: AgentWorkflowSummary | AgentWorkflowResult | null;
+  nodes: AgentWorkflowNodeResult[];
+  eventState: AgentWorkflowEventState;
+  reasoningBlocksByAttemptId: Record<string, ReasoningBlockSnapshot[]>;
+  attemptId: string | null;
+  usage: { input: number | null; output: number | null; cost: string };
+  modelFacts: { provider: string; model: string } | null;
+  contextEvidence: ContextBuildEvidence | null;
+  contextEvidenceError: string | null;
+};
 
 /**
  * Format server timestamps into the compact time label used by the workspace.
@@ -275,6 +291,12 @@ export default function Home() {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
+  const [inspectedRunEvidence, setInspectedRunEvidence] =
+    useState<RunEvidenceSnapshot | null>(null);
+  const [inspectedRunEvidenceState, setInspectedRunEvidenceState] =
+    useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [inspectedRunEvidenceError, setInspectedRunEvidenceError] =
+    useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -315,6 +337,7 @@ export default function Home() {
   const activeSessionIdValue = useRef<string | null>(null);
   const isSendingValue = useRef(false);
   const restoreSessionHandler = useRef<(sessionId: string) => Promise<void>>(async () => {});
+  const inspectedRunEvidenceRequestId = useRef(0);
 
   const selectedReasoningCapabilities =
     selectedProvider && selectedModel
@@ -346,6 +369,45 @@ export default function Home() {
       : contextEvidenceError
         ? "error"
         : "ready";
+
+  const isInspectingHistoricalRun = inspectedRunEvidenceState !== "idle";
+  const evidenceRun = isInspectingHistoricalRun ? inspectedRunEvidence?.run ?? null : run;
+  const evidenceWorkflow = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.workflow ?? null
+    : agentWorkflow;
+  const evidenceWorkflowNodes = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.nodes ?? []
+    : agentWorkflowNodes;
+  const evidenceEventState = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.eventState ?? EMPTY_AGENT_EVENT_STATE
+    : agentEventState;
+  const evidenceReasoningBlocks = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.reasoningBlocksByAttemptId ?? {}
+    : reasoningBlocksByAttemptId;
+  const evidenceAttemptId = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.attemptId ?? null
+    : attemptId;
+  const evidenceUsage = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.usage ?? null
+    : runUsage;
+  const evidenceModelFacts = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.modelFacts ?? null
+    : runModelFacts;
+  const displayedContextEvidence = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.contextEvidence ?? null
+    : contextEvidence;
+  const displayedContextEvidenceError = isInspectingHistoricalRun
+    ? inspectedRunEvidence?.contextEvidenceError ?? null
+    : contextEvidenceError;
+  const displayedContextEvidenceState = isInspectingHistoricalRun
+    ? inspectedRunEvidenceState === "loading"
+      ? "loading"
+      : inspectedRunEvidence?.contextEvidenceError
+        ? "error"
+        : inspectedRunEvidence?.contextEvidence
+          ? "ready"
+          : "empty"
+    : contextEvidenceState;
 
   /** Batch text and reasoning token projections into one browser animation frame. */
   function scheduleAssistantProjection(assistantLocalId: string) {
@@ -604,7 +666,12 @@ export default function Home() {
     applyReasoningDisplayPolicyForModel(
       initialReasoningCapabilities?.presentation ?? "none",
     );
-  }, [applyReasoningDisplayPolicyForModel]);
+  }, [
+    applyReasoningDisplayPolicyForModel,
+    setReasoningEffort,
+    setSelectedModel,
+    setSelectedProvider,
+  ]);
 
   /** Record an explicit display preference so model switches do not silently increase disclosure. */
   function handleReasoningDisplayPolicyChange(policy: ReasoningDisplayPolicy) {
@@ -699,6 +766,11 @@ export default function Home() {
   const isActiveSessionBusyInAnotherTab = Boolean(
     activeSessionId && remoteBusySessionIds.has(activeSessionId),
   );
+  const isPersistedConversationExecutionActive = Boolean(
+    activeSessionId && isConversationExecutionActive(run?.status ?? null, agentWorkflow?.status ?? null),
+  );
+  const isConversationSubmissionBlocked =
+    isActiveSessionBusyInAnotherTab || isPersistedConversationExecutionActive;
 
   const lastAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
 
@@ -829,6 +901,13 @@ export default function Home() {
 
     setExecutionMode("agent");
     setAgentWorkflow(summary);
+    if (assistantLocalId) {
+      setMessages((current) => current.map((message) =>
+        message.local_id === assistantLocalId
+          ? { ...message, agentWorkflow: true }
+          : message,
+      ));
+    }
     let restoredEvents = EMPTY_AGENT_EVENT_STATE;
     try {
       const replay = await replayAgentWorkflowEvents(summary.workflow_execution_id, 0);
@@ -980,11 +1059,21 @@ export default function Home() {
               throw error;
             }),
       ]);
-      setMessages(page.items.map(messageFromMessage));
+      const restoredMessages = page.items.map(messageFromMessage);
+      const pendingRunId = pendingAssistantRunIdForLatestTurn(page.items, latestRun);
+      const pendingAssistant = pendingRunId
+        ? { ...createLocalMessage("assistant", "", pendingRunId), pending: true }
+        : null;
+      setMessages(pendingAssistant ? [...restoredMessages, pendingAssistant] : restoredMessages);
       setMessageCursor(page.next_cursor);
       setHasMoreMessages(page.has_more);
       restoreRunFacts(latestRun);
-      if (latestRun) await restoreAgentWorkflowForRun(latestRun.run_id);
+      if (latestRun) {
+        await restoreAgentWorkflowForRun(
+          latestRun.run_id,
+          pendingAssistant?.local_id,
+        );
+      }
       const hasPersistedAssistant = hasSavedAssistantForLatestTurn(page.items);
       setResponseCompleted(hasPersistedAssistant);
       setAssistantSaved(hasPersistedAssistant);
@@ -997,8 +1086,17 @@ export default function Home() {
     }
   }
 
+  /** Return the inspector to live workbench facts without changing any execution state. */
+  function showCurrentRunEvidence() {
+    inspectedRunEvidenceRequestId.current += 1;
+    setInspectedRunEvidence(null);
+    setInspectedRunEvidenceError(null);
+    setInspectedRunEvidenceState("idle");
+  }
+
   /** Navigate to and restore one owned conversation from its stable URL. */
   async function handleSelectSession(sessionId: string) {
+    showCurrentRunEvidence();
     switchDraftContext(sessionId);
     restoredRouteKey.current = workspaceRouteKey({ kind: "conversation", sessionId });
     router.push(conversationPath(sessionId));
@@ -1007,6 +1105,7 @@ export default function Home() {
 
   /** Restore an exact owned Run and its conversation rather than substituting the latest Run. */
   async function restoreRunRoute(runId: string) {
+    showCurrentRunEvidence();
     setErrorMessage(null);
     setIsInspectorOpen(true);
     setActiveSessionId(null);
@@ -1052,6 +1151,7 @@ export default function Home() {
    * Reset the local conversation view without deleting any persisted session.
    */
   function resetConversationView() {
+    showCurrentRunEvidence();
     setActiveSessionId(null);
     setMessages([]);
     setRun(null);
@@ -1105,13 +1205,127 @@ export default function Home() {
     restoreSessionHandler.current = restoreSession;
   });
 
-  /** Open the current persisted Run at a shareable route while retaining loaded evidence. */
-  function handleOpenRunEvidence() {
+  /**
+   * Read an immutable evidence snapshot without mutating the active conversation or Workflow stream.
+   * Partial evidence failures remain scoped to the inspector and never replace workbench errors.
+   */
+  async function readRunEvidenceSnapshot(runId: string): Promise<RunEvidenceSnapshot> {
+    const runDetail = await getRun(runId);
+    let workflow: AgentWorkflowSummary | AgentWorkflowResult | null = null;
+    let nodes: AgentWorkflowNodeResult[] = [];
+    let eventState = EMPTY_AGENT_EVENT_STATE;
+
+    try {
+      const summary = await getRunAgentWorkflow(runId);
+      workflow = summary;
+      try {
+        const replay = await replayAgentWorkflowEvents(summary.workflow_execution_id, 0);
+        await readAgentWorkflowEventStream(
+          replay,
+          (event) => {
+            eventState = appendAgentWorkflowEvent(eventState, event);
+          },
+          { requireTerminalEvent: false },
+        );
+      } catch {
+        // The result snapshot below remains authoritative when public event replay is unavailable.
+      }
+      try {
+        const result = await getAgentWorkflowResult(summary.workflow_execution_id);
+        workflow = result;
+        nodes = result.nodes;
+      } catch {
+        // A running Workflow may expose only its summary until the bounded result is readable.
+      }
+    } catch (error) {
+      if (!(error instanceof NexusApiError && error.status === 404)) throw error;
+    }
+
+    const latestAttempt = runDetail.attempts.at(-1) ?? null;
+    const attemptIds = Array.from(new Set([
+      ...nodes.flatMap((node) => node.evidence.model_attempt_ids),
+      ...(latestAttempt ? [latestAttempt.attempt_id] : []),
+    ]));
+    const reasoningEntries = await Promise.all(
+      attemptIds.map(async (modelAttemptId) => {
+        try {
+          const blocks = (await getReasoningBlocks(modelAttemptId)).filter((block) =>
+            isReasoningPresentation(block),
+          );
+          return [modelAttemptId, blocks] as const;
+        } catch {
+          return [modelAttemptId, []] as const;
+        }
+      }),
+    );
+
+    const contextBuildId = latestAttempt?.context_build_id ?? null;
+    let snapshotContextEvidence: ContextBuildEvidence | null = null;
+    let snapshotContextEvidenceError: string | null = null;
+    if (contextBuildId) {
+      try {
+        snapshotContextEvidence = await getContextBuildEvidence(contextBuildId);
+      } catch (error) {
+        snapshotContextEvidenceError =
+          error instanceof Error ? error.message : "上下文证据暂不可用。";
+      }
+    }
+
+    const workflowResult = workflow && "nodes" in workflow ? workflow : null;
+    return {
+      run: runDetail,
+      workflow,
+      nodes,
+      eventState,
+      reasoningBlocksByAttemptId: Object.fromEntries(reasoningEntries),
+      attemptId:
+        workflowResult?.completion?.model_attempt_ids.at(-1) ?? latestAttempt?.attempt_id ?? null,
+      usage: workflowResult
+        ? {
+            input: workflowResult.aggregate_usage.input_tokens,
+            output: workflowResult.aggregate_usage.output_tokens,
+            cost: String(workflowResult.aggregate_usage.estimated_cost),
+          }
+        : {
+            input: latestAttempt?.input_tokens ?? null,
+            output: latestAttempt?.output_tokens ?? null,
+            cost: String(latestAttempt?.estimated_cost ?? runDetail.cost_used ?? "—"),
+          },
+      modelFacts: latestAttempt
+        ? { provider: latestAttempt.provider, model: latestAttempt.model }
+        : null,
+      contextEvidence: snapshotContextEvidence,
+      contextEvidenceError: snapshotContextEvidenceError,
+    };
+  }
+
+  /** Open evidence for the clicked Assistant response without changing the workspace route. */
+  async function handleOpenRunEvidence(message: LocalMessage) {
+    const targetRunId = runEvidenceTargetForMessage(message);
     setIsInspectorOpen(true);
-    if (!run) return;
-    const route: NexusWorkspaceRoute = { kind: "run", runId: run.run_id };
-    restoredRouteKey.current = workspaceRouteKey(route);
-    router.push(runPath(run.run_id));
+    if (!targetRunId) {
+      setInspectedRunEvidenceError("这条回复没有关联可读取的运行证据。");
+      setInspectedRunEvidenceState("error");
+      return;
+    }
+
+    const requestId = inspectedRunEvidenceRequestId.current + 1;
+    inspectedRunEvidenceRequestId.current = requestId;
+    setInspectedRunEvidence(null);
+    setInspectedRunEvidenceError(null);
+    setInspectedRunEvidenceState("loading");
+    try {
+      const snapshot = await readRunEvidenceSnapshot(targetRunId);
+      if (inspectedRunEvidenceRequestId.current !== requestId) return;
+      setInspectedRunEvidence(snapshot);
+      setInspectedRunEvidenceState("ready");
+    } catch (error) {
+      if (inspectedRunEvidenceRequestId.current !== requestId) return;
+      setInspectedRunEvidenceError(
+        error instanceof Error ? error.message : "无法读取这条回复的运行证据。",
+      );
+      setInspectedRunEvidenceState("error");
+    }
   }
 
   /**
@@ -1235,6 +1449,7 @@ export default function Home() {
     if (
       !input ||
       isSending ||
+      isPersistedConversationExecutionActive ||
       !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
     ) return;
     if (pendingUploadFiles.length > 0) {
@@ -1504,8 +1719,12 @@ export default function Home() {
   /** Serialize same-session submissions across tabs before entering the billable request flow. */
   async function handleSend() {
     if (submissionInProgress.current) return;
-    if (isActiveSessionBusyInAnotherTab) {
-      setErrorMessage("此会话正在另一个标签页生成回复，请等待完成后再发送。");
+    if (isConversationSubmissionBlocked) {
+      setErrorMessage(
+        isActiveSessionBusyInAnotherTab
+          ? "此会话正在另一个标签页生成回复，请等待完成后再发送。"
+          : "此会话仍有服务端运行正在处理，请等待运行结束后再发送。",
+      );
       return;
     }
     submissionInProgress.current = true;
@@ -1685,7 +1904,7 @@ export default function Home() {
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => handleRepeatQuestion(message)}>再次提问</button>
-                        <button onClick={handleOpenRunEvidence}>查看运行证据 ↗</button>
+                        <button onClick={() => void handleOpenRunEvidence(message)}>查看运行证据 ↗</button>
                       </div>
                     )}
                   </>
@@ -1709,6 +1928,11 @@ export default function Home() {
               {isActiveSessionBusyInAnotherTab && (
                 <p className="composer-sync-note" role="status">
                   此会话正在另一个标签页生成；完成后会自动读取最新消息。
+                </p>
+              )}
+              {!isActiveSessionBusyInAnotherTab && isPersistedConversationExecutionActive && !isSending && (
+                <p className="composer-sync-note" role="status">
+                  服务端仍在处理此会话；当前不可重复提交，可在运行详情中查看状态。
                 </p>
               )}
               <PendingUploadFiles
@@ -1825,7 +2049,7 @@ export default function Home() {
                       );
                     }}
                   />
-                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (pendingUploadFiles.length > 0 || isActiveSessionBusyInAnotherTab || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (pendingUploadFiles.length > 0 || isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>
@@ -1835,51 +2059,74 @@ export default function Home() {
 
       <aside className={`inspector ${isInspectorOpen ? "is-open" : ""}`} aria-label="运行详情">
         <div className="inspector-header">
-          <div><p className="eyebrow">运行详情</p><h2>执行证据</h2></div>
+          <div>
+            <p className="eyebrow">{isInspectingHistoricalRun ? "消息运行详情" : "当前运行详情"}</p>
+            <h2>执行证据</h2>
+            {isInspectingHistoricalRun && (
+              <button className="evidence-current-button" onClick={showCurrentRunEvidence}>
+                返回当前运行
+              </button>
+            )}
+          </div>
           <button className="icon-button" onClick={() => setIsInspectorOpen(false)} aria-label="关闭运行详情">×</button>
         </div>
 
+        {isInspectingHistoricalRun && inspectedRunEvidenceState === "loading" && (
+          <p className="evidence-load-state" role="status">正在读取所选回复的持久化证据…</p>
+        )}
+        {isInspectingHistoricalRun && inspectedRunEvidenceState === "error" && (
+          <div className="error-banner" role="alert">
+            <strong>运行证据读取失败</strong>
+            <p>{inspectedRunEvidenceError}</p>
+          </div>
+        )}
+
         <div className="run-state">
-          <div className={`status-emblem ${run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{run?.status === "failed" || agentWorkflow?.status === "failed" || agentWorkflow?.status === "outcome_unknown" ? "!" : run ? "✓" : "·"}</div>
-          <div><strong>{agentWorkflow ? agentWorkflowStatusLabel(agentWorkflow.status) : isSending ? "生成进行中" : run?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : run ? "运行已创建" : "等待首次运行"}</strong><p>{agentWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p></div>
-          <time>{run ? formatTime(run.updated_at) : "—"}</time>
+          <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
+          <div>
+            <strong>{evidenceWorkflow ? agentWorkflowStatusLabel(evidenceWorkflow.status) : isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "响应已保存" : evidenceRun?.status === "failed" ? "生成失败" : evidenceRun?.status === "cancelled" ? "已取消" : evidenceRun ? "运行处理中" : "等待证据" : isSending ? "生成进行中" : evidenceRun?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : evidenceRun ? "运行已创建" : "等待首次运行"}</strong>
+            <p>{isInspectingHistoricalRun ? "所选回复的只读快照，不改变当前工作台" : evidenceWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p>
+          </div>
+          <time>{evidenceRun ? formatTime(evidenceRun.updated_at) : "—"}</time>
         </div>
 
         <div className="metric-grid">
-          <div><span>总耗时</span><strong>{run ? formatDuration(run) : "—"}</strong></div>
-          <div><span>总 Token</span><strong>{formatTokenTotal(runUsage)}</strong></div>
-          <div><span>预估费用</span><strong>{runUsage?.cost ?? "—"}</strong></div>
-          <div><span>{agentWorkflow ? "模型调用" : "Attempt"}</span><strong>{agentWorkflow ? `${agentWorkflow.model_call_count} / ${agentWorkflow.max_model_calls}` : attemptId ? "已记录" : "—"}</strong></div>
+          <div><span>总耗时</span><strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong></div>
+          <div><span>总 Token</span><strong>{formatTokenTotal(evidenceUsage)}</strong></div>
+          <div><span>预估费用</span><strong>{evidenceUsage?.cost ?? "—"}</strong></div>
+          <div><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count} / ${evidenceWorkflow.max_model_calls}` : evidenceAttemptId ? "已记录" : "—"}</strong></div>
         </div>
 
         <ContextEvidencePanel
-          evidence={contextEvidence}
-          state={contextEvidenceState}
-          errorMessage={contextEvidenceError}
+          evidence={displayedContextEvidence}
+          state={displayedContextEvidenceState}
+          errorMessage={displayedContextEvidenceError}
         />
 
-        {agentWorkflow ? (
+        {evidenceWorkflow ? (
           <AgentWorkflowPanel
-            workflow={agentWorkflow}
-            events={agentEventState.events}
-            nodes={agentWorkflowNodes}
-            reasoningBlocksByAttemptId={reasoningBlocksByAttemptId}
-            hasEventGap={agentEventState.hasGap}
+            workflow={evidenceWorkflow}
+            events={evidenceEventState.events}
+            nodes={evidenceWorkflowNodes}
+            reasoningBlocksByAttemptId={evidenceReasoningBlocks}
+            hasEventGap={evidenceEventState.hasGap}
             isCancelling={isCancellingWorkflow}
-            onCancel={() => void handleCancelAgentWorkflow()}
+            onCancel={isInspectingHistoricalRun ? undefined : () => void handleCancelAgentWorkflow()}
           />
         ) : (
           <>
         <section className="inspector-section">
-          <div className="section-title"><h3>模型调用</h3><span>{attemptId ? "已关联" : "等待"}</span></div>
+          <div className="section-title"><h3>模型调用</h3><span>{evidenceAttemptId ? "已关联" : "等待"}</span></div>
           <dl className="detail-list">
-            <div><dt>Provider</dt><dd>{(runModelFacts?.provider ?? selectedProvider) || "—"}</dd></div>
-            <div><dt>Model</dt><dd>{(runModelFacts?.model ?? selectedModel) || "—"}</dd></div>
-            <div><dt>输入 Token</dt><dd>{runUsage?.input ?? "—"}</dd></div>
-            <div><dt>输出 Token</dt><dd>{runUsage?.output ?? "—"}</dd></div>
-            <div><dt>请求状态</dt><dd className={run?.status === "failed" ? "error-text" : "success-text"}>{statusLabel}</dd></div>
+            <div><dt>Provider</dt><dd>{(evidenceModelFacts?.provider ?? (isInspectingHistoricalRun ? "" : selectedProvider)) || "—"}</dd></div>
+            <div><dt>Model</dt><dd>{(evidenceModelFacts?.model ?? (isInspectingHistoricalRun ? "" : selectedModel)) || "—"}</dd></div>
+            <div><dt>输入 Token</dt><dd>{evidenceUsage?.input ?? "—"}</dd></div>
+            <div><dt>输出 Token</dt><dd>{evidenceUsage?.output ?? "—"}</dd></div>
+            <div><dt>请求状态</dt><dd className={evidenceRun?.status === "failed" ? "error-text" : "success-text"}>{isInspectingHistoricalRun ? evidenceRun?.status ?? "等待" : statusLabel}</dd></div>
           </dl>
-          {lastAssistantMessage?.reasoningBlocks.map((presentation) => (
+          {(isInspectingHistoricalRun
+            ? evidenceAttemptId ? evidenceReasoningBlocks[evidenceAttemptId] ?? [] : []
+            : lastAssistantMessage?.reasoningBlocks ?? []).map((presentation) => (
             <ReasoningView
               key={`trajectory-${presentation.block_id}`}
               presentation={presentation}
@@ -1889,21 +2136,22 @@ export default function Home() {
         </section>
 
         <section className="inspector-section timeline-section">
-          <div className="section-title"><h3>运行时间线</h3><span>{run ? "服务端事实" : "暂无事件"}</span></div>
+          <div className="section-title"><h3>运行时间线</h3><span>{evidenceRun ? "服务端事实" : "暂无事件"}</span></div>
           <ol className="timeline">
-            <li className={run ? "complete" : "pending"}><i /><div><strong>请求已接收</strong><small>{run ? formatTime(run.created_at) : "等待"}</small></div></li>
-            <li className={isSending ? "complete" : "pending"}><i /><div><strong>模型生成</strong><small>{isSending ? "正在流式接收" : "等待"}</small></div></li>
-            <li className={runUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong><small>{runUsage ? `${formatTokenTotal(runUsage)} tokens` : "等待"}</small></div></li>
-            <li className={responseCompleted ? "complete" : "pending"}><i /><div><strong>模型响应完成</strong><small>{responseCompleted ? "已完成" : "等待"}</small></div></li>
-            <li className={assistantSaveFailed ? "failed" : assistantSaved ? "complete" : "pending"}><i /><div><strong>{assistantSaveFailed ? "响应保存失败" : "响应已保存"}</strong><small>{assistantSaveFailed ? "需要重试" : assistantSaved ? "已完成" : "等待"}</small></div></li>
+            <li className={evidenceRun ? "complete" : "pending"}><i /><div><strong>请求已接收</strong><small>{evidenceRun ? formatTime(evidenceRun.created_at) : "等待"}</small></div></li>
+            <li className={evidenceRun?.started_at ? "complete" : "pending"}><i /><div><strong>模型生成</strong><small>{evidenceRun?.status === "running" ? "服务端处理中" : evidenceRun?.started_at ? "已开始" : "等待"}</small></div></li>
+            <li className={evidenceUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong><small>{evidenceUsage ? `${formatTokenTotal(evidenceUsage)} tokens` : "等待"}</small></div></li>
+            <li className={evidenceRun?.status === "completed" ? "complete" : evidenceRun?.status === "failed" ? "failed" : "pending"}><i /><div><strong>模型响应完成</strong><small>{evidenceRun?.status === "completed" ? "已完成" : evidenceRun?.status === "failed" ? "失败" : "等待"}</small></div></li>
+            <li className={isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "complete" : "pending" : assistantSaveFailed ? "failed" : assistantSaved ? "complete" : "pending"}><i /><div><strong>{!isInspectingHistoricalRun && assistantSaveFailed ? "响应保存失败" : "响应已保存"}</strong><small>{isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "已完成" : "等待" : assistantSaveFailed ? "需要重试" : assistantSaved ? "已完成" : "等待"}</small></div></li>
           </ol>
         </section>
 
         <div className="future-note"><span>预留</span><p><strong>Agent Workflow</strong>切换到 Agent 模式后显示真实节点；工具执行仍等待后续合同。</p></div>
           </>
         )}
-        {errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
-        {lastAssistantMessage && !lastAssistantMessage.pending && !lastAssistantMessage.saving && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
+        {!isInspectingHistoricalRun && errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
+        {isInspectingHistoricalRun && evidenceRun && <p className="inspector-footnote">当前查看：所选回复关联的只读运行 {evidenceRun.run_id}</p>}
+        {!isInspectingHistoricalRun && lastAssistantMessage && !lastAssistantMessage.pending && !lastAssistantMessage.saving && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
       </aside>
     </main>
   );

@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 8 月 31 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入及稳定模型目录已实现；System Prompt前台隔离和浏览器本地文件选择已实现，后端文件上传仍待完成；会话归档按当前决定暂停，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
+**文档日期：** 2026 年 9 月 2 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录以及消息运行证据与当前工作台解耦已实现；System Prompt前台隔离和浏览器本地文件选择已实现，后端文件上传仍待完成；会话归档按当前决定暂停，独立后台执行进入阶段10规划，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -270,6 +270,8 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 - `version` 用于 Workflow 状态版本，`snapshot_version` 用于 Result 快照一致性。前端缓存按 `workflow_execution_id` 隔离，只接受不低于当前版本的摘要/结果；不得把不同快照的节点数组手工拼成“最新结果”。
 - 初始 POST SSE 断开后，先通过 Run 发现接口确认 Workflow，再回放 `lastEventSequence` 之后已经提交的事件并读取 Summary。若仍为运行中，只能以有界退避查询 Summary 和有限事件回放，并明确显示“查询恢复中”，不能把 GET `/events` 当成长连接。
 - 刷新后以 Run 发现、Workflow Summary 和 Result 为事实恢复。浏览器内的事件列表只是投影缓存，不能覆盖后端终态。
+- 点击某条 Assistant Message 的“查看运行证据”时，必须使用该 Message 自身持久化的 `run_id` 加载独立只读快照。该动作只开关证据抽屉，不改变会话路由、当前 Run、正在接收的 Workflow 事件、待生成 Assistant 投影或取消目标。
+- 当前 Session 的最新 Run 或 Workflow 仍为活动状态时，刷新恢复必须补回待完成 Assistant 投影并禁止再次提交；浏览器锁和标签页广播只是体验优化，服务端活动状态才是恢复后的事实。跨浏览器/跨设备的最终并发拒绝仍需后台执行阶段增加服务端条件约束。
 
 #### 完整节点结果展示
 
@@ -298,7 +300,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 - HTTP `422` 映射到创建表单字段或整体合同错误；`404` 在 Run 发现时表示“尚无 Workflow”，在已有 ID 查询时使用统一不可用状态；`409` 先重新发现该 Run 的 Workflow，不自动改 key 创建第二个 Workflow。
 - POST 返回 `200`/`201` 后仍读取响应或终态事件中的业务 `status`。`failed`、`cancelled` 和 `outcome_unknown` 不能因 HTTP 成功显示为完成。
 - `WorkflowErrorRead` 的 `public_message` 是用户可见错误，`error_code` 用于稳定映射，`details_reference_id` 只作为受控诊断引用。页面不得显示 Provider 原始响应或内部异常正文。
-- 当前稳定错误按用户动作分组：计划/合同类包括 `node_output_invalid`、`agent_capability_unavailable`、`agent_plan_invalid`、`agent_review_policy_mismatch`、`agent_dependency_cycle`；限制类包括 `agent_budget_exhausted`、`agent_budget_price_unavailable`、`agent_node_limit_exceeded`、`agent_model_call_limit_exceeded`、`agent_workflow_timeout`；质量门禁类包括 `agent_verification_failed`、`agent_review_rejected`；终止/系统类包括 `agent_workflow_cancelled`、`agent_provider_outcome_unknown`、`agent_workflow_internal_error`。未知 Provider 错误代码使用通用安全文案，并继续服从 `is_retryable` 和 `outcome_is_known`，不能因前端未登记就改成可重试。
+- 当前稳定错误按用户动作分组：计划/合同类包括 `node_output_invalid`、`agent_capability_unavailable`、`agent_plan_invalid`、`agent_review_policy_mismatch`、`agent_dependency_cycle`；限制类包括 `agent_budget_exhausted`、`agent_budget_price_unavailable`、`agent_node_limit_exceeded`、`agent_model_call_limit_exceeded`、`agent_workflow_timeout`；质量门禁类包括 `agent_verification_failed`；终止/系统类包括 `agent_workflow_cancelled`、`agent_provider_outcome_unknown`、`agent_workflow_internal_error`。Reviewer 的 `fail`、错误级发现、重试或重新规划要求是最终合成的证据约束和 Evaluation 事实，不再映射为 `agent_review_rejected` 工作流终止错误。未知 Provider 错误代码使用通用安全文案，并继续服从 `is_retryable` 和 `outcome_is_known`，不能因前端未登记就改成可重试。
 - `outcome_unknown` 表示 Provider 结果是否发生无法确认。当前相应错误会强制 `is_retryable=false`；前端只提供“重新读取证据”，不提供一键重新运行。
 - `agent_budget_exhausted`、节点/模型调用上限、验证失败和审核拒绝分别显示其事实原因。当前 Reviewer 拒绝不会进入返工轮次，不能展示“正在修改”。
 - 当前只允许显式取消；取消按钮在 Workflow 为 `running` 时出现，重复提交按幂等结果处理。恢复、批准、用户输入、返工、重排 Task、提高上限或绕过能力拒绝仍不提供。
@@ -639,6 +641,8 @@ apps/web/
 | 异步 Task 暂无 Worker | 显示已接受或等待执行的后端事实，不显示虚假的执行百分比；允许动作由后端返回 |
 | Agent 模式的 User Message 或 Run 创建结果未知 | 保留输入并标记提交尚未确认；在统一幂等提交合同完成前不自动创建第二条 Message、第二个 Run 或 Workflow |
 | Agent Workflow POST 断流或超时 | 保留原 `idempotency_key`，先按 Run 发现 Workflow、回放已提交事件并读取 Summary/Result；不生成新 key 自动重试 |
+| 运行中查看历史回复证据 | 在独立检查器状态中按所选 Message 的 `run_id` 读取 Run、Workflow、Node、Reasoning 和 Context 证据；不跳转 `/runs/[runId]`，不重建工作台，不取消或替换当前执行 |
+| 页面恢复时最新 Run 仍在活动状态 | 恢复待完成 Assistant 投影并禁用新提交，允许读取或显式取消权威 Workflow；不把缺少本地 SSE reader 解释为运行已结束 |
 | Agent Workflow 事件重复或缺口 | 按 `event_sequence` 去重；缺口时停止实时标识，执行有限回放并以查询快照收敛 |
 | Agent Workflow 结果未知 | 展示安全错误和已提交节点证据，只允许重新读取；不提供自动重跑或“继续执行” |
 | Tool/Agent 等待批准或用户输入 | 当前阶段3不显示该动作；后端接口实现后保持 Run 可恢复并使用幂等/状态条件合同提交 |
@@ -654,6 +658,7 @@ apps/web/
 - 三栏工作区：会话侧栏、中央对话与输入区、运行证据检查器；桌面端默认展示详情，窄屏改为左右覆盖层。
 - 会话数据流：读取 Session 与最新消息窗口，服务端通过单次完整消息分页合同返回正文，并用游标继续加载更早消息；首次恢复同时读取 Session 最新 RunDetail 与 Attempt 事实。
 - 稳定路由：会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；新会话首次提交期间保持当前页面实例，只有 Assistant 消息已持久化并可恢复后才替换为会话路由，避免 App Router 在流式处理中重建页面并丢失首条回复；刷新和浏览器历史导航会重新读取持久化事实。
+- 证据查看解耦：消息操作不再导航到运行路由，而是按所选 Assistant Message 的 `run_id` 加载独立只读快照；历史证据的加载、失败和关闭均不修改当前工作台 Run、Workflow、消息或取消目标。`/runs/[runId]` 继续仅作为直接访问和分享的稳定入口。
 - 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。Composer只展示所选模型声明的思考程度，并把统一`reasoning`合同同时透传给快速回复和Agent Workflow。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
@@ -668,7 +673,7 @@ apps/web/
 
 | 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
 |---|---|---|---|
-| 会话与路由 | 创建、选择和重命名会话，原子创建Run与当前User Message，最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息、按会话隔离的标签页草稿、同会话多标签页提交互斥，以及不自动发送的“再次提问” | 会话归档/取消归档按当前决定暂停；轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
+| 会话与路由 | 创建、选择和重命名会话，原子创建Run与当前User Message，最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息、按会话隔离的标签页草稿、同会话多标签页提交互斥、不自动发送的“再次提问”，以及不改变路由和工作台状态的消息运行证据抽屉 | 会话归档/取消归档按当前决定暂停；轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
 | Provider 与模型选择 | Web读取稳定模型目录，支持搜索、键盘选择、加载/失败/空目录状态，并提供只读 `/settings/models` 服务端模型事实页；保留旧Provider目录兼容接口 | 最终用户自己的Provider凭据和模型授权过滤等待阶段5；当前设置页不提供登记、密钥或启停操作 | 进行中 |
 | 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
 | Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端System Prompt和明确引用的文本Artifact来源 | 现有普通产品入口错误提供System Prompt绑定，必须移除；未知Attempt的首事件前断线只能读取最终事实；Artifact产品绑定、Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
@@ -676,9 +681,9 @@ apps/web/
 | 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据、Composer合并入口、模型切换归一化以及快速回复/Agent Workflow透传已实现 | 真实Provider浏览器矩阵仍待后续执行 | 进行中 |
 | Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 320px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键；完整Composer高度驱动消息底部留白 | 输入区仍需随完整跨浏览器门禁持续验证 | 已完成 |
-| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留和快照恢复 | 跨请求继续执行、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置 | 进行中 |
+| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留、快照恢复、审核意见不吞掉最终回答，以及活动运行恢复后的重复提交保护 | 脱离HTTP连接独立执行、跨进程恢复、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置；独立后台执行已进入阶段10规划 | 进行中 |
 | Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
-| 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
+| 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断当前执行 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离、Next.js加载/错误/不存在边界，以及桌面和移动Chromium的可复现Playwright基线 | 真实 Provider 浏览器端到端、完整可访问性、跨浏览器、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
 | 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
 
@@ -696,9 +701,11 @@ apps/web/
 | Agent 规划与预算 | 非法角色/能力/依赖、价格缺失、预算不足、节点/调用/时间上限耗尽 | 工作流在对应节点失败并保存稳定错误代码 | Workflow `error_json`、计划校验节点和预算字段 |
 | Worker 与结构化输出 | Provider 返回的 JSON 不符合节点 Schema、完成原因非法或 Provider 结果未知 | Worker 节点失败、取消或结果未知 | Worker Node、Model Attempt 和对应事件 |
 | Handoff | Task/Agent Run归属冲突、字段合同错误或包含禁止的隐藏推理字段 | `handoff_submission`节点失败且没有可提交输出 | Handoff Node、源Worker Node和`llm_agent_handoffs`；Handoff不再设置独立输出上限，完整Worker结构化输出直接保存 |
-| Verification 与 Reviewer | Handoff/Attempt/Task 引用不一致，或 Reviewer 拒绝、要求重试/重规划 | `agent_verification_failed` 或 `agent_review_rejected` | Verification、Reviewer、Evaluation 和 Workflow 错误 |
+| Verification 与 Reviewer | Handoff/Attempt/Task 引用不一致，或 Reviewer 拒绝、要求重试/重规划 | 确定性验证失败返回 `agent_verification_failed`；有效 Reviewer 结论继续生成受证据约束的最终回答，并在 Evaluation/节点中保留失败、缺失证据和未完成工作 | Verification、Reviewer、Evaluation、Final synthesis 和 Workflow 结果 |
 | 节点结果合同 | 节点 JSON 超过 64 KiB、`output_type`/Schema 版本不匹配 | `node_output_invalid` 或安全内部错误 | Node `output_type`、`output_schema_version`、`error_json` |
 | 前端恢复与展示 | Summary、事件、节点或 Result 接口局部失败 | 正文继续可读，检查器提示对应证据暂不可用 | 浏览器 Network、页面错误栏和权威 Result 快照 |
+
+2026 年 9 月 2 日本地实际故障记录：用户在新 Agent Workflow 执行期间点击旧回复的“查看运行证据”，旧实现却读取全局最新 `run` 并导航到 `/runs/[runId]`。App Router 因页面段切换重建工作台，新的本地 Assistant 投影和事件 reader 不再可见，用户误以为没有回答并再次提交相同问题。当前修复改为按被点击 Message 的 `run_id` 加载独立只读证据快照，消息操作不改变 URL、当前工作台状态或取消目标；刷新恢复发现最新服务端运行仍活动时补回待完成回复并阻止重复提交。让执行真正脱离浏览器连接继续属于阶段10，不在阶段4伪造。
 
 2026年8月20日本地实际故障记录：某次工作流的前六个节点完成，第七个`handoff_submission`节点因当时待提交Handoff为3352字节而失败。该限制和后续968字节投影逻辑已在2026年8月29日移除；新的Run直接保存完整Worker结构化Handoff。原失败Workflow继续作为不可变历史事实保留。
 
@@ -710,7 +717,7 @@ apps/web/
 
 2026 年 8 月 20 日本地实际故障记录：会话 `865c0292-c075-4c07-8523-9a98a2dc0ae6` 的 Worker 调用正常结束并返回完整 JSON，但额外输出了 `additional_properties=false`；该名称来自提示中 JSON Schema 的 `additionalProperties` 元数据，不属于 Worker 六个业务字段，因此被 `extra="forbid"` 拒绝。当前修复不对 DeepSeek 或单一模型写特殊分支：所有 `prompted_json` 调用均获得明确的顶层字段白名单和“Schema 关键字不是响应字段”约束，面向模型的 Schema 投影不再携带容易误抄的 `additionalProperties` 与 `title`，服务端仍按原始严格合同验证结果。前端继续只展示后端权威终态，不在浏览器中猜测性修补模型结果。
 
-2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而返回 `agent_review_rejected`。当前通用策略允许普通解释任务使用模型已有知识，同时保持“明确来源限制优先、不得伪造外部证据、重要不确定性必须说明”的边界。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；该修复没有前端结果修补或 DeepSeek 专用分支。后端与模型适配层最新全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
+2026 年 8 月 21 日本地实际故障记录：结构化输出修复后的首次回归已通过两个 Worker 合同，但统一指令中的 `Use only the supplied content` 让 Agent 拒绝使用模型已有知识，Reviewer 因普通解释问题没有得到回答而按当时合同返回 `agent_review_rejected`。通用知识边界随后已修复；2026 年 9 月 2 日又进一步移除了“审核拒绝即吞掉回答”的旧合同，当前相同审核结果会进入 Final synthesis，明确缺失证据与未完成工作。会话 `6102159d-3a72-4bb9-bc0a-00a723e9448f` 当时已通过 Playwright 完成 15 个节点、6 次真实模型调用和独立审核，最终中文回答即时显示并关联持久化 Message；相关修复没有前端结果修补或 DeepSeek 专用分支。
 
 2026 年 8 月 24 日本地 Composer 故障记录：固定的消息列表底部内边距无法覆盖 Agent 控件和长输入形成的动态 Composer 高度，因此长回复末尾的 `message-actions` 会被遮挡；原生 `select` 菜单也与相邻控件挤在一起，Textarea 只提供手工调整且 Enter 仍会误发送。当前实现使用 `ResizeObserver` 根据完整 Composer 高度更新会话底部间距，执行配置改为自定义可访问列表，并删除 Composer 内的运行机制解释。2026年8月31日重新设计后，Textarea随内容自动增高至320px后再内部滚动；生产构建中855字符输入使Composer增至493px，消息底部留白同步增至558px。Composer使用细内描边和轻阴影，Prompt、思考及模型列表采用浅底选中行，Agent低频设置进入条件设置栏；交互字号统一为12px、次级说明为11px、弹层标题为13px，恢复操作不再使用8～9px文字。前端80项测试、TypeScript、ESLint、生产构建及桌面和Pixel 7共18项Playwright测试通过。
 

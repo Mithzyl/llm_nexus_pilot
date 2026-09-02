@@ -355,6 +355,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .inspector-header { display: flex; align-items: flex-start; margin-bottom: 25px; }
 .inspector-header h2 { margin: 5px 0 0; font-size: 17px; }
 .inspector-header .icon-button { margin-left: auto; }
+.evidence-current-button { margin: 9px 0 0; padding: 0; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; }
+.evidence-current-button:hover { color: var(--text); }
+.evidence-load-state { margin: 0 0 12px; color: var(--muted); font-size: 10px; }
 .run-state { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 10px; padding: 14px 0 21px; border-bottom: 1px solid var(--line); }
 .status-emblem { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 11px; color: var(--accent-contrast); background: var(--accent); font-size: 13px; font-weight: 800; }
 .status-emblem.is-failed { background: var(--accent-contrast); color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }

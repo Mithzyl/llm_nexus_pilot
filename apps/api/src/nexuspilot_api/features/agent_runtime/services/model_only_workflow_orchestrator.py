@@ -82,8 +82,8 @@ from nexuspilot_api.schemas.responses import ResponsesResult
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 
 
-def review_allows_final_synthesis(review_output: ReviewerModelOutput) -> bool:
-    """Allow final revision only when review findings require no new execution or replanning."""
+def review_passes_candidate_evaluation(review_output: ReviewerModelOutput) -> bool:
+    """Return whether candidate evidence passes review without retry or replanning work."""
 
     has_blocking_finding = any(finding.severity == "error" for finding in review_output.findings)
     return (
@@ -439,16 +439,6 @@ class ModelOnlyWorkflowOrchestrator:
                     ),
                 )
                 raise WorkflowExecutionStopped
-            if review_output is not None and not review_allows_final_synthesis(review_output):
-                await self._fail_workflow(
-                    workflow,
-                    error=self._workflow_error(
-                        "agent_review_rejected",
-                        "Independent review rejected the candidate results.",
-                    ),
-                )
-                raise WorkflowExecutionStopped
-
             worker_result_inputs = [self._worker_record_input(record) for record in worker_records]
             handoff_outputs = [record.handoff for record in worker_records]
             worker_agent_run_ids = [record.agent_run_id for record in worker_records]
@@ -482,7 +472,11 @@ class ModelOnlyWorkflowOrchestrator:
                 role="controller",
                 purpose=(
                     "Synthesize the final answer and distinguish verified from unresolved items. "
-                    "Apply every non-blocking Reviewer required_action before finalizing."
+                    "Never suppress the user-facing answer because Reviewer findings, retry "
+                    "requests, or replanning requests exist. Treat every Reviewer finding and "
+                    "required_action as an evidence constraint: do not present rejected claims "
+                    "as confirmed, clearly state limitations and missing inputs, and provide "
+                    "safe next actions when work remains."
                 ),
                 model_output=FinalSynthesisModelOutput,
                 model_input={
@@ -1490,7 +1484,7 @@ class ModelOnlyWorkflowOrchestrator:
                 status=EvaluationStatus.COMPLETED,
                 verdict=(
                     EvaluationVerdict.PASS
-                    if review_allows_final_synthesis(reviewer_output)
+                    if review_passes_candidate_evaluation(reviewer_output)
                     else EvaluationVerdict.FAIL
                 ),
                 score=reviewer_output.score * Decimal("100"),
@@ -1513,15 +1507,16 @@ class ModelOnlyWorkflowOrchestrator:
             reviewer_agent_run_id=agent_run.agent_run_id,
             reviewer_model_attempt_id=response.id,
         )
-        review_accepted = review_allows_final_synthesis(reviewer_output)
         await self._complete_node(
             workflow,
             node,
             output=output,
             transition=NodeTransitionRead(
-                selected_transition=("synthesize" if review_accepted else "reject"),
-                next_node_keys=(["final_synthesis"] if review_accepted else []),
-                condition_summary="Independent Reviewer returned a typed verdict",
+                selected_transition="synthesize",
+                next_node_keys=["final_synthesis"],
+                condition_summary=(
+                    "Independent Reviewer returned typed evidence constraints for final synthesis"
+                ),
             ),
             evidence=self._model_evidence(
                 response,

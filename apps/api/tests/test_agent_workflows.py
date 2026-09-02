@@ -1601,7 +1601,7 @@ async def test_nonblocking_reviewer_revision_proceeds_to_final_synthesis(
         if request.metadata["agent_node_key"] == "final_synthesis"
     )
     assert final_request.system_instruction is not None
-    assert "Apply every non-blocking Reviewer required_action" in final_request.system_instruction
+    assert "Never suppress the user-facing answer" in final_request.system_instruction
     final_model_input = json.loads(final_request.messages[-1].content)
     assert final_model_input["review"]["verdict"] == "needs_revision"
     evaluation_id = review_node["output"]["evaluation_ids"][0]
@@ -1611,10 +1611,10 @@ async def test_nonblocking_reviewer_revision_proceeds_to_final_synthesis(
     assert evaluation.verdict == EvaluationVerdict.PASS
 
 
-async def test_reviewer_fail_stops_before_final_synthesis(
+async def test_reviewer_fail_still_produces_an_evidence_bounded_final_answer(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify an explicit Reviewer failure cannot become a successful final answer."""
+    """Verify an explicit Reviewer failure constrains rather than suppresses the user answer."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider(reviewer_verdict="fail")
@@ -1627,16 +1627,25 @@ async def test_reviewer_fail_stops_before_final_synthesis(
 
     assert response.status_code == 201
     result = response.json()
-    assert result["status"] == "failed"
-    assert result["error"]["error_code"] == "agent_review_rejected"
-    assert result["final_output"] is None
-    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+    assert result["status"] == "completed"
+    assert result["error"] is None
+    assert result["final_output"] is not None
+    review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
+    assert review_node["transition"]["selected_transition"] == "synthesize"
+    assert review_node["transition"]["next_node_keys"] == ["final_synthesis"]
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata["agent_node_key"] == "final_synthesis"
+    )
+    assert final_request.system_instruction is not None
+    assert "Never suppress the user-facing answer" in final_request.system_instruction
 
 
-async def test_reviewer_revision_with_error_finding_stops_before_final_synthesis(
+async def test_reviewer_revision_with_error_finding_constrains_final_synthesis(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify an error-level revision remains blocking even without a retry request."""
+    """Verify error findings reach final synthesis as explicit evidence constraints."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider(
@@ -1652,18 +1661,25 @@ async def test_reviewer_revision_with_error_finding_stops_before_final_synthesis
 
     assert response.status_code == 201
     result = response.json()
-    assert result["status"] == "failed"
-    assert result["error"]["error_code"] == "agent_review_rejected"
-    assert result["final_output"] is None
+    assert result["status"] == "completed"
+    assert result["error"] is None
+    assert result["final_output"] is not None
     review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
-    assert review_node["transition"]["selected_transition"] == "reject"
-    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+    assert review_node["transition"]["selected_transition"] == "synthesize"
+    assert review_node["transition"]["next_node_keys"] == ["final_synthesis"]
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata["agent_node_key"] == "final_synthesis"
+    )
+    final_model_input = json.loads(final_request.messages[-1].content)
+    assert final_model_input["review"]["findings"][0]["severity"] == "error"
 
 
-async def test_reviewer_retry_request_uses_reject_transition(
+async def test_reviewer_retry_request_reaches_final_synthesis_as_unresolved_work(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify a nominal pass that still requests retry cannot advertise synthesis."""
+    """Verify a retry recommendation cannot suppress an evidence-bounded user answer."""
 
     run = await create_test_run(client)
     provider = ScriptedAgentProvider(reviewer_requires_retry=True)
@@ -1676,14 +1692,21 @@ async def test_reviewer_retry_request_uses_reject_transition(
 
     assert response.status_code == 201
     result = response.json()
-    assert result["status"] == "failed"
-    assert result["error"]["error_code"] == "agent_review_rejected"
+    assert result["status"] == "completed"
+    assert result["error"] is None
+    assert result["final_output"] is not None
     review_node = next(node for node in result["nodes"] if node["node_key"] == "independent_review")
     assert review_node["output"]["verdict"] == "pass"
     assert review_node["output"]["requires_retry"] is True
-    assert review_node["transition"]["selected_transition"] == "reject"
-    assert review_node["transition"]["next_node_keys"] == []
-    assert not any(node["node_key"] == "final_synthesis" for node in result["nodes"])
+    assert review_node["transition"]["selected_transition"] == "synthesize"
+    assert review_node["transition"]["next_node_keys"] == ["final_synthesis"]
+    final_request = next(
+        request
+        for request in provider.requests
+        if request.metadata["agent_node_key"] == "final_synthesis"
+    )
+    final_model_input = json.loads(final_request.messages[-1].content)
+    assert final_model_input["review"]["requires_retry"] is True
 
 
 async def test_reviewer_pass_with_error_finding_is_rejected_as_invalid_output(

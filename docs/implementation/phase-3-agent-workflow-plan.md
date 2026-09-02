@@ -1,7 +1,7 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 8 月 29 日
-**文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁和自动缓存诊断均已实现并通过自动化验证；Composer产品入口属于阶段4）
+**文档日期：** 2026 年 9 月 2 日
+**文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断及“审核约束回答但不吞掉回答”均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 
@@ -32,7 +32,7 @@
 - `llm_runs`、`llm_tasks`、`llm_attempts`、`llm_evaluations` 和 `llm_artifacts` 已保存主要业务事实。
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
-- 阶段10 RabbitMQ 和阶段7 Tool Runtime 均已暂停。阶段3第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
+- 阶段10 RabbitMQ 已因独立后台执行需求恢复规划但尚未实施，阶段7 Tool Runtime 仍暂停。阶段3第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
 - 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成，真实 Provider 端到端验收仍未完成，工具视图等待阶段7稳定合同。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
@@ -44,7 +44,7 @@
 | 完整节点结果 | 已实现 | 所有节点使用 `agent_workflow_node_result.v1` 信封，包含输入引用、类型化输出、分支、预算、证据、错误和生命周期；详情与完整结果可查询 |
 | 数据库事实 | 已实现 | 新增 Workflow、Node、Event 表；补充 Agent Run/Turn 到 Workflow/Node 的引用；Run 目前最多创建一个 Workflow，节点键和节点尝试具有数据库唯一约束 |
 | 依赖与交接 | 已实现 | Controller 返回的有向无环任务图先由程序校验；无依赖的工作 Agent 最多两个并行，每个 Provider 调用使用独立数据库会话；依赖 Task 的 Worker 输出与 Handoff 会显式传给下游 Agent |
-| 审核门禁 | 已实现 | 确定性验证失败不能被 Reviewer 覆盖；无错误级发现且不要求重试或重新规划的 `needs_revision` 进入最终汇总并应用修改，明确失败、错误级发现、重新规划或重试要求会阻止最终汇总；Evaluation 保留候选 Attempt 与 Task 的正确归属 |
+| 审核约束 | 已实现 | 确定性验证失败不能被 Reviewer 覆盖；有效的 Reviewer 输出始终进入最终汇总。`fail`、错误级发现、重新规划或重试要求仍使 Evaluation 失败，但只约束最终回答不得宣称被拒绝内容已确认，并要求明确限制、缺失输入、未完成工作和安全下一步，不再吞掉用户回答；Evaluation 保留候选 Attempt 与 Task 的正确归属 |
 | 最终消息一致性 | 已实现 | Assistant Message 与最终汇总节点的完成事件使用同一事务；节点合同或持久化失败会回滚尚未提交的消息，避免失败工作流留下成功答案 |
 | HTTP 与 SSE | 已实现 | POST 支持同步 JSON 或提交后实时 SSE；GET 支持 Workflow、Result、Node 列表/详情和按序号回放已持久化事件；显式取消接口可阻止后续节点；GET `/events` 按设计只做有限回放 |
 | 事件观察者隔离 | 已实现 | 事件先提交到数据库再通知请求级实时观察者；观察者断开或回调异常只记录警告并解除该观察者，不回滚事实、不使工作流失败；任务取消仍按原取消语义传播 |
@@ -153,7 +153,7 @@ Run
 - 节点输出由 `NODE_OUTPUT_MODELS` 按 `output_type` 映射到唯一 Pydantic 类型，写入前和读取后都会重新校验。
 - `workflow_definition_registry.py` 已登记 `model_only/1.0.0/model_only_v1` 的固定节点和按任务生成的节点，应用导入该模块时会检查重复定义、未知输出类型和未知后续节点。
 - 创建工作流时必须找到完全匹配的名称、版本和执行配置；节点开始前校验 `node_key`、`node_type` 和 `output_type`，节点完成前校验实际后续节点及跳过节点是否属于允许连接。
-- `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核，以及审核意见进入最终修改或终止工作流的分支。
+- `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核，以及审核意见如何约束最终汇总。审核不是回答投递开关；只有无可信类型化审核结果、确定性验证失败或其他执行错误才会按对应错误合同终止。
 
 ### 后续目标
 
@@ -479,7 +479,7 @@ reviewer_model_attempt_id
 
 - Reviewer 只读取用户目标、任务要求、候选结果、确定性检查和明确证据，不读取实现模型隐藏消息或 Working State。
 - 当前为每个候选 Worker Attempt 创建一条 Evaluation，因此返回 `evaluation_ids[]`，不是单个 `evaluation_id`。
-- Reviewer 输出不能覆盖候选结果。当前 `fail`、错误级发现、`requires_replan=true` 或 `requires_retry=true` 会以 `agent_review_rejected` 终止工作流；没有错误级发现且不要求重新规划或重试的`needs_revision`会作为明确输入交给Final synthesis应用。当前不创建新的返工Task、Attempt或Node Execution。
+- Reviewer 输出不能覆盖候选结果。有效审核输出无论为 `pass`、`needs_revision` 还是 `fail`，都会作为类型化证据约束交给 Final synthesis；错误级发现、`requires_replan=true` 或 `requires_retry=true` 会使对应 Evaluation 失败，但最终回答必须改为说明被拒绝主张、证据限制、缺失输入、未完成工作和安全下一步，不能假装执行成功，也不能直接丢弃回答。当前不创建新的返工 Task、Attempt 或 Node Execution。
 
 ### 10. `final_synthesis` → `FinalSynthesisOutput`
 
@@ -860,7 +860,6 @@ agent_budget_price_unavailable
 agent_node_limit_exceeded
 agent_model_call_limit_exceeded
 agent_verification_failed
-agent_review_rejected
 agent_workflow_timeout
 agent_workflow_cancelled
 agent_provider_outcome_unknown
@@ -1033,7 +1032,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 2026 年 8 月 21 日补充知识边界修复：统一 Agent 指令原先要求 `Use only the supplied content`，导致普通解释问题也被错误当成必须提供外部资料的证据任务；Worker 只能报告资料缺失，Reviewer 因目标未回答而拒绝。当前 Provider 无关策略将已提供内容视为权威上下文，并允许普通解释问题使用模型已有的通用知识；任务明确限制来源时仍必须遵守，且任何模型都不得伪造工具、文件、测试、网络请求或外部验证事实。Playwright 使用真实 DeepSeek 对同一问题完成 15 个节点和 6 次模型调用，三个 Worker、Reviewer、最终汇总和消息关联全部成功，最终回答无需刷新即可见。后端与模型适配层全量验证为 `264 passed, 4 skipped`，Ruff 全量检查通过。
 
-2026 年 8 月 24 日补充审核门禁修复：Reviewer 返回 `needs_revision` 且不存在错误级发现、重试或重新规划要求时，工作流不再丢弃候选回答，而是把完整审核意见交给 Final synthesis 应用后生成最终消息；明确 `fail`、错误级发现、重试或重新规划仍会阻止汇总。定向回归覆盖上述四类分支，结果为 `4 passed`。
+2026 年 8 月 24 日曾把 Reviewer 作为最终汇总门禁：只有不存在错误级发现、重试或重新规划要求的 `needs_revision` 才能生成最终消息。2026 年 9 月 2 日根据真实故障修正该合同：有效 Reviewer 输出只约束答案的可信范围，不再控制用户是否收到回答；`fail`、错误级发现、重试和重新规划要求均进入 Final synthesis，并要求明确限制、缺失证据和未完成工作。Evaluation 仍准确记录失败，确定性验证仍不能被 Reviewer 覆盖。新增三项回归与既有 Reviewer 合同合计 `7 passed`。
 
 2026年8月29日补充稳定模型思考合同：工作流创建请求新增统一`reasoning`字段，Controller、Worker、Reviewer和Final synthesis均透传同一选择；省略时由各角色登记模型解析为“启用 + medium”。新工作流在写入工作流、事件或可计费调用前预检全部角色模型，未登记、已禁用、不支持等级或不支持关闭均明确失败；精确幂等回放不因模型策略后来变化而重跑。每个Attempt继续保存统一配置、来源、模型策略版本和Provider原生值。Agent定向测试为`55 passed`，后端与模型包全量测试为`295 passed, 4 skipped`，Ruff全量检查通过。
 
@@ -1131,7 +1130,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 ### `model_only_v1` 与阶段3
 
-当前状态：已完成。自动化测试已经验证主流程、完整节点合同、核心 HTTP/SSE、幂等、有界并行、原子费用预留、显式取消、审核门禁、最终消息回滚、终态一致提交、超时和未知结果。
+当前状态：已完成。自动化测试已经验证主流程、完整节点合同、核心 HTTP/SSE、幂等、有界并行、原子费用预留、显式取消、审核证据约束、最终消息回滚、终态一致提交、超时和未知结果。
 
 - Controller、Planner/Researcher、确定性验证、Reviewer 和最终汇总可在同步请求内完成。
 - 每个执行节点返回完整 `AgentWorkflowNodeResult`，所有节点特有输出通过判别联合校验。
