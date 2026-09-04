@@ -54,7 +54,10 @@ import {
   readAgentWorkflowEventStream,
   type AgentWorkflowEventState,
 } from "../lib/agent-workflow";
-import { isAgentWorkflowCancellable } from "../lib/agent-workflow-view";
+import {
+  isAgentWorkflowAssistantMessage,
+  isAgentWorkflowCancellable,
+} from "../lib/agent-workflow-view";
 import {
   hasSavedAssistantForLatestTurn,
   pendingAssistantRunIdForLatestTurn,
@@ -902,13 +905,12 @@ export default function Home() {
 
     setExecutionMode("agent");
     setAgentWorkflow(summary);
-    if (assistantLocalId) {
-      setMessages((current) => current.map((message) =>
-        message.local_id === assistantLocalId
-          ? { ...message, agentWorkflow: true }
-          : message,
-      ));
-    }
+    setMessages((current) => current.map((message) =>
+      message.local_id === assistantLocalId
+        || isAgentWorkflowAssistantMessage(message, runId)
+        ? { ...message, agentWorkflow: true }
+        : message,
+    ));
     let restoredEvents = EMPTY_AGENT_EVENT_STATE;
     try {
       const replay = await replayAgentWorkflowEvents(summary.workflow_execution_id, 0);
@@ -1894,7 +1896,7 @@ export default function Home() {
                           presentation={presentation}
                         />
                       ))}
-                      {message.pending && message.agentWorkflow && message.run_id === run?.run_id && (
+                      {message.agentWorkflow && message.run_id === run?.run_id && (
                         <AgentWorkflowActivityFeed events={agentEventState.events} />
                       )}
                       {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}

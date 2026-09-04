@@ -1,3 +1,7 @@
+"use client";
+
+import { useId, useState } from "react";
+
 import type {
   AgentWorkflowEvent,
   AgentWorkflowNodeResult,
@@ -14,7 +18,8 @@ import {
   agentNodePublicActivityText,
   agentWorkflowEventActivity,
   isAgentWorkflowCancellable,
-  selectRecentAgentWorkflowActivities,
+  selectAgentWorkflowActivityTimeline,
+  selectVisibleAgentWorkflowActivities,
 } from "../../lib/agent-workflow-view";
 
 const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
@@ -135,19 +140,55 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
   }
 }
 
-/** Render a compact live activity feed without exposing model reasoning or raw output. */
+/** Format one durable activity time for the expanded workflow timeline. */
+function formatAgentActivityTime(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+/** Render the latest activity by default and preserve the full collapsible timeline. */
 export function AgentWorkflowActivityFeed({ events }: { events: AgentWorkflowEvent[] }) {
-  const activities = selectRecentAgentWorkflowActivities(events);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const activityTimelineId = useId();
+  const activities = selectAgentWorkflowActivityTimeline(events);
   if (activities.length === 0) return null;
+  const latestActivity = activities[activities.length - 1];
+  const visibleActivities = selectVisibleAgentWorkflowActivities(activities, isExpanded);
 
   return (
-    <section className="agent-activity-feed" aria-label="Agent 工作流当前活动">
-      <span className="agent-activity-label">执行过程</span>
-      <ol aria-live="polite" aria-atomic="false">
-        {activities.map((activity) => (
-          <li key={`${activity.nodeExecutionId}:${activity.phase}`} data-phase={activity.phase}>
+    <section
+      className="agent-activity-feed"
+      aria-label="Agent 工作流执行过程"
+      data-expanded={isExpanded}
+    >
+      <button
+        type="button"
+        className="agent-activity-toggle"
+        aria-expanded={isExpanded}
+        aria-controls={activityTimelineId}
+        onClick={() => setIsExpanded((current) => !current)}
+      >
+        <span>执行过程</span>
+        <small>{isExpanded ? `${activities.length} 条活动` : "查看完整过程"}</small>
+        <i aria-hidden="true">{isExpanded ? "−" : "+"}</i>
+      </button>
+      <ol id={activityTimelineId} aria-live="polite" aria-atomic="false">
+        {visibleActivities.map((activity) => (
+          <li
+            key={activity.eventSequence}
+            data-phase={activity.phase}
+            data-latest={activity.eventSequence === latestActivity.eventSequence}
+          >
             <i aria-hidden="true" />
             <span>{activity.text}</span>
+            {isExpanded && (
+              <time dateTime={activity.occurredAt}>
+                {formatAgentActivityTime(activity.occurredAt)}
+              </time>
+            )}
           </li>
         ))}
       </ol>

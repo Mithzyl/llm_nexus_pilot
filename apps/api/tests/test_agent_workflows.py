@@ -107,11 +107,14 @@ def test_node_activity_templates_expose_work_without_hidden_reasoning() -> None:
     assert running.model_dump(mode="json") == {
         "schema_version": "node_activity_summary.v1",
         "phase": "running",
-        "text": "正在处理任务“梳理接口边界 并确认调用关系”",
+        "text": "Agent（planner）正在执行：“梳理接口边界 并确认调用关系”",
         "source": "deterministic_input",
     }
-    assert completed.text == "已完成任务“梳理接口边界”：已确认 API 与事件边界 并保留兼容入口"
-    assert handoff.text == "已收到planner的交接：“把已确认的接口边界交给下游节点”"
+    assert completed.text == (
+        "Agent（planner）已提交“梳理接口边界”的阶段结果："
+        "已确认 API 与事件边界 并保留兼容入口"
+    )
+    assert handoff.text == "已接收 Agent（planner）的阶段结果：“把已确认的接口边界交给下游节点”"
     assert "must-not-leak" not in running.text
     assert "must-not-leak" not in completed.text
 
@@ -130,7 +133,14 @@ def test_node_activity_templates_expose_work_without_hidden_reasoning() -> None:
             },
             "已准备上下文：纳入3项，排除1项",
         ),
-        ("controller_plan", {"tasks": [{}, {}, {}]}, "已为当前目标制定3项计划"),
+        (
+            "controller_plan",
+            {
+                "decision_summary": "解释瑞利散射，并区分白天与日落时的光线路径",
+                "tasks": [{}, {}, {}],
+            },
+            "Controller 已规划：“解释瑞利散射，并区分白天与日落时的光线路径”",
+        ),
         (
             "plan_validation",
             {"is_valid": True, "total_task_count": 3, "checks": []},
@@ -154,12 +164,12 @@ def test_node_activity_templates_expose_work_without_hidden_reasoning() -> None:
         (
             "final_synthesis",
             {"completed_objectives": ["one", "two"], "unresolved_items": ["later"]},
-            "已生成最终回答：完成2项，保留1项未解决事项",
+            "最终答案已生成：覆盖2项目标，保留1项未解决事项",
         ),
         (
             "workflow_completion",
             {"node_count": 11, "model_attempt_ids": ["attempt-1", "attempt-2"]},
-            "工作流已完成：11个节点，2次模型调用",
+            "最终答案已提交：11个节点，2次模型调用",
         ),
     ],
 )

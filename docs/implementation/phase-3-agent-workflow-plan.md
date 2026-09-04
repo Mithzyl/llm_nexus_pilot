@@ -285,7 +285,8 @@ class AgentWorkflowNode(Protocol):
 
 - 运行中摘要只能使用调用前已经确定并已授权公开的输入事实，例如节点类型、任务标题、角色和任务数量。
 - 完成摘要只能在节点类型化输出校验并持久化后生成；允许引用已通过公共合同校验的短字段，但不能直接展示完整模型响应。
-- 单次Provider调用期间没有更细的可靠进度时，保持“正在处理某任务”，不能编造百分比、内部步骤或预计完成时间。
+- 单次Provider调用期间没有更细的可靠进度时，保持“{角色}正在执行某项工作”，不能编造百分比、内部步骤或预计完成时间。
+- Worker节点完成只表示一个Agent提交了供下游使用的阶段结果，不表示用户目标或整个任务已经完成；只有最终汇总和工作流完成事实可以使用“最终答案已生成/已提交”。
 - 摘要不包含模型隐藏推理、思维链、System Prompt、密钥、内部对象URI、完整用户输入、完整Handoff、完整文件内容或未脱敏Provider响应。
 - 当前`public_view.summary`继续作为兼容字段；历史节点不回填、不猜测。新节点写入版本化活动对象后，兼容字段必须镜像同一`text`，不能形成两套不同文案事实。
 
@@ -297,13 +298,13 @@ class AgentWorkflowNode(Protocol):
 {
   "public_view": {
     "status_label": "正在规划",
-    "summary": "正在围绕当前目标制定执行计划",
+    "summary": "Controller 正在规划执行步骤",
     "progress_current": 3,
     "progress_total": 11,
     "activity": {
       "schema_version": "node_activity_summary.v1",
       "phase": "running",
-      "text": "正在围绕当前目标制定执行计划",
+      "text": "Controller 正在规划执行步骤",
       "source": "deterministic_input"
     }
   }
@@ -335,23 +336,23 @@ class AgentWorkflowNode(Protocol):
 |---|---|---|---|
 | 请求归一化 | 正在确认请求目标与能力边界 | 已确认请求目标与能力边界 | 确定性节点结果；默认不复述完整`normalized_objective` |
 | 上下文组装 | 正在准备本次运行所需上下文 | 已准备上下文：纳入{已纳入数量}项，排除{已排除数量}项 | `included_*_ids`和`excluded_sources`计数 |
-| Controller计划 | 正在围绕当前目标制定执行计划 | 已为当前目标制定{任务数量}项计划 | `tasks`数量；计划详情继续在完整节点输出中查看 |
+| Controller计划 | Controller正在规划执行步骤 | Controller已规划：“{计划摘要}” | `decision_summary`的有界纯文本投影；任务详情继续在完整节点输出中查看 |
 | 计划校验 | 正在检查计划依赖与能力边界 | 通过时：计划检查通过，{任务数量}项任务可执行；失败时：计划不可执行，发现{问题数量}项问题 | `is_valid`、`total_task_count`和失败检查计数 |
 | Agent分派 | 正在分配{任务数量}项工作任务 | 已分配{任务数量}项任务，形成{执行组数量}个执行组 | `created_tasks`和`dispatch_groups`数量 |
-| 工作Agent模型节点 | 正在处理任务“{任务标题}” | 已完成任务“{任务标题}”：{Worker摘要短句} | 调用前任务标题；完成后`structured_output.summary`的有界纯文本投影 |
-| Handoff提交 | 正在整理“{任务标题}”的交接结果 | 已收到{Agent角色}的交接：“{交接目标}” | 已验证并持久化的`agent_role`与`AgentHandoffOutput.objective` |
+| 工作Agent模型节点 | Agent（{角色}）正在执行：“{任务标题}” | Agent（{角色}）已提交“{任务标题}”的阶段结果：{Worker摘要短句} | 调用前角色和任务标题；完成后`structured_output.summary`的有界纯文本投影；不得表述为任务完成 |
+| Handoff提交 | 正在整理“{任务标题}”的交接结果 | 已接收Agent（{角色}）的阶段结果：“{交接目标}” | 已验证并持久化的`agent_role`与`AgentHandoffOutput.objective` |
 | 确定性验证 | 正在核对交接结构、引用与完成状态 | 通过时：校验通过，已确认{已验证数量}项；未通过时：校验发现{阻塞数量}项阻塞问题 | `verdict`、`verified_claims`和`blocking_findings`数量 |
 | 独立审核 | 正在独立审核候选结果与证据 | 通过时：审核通过；需修订时：审核建议修订，发现{发现数量}项问题；失败时：审核未通过，发现{错误数量}项错误 | `verdict`和`findings`，不直接展示审核模型思维链 |
-| 最终汇总 | 正在汇总已确认结果与未解决事项 | 已生成最终回答：完成{完成项数量}项，保留{未解决数量}项未解决事项 | `completed_objectives`与`unresolved_items`数量 |
-| 工作流完成 | 正在提交工作流完成事实 | 工作流已完成：{节点数量}个节点，{模型调用数量}次模型调用 | `node_count`和`model_attempt_ids`数量 |
+| 最终汇总 | 正在规划最终答案 | 最终答案已生成：覆盖{完成项数量}项目标，保留{未解决数量}项未解决事项 | `completed_objectives`与`unresolved_items`数量 |
+| 工作流完成 | 正在提交工作流完成事实 | 最终答案已提交：{节点数量}个节点，{模型调用数量}次模型调用 | `node_count`和`model_attempt_ids`数量 |
 
 失败终态使用统一文案：`执行失败：{安全错误摘要}`、`执行已取消`、`模型调用结果暂无法确认`。节点失败后不得保留“正在……”；审核给出`needs_revision`或`fail`时仍按现有规则进入受约束的最终回答，不把“审核未通过”再次解释成工作流异常。
 
 #### 前端消费边界
 
-- 对话中的活动区默认只显示最新活动和最近两条已完成摘要；完整11类节点仍在独立运行证据抽屉中查看，避免用活动日志挤压回答正文。
-- 并行Worker按`node_execution_id`分别显示，不能用一个全局字符串相互覆盖；同一节点按`event_sequence`去重，乱序或缺口时以Result快照收敛。
-- 最终Assistant Message出现后，对话活动区自动折叠为“执行完成”，历史摘要继续保留在只读证据抽屉中。
+- 对话中的活动区默认折叠，只显示`event_sequence`最大的最新活动；用户展开后按事件序号查看全部已提交活动，完整节点参数仍在独立运行证据抽屉中查看。
+- 并行Worker按`node_execution_id`分别显示；同一节点的开始活动和阶段结果是两条独立生命周期事实，后到结果不能覆盖此前的“正在执行”。事件只按`event_sequence`去重，乱序或缺口时以Result快照收敛。
+- 最终Assistant Message出现后仍保留折叠活动区，用户可以在回答旁展开本次运行的简单工作摘要；切换运行后不把旧运行活动混入当前回答。
 - 最新活动使用`aria-live="polite"`供辅助技术播报；不得播报Token级变化，也不得把纯文本活动摘要当Markdown渲染。
 - Provider已有真正的公开推理摘要时，继续放在现有Reasoning区域；公开活动摘要放在“执行过程”区域，两者不能合并或互相替代。
 
@@ -360,7 +361,7 @@ class AgentWorkflowNode(Protocol):
 - 后端测试先覆盖每类节点的运行中和完成模板、无可用安全字段时的通用句、240字符边界、控制字符清理和敏感内容不进入摘要。
 - 事务测试验证开始摘要提交后才调用Provider，完成摘要只在类型化输出校验后提交，失败摘要不会泄露原始异常，并且事件活动对象与节点快照逐字段一致。
 - 兼容测试验证旧`public_view_json`缺少`activity`时仍可读取；新写入必须包含`node_activity_summary.v1`，`summary`与`activity.text`必须相同。
-- 前端测试覆盖事件重复、乱序、缺口恢复、两个并行Worker、刷新后Result恢复、终态折叠和辅助技术播报。
+- 前端测试覆盖事件重复、乱序、缺口恢复、两个并行Worker、同一Worker开始与阶段结果并存、折叠态最新活动、展开态完整瀑布流、刷新后Result恢复和辅助技术播报。
 - 完成条件是用户能够看到节点级“正在做什么”和“刚完成什么”，同时无法从该接口取得隐藏推理、完整模型输出或未提交事实。
 
 ## 各节点完整输出参数

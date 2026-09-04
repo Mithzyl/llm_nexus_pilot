@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import { AgentWorkflowActivityFeed } from "../components/agent-workflow/AgentWorkflowPanel";
 import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
-  selectRecentAgentWorkflowActivities,
+  selectAgentWorkflowActivityTimeline,
+  selectVisibleAgentWorkflowActivities,
+  isAgentWorkflowAssistantMessage,
   isAgentWorkflowCancellable,
 } from "../lib/agent-workflow-view";
 import type { AgentWorkflowEvent } from "../lib/types";
@@ -102,20 +108,78 @@ test("prefers versioned node activity while preserving historical summary fallba
   );
 });
 
-test("keeps parallel running activities and then fills recent completed facts", () => {
-  const activities = selectRecentAgentWorkflowActivities([
+test("keeps every lifecycle activity in durable event order", () => {
+  const activities = selectAgentWorkflowActivityTimeline([
     activityEvent(1, "worker-1", "running", "正在处理任务一"),
     activityEvent(2, "worker-2", "running", "正在处理任务二"),
-    activityEvent(3, "worker-1", "completed", "已完成任务一"),
+    activityEvent(3, "worker-1", "completed", "Agent 一已提交阶段结果"),
     activityEvent(4, "handoff-1", "completed", "已收到任务一交接"),
   ]);
 
   assert.deepEqual(
     activities.map((activity) => [activity.nodeExecutionId, activity.text]),
     [
+      ["worker-1", "正在处理任务一"],
       ["worker-2", "正在处理任务二"],
+      ["worker-1", "Agent 一已提交阶段结果"],
       ["handoff-1", "已收到任务一交接"],
-      ["worker-1", "已完成任务一"],
     ],
+  );
+});
+
+test("collapses to the newest activity and expands without losing earlier summaries", () => {
+  const activities = selectAgentWorkflowActivityTimeline([
+    activityEvent(1, "controller", "completed", "Controller 已规划"),
+    activityEvent(2, "worker", "running", "Agent 正在执行"),
+    activityEvent(3, "worker", "completed", "Agent 已提交阶段结果"),
+    activityEvent(4, "synthesis", "running", "正在规划最终答案"),
+  ]);
+
+  assert.deepEqual(
+    selectVisibleAgentWorkflowActivities(activities, false).map((activity) => activity.text),
+    ["正在规划最终答案"],
+  );
+  assert.deepEqual(
+    selectVisibleAgentWorkflowActivities(activities, true).map((activity) => activity.text),
+    ["Controller 已规划", "Agent 正在执行", "Agent 已提交阶段结果", "正在规划最终答案"],
+  );
+});
+
+test("renders an accessible collapsed activity disclosure with only the newest summary", () => {
+  const markup = renderToStaticMarkup(
+    createElement(AgentWorkflowActivityFeed, {
+      events: [
+        activityEvent(1, "controller", "completed", "Controller 已规划旧摘要"),
+        activityEvent(2, "worker", "running", "Agent 正在执行最新任务"),
+      ],
+    }),
+  );
+
+  assert.match(markup, /aria-expanded="false"/);
+  assert.match(markup, /Agent 正在执行最新任务/);
+  assert.doesNotMatch(markup, /Controller 已规划旧摘要/);
+});
+
+test("restores workflow presentation on the persisted assistant message for the same run", () => {
+  assert.equal(
+    isAgentWorkflowAssistantMessage(
+      { role: "assistant", run_id: "run-1" },
+      "run-1",
+    ),
+    true,
+  );
+  assert.equal(
+    isAgentWorkflowAssistantMessage(
+      { role: "user", run_id: "run-1" },
+      "run-1",
+    ),
+    false,
+  );
+  assert.equal(
+    isAgentWorkflowAssistantMessage(
+      { role: "assistant", run_id: "run-2" },
+      "run-1",
+    ),
+    false,
   );
 });

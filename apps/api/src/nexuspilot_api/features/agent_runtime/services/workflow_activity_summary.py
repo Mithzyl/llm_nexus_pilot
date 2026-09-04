@@ -52,6 +52,15 @@ def _list_count(output: Mapping[str, Any], field_name: str) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+def _public_agent_label(agent_role: str | None) -> str:
+    """Present an optional internal role as a readable Agent label."""
+
+    if not agent_role:
+        return "Agent"
+    role = _bounded_plain_text(agent_role, fallback="Agent")
+    return f"Agent（{role}）"
+
+
 def build_running_node_activity(
     *,
     output_type: str,
@@ -61,18 +70,19 @@ def build_running_node_activity(
     """Describe work that has durably started using only safe pre-call input facts."""
 
     task_title = _bounded_plain_text(input_values.get("task_title"), fallback="当前任务")
+    agent_label = _public_agent_label(agent_role)
     task_count = _list_count(input_values, "tasks")
     texts = {
         "request_intake": "正在确认请求目标与能力边界",
         "context_assembly": "正在准备本次运行所需上下文",
-        "controller_plan": "正在围绕当前目标制定执行计划",
+        "controller_plan": "Controller 正在规划执行步骤",
         "plan_validation": "正在检查计划依赖与能力边界",
         "agent_dispatch": (f"正在分配{task_count}项工作任务" if task_count else "正在分配工作任务"),
-        "agent_model_execution": f"正在处理任务“{task_title}”",
+        "agent_model_execution": f"{agent_label}正在执行：“{task_title}”",
         "agent_handoff": f"正在整理“{task_title}”的交接结果",
         "deterministic_verification": "正在核对交接结构、引用与完成状态",
         "independent_review": "正在独立审核候选结果与证据",
-        "final_synthesis": "正在汇总已确认结果与未解决事项",
+        "final_synthesis": "正在规划最终答案",
         "workflow_completion": "正在提交工作流完成事实",
     }
     return _activity(
@@ -106,7 +116,11 @@ def build_completed_node_activity(
         excluded_count = _list_count(output, "excluded_sources")
         text = f"已准备上下文：纳入{included_count}项，排除{excluded_count}项"
     elif output_type == "controller_plan":
-        text = f"已为当前目标制定{_list_count(output, 'tasks')}项计划"
+        decision_summary = _bounded_plain_text(
+            output.get("decision_summary"),
+            fallback=f"已制定{_list_count(output, 'tasks')}项执行计划",
+        )
+        text = f"Controller 已规划：“{decision_summary}”"
     elif output_type == "plan_validation":
         if output.get("is_valid") is True:
             text = f"计划检查通过，{int(output.get('total_task_count') or 0)}项任务可执行"
@@ -129,10 +143,12 @@ def build_completed_node_activity(
         )
         task_title = _bounded_plain_text(activity_context.get("task_title"), fallback="当前任务")
         summary_text = _bounded_plain_text(worker_summary, fallback="已提交类型化结果")
-        text = f"已完成任务“{task_title}”：{summary_text}"
+        agent_label = _public_agent_label(agent_role)
+        text = f"{agent_label}已提交“{task_title}”的阶段结果：{summary_text}"
     elif output_type == "agent_handoff":
         objective = _bounded_plain_text(output.get("objective"), fallback="当前任务结果")
-        text = f"已收到{agent_role or '工作 Agent'}的交接：“{objective}”"
+        agent_label = _public_agent_label(agent_role)
+        text = f"已接收 {agent_label}的阶段结果：“{objective}”"
     elif output_type == "deterministic_verification":
         if output.get("verdict") == "pass":
             text = f"校验通过，已确认{_list_count(output, 'verified_claims')}项"
@@ -155,12 +171,12 @@ def build_completed_node_activity(
             text = f"审核未通过，发现{error_count}项错误"
     elif output_type == "final_synthesis":
         text = (
-            f"已生成最终回答：完成{_list_count(output, 'completed_objectives')}项，"
+            f"最终答案已生成：覆盖{_list_count(output, 'completed_objectives')}项目标，"
             f"保留{_list_count(output, 'unresolved_items')}项未解决事项"
         )
     elif output_type == "workflow_completion":
         text = (
-            f"工作流已完成：{int(output.get('node_count') or 0)}个节点，"
+            f"最终答案已提交：{int(output.get('node_count') or 0)}个节点，"
             f"{_list_count(output, 'model_attempt_ids')}次模型调用"
         )
     else:

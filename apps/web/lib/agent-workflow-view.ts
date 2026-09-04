@@ -14,7 +14,16 @@ type AgentNodeBudget = AgentWorkflowNodeResult["budget"];
 export type AgentWorkflowActivityItem = AgentWorkflowNodeActivitySummary & {
   nodeExecutionId: string;
   eventSequence: number;
+  occurredAt: string;
 };
+
+/** Identify the persisted assistant message that represents one Agent Workflow Run. */
+export function isAgentWorkflowAssistantMessage(
+  message: { role: string; run_id: string | null },
+  workflowRunId: string,
+): boolean {
+  return message.role === "assistant" && message.run_id === workflowRunId;
+}
 
 /** Prefer the versioned activity while retaining readable historical node snapshots. */
 export function agentNodePublicActivityText(
@@ -35,27 +44,30 @@ export function agentWorkflowEventActivity(
     ...activity,
     nodeExecutionId: event.node_execution_id,
     eventSequence: event.event_sequence,
+    occurredAt: event.occurred_at,
   };
 }
 
-/** Keep every parallel running node, then fill a compact feed with recent completions. */
-export function selectRecentAgentWorkflowActivities(
+/** Preserve every public lifecycle transition in durable event-sequence order. */
+export function selectAgentWorkflowActivityTimeline(
   events: AgentWorkflowEvent[],
-  maximumItems = 3,
 ): AgentWorkflowActivityItem[] {
-  const latestActivityByNodeId = new Map<string, AgentWorkflowActivityItem>();
+  const activityByEventSequence = new Map<number, AgentWorkflowActivityItem>();
   for (const event of events) {
     const activity = agentWorkflowEventActivity(event);
-    if (activity) latestActivityByNodeId.set(activity.nodeExecutionId, activity);
+    if (activity) activityByEventSequence.set(activity.eventSequence, activity);
   }
-  const latestActivities = [...latestActivityByNodeId.values()];
-  const running = latestActivities
-    .filter((activity) => activity.phase === "running")
-    .sort((left, right) => left.eventSequence - right.eventSequence);
-  const completed = latestActivities
-    .filter((activity) => activity.phase !== "running")
-    .sort((left, right) => right.eventSequence - left.eventSequence);
-  return [...running, ...completed].slice(0, maximumItems);
+  return [...activityByEventSequence.values()].sort(
+    (left, right) => left.eventSequence - right.eventSequence,
+  );
+}
+
+/** Show only the newest activity when collapsed and the complete timeline when expanded. */
+export function selectVisibleAgentWorkflowActivities(
+  activities: AgentWorkflowActivityItem[],
+  isExpanded: boolean,
+): AgentWorkflowActivityItem[] {
+  return isExpanded ? activities : activities.slice(-1);
 }
 
 /** Describe persisted dispatch groups without inferring dependencies from event arrival order. */
