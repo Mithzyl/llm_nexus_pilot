@@ -28,6 +28,11 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowCreate,
     AgentWorkflowNodeResultRead,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_activity_summary import (
+    build_completed_node_activity,
+    build_running_node_activity,
+    build_terminal_node_activity,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry import (
     DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
 )
@@ -68,6 +73,137 @@ from nexuspilot_api.models import (
 )
 
 INTERNAL_HEADERS = {"X-Internal-API-Key": "test-internal-key-long-enough"}
+
+
+def test_node_activity_templates_expose_work_without_hidden_reasoning() -> None:
+    """Generate stable activity text only from safe node inputs and typed outputs."""
+
+    running = build_running_node_activity(
+        output_type="agent_model_execution",
+        input_values={
+            "task_title": "梳理接口边界\n并确认调用关系",
+            "system_prompt": "must-not-leak",
+        },
+        agent_role="planner",
+    )
+    completed = build_completed_node_activity(
+        output_type="agent_model_execution",
+        output={
+            "structured_output": {
+                "summary": " 已确认   API 与事件边界\n并保留兼容入口 ",
+                "hidden_reasoning": "must-not-leak",
+            }
+        },
+        activity_context={"task_title": "梳理接口边界"},
+        agent_role="planner",
+    )
+    handoff = build_completed_node_activity(
+        output_type="agent_handoff",
+        output={"objective": "把已确认的接口边界交给下游节点"},
+        activity_context={},
+        agent_role="planner",
+    )
+
+    assert running.model_dump(mode="json") == {
+        "schema_version": "node_activity_summary.v1",
+        "phase": "running",
+        "text": "正在处理任务“梳理接口边界 并确认调用关系”",
+        "source": "deterministic_input",
+    }
+    assert completed.text == "已完成任务“梳理接口边界”：已确认 API 与事件边界 并保留兼容入口"
+    assert handoff.text == "已收到planner的交接：“把已确认的接口边界交给下游节点”"
+    assert "must-not-leak" not in running.text
+    assert "must-not-leak" not in completed.text
+
+
+@pytest.mark.parametrize(
+    ("output_type", "output", "expected_text"),
+    [
+        ("request_intake", {}, "已确认请求目标与能力边界"),
+        (
+            "context_assembly",
+            {
+                "included_message_ids": ["message-1", "message-2"],
+                "included_artifact_ids": ["artifact-1"],
+                "included_handoff_ids": [],
+                "excluded_sources": [{"reason": "disabled"}],
+            },
+            "已准备上下文：纳入3项，排除1项",
+        ),
+        ("controller_plan", {"tasks": [{}, {}, {}]}, "已为当前目标制定3项计划"),
+        (
+            "plan_validation",
+            {"is_valid": True, "total_task_count": 3, "checks": []},
+            "计划检查通过，3项任务可执行",
+        ),
+        (
+            "agent_dispatch",
+            {"created_tasks": [{}, {}], "dispatch_groups": [{}, {}]},
+            "已分配2项任务，形成2个执行组",
+        ),
+        (
+            "deterministic_verification",
+            {"verdict": "pass", "verified_claims": ["one"], "blocking_findings": []},
+            "校验通过，已确认1项",
+        ),
+        (
+            "independent_review",
+            {"verdict": "needs_revision", "findings": [{}, {}]},
+            "审核建议修订，发现2项问题",
+        ),
+        (
+            "final_synthesis",
+            {"completed_objectives": ["one", "two"], "unresolved_items": ["later"]},
+            "已生成最终回答：完成2项，保留1项未解决事项",
+        ),
+        (
+            "workflow_completion",
+            {"node_count": 11, "model_attempt_ids": ["attempt-1", "attempt-2"]},
+            "工作流已完成：11个节点，2次模型调用",
+        ),
+    ],
+)
+def test_completed_node_activity_templates_use_typed_output_facts(
+    output_type: str,
+    output: dict,
+    expected_text: str,
+) -> None:
+    """Describe each completed node from bounded typed fields rather than free-form claims."""
+
+    activity = build_completed_node_activity(
+        output_type=output_type,
+        output=output,
+        activity_context={},
+        agent_role=None,
+    )
+
+    assert activity.text == expected_text
+    assert activity.phase == "completed"
+    assert activity.source == "typed_output"
+
+
+def test_node_activity_text_is_bounded_and_terminal_errors_use_safe_contract() -> None:
+    """Normalize public activity text and never expose an unbounded internal exception."""
+
+    activity = build_completed_node_activity(
+        output_type="agent_handoff",
+        output={"objective": "目标\u0000" + "很长" * 200},
+        activity_context={},
+        agent_role="researcher",
+    )
+    failed = build_terminal_node_activity(
+        node_status=AgentWorkflowNodeStatus.FAILED,
+        public_error_message="上游服务暂时不可用",
+    )
+    unknown = build_terminal_node_activity(
+        node_status=AgentWorkflowNodeStatus.OUTCOME_UNKNOWN,
+        public_error_message="internal stack must not be copied",
+    )
+
+    assert len(activity.text) <= 240
+    assert "\u0000" not in activity.text
+    assert failed.text == "执行失败：上游服务暂时不可用"
+    assert unknown.text == "模型调用结果暂无法确认"
 
 
 def registered_agent_test_model(
@@ -1281,6 +1417,27 @@ async def test_dependent_agent_receives_direct_handoff_and_evaluations_keep_owne
     assert result["status"] == "completed", result
     assert all(
         node["public_view"]["progress_current"] <= node["public_view"]["progress_total"]
+        for node in result["nodes"]
+    )
+    assert all(
+        node["public_view"]["activity"]["schema_version"] == "node_activity_summary.v1"
+        and node["public_view"]["summary"] == node["public_view"]["activity"]["text"]
+        for node in result["nodes"]
+    )
+    async with test_database_session_factory() as db_session:
+        completed_events = list(
+            await db_session.scalars(
+                select(LlmAgentWorkflowEvent).where(
+                    LlmAgentWorkflowEvent.workflow_execution_id == result["workflow_execution_id"],
+                    LlmAgentWorkflowEvent.event_type == "agent.node.completed",
+                )
+            )
+        )
+    completed_activity_by_node_id = {
+        event.node_execution_id: event.public_payload_json["activity"] for event in completed_events
+    }
+    assert all(
+        completed_activity_by_node_id[node["node_execution_id"]] == node["public_view"]["activity"]
         for node in result["nodes"]
     )
     dependent_request = next(

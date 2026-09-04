@@ -718,6 +718,7 @@ class ModelOnlyWorkflowOrchestrator:
             node_type="agent_model_execution",
             output_type="agent_model_execution",
             input_values={
+                "task_title": task.title,
                 "objective": task.objective,
                 "completion_criteria": completion_criteria,
                 "dependency_handoff_ids": [
@@ -893,6 +894,7 @@ class ModelOnlyWorkflowOrchestrator:
             usage=self._model_usage(outcome.response),
             status_label="Agent task complete",
             summary=f"{agent_run.agent_role} completed the assigned analysis",
+            activity_context={"task_title": task.title},
         )
         handoff_node = await self._start_node(
             workflow,
@@ -907,6 +909,7 @@ class ModelOnlyWorkflowOrchestrator:
             agent_role=agent_run.agent_role,
             status_label="Submitting handoff",
             summary="Persisting the Agent result as immutable collaboration evidence",
+            activity_context={"task_title": task.title},
         )
         handoff_output = await self._submit_worker_handoff(
             workflow,
@@ -928,6 +931,7 @@ class ModelOnlyWorkflowOrchestrator:
             usage=NodeUsageRead(),
             status_label="Handoff submitted",
             summary="Agent collaboration evidence is available to downstream nodes",
+            activity_context={"task_title": task.title},
         )
         await self._complete_task_and_agent(task, agent_run)
         return WorkerExecutionRecord(
@@ -1154,6 +1158,7 @@ class ModelOnlyWorkflowOrchestrator:
         agent_run_id: str | None = None,
         agent_turn_id: str | None = None,
         agent_role: str | None = None,
+        activity_context: dict | None = None,
     ) -> LlmAgentWorkflowNodeExecution:
         """Delegate running-node persistence to the workflow state service."""
 
@@ -1171,6 +1176,7 @@ class ModelOnlyWorkflowOrchestrator:
             agent_run_id=agent_run_id,
             agent_turn_id=agent_turn_id,
             agent_role=agent_role,
+            activity_context=activity_context,
         )
 
     async def _complete_node(
@@ -1184,6 +1190,7 @@ class ModelOnlyWorkflowOrchestrator:
         usage: NodeUsageRead,
         status_label: str,
         summary: str,
+        activity_context: dict | None = None,
     ) -> None:
         """Delegate completed-node validation and persistence to the state service."""
 
@@ -1196,6 +1203,7 @@ class ModelOnlyWorkflowOrchestrator:
             usage=usage,
             status_label=status_label,
             summary=summary,
+            activity_context=activity_context,
         )
 
     async def _fail_node(

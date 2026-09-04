@@ -29,6 +29,11 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     node_output_schema_version,
     validate_node_output,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_activity_summary import (
+    build_completed_node_activity,
+    build_running_node_activity,
+    build_terminal_node_activity,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry import (
     AgentWorkflowDefinition,
     WorkflowDefinitionRegistry,
@@ -235,8 +240,9 @@ class WorkflowExecutionStateService:
         agent_run_id: str | None = None,
         agent_turn_id: str | None = None,
         agent_role: str | None = None,
+        activity_context: dict | None = None,
     ) -> LlmAgentWorkflowNodeExecution:
-        """Persist a running node and start event before any model side effect."""
+        """Persist a running node and public activity before any model side effect."""
 
         await self.ensure_workflow_running(workflow)
         definition = self._require_workflow_definition(workflow)
@@ -268,6 +274,11 @@ class WorkflowExecutionStateService:
             "prompt_release_id": None,
             "values": input_values,
         }
+        activity = build_running_node_activity(
+            output_type=output_type,
+            input_values=activity_context or input_values,
+            agent_role=agent_role,
+        )
         node = LlmAgentWorkflowNodeExecution(
             node_execution_id=new_id(),
             workflow_execution_id=workflow.workflow_execution_id,
@@ -297,9 +308,10 @@ class WorkflowExecutionStateService:
             ).model_dump(mode="json"),
             public_view_json=NodePublicViewRead(
                 status_label=status_label,
-                summary=summary,
+                summary=activity.text,
                 progress_current=node_sequence,
                 progress_total=_progress_total(workflow, node_sequence),
+                activity=activity,
             ).model_dump(mode="json"),
             warnings_json=[],
             started_at=utc_now(),
@@ -317,12 +329,13 @@ class WorkflowExecutionStateService:
         await self.append_event(
             workflow,
             event_type="agent.node.started",
-            public_summary=summary,
+            public_summary=activity.text,
             public_payload={
                 "node_execution_id": node.node_execution_id,
                 "node_key": node_key,
                 "node_type": node_type,
                 "agent_role": agent_role,
+                "activity": activity.model_dump(mode="json"),
             },
             node=node,
         )
@@ -339,9 +352,10 @@ class WorkflowExecutionStateService:
         usage: NodeUsageRead,
         status_label: str,
         summary: str,
+        activity_context: dict | None = None,
         commit_event: bool = True,
     ) -> LlmAgentWorkflowEvent:
-        """Validate and persist a completed node with its transition and evidence event."""
+        """Validate and persist a completed node with its typed public activity."""
 
         await self.ensure_workflow_running(workflow)
         definition = self._require_workflow_definition(workflow)
@@ -355,6 +369,12 @@ class WorkflowExecutionStateService:
         if len(serialized.encode()) > MAX_NODE_RESULT_BYTES:
             raise InvalidRequestError("Agent node output exceeds the 64 KiB envelope limit")
         now = utc_now()
+        activity = build_completed_node_activity(
+            output_type=node.output_type,
+            output=output_json,
+            activity_context=activity_context or {},
+            agent_role=node.agent_role,
+        )
         node.status = AgentWorkflowNodeStatus.COMPLETED
         node.output_json = output_json
         node.transition_json = transition.model_dump(mode="json")
@@ -366,9 +386,10 @@ class WorkflowExecutionStateService:
         )
         node.public_view_json = NodePublicViewRead(
             status_label=status_label,
-            summary=summary,
+            summary=activity.text,
             progress_current=node.node_sequence,
             progress_total=_progress_total(workflow, node.node_sequence),
+            activity=activity,
         ).model_dump(mode="json")
         active_ids = [
             item
@@ -391,7 +412,7 @@ class WorkflowExecutionStateService:
         return await self.append_event(
             workflow,
             event_type="agent.node.completed",
-            public_summary=summary,
+            public_summary=activity.text,
             public_payload={
                 "node_execution_id": node.node_execution_id,
                 "node_key": node.node_key,
@@ -401,6 +422,7 @@ class WorkflowExecutionStateService:
                     f"/api/v1/agent-workflows/{workflow.workflow_execution_id}"
                     f"/nodes/{node.node_execution_id}"
                 ),
+                "activity": activity.model_dump(mode="json"),
             },
             node=node,
             commit_event=commit_event,
@@ -444,11 +466,16 @@ class WorkflowExecutionStateService:
             if cancelled
             else ("Node failed" if error.outcome_is_known else "Node outcome unknown")
         )
+        activity = build_terminal_node_activity(
+            node_status=node.status,
+            public_error_message=error.public_message,
+        )
         node.public_view_json = NodePublicViewRead(
             status_label=status_label,
-            summary=error.public_message,
+            summary=activity.text,
             progress_current=node.node_sequence,
             progress_total=_progress_total(workflow, node.node_sequence),
+            activity=activity,
         ).model_dump(mode="json")
         active_ids = [
             item
@@ -477,7 +504,7 @@ class WorkflowExecutionStateService:
         await self.append_event(
             workflow,
             event_type=f"agent.node.{event_suffix}",
-            public_summary=error.public_message,
+            public_summary=activity.text,
             public_payload={
                 "node_execution_id": node.node_execution_id,
                 "node_key": node.node_key,
@@ -486,6 +513,7 @@ class WorkflowExecutionStateService:
                     f"/api/v1/agent-workflows/{workflow.workflow_execution_id}"
                     f"/nodes/{node.node_execution_id}"
                 ),
+                "activity": activity.model_dump(mode="json"),
             },
             node=node,
         )

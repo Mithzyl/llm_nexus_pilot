@@ -1,4 +1,8 @@
-import type { AgentWorkflowEvent, ProviderName } from "./types";
+import type {
+  AgentWorkflowEvent,
+  AgentWorkflowNodeActivitySummary,
+  ProviderName,
+} from "./types";
 
 const TERMINAL_WORKFLOW_EVENTS = new Set([
   "agent.workflow.completed",
@@ -44,6 +48,26 @@ export type AgentWorkflowEventState = {
   hasGap: boolean;
 };
 
+/** Validate the versioned public activity carried by a node snapshot or event. */
+export function isAgentWorkflowNodeActivitySummary(
+  value: unknown,
+): value is AgentWorkflowNodeActivitySummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const activity = value as Partial<AgentWorkflowNodeActivitySummary>;
+  return (
+    activity.schema_version === "node_activity_summary.v1" &&
+    typeof activity.phase === "string" &&
+    ["running", "completed", "failed", "cancelled", "outcome_unknown"].includes(
+      activity.phase,
+    ) &&
+    typeof activity.text === "string" &&
+    activity.text.length >= 1 &&
+    activity.text.length <= 240 &&
+    typeof activity.source === "string" &&
+    ["deterministic_input", "typed_output", "error_contract"].includes(activity.source)
+  );
+}
+
 /** Select prompted JSON when the registered provider does not expose native JSON Schema. */
 export function agentStructuredOutputMode(
   provider: ProviderName,
@@ -78,6 +102,8 @@ export function parseAgentWorkflowSseBlock(block: string): AgentWorkflowEvent | 
       !payload.public_payload ||
       typeof payload.public_payload !== "object" ||
       Array.isArray(payload.public_payload) ||
+      ("activity" in payload.public_payload &&
+        !isAgentWorkflowNodeActivitySummary(payload.public_payload.activity)) ||
       (payload.trace_id !== null && typeof payload.trace_id !== "string") ||
       (eventId !== undefined && Number(eventId) !== payload.event_sequence)
     ) {

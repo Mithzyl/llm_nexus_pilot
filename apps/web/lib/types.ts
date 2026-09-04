@@ -639,6 +639,13 @@ export type AgentWorkflowNodeOutputMap = {
   };
 };
 
+export type AgentWorkflowNodeActivitySummary = {
+  schema_version: "node_activity_summary.v1";
+  phase: "running" | "completed" | "failed" | "cancelled" | "outcome_unknown";
+  text: string;
+  source: "deterministic_input" | "typed_output" | "error_contract";
+};
+
 type AgentWorkflowNodeBase = {
   schema_version: "agent_workflow_node_result.v1";
   workflow_execution_id: string;
@@ -697,6 +704,7 @@ type AgentWorkflowNodeBase = {
     summary: string;
     progress_current: number;
     progress_total: number;
+    activity?: AgentWorkflowNodeActivitySummary | null;
   };
   observability: { trace_id: string | null; span_id: string | null };
   warnings: string[];

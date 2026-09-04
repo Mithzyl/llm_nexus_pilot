@@ -60,6 +60,7 @@ import {
   pendingAssistantRunIdForLatestTurn,
 } from "../lib/history";
 import {
+  AgentWorkflowActivityFeed,
   AgentWorkflowPanel,
   agentWorkflowStatusLabel,
 } from "../components/agent-workflow/AgentWorkflowPanel";
@@ -1893,6 +1894,9 @@ export default function Home() {
                           presentation={presentation}
                         />
                       ))}
+                      {message.pending && message.agentWorkflow && message.run_id === run?.run_id && (
+                        <AgentWorkflowActivityFeed events={agentEventState.events} />
+                      )}
                       {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}
                       {message.pending && <p className="stream-note">正在接收增量响应，不会把部分文本标记为完成。</p>}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}

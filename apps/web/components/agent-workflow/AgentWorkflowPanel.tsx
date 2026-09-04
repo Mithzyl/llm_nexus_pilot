@@ -11,7 +11,10 @@ import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
+  agentNodePublicActivityText,
+  agentWorkflowEventActivity,
   isAgentWorkflowCancellable,
+  selectRecentAgentWorkflowActivities,
 } from "../../lib/agent-workflow-view";
 
 const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
@@ -132,6 +135,26 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
   }
 }
 
+/** Render a compact live activity feed without exposing model reasoning or raw output. */
+export function AgentWorkflowActivityFeed({ events }: { events: AgentWorkflowEvent[] }) {
+  const activities = selectRecentAgentWorkflowActivities(events);
+  if (activities.length === 0) return null;
+
+  return (
+    <section className="agent-activity-feed" aria-label="Agent 工作流当前活动">
+      <span className="agent-activity-label">执行过程</span>
+      <ol aria-live="polite" aria-atomic="false">
+        {activities.map((activity) => (
+          <li key={`${activity.nodeExecutionId}:${activity.phase}`} data-phase={activity.phase}>
+            <i aria-hidden="true" />
+            <span>{activity.text}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 /** Render one complete Agent Workflow snapshot or its live event projection. */
 export function AgentWorkflowPanel({
   workflow,
@@ -206,7 +229,7 @@ export function AgentWorkflowPanel({
                   <i aria-hidden="true" />
                   <span>
                     <strong>{NODE_LABELS[node.output_type]}</strong>
-                    <small>{node.public_view.summary}</small>
+                    <small>{agentNodePublicActivityText(node.public_view)}</small>
                   </span>
                   <time>{node.timing.duration_ms} ms</time>
                 </summary>
@@ -242,13 +265,16 @@ export function AgentWorkflowPanel({
         </ol>
       ) : (
         <ol className="agent-event-list" aria-label="Agent Workflow 实时事件">
-          {events.map((event) => (
-            <li key={event.event_id}>
-              <i aria-hidden="true" />
-              <span><strong>{event.public_summary}</strong><small>{event.event_type}</small></span>
-              <time>#{event.event_sequence}</time>
-            </li>
-          ))}
+          {events.map((event) => {
+            const activity = agentWorkflowEventActivity(event);
+            return (
+              <li key={event.event_id}>
+                <i aria-hidden="true" />
+                <span><strong>{activity?.text ?? event.public_summary}</strong><small>{event.event_type}</small></span>
+                <time>#{event.event_sequence}</time>
+              </li>
+            );
+          })}
         </ol>
       )}
 

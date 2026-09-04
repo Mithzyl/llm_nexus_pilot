@@ -1,12 +1,62 @@
 import type {
+  AgentWorkflowEvent,
+  AgentWorkflowNodeActivitySummary,
   AgentWorkflowNodeOutputMap,
   AgentWorkflowNodeResult,
   AgentWorkflowNodeStatus,
   AgentWorkflowStatus,
 } from "./types";
+import { isAgentWorkflowNodeActivitySummary } from "./agent-workflow";
 
 type AgentDispatchGroup = AgentWorkflowNodeOutputMap["agent_dispatch"]["dispatch_groups"][number];
 type AgentNodeBudget = AgentWorkflowNodeResult["budget"];
+
+export type AgentWorkflowActivityItem = AgentWorkflowNodeActivitySummary & {
+  nodeExecutionId: string;
+  eventSequence: number;
+};
+
+/** Prefer the versioned activity while retaining readable historical node snapshots. */
+export function agentNodePublicActivityText(
+  publicView: AgentWorkflowNodeResult["public_view"],
+): string {
+  return isAgentWorkflowNodeActivitySummary(publicView.activity)
+    ? publicView.activity.text
+    : publicView.summary;
+}
+
+/** Read one validated activity from a persisted node event when the version is supported. */
+export function agentWorkflowEventActivity(
+  event: AgentWorkflowEvent,
+): AgentWorkflowActivityItem | null {
+  const activity = event.public_payload.activity;
+  if (!event.node_execution_id || !isAgentWorkflowNodeActivitySummary(activity)) return null;
+  return {
+    ...activity,
+    nodeExecutionId: event.node_execution_id,
+    eventSequence: event.event_sequence,
+  };
+}
+
+/** Keep every parallel running node, then fill a compact feed with recent completions. */
+export function selectRecentAgentWorkflowActivities(
+  events: AgentWorkflowEvent[],
+  maximumItems = 3,
+): AgentWorkflowActivityItem[] {
+  const latestActivityByNodeId = new Map<string, AgentWorkflowActivityItem>();
+  for (const event of events) {
+    const activity = agentWorkflowEventActivity(event);
+    if (activity) latestActivityByNodeId.set(activity.nodeExecutionId, activity);
+  }
+  const latestActivities = [...latestActivityByNodeId.values()];
+  const running = latestActivities
+    .filter((activity) => activity.phase === "running")
+    .sort((left, right) => left.eventSequence - right.eventSequence);
+  const completed = latestActivities
+    .filter((activity) => activity.phase !== "running")
+    .sort((left, right) => right.eventSequence - left.eventSequence);
+  return [...running, ...completed].slice(0, maximumItems);
+}
 
 /** Describe persisted dispatch groups without inferring dependencies from event arrival order. */
 export function agentDispatchGroupSummary(dispatchGroups: AgentDispatchGroup[]): string {

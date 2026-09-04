@@ -154,6 +154,15 @@ class NodeTimingRead(StrictContract):
     duration_ms: int = Field(ge=0)
 
 
+class NodeActivitySummaryRead(StrictContract):
+    """Expose one versioned public lifecycle summary without hidden model reasoning."""
+
+    schema_version: Literal["node_activity_summary.v1"] = "node_activity_summary.v1"
+    phase: Literal["running", "completed", "failed", "cancelled", "outcome_unknown"]
+    text: str = Field(min_length=1, max_length=240)
+    source: Literal["deterministic_input", "typed_output", "error_contract"]
+
+
 class NodePublicViewRead(StrictContract):
     """Provide deterministic user-facing node status without model-authored progress claims."""
 
@@ -161,6 +170,7 @@ class NodePublicViewRead(StrictContract):
     summary: str = Field(min_length=1, max_length=2_000)
     progress_current: int = Field(ge=0)
     progress_total: int = Field(ge=1)
+    activity: NodeActivitySummaryRead | None = None
 
 
 class NodeObservabilityRead(StrictContract):

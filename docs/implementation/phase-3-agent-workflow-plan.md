@@ -1,7 +1,7 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
 **文档日期：** 2026 年 9 月 2 日
-**文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断及“审核约束回答但不吞掉回答”均已实现并通过自动化验证；Composer产品入口属于阶段4）
+**文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 
@@ -10,6 +10,8 @@
 > 2026 年 8 月 19 日路线图重排：本能力由原阶段5调整为阶段3；实现范围和完成状态不变。
 
 > 2026年8月26日新增的统一Context Builder要求不推翻阶段3原完成条件。Agent节点消费统一上下文的后端运行时接入已经完成；Prompt/Artifact产品绑定、对象型Message产品链路和前端证据入口继续由阶段4验收。
+
+> 2026年9月2日完成“公开活动摘要”：在不公开模型隐藏推理的前提下，用已提交节点事实说明当前正在规划、执行、交接、验证、审核或汇总什么。该能力是阶段3公共节点合同的兼容增强，前端呈现由阶段4负责，不改变阶段3原完成判断。
 
 本文统一使用以下口径：
 
@@ -52,6 +54,7 @@
 | 用量一致性 | 已实现 | 创建 Workflow Completion 前，按工作流模型调用幂等键读取 Model Attempt，独立汇总输入、输出、缓存读取、费用和调用次数，并与已提交节点用量比较；不一致时明确失败，不发布错误聚合 |
 | 自动缓存诊断 | 已实现离线范围 | Attempt 保存 Agent 角色、稳定前缀指纹、缓存读取、缓存写入、缓存未命中、首个可见Token时间和总延迟；内部接口可按 Run、工作流版本、Provider、Model、角色和指纹比较观察窗口内首个与后续请求；Anthropic 输入已归一化为普通输入、缓存读取与缓存创建之和 |
 | 资源限制 | 已实现 | Run 请求最长 100,000 字符；节点数、模型调用数、工作流总时长、单次模型超时和单节点输出大小均有限制；`max_parallel_agents` 范围为 `1`～`2`；并发调用使用原子费用预留避免超卖 |
+| 公开活动摘要 | 已实现 | `public_view.activity`和事件`public_payload.activity`使用`node_activity_summary.v1`；11类节点具有确定性中文模板、来源标记及运行中/完成/失败/取消/结果未知摘要，历史记录继续回退`summary` |
 | 工具、Memory 与 Knowledge | 明确禁用 | `implementer`、工具、文件写入、命令、网络及外部副作用在 `model_only_v1` 计划校验时被拒绝；Memory 和 Knowledge 不自动注入 |
 
 阶段3边界说明：
@@ -273,6 +276,92 @@ class AgentWorkflowNode(Protocol):
 - `error` 固定包含 `error_code`、`error_type`、`public_message`、`is_retryable`、`outcome_is_known` 和 `details_reference_id`；成功时为 `null`。
 - 当前`64 KiB`检查对校验后的节点`output` JSON做UTF-8字节计数，超限会明确失败；其余信封字段分别受固定Schema、列表数量、字符串长度、最大32个节点和有界分页约束，因此完整HTTP结果具有组合上限，但不错误复用单节点的64 KiB阈值。SSE事件只包含状态、节点ID、类型、详情路径和有界错误投影，不内联节点输出。后续工具生成的大型正文、完整报告和大量证据属于阶段7 Artifact工作项，应让`output`返回Artifact ID、hash、MIME和安全预览。“完整参数”不等于无限内联内容。
 - 内部与授权 API 返回所有合同字段；敏感值从形成时就不进入合同，而不是读取时临时删除。
+
+### 公开活动摘要（已实现）
+
+#### 目标和边界
+
+这项能力回答“工作流当前正在做什么、刚完成了什么”，但不回答“模型逐步想了什么”。产品名称统一为**公开活动摘要**（代码对象规划为`NodeActivitySummary`），不能命名为`reasoning_summary`，避免与Provider返回的推理摘要或隐藏思维链混淆。
+
+- 运行中摘要只能使用调用前已经确定并已授权公开的输入事实，例如节点类型、任务标题、角色和任务数量。
+- 完成摘要只能在节点类型化输出校验并持久化后生成；允许引用已通过公共合同校验的短字段，但不能直接展示完整模型响应。
+- 单次Provider调用期间没有更细的可靠进度时，保持“正在处理某任务”，不能编造百分比、内部步骤或预计完成时间。
+- 摘要不包含模型隐藏推理、思维链、System Prompt、密钥、内部对象URI、完整用户输入、完整Handoff、完整文件内容或未脱敏Provider响应。
+- 当前`public_view.summary`继续作为兼容字段；历史节点不回填、不猜测。新节点写入版本化活动对象后，兼容字段必须镜像同一`text`，不能形成两套不同文案事实。
+
+#### 合同设计
+
+`NodePublicViewRead`已增加可选`activity`对象；该字段对历史读取可选，对功能发布后的新节点写入为必填：
+
+```json
+{
+  "public_view": {
+    "status_label": "正在规划",
+    "summary": "正在围绕当前目标制定执行计划",
+    "progress_current": 3,
+    "progress_total": 11,
+    "activity": {
+      "schema_version": "node_activity_summary.v1",
+      "phase": "running",
+      "text": "正在围绕当前目标制定执行计划",
+      "source": "deterministic_input"
+    }
+  }
+}
+```
+
+字段语义：
+
+| 字段 | 允许值或约束 | 含义 |
+|---|---|---|
+| `schema_version` | 固定`node_activity_summary.v1` | 允许未来修改模板而不重解释历史记录 |
+| `phase` | `running`、`completed`、`failed`、`cancelled`、`outcome_unknown` | 与已持久化节点状态一一对应，不由文案推断 |
+| `text` | 纯文本，1～240个Unicode字符 | 用户可见的一句话活动说明；去除控制字符并合并多余空白，不渲染Markdown或HTML |
+| `source` | `deterministic_input`、`typed_output`、`error_contract` | 说明摘要来自调用前确定事实、已验证节点输出或安全错误合同 |
+
+持久化和事件规则：
+
+1. 节点开始事务先把`phase=running`活动摘要写入`public_view_json`，再提交`agent.node.started`；只有提交成功后才能调用可能计费的Provider。
+2. 节点完成时，先校验类型化`output`，再由确定性模板生成`phase=completed`摘要，并与节点完成事实同一事务保存。
+3. 失败、取消和结果未知分别从`AgentWorkflowErrorRead.public_message`及稳定终态生成`error_contract`摘要，不能把内部异常文本直接带到活动摘要。
+4. SSE事件`public_payload.activity`携带与数据库`public_view.activity`完全相同的对象；`public_summary`仅镜像`activity.text`以兼容现有消费者。前端不得解析两者来决定状态。
+5. 同一节点只在耐久生命周期检查点更新活动摘要，不为模型Token流创建高频数据库事件。事件去重身份继续使用`event_id`和`event_sequence`。
+
+#### 各节点输出文本
+
+模板中的标题、目标和摘要必须先规范空白并截断；缺少安全字段时使用不带占位值的通用句，不能显示`None`、空引号或内部ID。
+
+| 节点 | 运行中文案 | 完成文案 | 完成文案的数据来源 |
+|---|---|---|---|
+| 请求归一化 | 正在确认请求目标与能力边界 | 已确认请求目标与能力边界 | 确定性节点结果；默认不复述完整`normalized_objective` |
+| 上下文组装 | 正在准备本次运行所需上下文 | 已准备上下文：纳入{已纳入数量}项，排除{已排除数量}项 | `included_*_ids`和`excluded_sources`计数 |
+| Controller计划 | 正在围绕当前目标制定执行计划 | 已为当前目标制定{任务数量}项计划 | `tasks`数量；计划详情继续在完整节点输出中查看 |
+| 计划校验 | 正在检查计划依赖与能力边界 | 通过时：计划检查通过，{任务数量}项任务可执行；失败时：计划不可执行，发现{问题数量}项问题 | `is_valid`、`total_task_count`和失败检查计数 |
+| Agent分派 | 正在分配{任务数量}项工作任务 | 已分配{任务数量}项任务，形成{执行组数量}个执行组 | `created_tasks`和`dispatch_groups`数量 |
+| 工作Agent模型节点 | 正在处理任务“{任务标题}” | 已完成任务“{任务标题}”：{Worker摘要短句} | 调用前任务标题；完成后`structured_output.summary`的有界纯文本投影 |
+| Handoff提交 | 正在整理“{任务标题}”的交接结果 | 已收到{Agent角色}的交接：“{交接目标}” | 已验证并持久化的`agent_role`与`AgentHandoffOutput.objective` |
+| 确定性验证 | 正在核对交接结构、引用与完成状态 | 通过时：校验通过，已确认{已验证数量}项；未通过时：校验发现{阻塞数量}项阻塞问题 | `verdict`、`verified_claims`和`blocking_findings`数量 |
+| 独立审核 | 正在独立审核候选结果与证据 | 通过时：审核通过；需修订时：审核建议修订，发现{发现数量}项问题；失败时：审核未通过，发现{错误数量}项错误 | `verdict`和`findings`，不直接展示审核模型思维链 |
+| 最终汇总 | 正在汇总已确认结果与未解决事项 | 已生成最终回答：完成{完成项数量}项，保留{未解决数量}项未解决事项 | `completed_objectives`与`unresolved_items`数量 |
+| 工作流完成 | 正在提交工作流完成事实 | 工作流已完成：{节点数量}个节点，{模型调用数量}次模型调用 | `node_count`和`model_attempt_ids`数量 |
+
+失败终态使用统一文案：`执行失败：{安全错误摘要}`、`执行已取消`、`模型调用结果暂无法确认`。节点失败后不得保留“正在……”；审核给出`needs_revision`或`fail`时仍按现有规则进入受约束的最终回答，不把“审核未通过”再次解释成工作流异常。
+
+#### 前端消费边界
+
+- 对话中的活动区默认只显示最新活动和最近两条已完成摘要；完整11类节点仍在独立运行证据抽屉中查看，避免用活动日志挤压回答正文。
+- 并行Worker按`node_execution_id`分别显示，不能用一个全局字符串相互覆盖；同一节点按`event_sequence`去重，乱序或缺口时以Result快照收敛。
+- 最终Assistant Message出现后，对话活动区自动折叠为“执行完成”，历史摘要继续保留在只读证据抽屉中。
+- 最新活动使用`aria-live="polite"`供辅助技术播报；不得播报Token级变化，也不得把纯文本活动摘要当Markdown渲染。
+- Provider已有真正的公开推理摘要时，继续放在现有Reasoning区域；公开活动摘要放在“执行过程”区域，两者不能合并或互相替代。
+
+#### 测试与完成条件
+
+- 后端测试先覆盖每类节点的运行中和完成模板、无可用安全字段时的通用句、240字符边界、控制字符清理和敏感内容不进入摘要。
+- 事务测试验证开始摘要提交后才调用Provider，完成摘要只在类型化输出校验后提交，失败摘要不会泄露原始异常，并且事件活动对象与节点快照逐字段一致。
+- 兼容测试验证旧`public_view_json`缺少`activity`时仍可读取；新写入必须包含`node_activity_summary.v1`，`summary`与`activity.text`必须相同。
+- 前端测试覆盖事件重复、乱序、缺口恢复、两个并行Worker、刷新后Result恢复、终态折叠和辅助技术播报。
+- 完成条件是用户能够看到节点级“正在做什么”和“刚完成什么”，同时无法从该接口取得隐藏推理、完整模型输出或未提交事实。
 
 ## 各节点完整输出参数
 
@@ -1097,6 +1186,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 11 | 阶段7恢复后的 Tool Runtime 集成 | 不属于阶段3完成条件 | 新 `tool_enabled_v1` 复用结果合同和隔离边界 | 阶段7工具循环、写隔离、取消和未知结果测试 |
 | 12 | 统一Context Builder后端接入 | 已完成阶段3范围 | 已实现当前Message锚点、Session文本历史、每个角色模型的独立Context Build、Prompt Release、受限文本Artifact、Agent/Handoff/Evaluation类型化来源、去重和Attempt/Node证据；Memory、Knowledge、Tool和阶段4产品入口不属于本工作项 | 第二轮会话、并发锚点、完整轮次、Prompt/Artifact、Agent协作来源、当前目标单次出现、对象失败和节点证据测试 |
 | 13 | 稳定模型思考配置透传 | 已完成 | 工作流级选择或逐模型medium默认进入所有模型角色；新工作流预检全部角色；Attempt保存最终解析证据；幂等哈希包含思考选择 | 显式等级、默认、关闭、角色不支持、未登记模型、Attempt证据和幂等冲突测试 |
+| 14 | 版本化公开活动摘要 | 已完成 | 后端从确定性输入、类型化输出和安全错误合同生成节点活动摘要；快照与事件使用同一事实；前端显示模型所在工作阶段但不暴露隐藏推理 | 模板、边界、敏感信息、事务一致性、历史兼容、事件恢复、并行节点和前端可访问性测试 |
 
 ## 失败与恢复设计
 
@@ -1142,6 +1232,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - Model Attempt、Handoff、Evaluation 和 Node Result 均能从 `run_id` 查询并相互关联；阶段7加入 Tool Call、Artifact 和程序测试证据时沿用同一引用方式。
 - 工作流级思考选择会一致传入Controller、Worker、Reviewer和Final synthesis；省略时每个角色都使用自身登记模型的版本化medium默认。任一角色不支持时在创建工作流事实和调用Provider前失败，Attempt能够重读最终统一等级、来源、策略版本和Provider映射值。
 - Workflow Completion创建前会把全部节点用量与该工作流Model Attempt明细独立对账；缓存诊断可以在不读取Prompt正文的情况下按Run、Provider、Model、Agent角色和稳定前缀查询。
+
+新增公开活动摘要是已完成的兼容增强，其单独完成条件以上文“测试与完成条件”为准；它不改变阶段3原完成条件。
 
 ## 官方依据
 
