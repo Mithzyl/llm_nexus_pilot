@@ -28,7 +28,7 @@ function createRequest(
   if (!configuredFetch.authenticationWrapped) {
     const authenticatedFetch = (async (input: RequestInfo | URL, fetchInit?: RequestInit) => {
       if (String(input).endsWith("/api/v1/auth/me")) {
-        return Response.json({ user_id: "nexuspilot-web" });
+        return Response.json({ user_id: "nexuspilot-web", authentication_method: "browser_session" });
       }
       return configuredFetch(input, fetchInit);
     }) as typeof fetch & { authenticationWrapped?: boolean };
@@ -105,9 +105,12 @@ test("stops a business request when the browser session is unauthenticated", asy
   }
 });
 
-test("rejects cross-origin and missing-CSRF business mutations before any upstream call", async () => {
+test("rejects cross-origin before lookup and missing-CSRF before a business mutation", async () => {
   let calls = 0;
-  globalThis.fetch = (async () => { calls += 1; return Response.json({}); }) as typeof fetch;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return Response.json({ user_id: "nexuspilot-web", authentication_method: "browser_session" });
+  }) as typeof fetch;
   try {
     for (const origin of ["https://foreign.example", "http://localhost"]) {
       const response = await POST(new NextRequest("http://localhost/api/nexus/sessions", {
@@ -117,7 +120,27 @@ test("rejects cross-origin and missing-CSRF business mutations before any upstre
       }), createContext("sessions"));
       assert.equal(response.status, 403);
     }
-    assert.equal(calls, 0);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("local mode permits same-origin writes without cookies and overrides the owner", async () => {
+  const writes: unknown[] = [];
+  globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith("/api/v1/auth/me")) {
+      return Response.json({ user_id: "nexuspilot-web", authentication_method: "local_deployment" });
+    }
+    writes.push(JSON.parse(String(init?.body)));
+    return Response.json({ session_id: "local-session" }, { status: 201 });
+  }) as typeof fetch;
+  try {
+    const response = await POST(new NextRequest("http://localhost/api/nexus/sessions", {
+      method: "POST",
+      headers: { origin: "http://localhost", "content-type": "application/json" },
+      body: JSON.stringify({ title: "Local", user_id: "another-user" }),
+    }), createContext("sessions"));
+    assert.equal(response.status, 201);
+    assert.deepEqual(writes, [{ title: "Local", user_id: "nexuspilot-web" }]);
   } finally { globalThis.fetch = originalFetch; }
 });
 
@@ -126,6 +149,21 @@ test("returns an explicit unavailable response when principal lookup cannot conn
   try {
     const response = await GET(new NextRequest("http://localhost/api/nexus/sessions"), createContext("sessions"));
     assert.equal(response.status, 503);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("rejects unknown or missing access modes instead of treating them as local", async () => {
+  try {
+    for (const authenticationMethod of [undefined, "anonymous"]) {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        return Response.json({ user_id: "nexuspilot-web", authentication_method: authenticationMethod });
+      }) as typeof fetch;
+      const response = await GET(new NextRequest("http://localhost/api/nexus/sessions"), createContext("sessions"));
+      assert.equal(response.status, 502);
+      assert.equal(calls, 1);
+    }
   } finally { globalThis.fetch = originalFetch; }
 });
 

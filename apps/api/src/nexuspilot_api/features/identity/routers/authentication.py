@@ -10,6 +10,8 @@ from nexuspilot_api.features.identity.dependencies import (
     CSRF_COOKIE_NAME,
     SESSION_COOKIE_NAME,
     AuthenticatedPrincipalDependency,
+    get_workspace_principal,
+    require_browser_authentication_enabled,
 )
 from nexuspilot_api.features.identity.models.authentication import UserLoginSession
 from nexuspilot_api.features.identity.schemas.authentication import (
@@ -17,6 +19,7 @@ from nexuspilot_api.features.identity.schemas.authentication import (
     BrowserLoginRequest,
     PasswordChangeRequest,
     UserLoginSessionRead,
+    WorkspacePrincipalRead,
 )
 from nexuspilot_api.features.identity.services.authentication_service import (
     authenticate_local_password,
@@ -107,7 +110,11 @@ def _validate_request_csrf(
     )
 
 
-@router.post("/login", response_model=AuthenticatedPrincipalRead)
+@router.post(
+    "/login",
+    response_model=AuthenticatedPrincipalRead,
+    dependencies=[Depends(require_browser_authentication_enabled)],
+)
 async def post_browser_login(
     payload: BrowserLoginRequest,
     request: Request,
@@ -137,18 +144,22 @@ async def post_browser_login(
     return login_result.principal
 
 
-@router.get("/me", response_model=AuthenticatedPrincipalRead)
-async def get_current_authenticated_user(
-    principal: AuthenticatedPrincipalDependency,
+@router.get("/me", response_model=WorkspacePrincipalRead)
+async def get_current_workspace_principal(
+    principal: Annotated[WorkspacePrincipalRead, Depends(get_workspace_principal)],
     response: Response,
-) -> AuthenticatedPrincipalRead:
-    """Return the current browser principal without exposing credential metadata."""
+) -> WorkspacePrincipalRead:
+    """Return configured local ownership or the logged-in principal, never secret metadata."""
 
     _set_no_store(response)
     return principal
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_browser_authentication_enabled)],
+)
 async def post_browser_logout(
     request: Request,
     db_session: DatabaseSessionDependency,

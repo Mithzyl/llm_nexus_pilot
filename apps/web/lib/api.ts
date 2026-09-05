@@ -3,7 +3,7 @@ import type {
   AgentWorkflowNodeResult,
   AgentWorkflowResult,
   AgentWorkflowSummary,
-  AuthenticatedPrincipal,
+  WorkspacePrincipal,
   CursorPage,
   ContextBuildEvidence,
   ConversationTurn,
@@ -73,16 +73,16 @@ export function loginWithPassword(payload: {
   email: string;
   password: string;
   device_name?: string;
-}): Promise<AuthenticatedPrincipal> {
-  return nexusFetch<AuthenticatedPrincipal>("auth/login", {
+}): Promise<WorkspacePrincipal> {
+  return nexusFetch<WorkspacePrincipal>("auth/login", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
-/** Resolve the current browser identity from its opaque HttpOnly session. */
-export function getCurrentAuthenticatedUser(): Promise<AuthenticatedPrincipal> {
-  return nexusFetch<AuthenticatedPrincipal>("auth/me");
+/** Resolve the backend-selected local owner or authenticated browser identity. */
+export function getCurrentWorkspacePrincipal(): Promise<WorkspacePrincipal> {
+  return nexusFetch<WorkspacePrincipal>("auth/me");
 }
 
 /** Revoke the current browser session and expire both authentication cookies. */

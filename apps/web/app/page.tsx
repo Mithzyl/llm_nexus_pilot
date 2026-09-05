@@ -6,7 +6,7 @@ import {
   createMessage,
   createConversationTurn,
   createSession,
-  getCurrentAuthenticatedUser,
+  getCurrentWorkspacePrincipal,
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
@@ -42,7 +42,7 @@ import type {
   Run,
   RunDetail,
   Session,
-  AuthenticatedPrincipal,
+  WorkspacePrincipal,
 } from "../lib/types";
 import { readStreamEvents, replayCommittedStreamEvents } from "../lib/sse";
 import {
@@ -253,11 +253,12 @@ export default function Home() {
     ? workspaceRoute.sessionId
     : null;
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [authenticatedPrincipal, setAuthenticatedPrincipal] =
-    useState<AuthenticatedPrincipal | null>(null);
+  const [workspacePrincipal, setWorkspacePrincipal] =
+    useState<WorkspacePrincipal | null>(null);
   const [authenticationState, setAuthenticationState] = useState<
     "checking" | "authenticated" | "anonymous"
   >("checking");
+  const [workspaceAccessError, setWorkspaceAccessError] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
@@ -442,15 +443,18 @@ export default function Home() {
 
   useEffect(() => {
     let isMounted = true;
-    void getCurrentAuthenticatedUser()
+    void getCurrentWorkspacePrincipal()
       .then((principal) => {
         if (!isMounted) return;
-        setAuthenticatedPrincipal(principal);
+        setWorkspacePrincipal(principal);
         setAuthenticationState("authenticated");
       })
-      .catch(() => {
+      .catch((error) => {
         if (!isMounted) return;
-        setAuthenticatedPrincipal(null);
+        setWorkspacePrincipal(null);
+        if (!(error instanceof NexusApiError) || error.status !== 401) {
+          setWorkspaceAccessError(error instanceof Error ? error.message : "无法确认工作台访问方式。");
+        }
         setAuthenticationState("anonymous");
       });
     return () => {
@@ -466,13 +470,13 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!authenticatedPrincipal) return;
+    if (!workspacePrincipal) return;
     if (draftValue.current) return;
-    draftStorageKey.current = conversationDraftStorageKey(initialDraftSessionId, authenticatedPrincipal.user_id);
+    draftStorageKey.current = conversationDraftStorageKey(initialDraftSessionId, workspacePrincipal.user_id);
     const restoredDraft = readConversationDraft(window.sessionStorage, draftStorageKey.current);
     draftValue.current = restoredDraft;
     setDraft(restoredDraft);
-  }, [authenticatedPrincipal, initialDraftSessionId]);
+  }, [workspacePrincipal, initialDraftSessionId]);
 
   useEffect(() => {
     conversationSyncSenderId.current = crypto.randomUUID();
@@ -809,7 +813,7 @@ export default function Home() {
 
   /** Save the current draft and restore the draft belonging to the next conversation route. */
   function switchDraftContext(sessionId: string | null) {
-    const nextStorageKey = conversationDraftStorageKey(sessionId, authenticatedPrincipal?.user_id);
+    const nextStorageKey = conversationDraftStorageKey(sessionId, workspacePrincipal?.user_id);
     if (draftStorageKey.current !== nextStorageKey) {
       writeConversationDraft(window.sessionStorage, draftStorageKey.current, draftValue.current);
     }
@@ -1066,7 +1070,7 @@ export default function Home() {
    * Load one immutable conversation history and either its latest or explicitly requested Run.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
-    const nextDraftStorageKey = conversationDraftStorageKey(sessionId, authenticatedPrincipal?.user_id);
+    const nextDraftStorageKey = conversationDraftStorageKey(sessionId, workspacePrincipal?.user_id);
     if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
     setActiveSessionId(sessionId);
@@ -1792,12 +1796,13 @@ export default function Home() {
     }
   }
 
-  if (authenticationState !== "authenticated" || !authenticatedPrincipal) {
+  if (authenticationState !== "authenticated" || !workspacePrincipal) {
     return (
       <AuthenticationGate
         isChecking={authenticationState === "checking"}
+        unavailableMessage={workspaceAccessError}
         onAuthenticated={(principal) => {
-          setAuthenticatedPrincipal(principal);
+          setWorkspacePrincipal(principal);
           setAuthenticationState("authenticated");
         }}
       />
@@ -1842,8 +1847,10 @@ export default function Home() {
 
         <div className="sidebar-footer">
           <div className="authenticated-user">
-            <span>{authenticatedPrincipal.display_name}</span>
-            <button type="button" onClick={() => void handleLogout()}>退出</button>
+            <span>{workspacePrincipal.display_name}</span>
+            {workspacePrincipal.authentication_method === "browser_session" && (
+              <button type="button" onClick={() => void handleLogout()}>退出</button>
+            )}
           </div>
           <Link className="settings-link" href="/settings/models">模型目录</Link>
           <div className="environment-dot"><span />开发环境</div>

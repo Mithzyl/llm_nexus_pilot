@@ -68,7 +68,9 @@ make api-migrate
 make api-run
 ```
 
-迁移完成后，通过可信终端预置首个可登录账户。密码只从终端交互读取，不接受命令行参数：
+默认 `NEXUSPILOT_AUTHENTICATION_ENABLED=false`，本地打开 Web 即进入工作台，资源归属固定为历史本地用户 `nexuspilot-web`（不存在时由后端创建，不创建密码或登录会话）。该模式仅供个人本机使用，只监听回环地址，不能暴露到公网或不可信局域网；所有访问者会共享本地数据。生产环境拒绝关闭登录。
+
+需要登录时，在 `apps/api/.env` 设置 `NEXUSPILOT_AUTHENTICATION_ENABLED=true` 并重启 API，再通过可信终端预置首个可登录账户。密码只从终端交互读取，不接受命令行参数：
 
 ```bash
 apps/api/.venv/bin/python -m nexuspilot_api.commands.provision_local_user \
@@ -96,7 +98,7 @@ NEXUSPILOT_DATABASE_URL=mysql+aiomysql://nexuspilot:nexuspilot@localhost:3307/ne
 
 Compose 中的 API 会自动使用容器内部的 `mysql:3306` 和 `minio:9000`，不会读取宿主机地址。
 
-API 文档位于 `http://127.0.0.1:8000/docs`。`/health` 及 `/api/v1/auth/*` 登录会话接口不要求调用方预先持有部署级密钥；其他迁移期接口仍需携带：
+API 文档位于 `http://127.0.0.1:8000/docs`。`/health` 及启用登录后的 `/api/v1/auth/*` 登录会话接口不要求调用方预先持有部署级密钥；关闭登录时只有 `/auth/me` 提供本地 owner，且必须携带部署级密钥，其余登录/账号管理接口拒绝访问。其他迁移期接口仍需携带：
 
 ```text
 X-API-Key: apps/api/.env 中的 NEXUSPILOT_API_KEY
@@ -110,7 +112,7 @@ X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 
 公共和内部密钥必须不同，否则应用配置校验失败。
 
-浏览器认证配置位于 `apps/api/.env`。开发环境允许显式列出的 HTTP Origin；生产环境必须启用 `NEXUSPILOT_AUTHENTICATION_COOKIE_SECURE=true`，并将 `NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS` 配置为实际 HTTPS 站点。数据库只保存 Argon2id 密码校验值、会话令牌摘要和审计指纹，不保存密码、Cookie 原文或跨站请求伪造防护令牌原文。
+浏览器认证配置仅位于 `apps/api/.env`，Web 根据 `/auth/me` 返回的访问方式显示界面，不维护第二个开关。开发环境允许显式列出的 HTTP Origin；生产环境必须启用 `NEXUSPILOT_AUTHENTICATION_ENABLED=true`、`NEXUSPILOT_AUTHENTICATION_COOKIE_SECURE=true`，并将 `NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS` 配置为实际 HTTPS 站点。数据库只保存 Argon2id 密码校验值、会话令牌摘要和审计指纹，不保存密码、Cookie 原文或跨站请求伪造防护令牌原文。启用登录后不会自动转移本地旧对话，认证失败不会降级为免登录；本地 owner 停用或已绑定密码账号时明确拒绝免登录访问。
 
 分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。
 

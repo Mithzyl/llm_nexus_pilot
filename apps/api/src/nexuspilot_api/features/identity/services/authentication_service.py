@@ -30,6 +30,7 @@ from nexuspilot_api.features.identity.models.authentication import (
 )
 from nexuspilot_api.features.identity.schemas.authentication import (
     AuthenticatedPrincipalRead,
+    LocalWorkspacePrincipalRead,
     UserLoginSessionRead,
 )
 from nexuspilot_api.features.identity.services.password_hasher import (
@@ -40,9 +41,42 @@ from nexuspilot_api.features.identity.services.password_hasher import (
 from nexuspilot_api.models import User
 from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.schemas.users import UserCreate
+from nexuspilot_api.services.user_service import create_user
 
 BROWSER_SCOPES = ("model:invoke", "sessions:read", "sessions:write")
 SESSION_TOKEN_PREFIX = "nps_"
+
+
+async def resolve_local_workspace_principal(
+    db_session: AsyncSession,
+) -> LocalWorkspacePrincipalRead:
+    """Create/reuse only the historical local owner; reject disabled or login-bound owners.
+
+    Caller must first enforce local mode and the deployment service key. Concurrent
+    first reads reuse the uniquely committed User, without creating a password or session.
+    """
+
+    local_user_id = "nexuspilot-web"
+    local_user = await db_session.get(User, local_user_id)
+    if local_user is None:
+        try:
+            local_user = await create_user(
+                db_session, UserCreate(user_id=local_user_id, display_name="本地工作区"),
+            )
+        except ResourceConflictError:
+            # The unique owner may have been created by another browser's initial read.
+            await db_session.rollback()
+            local_user = await db_session.get(User, local_user_id)
+    identity = await db_session.scalar(select(UserAuthenticationIdentity).where(
+        UserAuthenticationIdentity.user_id == local_user_id,
+    ))
+    if local_user is None or identity is not None:
+        raise ResourceConflictError("本地资源所有者不可用，请检查账号配置。")
+    if not local_user.is_active:
+        raise AuthenticationRequiredError("本地资源所有者已停用。")
+    return LocalWorkspacePrincipalRead(
+        user_id=local_user.user_id, display_name="本地工作区", scopes=list(BROWSER_SCOPES),
+    )
 
 
 @dataclass(frozen=True)

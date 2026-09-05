@@ -35,6 +35,7 @@ def test_production_authentication_requires_secure_cookie_and_https_origin() -> 
 
     common_settings = {
         "environment": "production",
+        "authentication_enabled": True,
         "provider_continuation_encryption_key": SecretStr("c" * 32),
     }
     with pytest.raises(ValidationError, match="authentication_cookie_secure"):
@@ -44,6 +45,24 @@ def test_production_authentication_requires_secure_cookie_and_https_origin() -> 
             **common_settings,
             authentication_cookie_secure=True,
             authentication_allowed_origins="http://nexus.example.com",
+        )
+
+
+def test_login_defaults_off_but_cannot_be_disabled_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permit explicit single-user local operation, never an anonymous production deployment."""
+
+    monkeypatch.delenv("NEXUSPILOT_AUTHENTICATION_ENABLED", raising=False)
+    assert Settings(_env_file=None).authentication_enabled is False
+    with pytest.raises(ValidationError, match="authentication_enabled"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            authentication_enabled=False,
+            provider_continuation_encryption_key=SecretStr("c" * 32),
+            authentication_cookie_secure=True,
+            authentication_allowed_origins="https://nexus.example.com",
         )
 
 

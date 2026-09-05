@@ -47,6 +47,7 @@ class Settings(BaseSettings):
         ge=60,
         le=2_592_000,
     )
+    authentication_enabled: bool = False
     authentication_cookie_secure: bool = False
     authentication_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     authentication_session_idle_seconds: int = Field(default=43_200, ge=300, le=604_800)
@@ -78,7 +79,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_separate_internal_key(self) -> Self:
-        """Reject configurations that collapse public and internal trust boundaries."""
+        """Validate service separation and require secure login outside local environments."""
 
         if self.api_key == self.internal_api_key.get_secret_value():
             raise ValueError("internal_api_key must differ from api_key")
@@ -110,6 +111,8 @@ class Settings(BaseSettings):
                     "authentication_allowed_origins must contain only absolute HTTP(S) origins"
                 )
         if self.environment.lower() not in {"development", "test"}:
+            if not self.authentication_enabled:
+                raise ValueError("authentication_enabled must be enabled outside development")
             if not self.authentication_cookie_secure:
                 raise ValueError("authentication_cookie_secure must be enabled outside development")
             if any(not origin.startswith("https://") for origin in allowed_origins):

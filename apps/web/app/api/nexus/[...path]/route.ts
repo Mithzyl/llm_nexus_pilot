@@ -8,7 +8,10 @@ const MAX_REQUEST_BODY_BYTES = 2_000_000;
 
 type RouteContext = { params: Promise<{ path: string[] }> };
 type JsonObject = Record<string, unknown>;
-type AuthenticatedPrincipal = { user_id: string };
+type WorkspacePrincipal = {
+  user_id: string;
+  authentication_method: "browser_session" | "local_deployment";
+};
 
 /** Build the minimum authenticated header set for an upstream request. */
 function buildApiHeaders(request: NextRequest): Headers {
@@ -55,10 +58,10 @@ function copyUpstreamResponse(upstream: Response): Promise<Response> {
   );
 }
 
-/** Resolve the current browser user before forwarding any owned resource request. */
-async function fetchAuthenticatedPrincipal(
+/** Resolve server-selected local/login ownership; invalid or failed lookups never bypass login. */
+async function fetchWorkspacePrincipal(
   request: NextRequest,
-): Promise<{ principal: AuthenticatedPrincipal } | { error: Response }> {
+): Promise<{ principal: WorkspacePrincipal } | { error: Response }> {
   const upstream = await fetch(new URL("/api/v1/auth/me", API_BASE_URL), {
     method: "GET",
     headers: buildApiHeaders(request),
@@ -67,11 +70,12 @@ async function fetchAuthenticatedPrincipal(
   });
   if (!upstream.ok) return { error: await copyUpstreamResponse(upstream) };
   try {
-    const principal = (await upstream.json()) as Partial<AuthenticatedPrincipal>;
-    if (typeof principal.user_id !== "string" || !principal.user_id) {
+    const principal = (await upstream.json()) as Partial<WorkspacePrincipal>;
+    if (typeof principal.user_id !== "string" || !principal.user_id ||
+        !["browser_session", "local_deployment"].includes(principal.authentication_method ?? "")) {
       return { error: Response.json({ detail: "当前用户响应格式无效。" }, { status: 502 }) };
     }
-    return { principal: { user_id: principal.user_id } };
+    return { principal: principal as WorkspacePrincipal };
   } catch {
     return { error: Response.json({ detail: "当前用户响应格式无效。" }, { status: 502 }) };
   }
@@ -407,7 +411,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     if (request.headers.get("origin") !== request.nextUrl.origin) {
       return Response.json({ detail: "请求来源未获授权。" }, { status: 403 });
     }
-    if (!(isAuthenticationRoute && ["login", "logout"].includes(path[1]))) {
+    if (isAuthenticationRoute && !["login", "logout"].includes(path[1])) {
       const csrfCookie = request.cookies.get("nexuspilot_csrf")?.value;
       if (!csrfCookie || request.headers.get("x-csrf-token") !== csrfCookie) {
         return Response.json({ detail: "跨站请求伪造校验失败。" }, { status: 403 });
@@ -417,9 +421,16 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
   let currentUserId: string | null = null;
   if (!isAuthenticationRoute) {
     try {
-      const principalResult = await fetchAuthenticatedPrincipal(request);
+      const principalResult = await fetchWorkspacePrincipal(request);
       if ("error" in principalResult) return principalResult.error;
       currentUserId = principalResult.principal.user_id;
+      if (!["GET", "HEAD"].includes(request.method) &&
+          principalResult.principal.authentication_method === "browser_session") {
+        const csrfCookie = request.cookies.get("nexuspilot_csrf")?.value;
+        if (!csrfCookie || request.headers.get("x-csrf-token") !== csrfCookie) {
+          return Response.json({ detail: "跨站请求伪造校验失败。" }, { status: 403 });
+        }
+      }
     } catch {
       return Response.json({ detail: "身份服务暂不可用，请稍后重试。" }, { status: 503 });
     }

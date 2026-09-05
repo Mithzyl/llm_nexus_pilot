@@ -8,11 +8,11 @@ export type RunStatus =
   | "cancel_requested"
   | "cancelled";
 
-export type AuthenticatedPrincipal = {
+export type WorkspacePrincipal = {
   user_id: string;
   display_name: string;
-  authentication_method: "browser_session";
-  login_session_id: string;
+  authentication_method: "browser_session" | "local_deployment";
+  login_session_id: string | null;
   scopes: string[];
 };
 

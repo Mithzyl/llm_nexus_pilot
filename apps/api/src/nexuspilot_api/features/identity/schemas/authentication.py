@@ -48,3 +48,16 @@ class UserLoginSessionRead(ApiModel):
     absolute_expires_at: datetime
     revoked_at: datetime | None
     is_current: bool = False
+
+
+class LocalWorkspacePrincipalRead(BaseModel):
+    """Describe the single local resource owner without pretending it is a logged-in user."""
+
+    user_id: str
+    display_name: str
+    authentication_method: Literal["local_deployment"] = "local_deployment"
+    login_session_id: None = None
+    scopes: list[str]
+
+
+WorkspacePrincipalRead = AuthenticatedPrincipalRead | LocalWorkspacePrincipalRead

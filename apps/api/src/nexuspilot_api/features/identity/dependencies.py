@@ -2,14 +2,19 @@
 
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.config import Settings, get_settings
-from nexuspilot_api.features.identity.schemas.authentication import AuthenticatedPrincipalRead
+from nexuspilot_api.core.security import require_api_key
+from nexuspilot_api.features.identity.schemas.authentication import (
+    AuthenticatedPrincipalRead,
+    WorkspacePrincipalRead,
+)
 from nexuspilot_api.features.identity.services.authentication_service import (
     require_owned_login_session,
     resolve_browser_principal,
+    resolve_local_workspace_principal,
     validate_login_session_csrf,
 )
 from nexuspilot_api.infrastructure.database import get_database_session
@@ -18,12 +23,23 @@ SESSION_COOKIE_NAME = "nexuspilot_session"
 CSRF_COOKIE_NAME = "nexuspilot_csrf"
 
 
+def require_browser_authentication_enabled(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> None:
+    """Keep login and account-management endpoints unavailable in single-user local mode."""
+
+    if not settings.authentication_enabled:
+        raise HTTPException(status_code=403, detail="当前部署未启用登录。")
+
+
 async def get_authenticated_principal(
     request: Request,
     db_session: Annotated[AsyncSession, Depends(get_database_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> AuthenticatedPrincipalRead:
-    """Resolve the current final user from an opaque Cookie session."""
+    """Resolve an enabled login session; local owners can never manage browser credentials."""
+
+    require_browser_authentication_enabled(settings)
 
     principal = await resolve_browser_principal(
         db_session,
@@ -43,6 +59,19 @@ async def get_authenticated_principal(
             csrf_header=request.headers.get("x-csrf-token"),
         )
     return principal
+
+
+async def get_workspace_principal(
+    request: Request,
+    db_session: Annotated[AsyncSession, Depends(get_database_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> WorkspacePrincipalRead:
+    """Resolve configured access mode without falling back when enabled authentication fails."""
+
+    if settings.authentication_enabled:
+        return await get_authenticated_principal(request, db_session, settings)
+    await require_api_key(request.headers.get("x-api-key"))
+    return await resolve_local_workspace_principal(db_session)
 
 
 AuthenticatedPrincipalDependency = Annotated[

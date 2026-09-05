@@ -3,16 +3,18 @@
 import { useState } from "react";
 
 import { loginWithPassword } from "../../lib/api";
-import type { AuthenticatedPrincipal } from "../../lib/types";
+import type { WorkspacePrincipal } from "../../lib/types";
 
 type AuthenticationGateProps = {
   isChecking: boolean;
-  onAuthenticated: (principal: AuthenticatedPrincipal) => void;
+  unavailableMessage?: string | null;
+  onAuthenticated: (principal: WorkspacePrincipal) => void;
 };
 
-/** Render the provisioned-account login boundary before the conversation workspace mounts. */
+/** Show login only when authentication is required; dependency failures remain explicit. */
 export function AuthenticationGate({
   isChecking,
+  unavailableMessage,
   onAuthenticated,
 }: AuthenticationGateProps) {
   const [email, setEmail] = useState("");
@@ -51,8 +53,14 @@ export function AuthenticationGate({
         {isChecking ? (
           <div className="authentication-checking" role="status">
             <span />
-            正在确认登录状态…
+            正在连接工作台…
           </div>
+        ) : unavailableMessage ? (
+          <>
+            <h1 id="authentication-title">工作台暂不可用</h1>
+            <p className="authentication-error" role="alert">{unavailableMessage}</p>
+            <button type="button" onClick={() => window.location.reload()}>重试</button>
+          </>
         ) : (
           <>
             <p className="eyebrow">受保护的对话工作台</p>

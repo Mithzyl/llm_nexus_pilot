@@ -20,14 +20,14 @@ make web-run
 开发服务器使用 `.next-dev`，生产构建使用 `.next`，两者可以先后验证而不会覆盖正在运行的
 客户端产物。
 
-先按根目录 README 运行 `provision_local_user` 预置账户，再打开 `http://localhost:3000` 登录。如果 FastAPI 未运行，登录状态无法确认，不能进入或发送模型请求。
+默认关闭登录，打开 `http://localhost:3000` 即以固定本地 owner 使用工作台，不显示退出按钮。访问方式由后端 `/auth/me` 确认，不在 Web 环境文件增加第二套开关。需要账号隔离时，在 `apps/api/.env` 启用 `NEXUSPILOT_AUTHENTICATION_ENABLED=true`，按根目录 README 预置账户并重启 API。免登录仅供可信个人本机使用；如果 FastAPI 未运行，工作台显示不可用，不会自动绕过访问校验。
 
 ## 设计边界
 
 - Composer 的 Provider 和模型选项来自 `GET /api/v1/models?requires_streaming=true`，不在浏览器硬编码可用状态；`/settings/models` 使用同一合同只读展示全部已登记模型及不可用原因。`GET /api/v1/providers` 仅作为旧客户端兼容接口保留。
 - `/api/nexus/*` 不是通用 API 代理，只允许认证、Provider、Model、Session、Message、Run、Response、Attempt Reasoning/事件和八个 Agent Workflow 的精确路径；每个业务请求先解析 `/auth/me`，再以当前用户校验 Session、Message、Run、Attempt、Workflow 和 Node 归属。会话重命名只开放精确的 Session `PATCH` 路径。FastAPI 各业务 Router 改为直接依赖当前主体之前，部署级 API Key 仍只保存在服务端，不能把该过渡边界当作阶段5已经完成。
 - 登录使用管理员预置账户和数据库支持的不透明 Cookie 会话。HttpOnly 会话 Cookie 原文不进入浏览器脚本或数据库；独立 CSRF Cookie 允许脚本读取并放入请求头。登录、退出、当前用户、会话列表/撤销及密码修改由 `/api/v1/auth/*` 提供，业务写操作与认证状态修改都校验 Origin；需要已登录身份的写操作同时校验防护令牌。
-- 发送消息前创建或复用用户、Session 和 Run；响应通过 `POST /api/v1/responses` 的 SSE 事件增量渲染。
+- 后端解析本地或登录 owner，前端发送消息前创建或复用 Session 和 Run，不自行创建用户；响应通过 `POST /api/v1/responses` 的 SSE 事件增量渲染。
 - Provider Catalog 同时返回逐模型推理能力。页面只渲染服务端统一的 `reasoning.raw`、`reasoning.summary` 或 `reasoning.status`，不会根据 Provider 名称推断内容；公开推理默认折叠，隐藏推理在 Chat 完成后移除空状态，在运行轨迹中保留状态与指标。
 - Responses 事件使用 `conversation-stream.v2` 和单调 `sequence`。已取得 Attempt 标识后发生断线或序号缺口时，页面通过受归属检查的 `/attempts/{attempt_id}/events` 从最后确认序号回放；缺失事件不会被跳过，用户主动停止不会触发自动恢复。
 - Assistant Message 保存 `source_model_attempt_id`，历史窗口一次批量返回对应公开 Reasoning Block；加密推理、DeepSeek 工具续接原文和 Provider response ID 始终留在后端。

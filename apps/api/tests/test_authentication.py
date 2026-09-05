@@ -3,9 +3,11 @@
 from datetime import timedelta
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.features.identity.models.authentication import (
     UserLoginSession,
     UserPasswordCredential,
@@ -18,6 +20,57 @@ from nexuspilot_api.models.base import utc_now
 
 LOGIN_ORIGIN = "http://test"
 TEST_PASSWORD = "correct horse battery staple"
+
+
+@pytest.fixture(autouse=True)
+def enable_browser_authentication(monkeypatch: pytest.MonkeyPatch):
+    """Exercise opt-in authentication explicitly, independently of local defaults."""
+
+    monkeypatch.setenv("NEXUSPILOT_AUTHENTICATION_ENABLED", "true")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def test_local_mode_uses_one_owner_without_creating_login_sessions(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allow local access only through the service key, never a client-selected owner."""
+
+    monkeypatch.setenv("NEXUSPILOT_AUTHENTICATION_ENABLED", "false")
+    get_settings.cache_clear()
+    for _ in range(2):
+        response = await client.get("/api/v1/auth/me?user_id=another-user")
+        assert response.status_code == 200
+        assert response.json()["user_id"] == "nexuspilot-web"
+        assert response.json()["authentication_method"] == "local_deployment"
+        assert response.json()["login_session_id"] is None
+        assert "set-cookie" not in response.headers
+    assert (await client.get("/api/v1/auth/me", headers={"X-API-Key": "wrong"})).status_code == 401
+    assert (await login(client)).status_code == 403
+    assert (await client.get("/api/v1/auth/sessions")).status_code == 403
+    logout_response = await client.post("/api/v1/auth/logout", headers={"Origin": LOGIN_ORIGIN})
+    assert logout_response.status_code == 403
+    async with test_database_session_factory() as database_session:
+        assert await database_session.scalar(select(UserLoginSession)) is None
+    disabled = await client.patch("/api/v1/users/nexuspilot-web", json={"is_active": False})
+    assert disabled.status_code == 200
+    assert (await client.get("/api/v1/auth/me")).status_code == 401
+
+
+async def test_local_mode_never_claims_a_password_account(
+    client: httpx.AsyncClient,
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail explicitly when the reserved local owner has been bound to a login identity."""
+
+    await provision_user(test_database_session_factory, user_id="nexuspilot-web")
+    monkeypatch.setenv("NEXUSPILOT_AUTHENTICATION_ENABLED", "false")
+    get_settings.cache_clear()
+    assert (await client.get("/api/v1/auth/me")).status_code == 409
 
 
 async def test_invalid_login_payload_never_echoes_password(client: httpx.AsyncClient) -> None:
