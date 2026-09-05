@@ -54,6 +54,15 @@ async function installApiMocks(
   await page.route("**/api/nexus/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace("/api/nexus/", "");
+    if (path === "auth/me") {
+      return fulfillJson(route, {
+        user_id: "nexuspilot-web",
+        display_name: "Test user",
+        authentication_method: "browser_session",
+        login_session_id: "login-session-1",
+        scopes: ["model:invoke", "sessions:read", "sessions:write"],
+      });
+    }
     if (path === "models") return fulfillJson(route, [MODEL]);
     if (path === "sessions") {
       return fulfillJson(route, {
@@ -130,12 +139,84 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => installApiMocks(page));
 
+test("requires a provisioned account before mounting the conversation workspace", async ({
+  page,
+}) => {
+  await page.unroute("**/api/nexus/**");
+  let isAuthenticated = false;
+  let logoutAttempts = 0;
+  await page.route("**/api/nexus/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname.replace("/api/nexus/", "");
+    if (path === "auth/me") {
+      return isAuthenticated
+        ? fulfillJson(route, {
+            user_id: "authenticated-user",
+            display_name: "Authenticated User",
+            authentication_method: "browser_session",
+            login_session_id: "login-session-1",
+            scopes: ["model:invoke", "sessions:read", "sessions:write"],
+          })
+        : fulfillJson(route, { detail: "需要登录。" }, 401);
+    }
+    if (path === "auth/login") {
+      if (request.postDataJSON().password === "wrong password") {
+        return fulfillJson(route, { detail: "邮箱或密码不正确。" }, 401);
+      }
+      isAuthenticated = true;
+      return fulfillJson(route, {
+        user_id: "authenticated-user",
+        display_name: "Authenticated User",
+        authentication_method: "browser_session",
+        login_session_id: "login-session-1",
+        scopes: ["model:invoke", "sessions:read", "sessions:write"],
+      });
+    }
+    if (path === "auth/logout") {
+      logoutAttempts += 1;
+      if (logoutAttempts === 1) {
+        return fulfillJson(route, { detail: "退出服务暂不可用。" }, 503);
+      }
+      isAuthenticated = false;
+      return route.fulfill({ status: 204, body: "" });
+    }
+    if (path === "models") return fulfillJson(route, [MODEL]);
+    if (path === "sessions") {
+      return fulfillJson(route, { items: [], next_cursor: null, has_more: false, limit: 50 });
+    }
+    return fulfillJson(route, { detail: `Unhandled authentication route: ${path}` }, 404);
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "登录" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "消息内容" })).toHaveCount(0);
+  await page.getByRole("textbox", { name: "邮箱" }).fill("user@example.com");
+  await page.getByLabel("密码").fill("wrong password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.locator(".authentication-error[role=alert]")).toContainText("邮箱或密码不正确");
+  await page.getByLabel("密码").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "登录" }).click();
+
+  await expect(page.getByRole("textbox", { name: "消息内容" })).toBeVisible();
+  await expect(page.locator(".authenticated-user")).toContainText("Authenticated User");
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "消息内容" })).toBeVisible();
+  const mobileMenu = page.getByRole("button", { name: "打开会话列表" });
+  if (await mobileMenu.isVisible()) await mobileMenu.click();
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await expect(page.getByText("退出服务暂不可用。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "登录", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "登录", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "消息内容" })).toHaveCount(0);
+});
+
 test("restores an unsent new-conversation draft after reload", async ({ page }) => {
   await page.goto("/");
   const composer = page.getByRole("textbox", { name: "消息内容" });
   await composer.fill("draft that must survive reload");
   await expect.poll(() => page.evaluate(() =>
-    window.sessionStorage.getItem("nexuspilot:draft:new"),
+    window.sessionStorage.getItem("nexuspilot:draft:nexuspilot-web:new"),
   )).toBe("draft that must survive reload");
   await page.reload();
   await expect(composer).toHaveValue(

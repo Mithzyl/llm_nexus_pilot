@@ -29,3 +29,23 @@ class InvalidCursorError(ApplicationError):
 
 class InvalidRequestError(ApplicationError):
     """Report a semantically invalid query or action request."""
+
+
+class AuthenticationRequiredError(ApplicationError):
+    """Report a missing, expired, revoked, or inactive final-user identity."""
+
+
+class InvalidAuthenticationCredentialsError(ApplicationError):
+    """Return one uniform failure for unknown identities and invalid passwords."""
+
+
+class AuthenticationIdentityConflictError(ApplicationError):
+    """Reject requests that submit more than one final-user authentication method."""
+
+
+class AuthenticationCsrfError(ApplicationError):
+    """Reject a Cookie-authenticated mutation without valid same-origin CSRF proof."""
+
+
+class AuthenticationRateLimitError(ApplicationError):
+    """Report a temporarily blocked authentication attempt after repeated failures."""

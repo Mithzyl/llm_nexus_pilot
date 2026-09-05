@@ -1,5 +1,11 @@
 """Public model exports and metadata registration for the NexusPilot API."""
 
+from nexuspilot_api.features.identity.models.authentication import (
+    AuthenticationAuditEvent,
+    UserAuthenticationIdentity,
+    UserLoginSession,
+    UserPasswordCredential,
+)
 from nexuspilot_api.features.memory.models.agent_memory import (
     LlmAgentRun,
     LlmAgentTurn,
@@ -127,6 +133,7 @@ __all__ = [
     "AgentWorkflowStatus",
     "AgentWorkingStateStatus",
     "ApprovalMethod",
+    "AuthenticationAuditEvent",
     "AttemptStatus",
     "Base",
     "ContextBuildStatus",
@@ -216,5 +223,8 @@ __all__ = [
     "TaskStatus",
     "TimestampMixin",
     "User",
+    "UserAuthenticationIdentity",
+    "UserLoginSession",
+    "UserPasswordCredential",
     "new_id",
 ]

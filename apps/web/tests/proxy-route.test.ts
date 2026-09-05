@@ -8,6 +8,7 @@ process.env.NEXUSPILOT_API_URL = "https://nexus.test";
 let GET: typeof import("../app/api/nexus/[...path]/route").GET;
 let POST: typeof import("../app/api/nexus/[...path]/route").POST;
 let PATCH: typeof import("../app/api/nexus/[...path]/route").PATCH;
+let DELETE: typeof import("../app/api/nexus/[...path]/route").DELETE;
 const originalFetch = globalThis.fetch;
 
 test.before(async () => {
@@ -15,6 +16,7 @@ test.before(async () => {
   GET = route.GET;
   POST = route.POST;
   PATCH = route.PATCH;
+  DELETE = route.DELETE;
 });
 
 /** Build a same-origin request for one proxy path. */
@@ -22,13 +24,145 @@ function createRequest(
   path: string,
   init?: ConstructorParameters<typeof NextRequest>[1],
 ): InstanceType<typeof NextRequest> {
-  return new NextRequest(`http://localhost/api/nexus/${path}`, init);
+  const configuredFetch = globalThis.fetch as typeof fetch & { authenticationWrapped?: boolean };
+  if (!configuredFetch.authenticationWrapped) {
+    const authenticatedFetch = (async (input: RequestInfo | URL, fetchInit?: RequestInit) => {
+      if (String(input).endsWith("/api/v1/auth/me")) {
+        return Response.json({ user_id: "nexuspilot-web" });
+      }
+      return configuredFetch(input, fetchInit);
+    }) as typeof fetch & { authenticationWrapped?: boolean };
+    authenticatedFetch.authenticationWrapped = true;
+    globalThis.fetch = authenticatedFetch;
+  }
+  const headers = new Headers(init?.headers);
+  if (init?.method && init.method !== "GET") {
+    headers.set("origin", "http://localhost");
+    if (!headers.has("cookie")) headers.set("cookie", "nexuspilot_csrf=test-csrf");
+    headers.set("x-csrf-token", headers.get("cookie")?.includes("csrf-value") ? "csrf-value" : "test-csrf");
+  }
+  return new NextRequest(`http://localhost/api/nexus/${path}`, { ...init, headers });
 }
 
 /** Build the catch-all route context expected by the Next.js handler. */
 function createContext(path: string) {
   return { params: Promise.resolve({ path: path.split("/") }) };
 }
+
+test("forwards login cookies and does not require a pre-existing user session", async () => {
+  const upstreamCalls: Array<{ url: string; cookie: string | null }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const headers = new Headers(init?.headers);
+    upstreamCalls.push({ url: String(input), cookie: headers.get("cookie") });
+    return new Response(JSON.stringify({ user_id: "authenticated-user" }), {
+      status: 200,
+      headers: [
+        ["content-type", "application/json"],
+        ["set-cookie", "nexuspilot_session=opaque; Path=/; HttpOnly; SameSite=Lax"],
+        ["set-cookie", "nexuspilot_csrf=csrf; Path=/; SameSite=Lax"],
+      ],
+    });
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://localhost" },
+        body: JSON.stringify({ email: "user@example.com", password: "strong-password" }),
+      }),
+      createContext("auth/login"),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(upstreamCalls, [
+      { url: "https://nexus.test/api/v1/auth/login", cookie: "nexuspilot_csrf=test-csrf" },
+    ]);
+    const setCookies = (response.headers as Headers & { getSetCookie?: () => string[] })
+      .getSetCookie?.() ?? [response.headers.get("set-cookie") ?? ""];
+    assert.equal(setCookies.some((value) => value.includes("nexuspilot_session=opaque")), true);
+    assert.equal(setCookies.some((value) => value.includes("nexuspilot_csrf=csrf")), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("stops a business request when the browser session is unauthenticated", async () => {
+  const upstreamUrls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    upstreamUrls.push(String(input));
+    return Response.json({ detail: "需要登录。" }, { status: 401 });
+  }) as typeof fetch;
+
+  try {
+    const request = new NextRequest("http://localhost/api/nexus/sessions");
+    const response = await GET(request, createContext("sessions"));
+
+    assert.equal(response.status, 401);
+    assert.deepEqual(upstreamUrls, ["https://nexus.test/api/v1/auth/me"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects cross-origin and missing-CSRF business mutations before any upstream call", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => { calls += 1; return Response.json({}); }) as typeof fetch;
+  try {
+    for (const origin of ["https://foreign.example", "http://localhost"]) {
+      const response = await POST(new NextRequest("http://localhost/api/nexus/sessions", {
+        method: "POST",
+        headers: { origin, cookie: "nexuspilot_csrf=secret", "content-type": "application/json" },
+        body: JSON.stringify({ title: "Forbidden creation" }),
+      }), createContext("sessions"));
+      assert.equal(response.status, 403);
+    }
+    assert.equal(calls, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("returns an explicit unavailable response when principal lookup cannot connect", async () => {
+  globalThis.fetch = (async () => { throw new Error("connection refused"); }) as typeof fetch;
+  try {
+    const response = await GET(new NextRequest("http://localhost/api/nexus/sessions"), createContext("sessions"));
+    assert.equal(response.status, 503);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("forwards session revocation with the browser CSRF proof", async () => {
+  const upstreamCalls: Array<{ url: string; csrf: string | null; cookie: string | null }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const headers = new Headers(init?.headers);
+    upstreamCalls.push({
+      url: String(input),
+      csrf: headers.get("x-csrf-token"),
+      cookie: headers.get("cookie"),
+    });
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  try {
+    const response = await DELETE(
+      createRequest("auth/sessions/session-1", {
+        method: "DELETE",
+        headers: {
+          cookie: "nexuspilot_session=opaque; nexuspilot_csrf=csrf-value",
+          origin: "http://localhost",
+        },
+      }),
+      createContext("auth/sessions/session-1"),
+    );
+
+    assert.equal(response.status, 204);
+    assert.deepEqual(upstreamCalls, [{
+      url: "https://nexus.test/api/v1/auth/sessions/session-1",
+      csrf: "csrf-value",
+      cookie: "nexuspilot_session=opaque; nexuspilot_csrf=csrf-value",
+    }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("rejects cross-user session, message, and run resources at the proxy boundary", async () => {
   const upstreamUrls: string[] = [];

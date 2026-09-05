@@ -4,18 +4,26 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from nexuspilot_models.errors import ModelProviderError
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import (
     ApplicationError,
+    AuthenticationCsrfError,
+    AuthenticationIdentityConflictError,
+    AuthenticationRateLimitError,
+    AuthenticationRequiredError,
+    InvalidAuthenticationCredentialsError,
     InvalidCursorError,
     InvalidRequestError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
+from nexuspilot_api.features.identity.routers.authentication import router as authentication_router
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.provider_registry import (
     create_price_catalog,
@@ -56,7 +64,21 @@ app = FastAPI(
     description="Provider-neutral Responses API and durable NexusPilot execution records.",
     lifespan=lifespan,
 )
+app.include_router(authentication_router)
 app.include_router(api_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, error: RequestValidationError):
+    """Redact authentication validation inputs while preserving other API error contracts."""
+
+    if request.url.path.startswith("/api/v1/auth/"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "认证请求格式无效，请检查填写内容。"},
+            headers={"Cache-Control": "no-store"},
+        )
+    return await request_validation_exception_handler(request, error)
 
 
 @app.exception_handler(ApplicationError)
@@ -68,8 +90,17 @@ async def application_error_handler(_request: object, error: ApplicationError) -
         ResourceConflictError: 409,
         InvalidCursorError: 422,
         InvalidRequestError: 422,
+        AuthenticationRequiredError: 401,
+        InvalidAuthenticationCredentialsError: 401,
+        AuthenticationIdentityConflictError: 400,
+        AuthenticationCsrfError: 403,
+        AuthenticationRateLimitError: 429,
     }.get(type(error), 400)
-    return JSONResponse(status_code=status_code, content={"detail": str(error)})
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": str(error)},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.exception_handler(ModelProviderError)

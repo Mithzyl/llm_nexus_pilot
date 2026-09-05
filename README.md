@@ -1,11 +1,11 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；当前优先实施阶段4 Web，先形成稳定可用的服务界面，再完成阶段5身份凭据和阶段6可观测性。阶段7工具、阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；阶段4 Web 与阶段5身份认证正在实施，阶段6可观测性随后进行。阶段7工具、阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
 
 ## 当前能力
 
 - FastAPI 健康检查和版本化 REST API；
-- API Key 基础认证；
+- 部署级 API Key 认证，以及面向已预置账户的本地密码登录、不透明浏览器会话、退出、会话撤销和密码修改；
 - 受信 API 调用方可以创建、查询、分页筛选和受限更新用户及会话；分页 cursor 与完整筛选条件绑定；
 - 可以追加不可变会话消息，按数据库分配的序号分页读取，并验证 Message、Run 与 Session 归属；
 - Run 和 Task 支持独立签名 cursor 分页、归属与状态过滤；列表只返回有界预览，Run 兼容聚合详情对每类子资源最多返回 100 条并明确标记是否还有更多；
@@ -43,8 +43,10 @@ apps/api/src/nexuspilot_api/
 ├── main.py                 # 应用创建与顶层资源生命周期
 ├── core/                   # 配置、认证、FastAPI 依赖注入
 ├── features/
+│   ├── identity/           # 登录身份、密码校验、会话、认证审计
 │   └── memory/             # Memory 业务域，内部按 models/schemas/services/routers 分层
-├── routers/                # 非 Memory 资源的 HTTP Controller
+├── commands/               # 可信终端账户预置等运维入口
+├── routers/                # 其他业务资源的 HTTP Controller
 ├── services/               # 按业务资源拆分的事务与业务逻辑
 ├── models/                 # SQLAlchemy 持久化模型
 ├── schemas/                # Pydantic HTTP 请求和响应结构
@@ -66,6 +68,15 @@ make api-migrate
 make api-run
 ```
 
+迁移完成后，通过可信终端预置首个可登录账户。密码只从终端交互读取，不接受命令行参数：
+
+```bash
+apps/api/.venv/bin/python -m nexuspilot_api.commands.provision_local_user \
+  --user-id operator \
+  --display-name "Operator" \
+  --email operator@example.com
+```
+
 后端只读取 `apps/api/.env`；前端只读取 `apps/web/.env.local`。前端文件中的
 `NEXUSPILOT_API_KEY` 必须与后端同名配置一致，但 Provider 密钥、数据库和对象存储配置
 不得复制到前端文件。根目录不再使用共享 `.env`。
@@ -85,7 +96,7 @@ NEXUSPILOT_DATABASE_URL=mysql+aiomysql://nexuspilot:nexuspilot@localhost:3307/ne
 
 Compose 中的 API 会自动使用容器内部的 `mysql:3306` 和 `minio:9000`，不会读取宿主机地址。
 
-API 文档位于 `http://127.0.0.1:8000/docs`。除 `/health` 外，请求需要携带：
+API 文档位于 `http://127.0.0.1:8000/docs`。`/health` 及 `/api/v1/auth/*` 登录会话接口不要求调用方预先持有部署级密钥；其他迁移期接口仍需携带：
 
 ```text
 X-API-Key: apps/api/.env 中的 NEXUSPILOT_API_KEY
@@ -98,6 +109,8 @@ X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 ```
 
 公共和内部密钥必须不同，否则应用配置校验失败。
+
+浏览器认证配置位于 `apps/api/.env`。开发环境允许显式列出的 HTTP Origin；生产环境必须启用 `NEXUSPILOT_AUTHENTICATION_COOKIE_SECURE=true`，并将 `NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS` 配置为实际 HTTPS 站点。数据库只保存 Argon2id 密码校验值、会话令牌摘要和审计指纹，不保存密码、Cookie 原文或跨站请求伪造防护令牌原文。
 
 分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。
 
@@ -248,4 +261,4 @@ cd ../..
 make web-run
 ```
 
-打开 `http://localhost:3000`。界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。具体行为边界见 [`phase-4-web-ui-plan.md`](docs/frontend/phase-4-web-ui-plan.md)。
+打开 `http://localhost:3000`，使用已预置账户登录。登录成功后界面以三栏黑白主题为基线，包含会话侧栏、对话工作区、SSE 流式响应和运行证据检查器。Next.js 服务端转发层从 Cookie 解析当前用户并覆盖业务请求中的资源归属；FastAPI 业务 Router 全面改为主体依赖及个人 API Key、用户 Provider 凭据仍属于阶段5后续工作。具体行为边界见 [`phase-4-web-ui-plan.md`](docs/frontend/phase-4-web-ui-plan.md)。

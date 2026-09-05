@@ -33,3 +33,10 @@ test("persists, bounds, and clears unsent drafts without retaining empty values"
   clearConversationDraft(storage, key);
   assert.equal(readConversationDraft(storage, key), "");
 });
+
+test("does not restore another account's draft in the same browser tab", () => {
+  const storage = new MemoryStorage();
+  writeConversationDraft(storage, conversationDraftStorageKey(null, "alice"), "Alice private draft");
+  assert.equal(readConversationDraft(storage, conversationDraftStorageKey(null, "bob")), "");
+  assert.equal(readConversationDraft(storage, conversationDraftStorageKey(null, "alice")), "Alice private draft");
+});

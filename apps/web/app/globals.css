@@ -27,6 +27,53 @@ button, textarea, input { font: inherit; }
 button { color: inherit; }
 button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
 
+.authentication-page {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 10%, #f1f1f1 0, transparent 36%),
+    #ffffff;
+}
+.authentication-panel {
+  width: min(100%, 390px);
+  padding: 34px;
+  border: 1px solid #dedede;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.09);
+}
+.authentication-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 42px; font-size: 18px; font-weight: 720; }
+.authentication-panel h1 { margin: 6px 0 8px; font-size: 30px; letter-spacing: -0.04em; }
+.authentication-intro { margin: 0 0 26px; color: #6b6b6b; }
+.authentication-form { display: grid; gap: 17px; }
+.authentication-form label { display: grid; gap: 8px; font-size: 13px; font-weight: 650; }
+.authentication-form input {
+  width: 100%;
+  border: 1px solid #cfcfcf;
+  border-radius: 11px;
+  padding: 12px 13px;
+  background: #ffffff;
+}
+.authentication-form button {
+  min-height: 45px;
+  margin-top: 5px;
+  border: 0;
+  border-radius: 11px;
+  background: #0a0a0a;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+.authentication-form button:disabled { cursor: not-allowed; opacity: 0.45; }
+.authentication-error { margin: 0; color: #a01a1a; font-size: 13px; line-height: 1.45; }
+.authentication-checking { display: flex; align-items: center; gap: 10px; color: #6b6b6b; }
+.authentication-checking span { width: 9px; height: 9px; border-radius: 999px; background: #0a0a0a; animation: pulse 1s infinite alternate; }
+.authenticated-user { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
+.authenticated-user span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.authenticated-user button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+
 .app-shell {
   --page: #ffffff;
   --panel: #f7f7f7;

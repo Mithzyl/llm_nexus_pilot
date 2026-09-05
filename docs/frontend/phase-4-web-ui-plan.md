@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 9 月 2 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录以及消息运行证据与当前工作台解耦已实现；System Prompt前台隔离和浏览器本地文件选择已实现，后端文件上传仍待完成；会话归档按当前决定暂停，独立后台执行进入阶段10规划，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
+**文档日期：** 2026 年 9 月 5 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录、消息运行证据与当前工作台解耦，以及阶段5浏览器登录门禁和当前主体BFF归属已实现；System Prompt前台隔离和浏览器本地文件选择已实现，后端文件上传仍待完成；会话归档按当前决定暂停，独立后台执行进入阶段10规划，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -30,19 +30,19 @@
 
 ## 当前后端事实与前端边界
 
-当前公共认证是受信服务调用方级 API Key，不是最终用户登录。因此第一版前端只能作为开发/内部使用界面，采用后端为前端（Backend-for-Frontend，BFF）的 Next.js 服务端转发层保存平台 API Key：
+阶段5已开始实现最终用户浏览器身份。Next.js 后端为前端（Backend-for-Frontend，BFF）仍保存迁移期部署级 API Key，同时转发不透明登录 Cookie；每个业务请求先解析当前用户，再校验或覆盖资源归属：
 
 ```text
 Browser
-  ↓ same-origin request
+  ↓ same-origin Cookie request
 Next.js Server / Backend-for-Frontend
-  ↓ server-side X-API-Key
+  ↓ server-side X-API-Key + browser Cookie
 FastAPI
 ```
 
-浏览器不能直接持有 `X-API-Key` 或 `X-Internal-API-Key`。正式面向多用户发布前，必须另行完成登录主体、Session Cookie、跨站请求伪造防护、用户与资源授权映射及退出失效策略。
+浏览器不能直接持有 `X-API-Key` 或 `X-Internal-API-Key`。当前已实现登录主体、不透明 Session Cookie、精确 Origin/跨站请求伪造防护、退出、会话撤销和 BFF 资源归属；FastAPI 业务 Router 全面改为主体依赖、个人 API Key 与用户 Provider 凭据仍未完成，因此仍不满足公网发布门禁。
 
-阶段5规划的 `/auth/login`、`/auth/logout`、`/auth/me`、会话撤销、`/me/api-keys` 和 `/me/provider-credentials` 均不在阶段4当前内部开发版中提前实现。阶段4可以继续验证对话交互，但公开发布门禁要求阶段5完成后由 FastAPI 当前主体决定 `user_id`，Next.js 不再注入固定开发用户或部署级公共 key。
+阶段5的 `/auth/login`、`/auth/logout`、`/auth/me`、会话列表/撤销和密码修改已经提供稳定首版；`/me/api-keys`、`/me/provider-credentials`、找回密码与账户安全页面尚未实现。Next.js 已不再注入固定开发用户，而是从当前登录主体派生 `user_id`；部署级 API Key 要等 FastAPI 各业务路由完成主体授权迁移后才能退出最终用户请求链。
 
 当前内部版已经确认的后端能力：
 
@@ -67,7 +67,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 
 - Session下的轮次提交接口已原子创建Run与当前User Message；该动作仍缺少客户端幂等键，因此浏览器超时后不能安全地自动重发未知结果的轮次。
 - `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
-- 当前只有平台 API Key，没有最终用户登录和资源授权。公开部署前必须补齐认证；开发版只能由服务端持有密钥。
+- 当前已有浏览器登录和 BFF 层资源归属，但 FastAPI 各业务 Router 尚未直接从主体派生 owner。公开部署前必须完成后端逐资源授权、个人程序调用和凭据安全门禁；部署级密钥仍只能由服务端持有。
 - `/responses` 已使用 `conversation-stream.v2` 信封持久化公开事件，并按 Attempt 提供有限回放。浏览器收到首个事件并取得 `attempt_id` 后，断线会从最后确认的 `sequence` 继续读取；若连接在首个事件前断开，仍只能通过 Run/Attempt 最终事实恢复，不能自动重发可能计费的请求。阶段3 Agent Workflow 保留自己的事件合同，两者不能混用。
 - 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
 - 阶段3后端当前提供显式取消、最多两个无依赖工作 Agent 并行和费用预留；前端已经完成对应合同、代理和交互适配。恢复、等待用户输入、进程重启恢复和大型节点结果 Artifact 降级仍不存在，前端不能显示这些动作，也不能把有限事件回放描述为持续订阅。
@@ -95,7 +95,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 | 阶段2：LLM核心能力 | Provider、Responses、SSE、统一Context Builder、Prompt/Model Catalog、Evaluation | 模型选择、普通/流式生成、全部上下文来源与评估证据 | Composer、模型选择器、证据抽屉 | 终止事件、用量、错误、能力目录和Context来源证据稳定；所有来源只能通过Context Builder | 进行中 |
 | 阶段3：Agent Runtime 与工作流 | 后端已完成 `model_only_v1`、完整节点合同、持久事件、最多两个无依赖工作 Agent 并行、费用预留和显式取消；工具与恢复不属于当前配置 | 展示 Agent 分工、节点结果、Handoff、验证、审核和预算证据，并适配取消与并行组 | Run 下的 Agent 时间线和工作流详情 | 八个接口、取消动作、并行组和费用预留已接入；真实 Provider 端到端验收待完成，工具另等阶段7 | 进行中 |
 | 阶段4：Web 前端 | BFF、对话外壳、响应式、主题、可访问性和前端验证体系 | 承载各后端检查点的统一交互面 | `apps/web` 全部页面 | 只启用已通过对应后端检查点的能力；浏览器边界和真实状态门禁持续通过 | 进行中 |
-| 阶段5：身份、授权与凭据 | 登录主体、浏览器会话、个人 API Key、供应商凭据和资源授权 | 登录/退出、会话管理、密钥与供应商凭据设置，移除固定开发用户 | 登录页、账户安全、API Key 与 Provider 凭据页 | Cookie/Bearer、跨用户隔离、跨站请求伪造防护、撤销和加密门禁全部通过 | 未开始 |
+| 阶段5：身份、授权与凭据 | 登录主体、浏览器会话、个人 API Key、供应商凭据和资源授权 | 登录/退出、会话管理、密钥与供应商凭据设置，移除固定开发用户 | 登录页、账户安全、API Key 与 Provider 凭据页 | Cookie/Bearer、跨用户隔离、跨站请求伪造防护、撤销和加密门禁全部通过 | 进行中：登录页、Cookie主体和BFF归属已完成 |
 | 阶段6：可观测性 | API、模型、消息、Worker、工具和 Agent 的关联链路 | 关联标识、耗时分解、健康状态和内部诊断 | 运行诊断页、内部运维视图 | 公开/内部字段分层完成；追踪不含密钥和完整敏感内容 | 未开始 |
 | 阶段7：工具能力 | 工具契约、权限、文件、搜索、Shell、Git 和调用证据 | 工具提议、批准、执行结果、失败和 Artifact 展示 | Assistant 执行过程、批准对话框、工具详情 | 工具执行事实、风险等级、批准合同和脱敏结果稳定 | 未开始 |
 | 阶段8：代码搜索增强 | 文件索引、ripgrep、Tree-sitter 和可选语言服务器协议（LSP）证据 | 文件/行引用、定义与引用关系、索引新鲜度 | 代码证据抽屉、搜索结果视图 | workspace 归属、安全路径、稳定定位和有界结果合同通过 | 未开始 |
@@ -308,9 +308,9 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 #### BFF 与授权边界
 
 - Next.js 后端为前端（BFF）允许列表只增加上表八个路径和对应方法；仍使用流式请求/响应大小限制，不增加 Agent 通配代理。
-- 阶段5身份未完成前只用于固定开发用户。以 Run ID 创建/发现时先校验 Run 属于固定开发用户；以 Workflow ID 查询时在服务端解析其 `run_id` 后再校验 Run 归属；Node 详情继续要求 Node 属于路径中的 Workflow。
+- BFF 以 Run ID 创建/发现时先校验 Run 属于当前登录用户；以 Workflow ID 查询时在服务端解析其 `run_id` 后再校验 Run 归属；Node 详情继续要求 Node 属于路径中的 Workflow。
 - 浏览器不能提交或覆盖 `user_id`，不能看到平台 API Key、内部路径、数据库标识以外的内部存储位置、模型 Prompt 或原始 Provider 响应。
-- FastAPI 当前仍是受信调用方边界；BFF 的开发用户校验不能替代阶段5最终主体授权。公开发布前必须将 Workflow、Node、Event 查询纳入服务端主体资源授权测试。
+- FastAPI 业务 Router 当前仍处于受信调用方边界；BFF 的当前用户校验不能替代服务端逐资源主体授权。公开发布前必须将 Workflow、Node、Event 及其他最终用户资源纳入 FastAPI 主体授权测试。
 
 #### 当前前端实施任务
 
@@ -337,7 +337,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 - 八个当前接口的请求、响应、状态码、cursor、SSE ID/事件名和完整节点合同与阶段3 OpenAPI 一致。
 - 单 Workflow 依赖分组路径、最多两个并行工作 Agent、Handoff、确定性验证、Reviewer 三种策略、预算预留/耗尽、上限终止、验证失败、审核拒绝、显式取消和未知结果都能准确显示。
 - 事件重复、乱序、缺页、断线和刷新不会重复节点、丢失终态或自动发起第二次模型调用。
-- BFF 的固定开发用户归属、Workflow/Node 父子关系、路径/方法允许列表、请求大小和敏感字段测试通过。
+- BFF 的当前登录用户归属、Workflow/Node 父子关系、路径/方法允许列表、请求大小和敏感字段测试通过。
 - 时间线不展示隐藏推理、内部 Prompt、Memory、Knowledge、工具执行或尚未实现的恢复动作。
 - 真实浏览器完成 JSON 与 SSE 两条关键流程，并验证窄屏、长节点结果、键盘操作和长时间运行页面性能。
 
@@ -416,7 +416,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 - 增加登录、退出、当前用户、登录会话列表、单会话撤销、全部会话撤销和密码管理入口。
 - 增加 NexusPilot 个人 API Key 列表、创建、一次展示和撤销；密钥原文只在创建成功页出现一次，离开后不可恢复。
 - 增加供应商凭据创建、命名、验证、默认项、轮换和撤销；列表始终掩码，验证可能产生费用时必须在提交前说明并确认。
-- 移除固定开发用户和浏览器到部署级 API Key 的隐式映射；所有资源 owner 由 FastAPI 当前主体派生。
+- 固定开发用户已经移除；下一步将所有资源 owner 从 BFF 过渡校验迁移为 FastAPI 当前主体直接派生，并在完成后移除最终用户请求对部署级 API Key 的依赖。
 
 **失败与恢复：**
 
@@ -674,10 +674,10 @@ apps/web/
 - 模型调用：自定义选择器读取 `GET /api/v1/models?requires_streaming=true`，只投影同时满足稳定登记启用、Provider Registry允许、能力快照已确认和流式合同可用的模型；支持搜索和键盘选择，不再把环境白名单或空白名单直接当作可选择模型。`GET /api/v1/providers` 继续保留兼容。对话通过 `POST /api/v1/responses` 接收正文、Reasoning、用量、完成和失败事件。快速回复和无预算 Agent Workflow 当前不发送 `max_output_tokens`，由 Provider 和模型能力决定输出；接口字段继续保留为可选整数，显式值范围为 1～65536。Provider 如果仍返回 `finish_reason=length`，前端保存部分正文和结束原因，并明确显示“达到输出上限”，不伪装成完整回复。Composer只展示所选模型声明的思考程度，并把统一`reasoning`合同同时透传给快速回复和Agent Workflow。
 - Assistant 正文：流式增量与历史恢复统一使用 GitHub Flavored Markdown 渲染，支持标题、强调、带层级标记的列表、引用、表格、行内代码和围栏代码块；原始 HTML 不执行，危险链接被移除，远程图片只显示为不可加载的文本占位。
 - 流式安全行为：按 sequence 去重并拒绝缺口；已知 Attempt 断线后读取持久事件直到终止；停止生成会中止浏览器请求且不会触发自动恢复；部分文本不会被标记为完成。
-- 服务端代理边界：仅开放前端需要的固定路由，并强制校验固定开发用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
+- 服务端代理边界：仅开放前端需要的固定路由，并强制校验当前登录用户的 Session、Message、Run、Attempt、Workflow 和 Node 归属；请求体在流式读取中受大小上限约束。
 - 主题与响应式：亮色白底黑字、暗色黑底白字；支持本地主题偏好、仅按钮发送、移动端覆盖层和 reduced motion。
 - Agent Workflow：提供显式 `model_only_v1` 模式、审核策略、工作 Agent 最大并行数、八个接口客户端、POST SSE 与有限事件回放、事件缺口检测、显式取消、完整节点类型、11 类节点证据时间线和 Result 恢复；执行组按后端 `dispatch_groups` 展示，并区分已消费费用与当前费用预留；DeepSeek 根据已注册能力使用 prompted JSON。
-- Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的固定开发用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
+- Agent 代理边界：BFF 当前开放八个精确路径，以 Run 校验 Workflow、取消动作和 Node 的当前登录用户归属；取消请求不携带 JSON 请求体，仍在转发动作前完成归属校验。
 
 ### 当前能力总览
 
@@ -697,7 +697,7 @@ apps/web/
 | Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
 | 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断当前执行 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离、Next.js加载/错误/不存在边界，以及桌面和移动Chromium的可复现Playwright基线 | 真实 Provider 浏览器端到端、完整可访问性、跨浏览器、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
-| 身份与后续平台能力 | 当前固定开发用户和服务端平台 API Key 可用于内部联调 | 最终用户登录与授权等待阶段5；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker 分别等待阶段6至阶段10 | 未开始 |
+| 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属可用于多用户前端联调 | FastAPI全资源主体授权、个人API Key和用户Provider凭据继续由阶段5完成；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker分别等待阶段6至阶段10 | 进行中 |
 
 ### 当前故障定位索引
 
@@ -997,7 +997,7 @@ GET /api/v1/models
 | 阶段2 + 阶段4 | 稳定模型目录、数据库模型实体、Provider Registry 交集和 `/models` 选择数据 | `llm_models`、`llm_model_catalog_versions`与Provider Registry | 空库/存量库回填、唯一约束、启用/禁用、能力缺失、稳定排序、BFF固定路由和前端不可静默切换测试通过 | 已完成 |
 | 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
 | 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 本轮会话可靠性及桌面/移动确定性浏览器基线已通过；归档暂停，代码块完整门禁、真实Provider、跨浏览器、安全和可访问性门禁继续实施 | 进行中 |
-| 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 未开始 |
+| 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 进行中 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |
 | 阶段7 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段7完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |
 | 阶段8 | 代码搜索、文件/行引用、定义引用和索引状态 | 阶段8完成并提供安全定位合同 | 路径、workspace、大小、索引和引用准确性测试通过 | 未开始 |

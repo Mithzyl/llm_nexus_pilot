@@ -8,6 +8,14 @@ export type RunStatus =
   | "cancel_requested"
   | "cancelled";
 
+export type AuthenticatedPrincipal = {
+  user_id: string;
+  display_name: string;
+  authentication_method: "browser_session";
+  login_session_id: string;
+  scopes: string[];
+};
+
 export type ProviderName =
   | "openai"
   | "deepseek"

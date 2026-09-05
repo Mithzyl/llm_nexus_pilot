@@ -127,14 +127,14 @@ test("loads owner-scoped Context evidence without requesting System Prompt optio
     const evidence = await getContextBuildEvidence("context-1");
     assert.equal(evidence.context_build_id, "context-1");
     assert.deepEqual(requests, [
-      "/api/nexus/context-builds/context-1/evidence?user_id=nexuspilot-web",
+      "/api/nexus/context-builds/context-1/evidence",
     ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("filters session list by the development user", async () => {
+test("loads sessions through the authenticated-user proxy scope", async () => {
   const requests: string[] = [];
   globalThis.fetch = (async (input) => {
     requests.push(String(input));
@@ -143,7 +143,7 @@ test("filters session list by the development user", async () => {
 
   try {
     await listSessions();
-    assert.match(requests[0], /sessions\?user_id=nexuspilot-web&limit=50$/);
+    assert.equal(requests[0], "/api/nexus/sessions?limit=50");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -221,7 +221,6 @@ test("atomically creates a run-linked current user message", async () => {
 
   try {
     const turn = await createConversationTurn("session-1", {
-      user_id: "nexuspilot-web",
       content_text: "Current question",
     });
     assert.equal(turn.run.run_id, "run-1");
@@ -229,7 +228,6 @@ test("atomically creates a run-linked current user message", async () => {
     assert.match(request!.url, /sessions\/session-1\/turns$/);
     assert.equal(request!.init?.method, "POST");
     assert.deepEqual(JSON.parse(String(request!.init?.body)), {
-      user_id: "nexuspilot-web",
       content_text: "Current question",
     });
   } finally {

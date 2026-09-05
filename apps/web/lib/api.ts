@@ -3,6 +3,7 @@ import type {
   AgentWorkflowNodeResult,
   AgentWorkflowResult,
   AgentWorkflowSummary,
+  AuthenticatedPrincipal,
   CursorPage,
   ContextBuildEvidence,
   ConversationTurn,
@@ -16,8 +17,15 @@ import type {
   Session,
 } from "./types";
 
-export const DEVELOPMENT_USER_ID = "nexuspilot-web";
 export const MESSAGE_PAGE_SIZE = 100;
+
+/** Read only the public CSRF cookie to prove a browser script initiated a mutation. */
+export function browserCsrfHeaders(): Record<string, string> {
+  if (typeof document === "undefined") return {};
+  const csrfCookie = document.cookie.split(";").map((entry) => entry.trim())
+    .find((entry) => entry.startsWith("nexuspilot_csrf="));
+  return csrfCookie ? { "X-CSRF-Token": csrfCookie.slice("nexuspilot_csrf=".length) } : {};
+}
 
 export class NexusApiError extends Error {
   status: number;
@@ -38,9 +46,11 @@ export async function nexusFetch<T>(path: string, init?: RequestInit): Promise<T
     headers: {
       Accept: "application/json",
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...browserCsrfHeaders(),
       ...init?.headers,
     },
     cache: "no-store",
+    credentials: "same-origin",
   });
 
   if (!response.ok) {
@@ -54,16 +64,37 @@ export async function nexusFetch<T>(path: string, init?: RequestInit): Promise<T
     throw new NexusApiError(message, response.status);
   }
 
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/** Authenticate a provisioned account and establish server-managed browser cookies. */
+export function loginWithPassword(payload: {
+  email: string;
+  password: string;
+  device_name?: string;
+}): Promise<AuthenticatedPrincipal> {
+  return nexusFetch<AuthenticatedPrincipal>("auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Resolve the current browser identity from its opaque HttpOnly session. */
+export function getCurrentAuthenticatedUser(): Promise<AuthenticatedPrincipal> {
+  return nexusFetch<AuthenticatedPrincipal>("auth/me");
+}
+
+/** Revoke the current browser session and expire both authentication cookies. */
+export function logoutCurrentUser(): Promise<void> {
+  return nexusFetch<void>("auth/logout", { method: "POST" });
 }
 
 /**
  * Load the first bounded page of conversations for the sidebar.
  */
 export function listSessions(): Promise<CursorPage<Session>> {
-  return nexusFetch<CursorPage<Session>>(
-    `sessions?user_id=${encodeURIComponent(DEVELOPMENT_USER_ID)}&limit=50`,
-  );
+  return nexusFetch<CursorPage<Session>>("sessions?limit=50");
 }
 
 /**
@@ -82,34 +113,24 @@ export function listModels(
   return nexusFetch<ModelDirectoryEntry[]>(`models${query}`, { signal });
 }
 
-/** Read the content-free Context evidence projection for the development user. */
+/** Read the content-free Context evidence projection for the authenticated user. */
 export function getContextBuildEvidence(
   contextBuildId: string,
   signal?: AbortSignal,
 ): Promise<ContextBuildEvidence> {
   return nexusFetch<ContextBuildEvidence>(
-    `context-builds/${encodeURIComponent(contextBuildId)}/evidence?user_id=${encodeURIComponent(DEVELOPMENT_USER_ID)}`,
+    `context-builds/${encodeURIComponent(contextBuildId)}/evidence`,
     { signal },
   );
 }
 
 /**
- * Ensure a development identity exists without exposing credentials to the browser.
+ * Create a new active session owned by the authenticated identity.
  */
-export function ensureDevelopmentUser(userId: string): Promise<unknown> {
-  return nexusFetch<unknown>("users", {
-    method: "POST",
-    body: JSON.stringify({ user_id: userId, display_name: "NexusPilot 开发用户" }),
-  });
-}
-
-/**
- * Create a new active session owned by the configured development identity.
- */
-export function createSession(userId: string, title: string): Promise<Session> {
+export function createSession(title: string): Promise<Session> {
   return nexusFetch<Session>("sessions", {
     method: "POST",
-    body: JSON.stringify({ user_id: userId, title }),
+    body: JSON.stringify({ title }),
   });
 }
 
@@ -167,7 +188,6 @@ export function getRun(runId: string): Promise<RunDetail> {
  * Create an auditable run before the model request is sent.
  */
 export function createRun(payload: {
-  user_id: string;
   session_id: string;
   user_request: string;
 }): Promise<Run> {
@@ -182,7 +202,7 @@ export function createRun(payload: {
  */
 export function createConversationTurn(
   sessionId: string,
-  payload: { user_id: string; content_text: string },
+  payload: { content_text: string },
 ): Promise<ConversationTurn> {
   return nexusFetch<ConversationTurn>(`sessions/${encodeURIComponent(sessionId)}/turns`, {
     method: "POST",
@@ -249,7 +269,7 @@ export async function openAgentWorkflowStream(
     `/api/nexus/runs/${encodeURIComponent(runId)}/agent-workflows`,
     {
       method: "POST",
-      headers: { Accept: "text/event-stream", "Content-Type": "application/json" },
+      headers: { Accept: "text/event-stream", "Content-Type": "application/json", ...browserCsrfHeaders() },
       body: JSON.stringify({ ...payload, stream: true }),
       signal,
       cache: "no-store",

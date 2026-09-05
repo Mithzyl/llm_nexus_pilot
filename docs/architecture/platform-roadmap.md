@@ -2,7 +2,7 @@
 
 **文档日期：** 2026 年 9 月 2 日
 **文档状态：** 当前总体规划（权威入口）
-**当前实施焦点：** 阶段1～3已完成；阶段4前端继续实施，优先形成稳定可用的内部服务；阶段10已因 Agent Workflow 独立后台执行的真实需求恢复规划但尚未开始编码；阶段5身份与凭据、阶段6可观测性、阶段7工具、阶段8代码搜索和阶段9 MCP 的既定边界保持不变
+**当前实施焦点：** 阶段1～3已完成；阶段4前端与阶段5身份认证正在实施；阶段10已因 Agent Workflow 独立后台执行的真实需求恢复规划但尚未开始编码；阶段5后续凭据、阶段6可观测性、阶段7工具、阶段8代码搜索和阶段9 MCP 的既定边界保持不变
 
 ## 目标
 
@@ -56,7 +56,7 @@
 | Knowledge 知识库 | 暂停 | Knowledge 属于独立知识库能力；现有结构代码仅作实验性准备，需求、数据来源、解析、检索和权限将在后续单独规划，不计入阶段2 |
 | RabbitMQ、Publisher、Worker | 规划中 | Agent Workflow 必须脱离浏览器和 HTTP/SSE 观察连接继续执行的需求已确认；阶段4只完成证据查看解耦和活动运行防重，Publisher/Worker/租约/恢复尚未实施 |
 | Agent、工具、MCP、OpenTelemetry、Web | Agent 模型工作流已完成、可观测性优先级提高、工具暂停、Web 第一版进行中 | 阶段3已实现 `model_only_v1` 同步协调器、最多两个无依赖工作 Agent 并行、费用预留、显式取消、完整节点结果、持久事件、核心查询与实时 POST SSE；跨进程恢复、工具和遥测分别由阶段10、阶段7和阶段6负责 |
-| 最终用户认证与凭据管理 | 规划中 | 当前只有部署级受信调用方密钥；登录、当前用户、个人 API Key 和用户供应商凭据尚未实现，详见阶段5 |
+| 最终用户认证与凭据管理 | 进行中 | 已实现预置账户、本地密码、Cookie会话、登录/退出/撤销/密码修改、认证审计、Web登录门禁和BFF当前用户归属；FastAPI全资源主体授权、个人API Key和用户Provider凭据尚未实现，详见阶段5 |
 
 ## 总体结构
 
@@ -104,7 +104,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 | 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、System Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 已完成 | 运行能力可脱离 Agent 单独调用、测试和观测；System Prompt 只由后端策略选择，普通前端不能查看、选择或覆盖；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
 | 阶段3：Agent Runtime 与工作流 | 完整节点结果、Controller/工作模型、依赖分组、有界并行、确定性验证、独立审核和显式取消 | 已完成 | `model_only_v1` 主流程、数据库事实、核心 HTTP/SSE、原子费用预留、终态一致提交和失败收敛已通过自动化验证；工具恢复后以新的执行配置扩展，不回退本阶段；详见 [`phase-3-agent-workflow-plan.md`](../implementation/phase-3-agent-workflow-plan.md) |
 | 阶段4：Web 前端 | 建设类似 ChatGPT 交互方式的对话平台，并逐步展示 Run、Agent、模型与工具执行过程 | 进行中 | 第一版工程、核心对话外壳、会话重命名与标签页草稿、同会话多标签页提交互斥、只读模型目录、路由边界、Agent 轨迹和统一 Reasoning 流/历史展示已实现；普通Web已移除System Prompt选择、提交和运行提示，废弃“上下文”按钮并改为单击即打开系统选择器的“文件”按钮，在上传服务启用前阻止携带待上传文件发送；会话归档按当前决定暂停，后续 Tool 状态仍必须等待稳定事实；详见 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md) |
-| 阶段5：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 规划中 | Cookie/Bearer 身份、撤销、scope、跨用户隔离、凭据加密/轮换/验证及 Worker 撤权测试通过；详见 [`phase-5-platform-identity-credentials.md`](../implementation/phase-5-platform-identity-credentials.md) |
+| 阶段5：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 进行中 | Cookie/Bearer 身份、撤销、scope、跨用户隔离、凭据加密/轮换/验证及 Worker 撤权测试通过；详见 [`phase-5-platform-identity-credentials.md`](../implementation/phase-5-platform-identity-credentials.md) |
 | 阶段6：可观测性 | API、工作流节点、模型、未来消息/Worker/工具的 trace、metrics 和关联 | 未开始 | 阶段3已固定 ID、span 层级和敏感字段边界；本阶段完成遥测装配、采样、指标、导出、安全诊断及模型提示词缓存命中诊断，MySQL 始终是事实源 |
 | 阶段7：工具能力 | 工具契约、权限、Workspace、文件、搜索、隔离命令、Git 和调用证据 | 暂停 | 阶段5授权边界和阶段6诊断能力稳定后恢复；阶段3不得绕过该阶段执行工具；详见 [`phase-7-tool-runtime-plan.md`](../implementation/phase-7-tool-runtime-plan.md) |
 | 阶段8：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 复用阶段7只读工具与 Workspace 权限；结果包含稳定文件位置、定义引用和可复核证据 |
@@ -171,7 +171,7 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 - 阶段2已完成：Model Gateway、Context、Prompt/模型能力目录和 Evaluation 已通过快速测试、真实基础设施与迁移门禁。Memory 当前只保留规划和实验性准备代码，不进入实际模型响应链路；Knowledge 已移出本阶段，等待独立规划。
 - 阶段3已完成：同步 `model_only_v1` 编排、完整节点返回参数、最多两个无依赖工作 Agent 并行、业务事件、原子费用预留、显式取消、审核证据约束、完成事务和核心查询接口已经实现并验证。有效 Reviewer 失败结论不再吞掉用户回答；跨进程恢复、工具运行和遥测分别留在阶段10、阶段7和阶段6。
 - 阶段4进行中：当前内部 Web 已具备核心对话外壳、Agent 合同适配、统一 Reasoning 展示、Responses 事件回放、会话重命名、标签页草稿、同会话多标签页提交互斥、只读模型目录、会话/运行稳定路由、刷新恢复，以及按被点击 Message 的 Run 独立读取证据且不改变工作台的检查器；恢复到活动服务端运行时会补回待完成回复并阻止重复提交。Composer已删除废弃的“上下文”入口和二级弹层，工具栏“文件”按钮单击后直接调用系统文件选择器。后端文件上传未实现前，前端只显示本地待上传列表，不读取文件内容、不伪造Artifact引用，并阻止携带待上传文件的消息发送；会话归档按当前决定暂停，继续优先完成真实 Provider/浏览器端到端验收、完整运行证据和公开发布前安全门禁。
-- 阶段5规划中：相关内部开发继续使用隔离测试身份、动态测试 key、假 Provider 和可选环境凭据；最终用户公开 API、个人 API Key 和用户供应商凭据尚未实现。
+- 阶段5进行中：已实现本地密码与浏览器Cookie身份链路、登录会话管理、Web登录门禁和BFF当前用户归属。身份表与现有 `users` 和业务资源保留在同一MySQL数据库中，以维持外键和事务；通过独立非 `llm_` 表及 `features/identity` 模块隔离职责。FastAPI全资源主体迁移、个人API Key、用户Provider凭据和公网发布门禁尚未完成。
 - 阶段6未开始：下一步在服务可用闭环上补齐 trace、metrics、导出和内部诊断，并按Provider已确认字段记录缓存输入Token、命中Token与稳定前缀版本；普通阶段4页面不展示原始Provider请求，不以遥测替代MySQL业务事实。
 - 阶段7暂停：规划已固定，但必须等待服务授权和运维边界稳定；阶段3不得绕过工具权限和隔离边界。
 - 阶段8、阶段9未开始：代码搜索复用阶段7的只读能力与 Workspace 权限；MCP 调用必须经过阶段7工具权限层。

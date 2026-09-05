@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -46,6 +47,20 @@ class Settings(BaseSettings):
         ge=60,
         le=2_592_000,
     )
+    authentication_cookie_secure: bool = False
+    authentication_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    authentication_session_idle_seconds: int = Field(default=43_200, ge=300, le=604_800)
+    authentication_session_absolute_seconds: int = Field(
+        default=2_592_000,
+        ge=3_600,
+        le=7_776_000,
+    )
+    authentication_login_failure_limit: int = Field(default=5, ge=1, le=50)
+    authentication_login_failure_window_seconds: int = Field(
+        default=900,
+        ge=60,
+        le=86_400,
+    )
     openai_api_key: SecretStr | None = None
     openai_models: str = ""
 
@@ -72,6 +87,35 @@ class Settings(BaseSettings):
             and self.provider_continuation_encryption_key is None
         ):
             raise ValueError("provider_continuation_encryption_key is required outside development")
+        if self.authentication_session_absolute_seconds < self.authentication_session_idle_seconds:
+            raise ValueError(
+                "authentication_session_absolute_seconds must be greater than or equal to "
+                "authentication_session_idle_seconds"
+            )
+        allowed_origins = self.allowed_authentication_origins()
+        if not allowed_origins:
+            raise ValueError("authentication_allowed_origins must contain at least one origin")
+        for allowed_origin in allowed_origins:
+            parsed_origin = urlsplit(allowed_origin)
+            if (
+                parsed_origin.scheme not in {"http", "https"}
+                or not parsed_origin.hostname
+                or parsed_origin.username is not None
+                or parsed_origin.password is not None
+                or parsed_origin.path not in {"", "/"}
+                or parsed_origin.query
+                or parsed_origin.fragment
+            ):
+                raise ValueError(
+                    "authentication_allowed_origins must contain only absolute HTTP(S) origins"
+                )
+        if self.environment.lower() not in {"development", "test"}:
+            if not self.authentication_cookie_secure:
+                raise ValueError("authentication_cookie_secure must be enabled outside development")
+            if any(not origin.startswith("https://") for origin in allowed_origins):
+                raise ValueError(
+                    "authentication_allowed_origins must use HTTPS outside development"
+                )
         return self
 
     def continuation_encryption_secret(self) -> str:
@@ -80,6 +124,15 @@ class Settings(BaseSettings):
         if self.provider_continuation_encryption_key is not None:
             return self.provider_continuation_encryption_key.get_secret_value()
         return self.internal_api_key.get_secret_value()
+
+    def allowed_authentication_origins(self) -> frozenset[str]:
+        """Return the normalized exact origins allowed to mutate Cookie sessions."""
+
+        return frozenset(
+            origin.strip().rstrip("/")
+            for origin in self.authentication_allowed_origins.split(",")
+            if origin.strip()
+        )
 
 
 @lru_cache

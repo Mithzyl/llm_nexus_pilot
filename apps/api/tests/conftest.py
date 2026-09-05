@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
 os.environ["NEXUSPILOT_API_KEY"] = "test-api-key-long-enough"
 os.environ["NEXUSPILOT_INTERNAL_API_KEY"] = "test-internal-key-long-enough"
 os.environ["NEXUSPILOT_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS"] = "http://test"
 
 from nexuspilot_models.contracts import (  # noqa: E402
     ModelRequest,

@@ -1,12 +1,12 @@
 "use client";
 
 import {
+  browserCsrfHeaders,
   cancelAgentWorkflow,
   createMessage,
   createConversationTurn,
   createSession,
-  DEVELOPMENT_USER_ID,
-  ensureDevelopmentUser,
+  getCurrentAuthenticatedUser,
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
@@ -18,8 +18,8 @@ import {
   listLatestMessagePage,
   listModels,
   listSessions,
+  logoutCurrentUser,
   NexusApiError,
-  nexusFetch,
   openAgentWorkflowStream,
   replayAgentWorkflowEvents,
   replayModelResponseEvents,
@@ -42,6 +42,7 @@ import type {
   Run,
   RunDetail,
   Session,
+  AuthenticatedPrincipal,
 } from "../lib/types";
 import { readStreamEvents, replayCommittedStreamEvents } from "../lib/sse";
 import {
@@ -78,6 +79,7 @@ import {
   pendingUploadFileKey,
 } from "../components/composer/FilePickerButton";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
+import { AuthenticationGate } from "../components/auth/AuthenticationGate";
 import Link from "next/link";
 import {
   composerConversationClearance,
@@ -251,6 +253,11 @@ export default function Home() {
     ? workspaceRoute.sessionId
     : null;
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [authenticatedPrincipal, setAuthenticatedPrincipal] =
+    useState<AuthenticatedPrincipal | null>(null);
+  const [authenticationState, setAuthenticationState] = useState<
+    "checking" | "authenticated" | "anonymous"
+  >("checking");
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
@@ -434,6 +441,24 @@ export default function Home() {
   }
 
   useEffect(() => {
+    let isMounted = true;
+    void getCurrentAuthenticatedUser()
+      .then((principal) => {
+        if (!isMounted) return;
+        setAuthenticatedPrincipal(principal);
+        setAuthenticationState("authenticated");
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setAuthenticatedPrincipal(null);
+        setAuthenticationState("anonymous");
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const savedTheme = window.localStorage.getItem("nexuspilot-theme");
     // localStorage is the explicitly local theme preference; sync it once after hydration.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -441,11 +466,13 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!authenticatedPrincipal) return;
     if (draftValue.current) return;
+    draftStorageKey.current = conversationDraftStorageKey(initialDraftSessionId, authenticatedPrincipal.user_id);
     const restoredDraft = readConversationDraft(window.sessionStorage, draftStorageKey.current);
     draftValue.current = restoredDraft;
     setDraft(restoredDraft);
-  }, []);
+  }, [authenticatedPrincipal, initialDraftSessionId]);
 
   useEffect(() => {
     conversationSyncSenderId.current = crypto.randomUUID();
@@ -560,7 +587,7 @@ export default function Home() {
     const nextHeight = composerTextareaHeight(textarea.scrollHeight);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
-  }, [draft]);
+  }, [draft, authenticationState]);
 
   useEffect(() => {
     const composerElement = composerWrap.current;
@@ -576,7 +603,7 @@ export default function Home() {
     const composerResizeObserver = new ResizeObserver(updateConversationClearance);
     composerResizeObserver.observe(composerElement);
     return () => composerResizeObserver.disconnect();
-  }, []);
+  }, [authenticationState]);
 
   useEffect(() => {
     /** Cancel an uncommitted visual projection when the workspace unmounts. */
@@ -598,6 +625,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (authenticationState !== "authenticated") return;
     let isMounted = true;
     void listSessions()
       .then((sessionPage) => {
@@ -614,7 +642,7 @@ export default function Home() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [authenticationState]);
 
   /**
    * Start one bounded provider-catalog request and invalidate any older request.
@@ -733,6 +761,7 @@ export default function Home() {
   }
 
   useEffect(() => {
+    if (authenticationState !== "authenticated") return;
     const { controller, requestId, timeoutId } = startProviderCatalogRequest();
     void listModels(controller.signal)
       .then((modelDirectory) => {
@@ -760,7 +789,7 @@ export default function Home() {
       controller.abort();
       providerCatalogRequestId.current += 1;
     };
-  }, [applyInitialModelSelection, startProviderCatalogRequest]);
+  }, [applyInitialModelSelection, authenticationState, startProviderCatalogRequest]);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
@@ -780,7 +809,7 @@ export default function Home() {
 
   /** Save the current draft and restore the draft belonging to the next conversation route. */
   function switchDraftContext(sessionId: string | null) {
-    const nextStorageKey = conversationDraftStorageKey(sessionId);
+    const nextStorageKey = conversationDraftStorageKey(sessionId, authenticatedPrincipal?.user_id);
     if (draftStorageKey.current !== nextStorageKey) {
       writeConversationDraft(window.sessionStorage, draftStorageKey.current, draftValue.current);
     }
@@ -1037,7 +1066,7 @@ export default function Home() {
    * Load one immutable conversation history and either its latest or explicitly requested Run.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
-    const nextDraftStorageKey = conversationDraftStorageKey(sessionId);
+    const nextDraftStorageKey = conversationDraftStorageKey(sessionId, authenticatedPrincipal?.user_id);
     if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
     setActiveSessionId(sessionId);
@@ -1181,6 +1210,7 @@ export default function Home() {
 
   /** Keep browser history navigation synchronized with persisted Session and Run facts. */
   useEffect(() => {
+    if (authenticationState !== "authenticated") return;
     const restoreFrame = window.requestAnimationFrame(() => {
       if (restoredRouteKey.current === currentRouteKey) return;
       restoredRouteKey.current = currentRouteKey;
@@ -1200,7 +1230,7 @@ export default function Home() {
     return () => window.cancelAnimationFrame(restoreFrame);
     // The stable route key is the intended reload trigger; state setters and helpers are local.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentRouteKey]);
+  }, [authenticationState, currentRouteKey]);
 
   useEffect(() => {
     activeSessionIdValue.current = activeSessionId;
@@ -1488,16 +1518,9 @@ export default function Home() {
     setMessages((current) => [...current, userMessage]);
 
     try {
-      try {
-        await nexusFetch<unknown>(`users/${DEVELOPMENT_USER_ID}`);
-      } catch (error) {
-        if (!(error instanceof Error && "status" in error && error.status === 404)) throw error;
-        await ensureDevelopmentUser(DEVELOPMENT_USER_ID);
-      }
-
       let session = activeSession;
       if (!session) {
-        session = await createSession(DEVELOPMENT_USER_ID, input.slice(0, 42));
+        session = await createSession(input.slice(0, 42));
         setSessions((current) => [session as Session, ...current]);
         setActiveSessionId(session.session_id);
         syncNotificationSessionId = session.session_id;
@@ -1506,7 +1529,6 @@ export default function Home() {
       submittedSessionId = session.session_id;
 
       const createdTurn = await createConversationTurn(session.session_id, {
-        user_id: DEVELOPMENT_USER_ID,
         content_text: input,
       });
       clearCommittedDraft();
@@ -1531,7 +1553,7 @@ export default function Home() {
       activeRequestController.current = responseController;
       const response = await fetch("/api/nexus/responses", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...browserCsrfHeaders() },
         signal: responseController.signal,
         body: JSON.stringify({
           run_id: createdRun.run_id,
@@ -1760,6 +1782,28 @@ export default function Home() {
               ? "失败"
               : "等待运行";
 
+  /** Revoke the current browser session before returning to the login boundary. */
+  async function handleLogout() {
+    try {
+      await logoutCurrentUser();
+      window.location.replace("/");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "退出失败，请重试。");
+    }
+  }
+
+  if (authenticationState !== "authenticated" || !authenticatedPrincipal) {
+    return (
+      <AuthenticationGate
+        isChecking={authenticationState === "checking"}
+        onAuthenticated={(principal) => {
+          setAuthenticatedPrincipal(principal);
+          setAuthenticationState("authenticated");
+        }}
+      />
+    );
+  }
+
   return (
     <main className={`app-shell ${isDark ? "theme-dark" : ""}`}>
       <aside className={`sidebar ${isSidebarOpen ? "is-open" : ""}`} aria-label="会话导航">
@@ -1797,6 +1841,10 @@ export default function Home() {
         </div>
 
         <div className="sidebar-footer">
+          <div className="authenticated-user">
+            <span>{authenticatedPrincipal.display_name}</span>
+            <button type="button" onClick={() => void handleLogout()}>退出</button>
+          </div>
           <Link className="settings-link" href="/settings/models">模型目录</Link>
           <div className="environment-dot"><span />开发环境</div>
           <span className={`connection-label ${connectionState}`}>

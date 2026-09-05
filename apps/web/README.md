@@ -1,6 +1,6 @@
 # NexusPilot Web
 
-阶段4第一版对话式前端，采用三栏黑白界面：会话侧栏、中央对话工作区和运行证据检查器。浏览器只访问同源 `/api/nexus/*`，由 Next.js 服务端转发层携带 FastAPI 的 API Key。
+阶段4对话式前端，采用三栏黑白界面：会话侧栏、中央对话工作区和运行证据检查器。浏览器只访问同源 `/api/nexus/*`；Next.js 服务端转发层保管 FastAPI 的部署级 API Key，并将浏览器的不透明登录 Cookie 转发给身份接口。
 
 ## 本地运行
 
@@ -20,12 +20,13 @@ make web-run
 开发服务器使用 `.next-dev`，生产构建使用 `.next`，两者可以先后验证而不会覆盖正在运行的
 客户端产物。
 
-打开 `http://localhost:3000`。如果 FastAPI 未运行，界面仍会显示完整空状态和布局，但会在侧栏明确标记 API 未连接，不能发送模型请求。
+先按根目录 README 运行 `provision_local_user` 预置账户，再打开 `http://localhost:3000` 登录。如果 FastAPI 未运行，登录状态无法确认，不能进入或发送模型请求。
 
 ## 设计边界
 
 - Composer 的 Provider 和模型选项来自 `GET /api/v1/models?requires_streaming=true`，不在浏览器硬编码可用状态；`/settings/models` 使用同一合同只读展示全部已登记模型及不可用原因。`GET /api/v1/providers` 仅作为旧客户端兼容接口保留。
-- `/api/nexus/*` 不是通用 API 代理，只允许当前页面所需的 Provider、Model、User、Session、Message、Run、Response、Attempt Reasoning/事件和八个 Agent Workflow 路径；Session、Message、Run、Attempt、Workflow 和 Node 会沿所属 Run 在服务端按固定开发用户校验归属。会话重命名只开放精确的 Session `PATCH` 路径并执行同一归属校验。正式多用户部署前必须替换为登录身份和资源授权。
+- `/api/nexus/*` 不是通用 API 代理，只允许认证、Provider、Model、Session、Message、Run、Response、Attempt Reasoning/事件和八个 Agent Workflow 的精确路径；每个业务请求先解析 `/auth/me`，再以当前用户校验 Session、Message、Run、Attempt、Workflow 和 Node 归属。会话重命名只开放精确的 Session `PATCH` 路径。FastAPI 各业务 Router 改为直接依赖当前主体之前，部署级 API Key 仍只保存在服务端，不能把该过渡边界当作阶段5已经完成。
+- 登录使用管理员预置账户和数据库支持的不透明 Cookie 会话。HttpOnly 会话 Cookie 原文不进入浏览器脚本或数据库；独立 CSRF Cookie 允许脚本读取并放入请求头。登录、退出、当前用户、会话列表/撤销及密码修改由 `/api/v1/auth/*` 提供，业务写操作与认证状态修改都校验 Origin；需要已登录身份的写操作同时校验防护令牌。
 - 发送消息前创建或复用用户、Session 和 Run；响应通过 `POST /api/v1/responses` 的 SSE 事件增量渲染。
 - Provider Catalog 同时返回逐模型推理能力。页面只渲染服务端统一的 `reasoning.raw`、`reasoning.summary` 或 `reasoning.status`，不会根据 Provider 名称推断内容；公开推理默认折叠，隐藏推理在 Chat 完成后移除空状态，在运行轨迹中保留状态与指标。
 - Responses 事件使用 `conversation-stream.v2` 和单调 `sequence`。已取得 Attempt 标识后发生断线或序号缺口时，页面通过受归属检查的 `/attempts/{attempt_id}/events` 从最后确认序号回放；缺失事件不会被跳过，用户主动停止不会触发自动恢复。
@@ -33,7 +34,7 @@ make web-run
 - 流式响应和历史 Assistant Message 使用同一安全 Markdown 渲染入口，支持 GitHub Flavored Markdown 的标题、强调、列表、引用、表格与代码；不执行原始 HTML，不允许危险协议链接，也不由消息内容自动加载远程图片。
 - 浏览器不保存 `X-API-Key`、供应商凭据、内部对象 URI 或原始供应商响应。
 - 会话使用 `/c/[sessionId]`，运行证据使用 `/runs/[runId]`；刷新、前进和后退会从消息窗口与对应 RunDetail/Attempt 事实恢复，运行地址不会被会话的最新 Run 替换。完整消息分页由服务端单次批量返回正文，用户可通过游标按钮继续加载更早页；SSE 中途断开不会被标记为已完成。
-- 未发送文本按新会话或具体 Session 保存在当前标签页的 `sessionStorage`；刷新和会话切换后恢复，User Message 持久化成功后才清除。同一浏览器内同一 Session 使用 Web Locks 阻止两个标签页同时进入计费提交，并通过不含正文的 `BroadcastChannel` 通知其他标签页刷新服务端事实。
+- 未发送文本按当前登录用户及新会话或具体 Session 保存在当前标签页的 `sessionStorage`；刷新和会话切换后恢复，切换账号不会读取其他账号草稿，User Message 持久化成功后才清除。同一浏览器内同一 Session 使用 Web Locks 阻止两个标签页同时进入计费提交，并通过不含正文的 `BroadcastChannel` 通知其他标签页刷新服务端事实。
 - “再次提问”只恢复所选 Assistant 回复对应的用户问题，不自动发送、不修改历史，也不创建计费调用。会话归档、取消归档和永久删除当前没有实现。
 - 模型响应完成和 Assistant Message 保存是两个独立状态；只有写入成功才显示“响应已保存”，保存失败时保留文本并明确提示。
 - Composer 可以显式切换“快速回复”和 `model_only_v1` Agent Workflow。Agent 模式使用当前 Provider/Model 绑定 Controller、Planner 和按策略启用的 Reviewer，并允许选择串行或最多两个无依赖工作 Agent 并行；DeepSeek 使用 prompted JSON，其他当前 Provider 使用原生 Schema。

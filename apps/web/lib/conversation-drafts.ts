@@ -4,8 +4,9 @@ const MAX_CONVERSATION_DRAFT_CHARACTERS = 100_000;
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 /** Build the tab-local storage key for a persisted conversation or the new-conversation screen. */
-export function conversationDraftStorageKey(sessionId: string | null): string {
-  return `${CONVERSATION_DRAFT_KEY_PREFIX}${sessionId ? encodeURIComponent(sessionId) : "new"}`;
+export function conversationDraftStorageKey(sessionId: string | null, userId?: string): string {
+  const ownerPrefix = userId ? `${encodeURIComponent(userId)}:` : "";
+  return `${CONVERSATION_DRAFT_KEY_PREFIX}${ownerPrefix}${sessionId ? encodeURIComponent(sessionId) : "new"}`;
 }
 
 /** Read a bounded unsent draft; malformed or unavailable storage is treated as an empty draft. */
