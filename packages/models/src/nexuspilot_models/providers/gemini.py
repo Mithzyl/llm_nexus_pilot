@@ -17,6 +17,7 @@ from nexuspilot_models.contracts import (
 )
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
+    native_content_blocks,
     parse_json_arguments,
     parse_structured_output,
 )
@@ -152,7 +153,7 @@ class GeminiGenerateContentProvider:
         )
 
     def _build_payload(self, request: ModelRequest) -> dict[str, Any]:
-        """Translate portable messages, tools, system text, and JSON schema to Gemini JSON."""
+        """Translate portable text/native attachments, tools and system instructions to Gemini JSON."""
 
         contents: list[dict[str, Any]] = []
         for message in request.messages:
@@ -178,7 +179,7 @@ class GeminiGenerateContentProvider:
                 )
             else:
                 role = "model" if message.role is MessageRole.ASSISTANT else "user"
-                contents.append({"role": role, "parts": [{"text": message.content}]})
+                contents.append({"role": role, "parts": native_content_blocks(message, self.name)})
         payload: dict[str, Any] = {"contents": contents}
         if request.system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": request.system_instruction}]}

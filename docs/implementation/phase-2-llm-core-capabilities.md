@@ -1,7 +1,7 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 8 月 28 日
-**文档状态：** 已完成（统一Context Builder与跨Provider思考程度后端合同均已完成；Agent角色透传和Web选择器分别留在阶段3、阶段4）
+**文档日期：** 2026 年 9 月 5 日
+**文档状态：** 原阶段已完成；新增文件输入工作项进行中（受信 Artifact 统一解析与 Context 基线已实现；正式文件版本、持久解析结果/缓存及产品工具循环尚未完成）
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -64,7 +64,7 @@
 - Knowledge 的上传、分块、检索数量和资源上限不在阶段2承诺，后续知识库规划必须重新确定并验证。
 - Prompt 变量数量、渲染结果长度、规则数量和 Evaluation 输入长度必须有配置上限；超过上限返回输入错误，不进行截断后伪装成功。
 
-## 后续文件输入工作项（2026 年 9 月 5 日，未开始）
+## 后续文件输入工作项（2026 年 9 月 5 日，进行中）
 
 用户上传与本地项目统一设计见[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)。这属于后续增强，不改变阶段2原有完成判断。当前受信 Run Artifact 上传不等于正式附件服务，现有跨 Run 禁止引用的规则不直接放宽。
 
@@ -73,6 +73,118 @@
 - 原文读取先验证主体和项目范围、实际大小/类型/哈希，再进入模型输入。不能只传摘要却宣称模型获得全文；超出模型输入能力时返回可解释覆盖或要求缩小范围，不静默截断必需来源。
 - 小文本直接复用受控解析与 Context；大型文件分段引用在同一预算与证据合同内实现。此设计不新增模型输出 token 限制，不恢复 Memory/Knowledge 或整库向量检索。
 - 新增测试先覆盖正常、跨用户/跨项目、损坏对象、错误 MIME/编码/哈希、版本替换、部分解析、删除失权和固定来源回放；真实 MinIO 与最终用户上传验收由阶段5/4协作完成。
+
+### 统一解析合同与实施清单（2026 年 9 月 5 日）
+
+当前有效设计为平台统一解析，再将文字/表格经 Context Builder 交给模型，不按 Provider 品牌分叉文件理解路径。跨阶段边界以[路线图](../architecture/platform-roadmap.md#统一文件解析与按需读取设计2026-年-9-月-5-日)为准。下列完整目标中，`FileParseRequest`、`FileParserDescriptor`、`ParsedFileDocument` 已有最小合同；正式用户版本、持久解析结果和模型工具尚未完成。具体当前字段和接口以本节“本轮实现与运行说明”为准，不能把完整目标当作现有 HTTP 接口。
+
+#### 输入、解析器与结果
+
+- `FileParseRequest`：文件版本 ID、受控解析选项及可选页/工作表范围。身份、项目、Run 绑定由服务端确认，不接受任意 URL、绝对路径或模型声明的权限。复用 Artifact 的测试入口继续限定当前 Run，不放宽跨 Run 读取。
+- `FileParserDescriptor`：解析器名称/版本、实际支持格式、正文/表格/OCR 等提取能力、选项模型、结果结构版本、依赖及资源策略。程序根据检测格式选择已启用解析器；首版预安装，不动态安装插件。专业引擎只在适配器内部使用，平台合同不直接依赖其全部类型。
+- `ParsedFileDocument`：文件版本/源哈希、解析结果 ID/版本/哈希、解析器及配置版本、内容块/阅读顺序/层级、表格结构、来源位置、提取方式、覆盖及失败记录。结构化正文为正式结果，文本、Markdown 和表格 JSON 是视图。
+- PDF 保留可用页码和坐标，文本保留行号，Excel 保留工作表/单元格，Word 保留段落/表格位置，PPT 保留幻灯片编号；无法可靠获得页码时不编造。表格区分公式与已有缓存值，不执行宏、不刷新外部引用、不声称重新计算公式。
+- 提取方式区分原生文字、OCR 和模型生成描述；不确定置信度允许缺省，不伪造统一分数。解析完整/部分/失败与模型实际读取范围分别记录，空结果不默认成功；扫描页、损坏/加密文件及缺失区域提供原因。
+- 原件与解析结果独立版本化。重新解析同一原件创建新结果，Run 固定所用版本；不得覆盖历史 Context。完整正文保存在 MinIO，数据库只管理引用和必要状态，具体持久化结构在实施前与阶段5文件版本合同共同确定，不在本次文档修改中增加迁移。
+- 解析缓存限定授权范围，依据文件版本/哈希、引擎版本和配置复用，读取仍重新鉴权。解析缓存不是模型 token 缓存。对象丢失/替换明确失败，不用新内容填补旧快照。
+
+#### 模型可见读取合同
+
+阶段2定义可进入 Context 的来源/结果含义，阶段7负责受控执行，阶段3负责模型循环；复用既有 `ToolDefinition`/`ToolCall`/Tool Message，不另建协议。
+
+| 拟用工具名 | 输入范围 | 输出与边界 |
+|---|---|---|
+| `list_run_files` | 运行内分页游标，Run 由服务端绑定 | 获准文件、固定版本、解析状态和后续游标 |
+| `get_file_outline` | 获准解析结果 ID | 章节/页/工作表目录及遗漏，不用生成摘要冒充目录 |
+| `search_file_content` | 解析结果 ID、关键词、游标 | 有界命中及位置；未命中不等于完整文件无相关信息；不开放任意 SQL/Shell |
+| `read_file_content` | 解析结果 ID、块/页/行范围 | 原文、引用标识、实际范围及后续位置，不静默截断 |
+| `read_file_table` | 解析结果 ID、表格/单元格范围 | 结构化单元格、表头、公式/值区别及来源 |
+
+模型只提供业务参数，不提供 owner、存储地址或权限上限。每次读取重新校验用户/项目及 Run 文件绑定；跨范围拒绝。小文件可由程序直接组装，大文件按范围分页读取，完整解析结果不因模型预算永久裁剪。压缩后的上下文保留固定引用及读取位置，不用摘要替代完整原件，也不新增输出 token 上限。无工具能力的模型只使用程序准备的内容；不声称支持自主查阅，不自动换模型。
+
+#### 已实现与未实现（代码核对）
+
+| 工作项 | 当前事实 | 后续设计 |
+|---|---|---|
+| 统一模型网关 | 已实现统一请求/响应、生成/SSE、Provider codec、重试和调用证据 | 保留，接收解析后的文字/表格，不把解析职责放到 Provider |
+| 统一 Context Builder | 已实现消息锚点、预算、固定来源及历史回放；支持 System Prompt、文本 Artifact、Handoff、节点和 Evaluation 来源 | 新增正式文件版本/解析结果/内容范围来源；当前文本 Artifact 读取不等于完整解析服务 |
+| System Prompt 与模型目录 | 已实现版本、启停、渲染、模型能力和思考配置 | 保留 System Prompt 后端边界，工具循环依据逐模型工具能力，不依据原生附件能力 |
+| Evaluation/Guardrail | 已实现规则校验、幂等和结果查询 | 复用错误与证据机制；解析质量和引用完整性需新样本验收 |
+| 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达 | 执行权限/登记归阶段7，读取循环归阶段3，尚不能直接调用文件工具 |
+| 原生文件直传基线 | 新建 native Context 返回 409 并指向 `parsed_artifacts`；历史 Context 可只读回放，禁止用于新生成；低层 codec/合同保留兼容 | 不再作为产品输入路径，保留旧证据，不把原生测试计作解析验收 |
+| 文件解析器及统一结果 | 已实现描述、请求及结果合同、UTF-8/CSV/TSV/JSON 读取和隔离 PDF 正文适配器 | Office/OCR、结构化 PDF 表格和完整文档目录尚未实现，逐格式验收再开放 |
+| 正式文件上下文 | 已实现当前 Run Artifact 解析、选定块/页/行/CSV 单元格、结果哈希和 Context 固定快照；正式用户文件版本尚未实现 | 阶段5落实版本/权限存储，阶段3/7接通模型读取工具 |
+| 解析复用及失败事实 | 已实现覆盖/遗漏、安全失败、原件变更复核和 macOS PDF 隔离；未实现跨 Context 解析缓存、MinIO 独立结果版本、后台恢复 | Context 幂等回放不是持久解析缓存，隔离运行时扩展归阶段7，后台恢复归阶段10 |
+
+以上已按本轮代码与测试更新。Memory Packet、后台形成、跨存储 Memory 补偿、Memory 孤儿清理及 Knowledge 仍不属于原阶段2完成条件；上传/解析专用补偿不得因此省略。
+
+#### 本轮实现与运行说明
+
+- 入口仍是受信调用方 API，不是浏览器上传：`POST /api/v1/responses` 的 `context_source_references.parsed_artifacts` 或 `POST /api/v1/context-builds` 的 `source_references.parsed_artifacts` 接收 `[{"artifact_id":"当前 Run 的 Artifact ID","block_offset":0,"block_limit":20}]`。省略范围请求全部内容，超限明确要求选择范围，绝不静默只给前 20 块；非零 offset 必须同时指定 limit。每次最多 10 个引用，不能重复或与文本/native 路由同时引用同一对象。
+- `FileParseRequest` 当前使用 `source_id/source_hash/filename/media_type` 固定已有 Artifact，暂无正式 `file_version_id`。`ParsedFileDocument` 记录引擎版本、原文块、行号、PDF 页码、CSV 行/列和覆盖；完整解析结果的哈希写入 Context `source_version`。本轮仅选中内容与提取/读取元数据保存到现有 Context，原件仍在 MinIO；没有新增表/字段或迁移，也没有把完整解析结果写成独立 MinIO 对象。未选部分后续仍需从原件重新解析，不宣称有持久解析缓存或跨升级的全结果分页快照。
+- 支持 UTF-8 文本/Markdown/代码和部分文本型 MIME、CSV/TSV、JSON；JSON 保留原始数字与文本，拒绝重复 key、非标准数值和过深嵌套。CSV 原样保留单元格，不推断表头、不执行公式。XML/YAML 只作为原文读取，不执行实体、模板或语义加载。Office、图片、OCR、音视频明确不支持。
+- PDF 使用预安装的 Poppler `pdfinfo/pdftotext`，仅提取嵌入文字并保留页码；无文字页记录未覆盖，全部无文字则明确失败。PDF 表格仅布局文本，不声称恢复单元格或理解图片；加密/损坏 PDF 拒绝。macOS 使用 `sandbox-exec`，Linux 提供 bubblewrap 启动适配，缺依赖或沙箱失败不退回宿主机。依赖由管理员预安装，不由模型或 API 下载。
+- PDF 子进程使用净化环境、无网络、任务临时目录、CPU/文件大小/墙钟时间约束；macOS 禁止派生进程并监测该 PID 的内存，Linux 设置地址空间上限。macOS 动态加载仅允许系统/Python/Homebrew 运行库与根目录本身读取（非递归用户目录授权），用户文件内容仍拒绝。Linux 实际隔离尚未在本机验证，不按 macOS 结果宣称通过。
+- 资源边界：本轮受信解析单文件 1 MiB、最多 10000 块、CSV 每行最多 1024 列、PDF 最多 200 页；解析并发每 API 进程 2。此为解析基线，不改变现有 Artifact 上传上限。读取函数每页最多 100 块/128 KiB并返回后续位置；现有 MySQL Context `TEXT` 限制下，每个序列化来源最多 60000 字节，超限选择更小块范围。不是模型输出 token 限制；未扩容数据库字段来掩盖过大输入。
+- 已有四个程序读取函数：`get_file_outline`（当前只返回块/页/表格行数和覆盖事实）、`search_file_content`、`read_file_content`、`read_file_table`。它们尚未注册为模型工具，无 `list_run_files` 新工具/API；不得声称 Agent 已能自主查阅文件。
+- 新生成统一提供文字/表格，不要求 `native_input` 或视觉能力，四家 Provider 契约与 DeepSeek 流式入口已覆盖。Context 历史回放不重新解析；生成前复核原件归属、元数据和哈希，已替换/丢失对象不能利用旧快照继续发模型。旧 native Context 可以查询，但生成明确拒绝并要求建立新的解析输入。
+- 验证入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py apps/api/tests/test_parsed_file_context.py apps/api/tests/test_native_file_context.py -q`；真实 PDF 隔离单独运行 `NEXUSPILOT_TEST_PDF_SANDBOX=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py -k real_pdf -q`。默认快速测试跳过这两项，不代表 PDF 隔离已验收；本机 macOS 已单独通过提取与未绑定文件/网络拒绝两项测试。未调用真实 Provider，未运行真实 MySQL/MinIO 文件链路。
+
+#### 实施顺序与验收
+
+本轮验证结果：API 与模型包全量测试 393 项通过、6 项跳过（4 项原有真实基础设施测试及2项需显式开启的 PDF 隔离测试）；PDF 两项已在 macOS 单独开启并通过。Ruff 与差异检查通过。另补输出符号/硬链接拒绝、主进程不跟随解析器预置输出链接、跨 Provider 相同提取内容、DeepSeek SSE、Context 原文替换后拒绝生成与 MySQL TEXT 大小边界测试。没有进行数据库迁移或真实 Provider 调用。
+
+| 顺序 | 阶段2具体任务 | 测试与完成条件 |
+|---|---|---|
+| 1 | 先建立文件解析/来源合同测试 | 正常/部分/失败、不同定位方式、空正文、重复/越权引用及旧文本请求兼容 |
+| 2 | 实现文本与表格基线，再接文档适配器 | 编码/行号、表头/单元格、中文 PDF 与复杂表格固定样本；支持范围与结果相符 |
+| 3 | 实现固定解析结果与 Context 转换 | 版本替换不污染历史、缓存不越权、分页连续且可追溯、预算不足不丢原文 |
+| 4 | 替换新文件产品的原生直传路径 | OpenAI/Anthropic/Gemini/DeepSeek 使用相同提取内容；不依赖视觉能力，不静默换模型 |
+| 5 | 联合阶段5/7/3验收 | 正式文件授权、对象缺失、隔离失败关闭、工具读取与流式回答；真实 MinIO 验收不能用假存储代替 |
+
+代码替换前检查所有 `native_artifact_ids`/`attachments` 调用方、测试和历史 Context：保留必要的历史只读解释，不覆盖既有证据；新产品路径只有统一解析，不同时维护两套默认文件策略。迁移/公共接口兼容范围需按实际持久数据确认，不能删除用户未提交修改或静默改写历史。
+
+暂时依赖失败才有界重试；权限/格式错误明确拒绝。解析结果写对象后提交数据库失败需可恢复补偿；沙箱、OCR/文档依赖及真实多用户授权未通过时，不开放对应格式或入口。独立后台恢复在阶段10完成前明确不可用。
+
+### 原生文件输入基线（历史实现记录，已退出新生成路径）
+
+当前先使用受信 Run Artifact 和隔离测试验证，不新增上传表或数据库字段。`user_files`、正式用户文件版本、解析清单和普通浏览器上传仍未实现；不能将本基线描述成文件产品已完成。
+
+以下仅记录上一轮原生直传的实现与验证，不是当前新请求行为或继续建设方向。当前新 Context 拒绝 `native_artifact_ids`，旧 Context 仅允许查询；低层原生合同/codec 与旧对象校验保留兼容。当前使用方式以上文“本轮实现与运行说明”为准。
+
+- 模型内部 `Message` 保留原有字符串 `content`，新增可选 `attachments`；`NativeFileContent` 只携带显示文件名、MIME、SHA-256 和验证后的 Base64 字节，不接受路径、URL、MinIO URI 或供应商 file ID。二进制输入仅允许在 user 消息中，文本与工具消息兼容原行为。
+- 原生路由：OpenAI Responses 使用 `input_file`/`input_image`；Anthropic Messages 使用 `document`/`image`；Gemini GenerateContent 使用 `inlineData`。首批共同支持 PDF、PNG、JPEG、WebP；GIF 只在 OpenAI/Anthropic 的已确认模型策略中允许。这里是适配器可表达的格式集合，不代表这些供应商的任意模型均可用。
+- DeepSeek、OpenAI-compatible 当前适配器没有原生文件输入实现，明确返回能力不支持，不丢弃文件后继续回答。不自动换模型、不自动 OCR、不调用 Shell 或外部工具。Word/Excel/PPT、音视频、HEIC/HEIF、图片输出及供应商 Files API 上传/缓存尚未实现；不能把支持保存附件等同于支持理解所有格式。
+- 逐模型证据复用 `llm_model_catalog_versions.capabilities_json.native_input`，不复制到新表。目录创建接口严格校验保留字段；`GET /api/v1/model-capabilities` 返回 `native_input`。缺少策略返回 `null`（未知），仅 `supports_vision=true` 不会启用文件。启用原生 PDF/图片必须同时确认视觉能力、已实现的 Provider 格式及资源策略。没有批量猜测或修改现有模型记录。
+
+以下只是测试策略示例，不是对任何真实模型能力或 token 用量的声明；实际值应在对应模型的能力快照中有依据地配置：
+
+```json
+{
+  "capabilities_json": {
+    "native_input": {
+      "media_types": ["application/pdf", "image/png"],
+      "max_file_bytes": 1048576,
+      "max_request_bytes": 2097152,
+      "max_files": 2,
+      "input_token_reserve_per_file": 4096
+    }
+  }
+}
+```
+
+- 受信 `POST /api/v1/responses` 通过 `context_source_references.native_artifact_ids` 引用**当前 Run** 的既有 Artifact，必须同时指定 `current_user_message_id`；Context 创建使用对应 `source_references.native_artifact_ids`。与文本 `artifact_ids` 分开，不允许同一对象双重引用或重复 ID。普通 HTTP `input` 内联二进制被拒绝；未来用户文件上传必须仍走正式轮次入口自动选择工作流，不能用本内部基线绕过该设计。
+- Context Builder 先校验 Run 关系、模型策略、对象大小/类型、流实际长度、SHA-256 与格式签名，然后保存 `native_artifact.v1` 清单，包含源哈希、文件名、大小、MIME、原生处理模式及覆盖状态。不在数据库 Context 正文、Context 返回或模型调用的原始 HTTP 请求证据中复制 Base64；Attempt 通过 `context_build_id` 找到固定来源。
+- Context 读取和幂等回放返回原清单，不重新解释文件；模型调用前根据同一模型快照重新校验当前 Run 归属、目录启用状态、Artifact 元数据及对象内容。对象丢失、被替换或能力撤销时明确失败，不偷换成最新内容。未携带原生文件的旧 Context 请求保持原幂等哈希算法结果。
+- 清单记录 `coverage=provider_interpreted_not_locally_verified`：平台只验证字节与格式签名，不声称检查了全部页面、正确解码了所有图像或已完成本地解析；深层文件损坏、加密、页面/像素限制等仍由供应商校验，其失败沿用现有 Attempt 错误记录。页码/行号与解析覆盖证据待解析服务完成，不伪造。
+- 保留原有 Context 输入预算。`input_token_reserve_per_file` 是明确配置的**原生输入估算预留**，加到清单文本估算中参与必选来源检查；不是实际计费或供应商保证，不把文件字节数当成页面/图像 token。实际 usage 以 Provider 返回为准；不足时不静默截断或删除文件。模型输出上限机制不变，仍允许既有 `65536` 设置。
+- 当前内联传输的防御上限为单文件及整次请求解码字节各 20 MiB、总数 10，逐模型策略只能收紧；这些是本实现的内存边界，不是供应商上限声明。部署必须为 Base64/JSON 及其他文本留出供应商请求额度；大文件、按页计数/选择和供应商文件引用传输留待后续。
+
+自动化验证涵盖原生内容合同、三家 Provider 的 PDF/图片字段映射和真实 HTTP 编码/SSE 解码（假传输）、未知能力、格式/哈希/大小错误、跨用户 Run 与同用户跨 Run、存储缺失、必需输入预算、固定清单回放及旧幂等兼容。没有调用真实供应商，也没有执行数据库迁移或改变现有模型能力记录。
+
+上一轮原生基线验证（非当前统一解析验收）：API 与模型包全量测试 366 项通过、4 项跳过；原生定向测试 23 项通过；Ruff 与 `git diff --check` 通过。上述测试不替代真实供应商和 MinIO 端到端验收。
+
+接口依据：[OpenAI 文件输入](https://developers.openai.com/api/docs/guides/file-inputs)、[OpenAI 图片输入](https://developers.openai.com/api/docs/guides/images-vision)、[Anthropic PDF](https://platform.claude.com/docs/en/build-with-claude/pdf-support)、[Anthropic 图片](https://platform.claude.com/docs/en/build-with-claude/vision)、[Gemini GenerateContent](https://ai.google.dev/api/generate-content)、[Gemini 图片格式](https://ai.google.dev/gemini-api/docs/image-understanding)。
 
 ## 阶段2核心能力范围
 

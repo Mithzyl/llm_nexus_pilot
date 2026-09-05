@@ -21,6 +21,7 @@ from nexuspilot_models.contracts import (
 )
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
+    native_content_blocks,
     parse_json_arguments,
     parse_structured_output,
 )
@@ -234,7 +235,7 @@ class OpenAIResponsesProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Translate portable messages, functions, and JSON Schema to Responses input."""
+        """Translate portable text/native attachments, functions and JSON Schema to Responses input."""
 
         input_items: list[dict[str, Any]] = []
         continuation_state = request.provider_continuation_state
@@ -253,7 +254,11 @@ class OpenAIResponsesProvider:
                     }
                 )
             else:
-                input_items.append({"role": message.role.value, "content": message.content})
+                input_items.append({
+                    "role": message.role.value,
+                    "content": native_content_blocks(message, self.name)
+                    if message.attachments else message.content,
+                })
         payload: dict[str, Any] = {
             "model": request.model,
             "input": input_items,

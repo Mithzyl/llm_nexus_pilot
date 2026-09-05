@@ -5,7 +5,9 @@ from datetime import datetime
 from typing import Literal
 
 from nexuspilot_models.contracts import (
+    NATIVE_MEDIA_TYPES_BY_PROVIDER,
     ModelReasoningCapabilities,
+    NativeInputCapabilities,
     ProviderName,
     ReasoningEffort,
 )
@@ -167,6 +169,22 @@ class ModelCatalogVersionCreate(BaseModel):
     tokenizer_version: str = Field(min_length=1, max_length=64)
     capabilities_json: dict = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_native_input_capabilities(self) -> "ModelCatalogVersionCreate":
+        """Validate the reserved native-input policy without changing legacy capability metadata."""
+
+        if "native_input" in self.capabilities_json:
+            policy = NativeInputCapabilities.model_validate(self.capabilities_json["native_input"])
+            if policy.media_types and not self.supports_vision:
+                raise ValueError("Native PDF/image input requires supports_vision")
+            if not set(policy.media_types).issubset(
+                NATIVE_MEDIA_TYPES_BY_PROVIDER.get(self.provider, frozenset())
+            ):
+                raise ValueError("Provider codec does not implement native file inputs")
+            if policy.input_token_reserve_per_file >= self.context_window:
+                raise ValueError("Native input reservation must leave room for text context")
+        return self
+
 
 class ModelCatalogStatusUpdate(BaseModel):
     """Validate one explicit catalog snapshot enablement transition."""
@@ -192,6 +210,7 @@ class ModelCapabilityRead(ApiModel):
     supports_streaming: bool | None
     tokenizer_name: str | None
     tokenizer_version: str | None
+    native_input: NativeInputCapabilities | None = None
 
 
 class RegisteredModelCreate(BaseModel):

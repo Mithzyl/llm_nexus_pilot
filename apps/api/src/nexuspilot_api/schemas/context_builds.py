@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import ContextBuildStatus, ContextSourceSelectionStatus
 from nexuspilot_api.schemas.base import ApiModel
+from nexuspilot_api.schemas.file_parsing import ParsedArtifactReference
 from nexuspilot_api.schemas.prompt_catalog import PromptRenderCreate
 
 
@@ -16,6 +17,8 @@ class RuntimeContextSourceReferences(BaseModel):
 
     prompt: PromptRenderCreate | None = None
     artifact_ids: list[str] = Field(default_factory=list, max_length=32)
+    native_artifact_ids: list[str] = Field(default_factory=list, max_length=10)
+    parsed_artifacts: list[ParsedArtifactReference] = Field(default_factory=list, max_length=10)
     agent_handoff_ids: list[str] = Field(default_factory=list, max_length=32)
     agent_node_execution_ids: list[str] = Field(default_factory=list, max_length=32)
     evaluation_ids: list[str] = Field(default_factory=list, max_length=32)
@@ -26,6 +29,7 @@ class RuntimeContextSourceReferences(BaseModel):
 
         for values in (
             self.artifact_ids,
+            self.native_artifact_ids,
             self.agent_handoff_ids,
             self.agent_node_execution_ids,
             self.evaluation_ids,
@@ -34,6 +38,10 @@ class RuntimeContextSourceReferences(BaseModel):
                 raise ValueError("Context source references cannot contain duplicates")
             if any(len(value) != 36 for value in values):
                 raise ValueError("Context source references must use 36-character IDs")
+        parsed_ids = [reference.artifact_id for reference in self.parsed_artifacts]
+        all_artifact_ids = self.artifact_ids + self.native_artifact_ids + parsed_ids
+        if len(set(all_artifact_ids)) != len(all_artifact_ids):
+            raise ValueError("An Artifact cannot be requested more than once across content routes")
         return self
 
 

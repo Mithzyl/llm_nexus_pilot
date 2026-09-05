@@ -453,6 +453,8 @@ class OpenAICompatibleChatProvider:
     def _validate_request(self, request: ModelRequest) -> None:
         """Reject wrong routing, unsupported features, and unsafe tool continuation."""
 
+        if any(message.attachments for message in request.messages):
+            raise ModelProviderError("unsupported_capability", "This codec does not support native file input.")
         if request.provider is not self.name:
             raise ModelProviderError(
                 "invalid_request",

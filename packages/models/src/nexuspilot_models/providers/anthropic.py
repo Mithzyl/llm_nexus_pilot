@@ -17,6 +17,7 @@ from nexuspilot_models.contracts import (
 )
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
+    native_content_blocks,
     parse_json_arguments,
     parse_structured_output,
 )
@@ -199,7 +200,7 @@ class AnthropicMessagesProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Translate portable messages, tools, and structured output to Messages JSON."""
+        """Translate portable text/native attachments, tools and structured output to Messages JSON."""
 
         messages: list[dict[str, Any]] = []
         for message in request.messages:
@@ -217,7 +218,11 @@ class AnthropicMessagesProvider:
                     }
                 )
             else:
-                messages.append({"role": message.role.value, "content": message.content})
+                messages.append({
+                    "role": message.role.value,
+                    "content": native_content_blocks(message, self.name)
+                    if message.attachments else message.content,
+                })
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": messages,

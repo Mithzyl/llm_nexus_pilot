@@ -710,7 +710,9 @@ async def resolve_enabled_model_catalog_version(
 
 
 def _model_capability_read(entry: LlmModelCatalogVersion) -> ModelCapabilityRead:
-    """Map one enabled catalog row to the public capability contract."""
+    """Expose explicit native-file policy independently of the general vision capability flag."""
+
+    from nexuspilot_api.services.native_file_input_service import catalog_native_input_policy
 
     return ModelCapabilityRead(
         provider=entry.provider,
@@ -726,6 +728,7 @@ def _model_capability_read(entry: LlmModelCatalogVersion) -> ModelCapabilityRead
         supports_streaming=entry.supports_streaming,
         tokenizer_name=entry.tokenizer_name,
         tokenizer_version=entry.tokenizer_version,
+        native_input=catalog_native_input_policy(entry),
     )
 
 

@@ -14,7 +14,7 @@ from nexuspilot_models.contracts import (
     ToolCall,
     ToolDefinition,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from nexuspilot_api.schemas.context_builds import RuntimeContextSourceReferences
 
@@ -51,6 +51,19 @@ class ResponsesRequest(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     stream: bool = False
+
+    @field_validator("input", mode="before")
+    @classmethod
+    def reject_inline_native_input(cls, value: Any) -> Any:
+        """Reject HTTP binary parts before constructing or decoding native content objects."""
+
+        if isinstance(value, list) and any(
+            (isinstance(message, dict) and message.get("attachments"))
+            or (isinstance(message, Message) and message.attachments)
+            for message in value
+        ):
+            raise ValueError("HTTP native input requires verified Context Artifact references")
+        return value
 
     @model_validator(mode="after")
     def validate_input(self) -> "ResponsesRequest":

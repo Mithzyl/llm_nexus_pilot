@@ -61,6 +61,7 @@ from nexuspilot_api.services.model_reasoning_service import (
     project_reasoning_stream_event,
     record_model_response_event,
 )
+from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
 
 
 def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
@@ -535,7 +536,8 @@ class ModelInvocationService:
 
         Requests without a current-message anchor retain the legacy explicit-input
         behavior. Anchored requests fail before provider dispatch when their Run,
-        Session, model catalog, or message lineage is inconsistent.
+        Session, model catalog, or message lineage is inconsistent. Parsed sources
+        are revalidated before dispatch; historical native Context remains read-only.
         """
 
         if payload.current_user_message_id is None:
@@ -580,15 +582,19 @@ class ModelInvocationService:
         system_instructions = [
             message.content for message in context_build.messages if message.role == "system"
         ]
-        return (
-            request.model_copy(
-                update={
-                    "messages": provider_messages,
-                    "system_instruction": "\n\n".join(system_instructions) or None,
-                }
-            ),
-            context_build.context_build_id,
+        assembled_request = request.model_copy(
+            update={
+                "messages": provider_messages,
+                "system_instruction": "\n\n".join(system_instructions) or None,
+            }
         )
+        if any(source.source_type == "native_artifact" for source in context_build.messages):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Historical native Context is read-only; create parsed_artifacts input",
+            )
+        await validate_parsed_context_sources(self.db_session, self.storage, context_build)
+        return assembled_request, context_build.context_build_id
 
     @staticmethod
     def _context_idempotency_key(

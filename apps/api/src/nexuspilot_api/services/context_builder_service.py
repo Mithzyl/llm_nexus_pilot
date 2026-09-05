@@ -41,6 +41,11 @@ from nexuspilot_api.schemas.context_builds import (
     ContextMessageRead,
     ContextSourceRead,
 )
+from nexuspilot_api.services.parsed_artifact_service import (
+    MAX_PARSED_CONTEXT_BYTES,
+    PARSED_ARTIFACT_SOURCE,
+    parse_run_artifact,
+)
 from nexuspilot_api.services.prompt_catalog_service import (
     render_prompt,
     resolve_enabled_model_catalog_version,
@@ -270,7 +275,7 @@ async def _load_runtime_context_candidates(
     *,
     object_storage: ContextObjectStorage | None,
 ) -> list[_ContextCandidate]:
-    """Load only messages at or before the Run's immutable current-message anchor."""
+    """Load anchored messages and Run-owned sources without depending on native vision policy."""
 
     run = await db_session.get(LlmRun, payload.run_id)
     if run is None:
@@ -333,10 +338,29 @@ async def _load_referenced_context_candidates(
     payload: ContextBuildCreate,
     object_storage: ContextObjectStorage | None,
 ) -> list[_ContextCandidate]:
-    """Resolve only explicit, Run-owned stable facts into typed Context candidates."""
+    """Resolve Run-owned parsed files; retired native references cannot create new input."""
 
     references = payload.source_references
     candidates: list[_ContextCandidate] = []
+    if references.native_artifact_ids:
+        raise ResourceConflictError("Native file input is retired; use parsed_artifacts references")
+    for reference in references.parsed_artifacts:
+        if object_storage is None:
+            raise ResourceConflictError("Parsed Artifact object storage is unavailable")
+        snapshot, document_hash = await parse_run_artifact(
+            db_session, object_storage, run_id=run.run_id, reference=reference,
+        )
+        content = _serialize_untrusted_material(
+            source_type=PARSED_ARTIFACT_SOURCE, source_id=reference.artifact_id, payload=snapshot,
+        )
+        if len(content.encode()) > MAX_PARSED_CONTEXT_BYTES:
+            raise ResourceConflictError(
+                "Parsed Context exceeds storage; select a smaller block range"
+            )
+        candidates.append(_candidate(
+            PARSED_ARTIFACT_SOURCE, reference.artifact_id, content, "user",
+            source_version=document_hash, trust_level="external_untrusted", required=True,
+        ))
     if references.prompt is not None:
         rendered_prompt = await render_prompt(db_session, references.prompt)
         prompt_version = await db_session.scalar(
@@ -920,9 +944,13 @@ def _message_candidate(message: LlmMessage) -> _ContextCandidate:
 
 
 def _hash_runtime_request(payload: ContextBuildCreate) -> str:
-    """Hash normalized runtime inputs so an idempotency key cannot change meaning."""
+    """Keep historical request hashes unchanged when newly added file selectors are empty."""
 
     normalized_request = payload.model_dump(mode="json", exclude={"idempotency_key"})
+    if not normalized_request["source_references"]["native_artifact_ids"]:
+        normalized_request["source_references"].pop("native_artifact_ids")
+    if not normalized_request["source_references"]["parsed_artifacts"]:
+        normalized_request["source_references"].pop("parsed_artifacts")
     serialized_request = json.dumps(
         normalized_request,
         ensure_ascii=False,
