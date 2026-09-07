@@ -1,4 +1,10 @@
-.PHONY: api-install api-test api-lint api-migrate api-run web-run web-test web-check web-e2e
+.PHONY: api-install api-test api-lint api-migrate api-run web-run web-test web-check web-e2e file-runtime-build file-runtime-check
+
+file-runtime-build:
+	python3 deployments/file-runtime/manage_runtime.py build
+
+file-runtime-check:
+	python3 deployments/file-runtime/manage_runtime.py check
 
 api-install:
 	python3 -m venv apps/api/.venv
