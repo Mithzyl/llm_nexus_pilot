@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     minio_bucket: str = "nexuspilot-artifacts"
     minio_secure: bool = False
     max_artifact_size_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    file_runtime_socket: str | None = Field(default=None, min_length=1, max_length=100)
     model_max_retries: int = Field(default=2, ge=0, le=5)
     model_retry_backoff_seconds: float = Field(default=0.1, ge=0, le=10)
     model_pricing_json: str = "{}"
@@ -79,10 +80,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_separate_internal_key(self) -> Self:
-        """Validate service separation and require secure login outside local environments."""
+        """Validate service separation, absolute executor paths and nonlocal login security."""
 
         if self.api_key == self.internal_api_key.get_secret_value():
             raise ValueError("internal_api_key must differ from api_key")
+        if (
+            self.file_runtime_socket is not None
+            and not Path(self.file_runtime_socket).is_absolute()
+        ):
+            raise ValueError("file_runtime_socket must be an absolute local Unix socket path")
         if (
             self.environment.lower() not in {"development", "test"}
             and self.provider_continuation_encryption_key is None

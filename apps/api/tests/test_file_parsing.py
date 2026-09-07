@@ -106,15 +106,15 @@ def test_limits_and_hash_mismatch_fail_without_partial_success():
             FileParseRequest.model_validate(request.model_dump() | {"filename": filename})
 
 
-def test_unsupported_office_images_and_forged_pdf_fail_explicitly():
+def test_unsupported_images_and_forged_office_pdf_fail_explicitly():
     """Unimplemented formats and signatures never silently fall back to native providers."""
 
-    for media_type in (
-        "image/png",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ):
-        with pytest.raises(FileParsingError, match="unsupported"):
-            parse_fixture(b"example", media_type)
+    with pytest.raises(FileParsingError, match="unsupported"):
+        parse_fixture(b"example", "image/png")
+    with pytest.raises(FileParsingError, match="signature"):
+        parse_fixture(
+            b"example", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     with pytest.raises(FileParsingError, match="signature"):
         parse_fixture(b"not a PDF", "application/pdf")
 

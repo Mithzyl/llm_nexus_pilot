@@ -55,9 +55,9 @@
 
 ## 预装文件执行环境
 
-2026 年 9 月 7 日：通用依赖环境已在本机 Docker Desktop 的 Linux 容器中构建并通过合成文件检查。定义位于 `deployments/file-runtime`，是管理员构建/验收入口，不是 HTTP 服务、后台 Worker 或模型工具。当前产品 Office 解析、上传、文件版本与 Agent 文件循环仍未实现。
+2026 年 9 月 7 日：通用依赖环境已在本机 Docker Desktop 的 Linux 容器中构建并通过合成文件检查，并新增 Office 专用执行器，服务于阶段2当前 Run Artifact 的程序解析。定义位于 `deployments/file-runtime`；不开放普通用户命令或 Docker HTTP 接口，不是可恢复后台 Worker。正式上传、文件版本与 Agent 自主文件循环仍未实现。
 
-运行前需要 Python 3 和可访问的 Docker daemon；检查要求 Linux cgroup v2。构建需要访问镜像仓库、Debian 软件源和 Python 软件源，文件检查不联网、不拉取镜像。
+宿主执行脚本需要 Python 3.10+ 和可访问的 Docker daemon（API 仍要求 Python 3.11+）；检查要求 Linux cgroup v2。构建需要访问镜像仓库、Debian 软件源和 Python 软件源，文件检查不联网、不拉取镜像。
 
 ```bash
 make file-runtime-build
@@ -65,14 +65,57 @@ make file-runtime-check
 ```
 
 - 基于 Python 3.11 Debian bookworm，预装 `python-docx==1.2.0`、`openpyxl==3.1.5`、`python-pptx==1.0.2` 及 Poppler。OCR、Docling、旧版二进制 Office 和桌面应用不在当前镜像中。
-- 仅将专用构建目录发送给 Docker，`.dockerignore` 只允许镜像定义、依赖清单和检查脚本；不复制 API 代码、`.env`、用户文件或密钥。
+- 仅将专用构建目录发送给 Docker，`.dockerignore` 只允许镜像定义、依赖清单、检查与解析脚本；不复制 API 代码、`.env`、用户文件或密钥。
 - 检查使用本地镜像解析出的固定 image ID，创建唯一命名的临时容器；非 root、无网络、根文件系统只读、删除 capabilities、禁止提权，不挂载宿主目录或 Docker socket。临时目录为 256 MiB tmpfs，禁止直接执行文件；内存 512 MiB、CPU 1 核、进程 64，检查等待上限 120 秒。限制用于当前合成样本，不作为未来 OCR 容量指标。
-- 五项独立检查为：Linux 权限/网络/文件系统/资源配置、DOCX 中文段落与合并表格、XLSX 单元格与公式及缺失缓存值、PPTX 文本/表格/备注、Poppler PDF 正文。输出 JSON 逐项结果、Python 依赖版本、Poppler 版本及镜像 ID。任一失败、报告不完整、进程错误或清理失败均返回非零退出码。
+- 六项独立检查为：Linux 权限/网络/文件系统/资源配置、DOCX 中文段落与合并表格、XLSX 单元格与公式及缺失缓存值、PPTX 文本/表格/备注、Poppler PDF 正文、真实 Office 解析脚本的三类文件提取。输出 JSON 逐项结果、Python 依赖版本、Poppler 版本及镜像 ID。任一失败、报告不完整、进程错误或清理失败均返回非零退出码。
 - 完成或超时后只删除该次检查容器，合成文件随临时目录销毁；构建的镜像保留供下次使用。清理失败显示精确容器名称供管理员检查，不清理其他容器。
 - 环境扩展由管理员修改依赖后显式构建、检查新镜像。普通任务不得临时安装依赖；`PIP_NO_INDEX` 只是包管理器默认设置，实际外网禁止依靠容器网络配置，不能把该环境变量当安全控制。
 - Python 直接依赖固定版本，传递依赖与系统软件实际版本分别记录在镜像 `/opt/file-runtime/installed-packages.txt` 和 `installed-system-packages.txt`。当前基础标签和软件源仍可变化，因此不承诺不同日期重新构建逐字节一致；复用同一镜像 ID 才是相同环境。发布级锁定、镜像分发与旧版本保留策略尚未实现。
 
-快速测试入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_runtime_environment.py -q`。该测试检查启动参数、超时清理和失败报告，不替代上述真实 Docker 检查。未来产品调用需增加获准文件物化、受控解析入口与结果校验，不能让 API/模型直接提交任意 Docker 参数。
+快速测试入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_runtime_environment.py apps/api/tests/test_office_parsing.py apps/api/tests/test_office_runtime_executor.py -q`。测试涉及本地 Unix Socket，需要操作系统允许绑定；容器测试默认跳过，显式设置 `NEXUSPILOT_TEST_FILE_RUNTIME=1` 后才执行真实 Docker 调用。不能以默认跳过结果证明容器验收通过。
+
+### Office 执行器启动与权限
+
+执行器只接受本机 Unix Socket 上一条 `office_parse.v1` 请求；字段仅包含固定协议、允许的 MIME 和 base64 文件字节，不允许指定路径、镜像、命令、挂载或环境变量。API 先检查当前 Run 归属、原件哈希及大小，再通过 `office_text_extraction.py` 发送请求，校验结果来源、结构和块身份，保存到现有 Context。各 Provider 接收相同文字/表格，不直接接收 Office 字节。
+
+本机开发示例，在仓库根目录运行（目录已存在时先检查归属，不覆盖或删除已有 Socket）：
+
+```bash
+mkdir -m 700 /tmp/nexuspilot-file-runtime
+python3 deployments/file-runtime/serve_runtime.py --socket /tmp/nexuspilot-file-runtime/executor.sock
+```
+
+在 `apps/api/.env` 显式设置并重启 API：
+
+```dotenv
+NEXUSPILOT_FILE_RUNTIME_SOCKET=/tmp/nexuspilot-file-runtime/executor.sock
+```
+
+- 未配置时 Office 请求明确失败；没有自动安装、启动执行器、拉取镜像或回退宿主机解析。示例配置没有自动改写用户实际 `.env`。
+- 启动时固定本地 Linux 镜像 ID；更新镜像后需显式重启执行器，新版本不会改变已提交 Context。镜像 ID、解析器及依赖版本写入解析来源版本。
+- 每请求创建独立容器，继承上述限制；标准输入传文件，标准输出传结构化结果，没有宿主目录挂载，容器日志驱动关闭。主机短暂保存的输入使用私有临时文件句柄，处理完成即释放。
+- 请求最大 1,500,000 字节、解码文件最多 1 MiB、输出最多 4 MiB；OOXML ZIP 最多 2048 条目、总解压 20 MiB、单条压缩比最多 200。拒绝路径穿越、重复条目、加密条目、XML 实体声明、宏和嵌入对象；只允许打印机设置这一类不执行的二进制元数据。Excel 最多扫描 200000 个单元格，仍受块/行大小限制。
+- 同时最多两份文件，超出立即返回繁忙；单次 Docker 创建最多 30 秒、解析最多 60 秒、清理最多 15 秒，API 总接收等待最多 125 秒。没有自动重试。断开观察连接不跳过清理，但强杀执行器或主机宕机后的孤儿容器恢复尚未实现，不能当作阶段10可靠任务系统。
+- Socket 父目录必须由执行器用户拥有且不允许组/其他用户写入；推荐 0700（仅同用户）或 0750（专用共享组）。Socket 对应使用 0600 或 0660；文件模式是实际访问控制，不是模型提示。启动时拒绝替换既有 Socket；正常退出只移除自身未变化的 Socket。
+- 清理失败返回执行失败，并在执行器 stderr 记录精确容器名和错误类型，供管理员核对后处理；不打印文件正文、依赖 stderr 或应用密钥。
+
+### Linux 云服务器兼容与验收
+
+文件解析始终运行在 Linux 镜像中；macOS 只运行 Docker 客户端和 Unix Socket 执行器，不使用 Homebrew Office 库或 macOS 沙箱执行 Office。Windows 原生执行器不在当前范围，可后续使用 Linux/WSL 主机。
+
+在目标服务器按实际 CPU 架构构建，例如 x86_64：
+
+```bash
+python3 deployments/file-runtime/manage_runtime.py build --platform linux/amd64 --image nexuspilot-file-runtime:amd64
+python3 deployments/file-runtime/manage_runtime.py check --image nexuspilot-file-runtime:amd64
+python3 deployments/file-runtime/serve_runtime.py --socket /run/nexuspilot-file-runtime/executor.sock --image nexuspilot-file-runtime:amd64
+```
+
+ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通过后才配置 API Socket；不复制 macOS `.venv`、Homebrew 路径或默认假定 ARM 镜像能在 x86 运行。构建工具没有推送或部署远程服务器。
+
+云部署由管理员准备专用执行器账户、Docker 访问权及 `/run/nexuspilot-file-runtime` 目录。API 用户只加入 Socket 的专用共享组，不加入 Docker 组；执行器和 API 不共享 Provider/数据库环境文件。若 API 本身容器化，只挂载 Socket 所在专用目录并设置匹配的组身份，禁止挂载 Docker Socket。SELinux/AppArmor、目录组权限、cgroup v2、资源额度和实际 CPU 必须在目标服务器运行上述检查，不通过时不能关闭安全配置以取得成功结果。
+
+本机 macOS Docker Desktop 的 Linux ARM64 六项检查通过，最终检查镜像为 `sha256:d335e479bdd97a0d19ada76b8e9638c26e4f2bce53c0d6b58edcbd08a17f3591`，只证明该 Linux 容器环境。另尝试 `build --platform linux/amd64 --image nexuspilot-file-runtime:amd64-test`，Debian 软件源下载 `libnss3` 返回 HTTP 500 / unexpected EOF，构建失败，未执行该架构解析检查。真实云服务器尚未验收；跨架构模拟运行也不替代云主机的权限、内核与部署检查。下一步应在网络可用的目标主机按其架构重新构建并执行上述检查，不以移除依赖或安全设置绕过失败。
 
 ## 个人项目文件工作区补充（2026 年 9 月 5 日，设计已完成，实施未开始）
 

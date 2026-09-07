@@ -101,6 +101,56 @@ async def test_selected_range_records_unread_content_without_claiming_full_cover
     assert len(snapshot["blocks"]) == 1
 
 
+@pytest.mark.parametrize("provider_name", ["openai", "anthropic", "gemini", "deepseek"])
+async def test_office_result_positions_reach_all_providers_and_context_history(
+    client, monkeypatch, provider_name
+):
+    """Keep Office results in the existing Run authorization and provider-neutral Context path."""
+
+    import hashlib
+
+    from nexuspilot_api.infrastructure.office_text_extraction import OFFICE_MEDIA_TYPES
+
+    payload, provider, _ = await prepare_parsed_fixture(client, provider_name)
+    content = b"PK\x03\x04protocol-fixture"
+    artifact = (
+        await client.post(
+            f"/api/v1/runs/{payload['run_id']}/artifacts",
+            data={"artifact_type": "file-input"},
+            files={"file": ("示例.docx", content, OFFICE_MEDIA_TYPES[0])},
+        )
+    ).json()
+
+    def extract(source, media_type):
+        """Provide fixed executor evidence; real Office decoding is checked in Docker tests."""
+
+        assert source == content
+        return {
+            "protocol": "office_parse.v1",
+            "source_hash": hashlib.sha256(source).hexdigest(),
+            "media_type": media_type,
+            "parser_version": "office-v1/fixture",
+            "status": "partial",
+            "warnings": ["Images not extracted"],
+            "blocks": [{"block_id": "block:1", "text": "正文", "paragraph_number": 1}],
+        }
+
+    monkeypatch.setattr(
+        "nexuspilot_api.services.file_parsing_service.extract_office_content", extract
+    )
+    payload["context_source_references"] = {
+        "parsed_artifacts": [{"artifact_id": artifact["artifact_id"]}]
+    }
+    response = await client.post("/api/v1/responses", json=payload)
+    assert response.status_code == 200, response.text
+    source = next(m for m in provider.requests[0].messages if "parsed_file.v1" in m.content)
+    snapshot = json.loads(source.content.split("\n", 1)[1].rsplit("\n", 1)[0])
+    assert snapshot["blocks"][0]["paragraph_number"] == 1
+    assert snapshot["blocks"][0]["line_start"] is None
+    assert snapshot["warnings"] == ["Images not extracted"]
+    assert not any(m.attachments for m in provider.requests[0].messages)
+
+
 @pytest.mark.parametrize("failure", ["corrupt", "missing", "mime", "cross_run", "duplicate"])
 async def test_invalid_file_references_fail_before_model_call(client, failure):
     """The parsing route does not bypass existing Run scope or trust object metadata blindly."""

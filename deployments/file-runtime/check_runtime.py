@@ -5,6 +5,7 @@ not the product file parser: it neither reads user documents nor contacts APIs.
 Any failed check exits nonzero; JSON reports each completed check separately.
 """
 
+import base64
 import importlib.metadata
 import json
 import os
@@ -48,9 +49,7 @@ def check_isolation(directory: Path) -> dict:
             raise RuntimeError("Unexpected external network access")
     for forbidden in ("/var/run/docker.sock", "/app/apps/api/.env"):
         if Path(forbidden).exists():
-            raise RuntimeError(
-                "Runtime exposes an application secret path or Docker socket"
-            )
+            raise RuntimeError("Runtime exposes an application secret path or Docker socket")
     if any(name.startswith("NEXUSPILOT_") for name in os.environ):
         raise RuntimeError("Runtime inherited application configuration")
     (directory / "temporary.txt").write_text("private task output", encoding="utf-8")
@@ -112,10 +111,7 @@ def check_excel(directory: Path) -> dict:
     loaded = load_workbook(path, data_only=False, keep_links=False)
     cached = load_workbook(path, read_only=True, data_only=True, keep_links=False)
     try:
-        if (
-            loaded["数据"]["A2"].value != "00123"
-            or loaded["数据"]["B3"].value != "=SUM(B2:B2)"
-        ):
+        if loaded["数据"]["A2"].value != "00123" or loaded["数据"]["B3"].value != "=SUM(B2:B2)":
             raise RuntimeError("XLSX identifier or formula changed")
         if "D1:E1" not in loaded["数据"].merged_cells:
             raise RuntimeError("XLSX merged range was lost")
@@ -143,10 +139,7 @@ def check_powerpoint(directory: Path) -> dict:
     slide.notes_slide.notes_text_frame.text = "演讲者备注"
     presentation.save(path)
     loaded = Presentation(path).slides[0]
-    if (
-        loaded.shapes[0].text != "幻灯片正文"
-        or loaded.shapes[1].table.cell(0, 1).text != "测试"
-    ):
+    if loaded.shapes[0].text != "幻灯片正文" or loaded.shapes[1].table.cell(0, 1).text != "测试":
         raise RuntimeError("PPTX text or table round-trip failed")
     if loaded.notes_slide.notes_text_frame.text != "演讲者备注":
         raise RuntimeError("PPTX notes were lost")
@@ -178,28 +171,19 @@ def check_pdf(directory: Path) -> dict:
     content.extend(b"xref\n0 6\n0000000000 65535 f \n")
     for offset in offsets[1:]:
         content.extend(f"{offset:010} 00000 n \n".encode())
-    content.extend(
-        f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode()
-    )
+    content.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF".encode())
     source, output = directory / "sample.pdf", directory / "sample.txt"
     source.write_bytes(content)
-    metadata = subprocess.run(
-        ["pdfinfo", str(source)], check=True, capture_output=True, timeout=10
-    )
+    metadata = subprocess.run(["pdfinfo", str(source)], check=True, capture_output=True, timeout=10)
     subprocess.run(
         ["pdftotext", "-layout", str(source), str(output)],
         check=True,
         capture_output=True,
         timeout=10,
     )
-    if (
-        b"Pages:" not in metadata.stdout
-        or "File runtime PDF check" not in output.read_text()
-    ):
+    if b"Pages:" not in metadata.stdout or "File runtime PDF check" not in output.read_text():
         raise RuntimeError("Poppler failed to extract the PDF fixture")
-    version = subprocess.run(
-        ["pdftotext", "-v"], check=True, capture_output=True, timeout=10
-    )
+    version = subprocess.run(["pdftotext", "-v"], check=True, capture_output=True, timeout=10)
     return {
         "pages": 1,
         "embedded_text": True,
@@ -224,6 +208,7 @@ def main() -> int:
             ("xlsx", check_excel),
             ("pptx", check_powerpoint),
             ("pdf", check_pdf),
+            ("office_parser", check_office_parser),
         ):
             try:
                 details = check(Path(temporary))
@@ -235,6 +220,50 @@ def main() -> int:
     report["status"] = "passed" if passed else "failed"
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if passed else 1
+
+
+def check_office_parser(directory: Path) -> dict:
+    """Parse generated Office samples through the real bounded stdin/stdout entrypoint."""
+
+    fixtures = {
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    results = {}
+    for extension, media_type in fixtures.items():
+        request = {
+            "protocol": "office_parse.v1",
+            "media_type": media_type,
+            "content_base64": base64.b64encode(
+                (directory / f"sample.{extension}").read_bytes()
+            ).decode(),
+        }
+        completed = subprocess.run(
+            ["python", "-I", "/opt/file-runtime/parse_office.py"],
+            input=json.dumps(request).encode() + b"\n",
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        report = json.loads(completed.stdout)
+        if report["status"] != "partial" or not report["warnings"] or not report["blocks"]:
+            raise RuntimeError("Office extraction omitted coverage information")
+        if extension == "docx":
+            assert report["blocks"][0]["heading_level"] == 1
+            assert report["blocks"][1]["text"] == "中文正文与 English text"
+        elif extension == "xlsx":
+            row = next(block for block in report["blocks"] if block["row_number"] == 3)
+            assert row["cell_formulas"][1] == "=SUM(B2:B2)"
+            assert row["missing_formula_values"] == ["B3"]
+            assert row["cells"][1] == ""
+        else:
+            assert any(
+                block.get("is_notes") and block["text"] == "演讲者备注"
+                for block in report["blocks"]
+            )
+        results[extension] = {"blocks": len(report["blocks"]), "source_positions": True}
+    return results
 
 
 if __name__ == "__main__":

@@ -2,3 +2,4 @@
 !Dockerfile
 !requirements.txt
 !check_runtime.py
+!parse_office.py

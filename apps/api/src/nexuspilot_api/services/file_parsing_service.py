@@ -9,6 +9,13 @@ import hashlib
 import io
 import json
 
+from pydantic import ValidationError
+
+from nexuspilot_api.infrastructure.office_text_extraction import (
+    OFFICE_MEDIA_TYPES,
+    OfficeExtractionError,
+    extract_office_content,
+)
 from nexuspilot_api.infrastructure.pdf_text_extraction import PdfExtractionError, extract_pdf_pages
 from nexuspilot_api.schemas.file_parsing import (
     FileContentPage,
@@ -34,6 +41,13 @@ TEXT_MEDIA_TYPES = (
     "text/yaml",
 )
 FILE_PARSERS = (
+    FileParserDescriptor(
+        name="office_document",
+        version="1",
+        media_types=OFFICE_MEDIA_TYPES,
+        requires_sandbox=True,
+        supports_tables=True,
+    ),
     FileParserDescriptor(name="utf8_text", version="1", media_types=TEXT_MEDIA_TYPES),
     FileParserDescriptor(name="json_text", version="1", media_types=("application/json",)),
     FileParserDescriptor(
@@ -104,7 +118,8 @@ def _validate_json_text(content: str) -> None:
 def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileDocument:
     """Extract verified bytes into bounded blocks; no model, storage or arbitrary network calls.
 
-    PDF extraction alone launches the dedicated OS-isolated Poppler adapter.
+    PDF launches the dedicated OS-isolated Poppler adapter; Office calls the
+    configured executor, which runs a disposable offline Linux container.
     Unsupported, empty, corrupt or over-limit inputs raise FileParsingError;
     PDF pages with no embedded text produce explicit partial coverage.
     """
@@ -122,7 +137,31 @@ def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileD
     warnings: list[str] = []
     total_pages = None
     parser_version = parser.version
-    if media_type == "application/pdf":
+    if media_type in OFFICE_MEDIA_TYPES:
+        if not content.startswith(b"PK\x03\x04"):
+            raise FileParsingError("Office signature does not match declared type")
+        try:
+            extracted = extract_office_content(content, media_type)
+            if (
+                extracted.get("protocol") != "office_parse.v1"
+                or extracted.get("source_hash") != request.source_hash
+                or extracted.get("media_type") != media_type
+                or extracted.get("status") not in {"complete", "partial"}
+                or not isinstance(extracted.get("parser_version"), str)
+            ):
+                raise FileParsingError("Office executor result does not match source")
+            blocks = [ParsedFileBlock.model_validate(block) for block in extracted["blocks"]]
+            warnings = extracted["warnings"]
+            if not isinstance(warnings, list) or not all(isinstance(w, str) for w in warnings):
+                raise FileParsingError("Office executor warnings are invalid")
+            parser_version = extracted["parser_version"]
+            if len({block.block_id for block in blocks}) != len(blocks):
+                raise FileParsingError("Office executor returned duplicate block identities")
+        except OfficeExtractionError as exc:
+            raise FileParsingError(str(exc)) from exc
+        except (ValidationError, KeyError, TypeError) as exc:
+            raise FileParsingError("Office executor returned invalid structured content") from exc
+    elif media_type == "application/pdf":
         if not content.startswith(b"%PDF-"):
             raise FileParsingError("PDF signature does not match declared type")
         try:
@@ -194,7 +233,13 @@ def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileD
         media_type=media_type,
         parser_name=parser.name,
         parser_version=parser_version,
-        status="partial" if uncovered_pages else "complete",
+        status=(
+            extracted["status"]
+            if media_type in OFFICE_MEDIA_TYPES
+            else "partial"
+            if uncovered_pages
+            else "complete"
+        ),
         blocks=blocks,
         total_pages=total_pages,
         uncovered_pages=uncovered_pages,
@@ -279,4 +324,11 @@ def get_file_outline(document: ParsedFileDocument) -> dict:
         "table_rows": sum(b.kind == "table_row" for b in document.blocks),
         "status": document.status,
         "warnings": document.warnings,
+        "headings": [
+            {"block_id": block.block_id, "level": block.heading_level, "text": block.text}
+            for block in document.blocks
+            if block.heading_level is not None
+        ],
+        "sheets": list(dict.fromkeys(b.sheet_name for b in document.blocks if b.sheet_name)),
+        "slides": list(dict.fromkeys(b.slide_number for b in document.blocks if b.slide_number)),
     }

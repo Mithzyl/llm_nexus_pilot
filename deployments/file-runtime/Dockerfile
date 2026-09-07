@@ -15,6 +15,7 @@ RUN PIP_NO_INDEX=0 python -m pip install --no-cache-dir -r /opt/file-runtime/req
     && dpkg-query -W > /opt/file-runtime/installed-system-packages.txt
 
 COPY check_runtime.py /opt/file-runtime/check_runtime.py
+COPY parse_office.py /opt/file-runtime/parse_office.py
 WORKDIR /tmp
 USER 65532:65532
 ENTRYPOINT ["python", "-I", "/opt/file-runtime/check_runtime.py"]

@@ -112,7 +112,7 @@
 | Evaluation/Guardrail | 已实现规则校验、幂等和结果查询 | 复用错误与证据机制；解析质量和引用完整性需新样本验收 |
 | 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达 | 执行权限/登记归阶段7，读取循环归阶段3，尚不能直接调用文件工具 |
 | 原生文件直传基线 | 新建 native Context 返回 409 并指向 `parsed_artifacts`；历史 Context 可只读回放，禁止用于新生成；低层 codec/合同保留兼容 | 不再作为产品输入路径，保留旧证据，不把原生测试计作解析验收 |
-| 文件解析器及统一结果 | 已实现描述、请求及结果合同、UTF-8/CSV/TSV/JSON 读取和隔离 PDF 正文适配器 | Office/OCR、结构化 PDF 表格和完整文档目录尚未实现，逐格式验收再开放 |
+| 文件解析器及统一结果 | 已实现 UTF-8/CSV/TSV/JSON、隔离 PDF 正文、独立容器 DOCX/XLSX/PPTX 提取与统一结果转换 | OCR、结构化 PDF 表格、完整文档目录和 Office 复杂视觉内容尚未实现 |
 | 正式文件上下文 | 已实现当前 Run Artifact 解析、选定块/页/行/CSV 单元格、结果哈希和 Context 固定快照；正式用户文件版本尚未实现 | 阶段5落实版本/权限存储，阶段3/7接通模型读取工具 |
 | 解析复用及失败事实 | 已实现覆盖/遗漏、安全失败、原件变更复核和 macOS PDF 隔离；未实现跨 Context 解析缓存、MinIO 独立结果版本、后台恢复 | Context 幂等回放不是持久解析缓存，隔离运行时扩展归阶段7，后台恢复归阶段10 |
 
@@ -122,18 +122,22 @@
 
 - 入口仍是受信调用方 API，不是浏览器上传：`POST /api/v1/responses` 的 `context_source_references.parsed_artifacts` 或 `POST /api/v1/context-builds` 的 `source_references.parsed_artifacts` 接收 `[{"artifact_id":"当前 Run 的 Artifact ID","block_offset":0,"block_limit":20}]`。省略范围请求全部内容，超限明确要求选择范围，绝不静默只给前 20 块；非零 offset 必须同时指定 limit。每次最多 10 个引用，不能重复或与文本/native 路由同时引用同一对象。
 - `FileParseRequest` 当前使用 `source_id/source_hash/filename/media_type` 固定已有 Artifact，暂无正式 `file_version_id`。`ParsedFileDocument` 记录引擎版本、原文块、行号、PDF 页码、CSV 行/列和覆盖；完整解析结果的哈希写入 Context `source_version`。本轮仅选中内容与提取/读取元数据保存到现有 Context，原件仍在 MinIO；没有新增表/字段或迁移，也没有把完整解析结果写成独立 MinIO 对象。未选部分后续仍需从原件重新解析，不宣称有持久解析缓存或跨升级的全结果分页快照。
-- 支持 UTF-8 文本/Markdown/代码和部分文本型 MIME、CSV/TSV、JSON；JSON 保留原始数字与文本，拒绝重复 key、非标准数值和过深嵌套。CSV 原样保留单元格，不推断表头、不执行公式。XML/YAML 只作为原文读取，不执行实体、模板或语义加载。Office、图片、OCR、音视频明确不支持。
-- 2026 年 9 月 7 日，独立 Office/Poppler 预装环境已通过合成文件检查，入口见[阶段7运行说明](phase-7-tool-runtime-plan.md#预装文件执行环境)。这是依赖环境验收，不改变上面的正式 API 格式支持范围；尚未把 Office 解析结果转换为本节的统一来源结构，也未开放用户文件执行。
+- 支持 UTF-8 文本/Markdown/代码和部分文本型 MIME、CSV/TSV、JSON；JSON 保留原始数字与文本，拒绝重复 key、非标准数值和过深嵌套。CSV 原样保留单元格，不推断表头、不执行公式。XML/YAML 只作为原文读取，不执行实体、模板或语义加载。图片、OCR、音视频和旧版二进制 Office 不支持。
+- 2026 年 9 月 7 日新增 DOCX/XLSX/PPTX：配置 `NEXUSPILOT_FILE_RUNTIME_SOCKET` 后，同一 `parsed_artifacts` 入口将已验证的文件字节交给独立执行器，每次创建固定镜像、无网络容器；API 不导入 Office 库、不访问 Docker daemon。缺配置、执行器离线/繁忙、解析失败均在模型调用前返回明确错误，不在宿主机尝试替代解析。详见[阶段7运行说明](phase-7-tool-runtime-plan.md#预装文件执行环境)。
+- Office 来源结构复用 `parsed_file.v1` 并增加可空位置字段：Word 使用段落/表格编号和已识别的 Heading 样式级别，Excel 使用工作表、行和单元格范围，PPT 使用幻灯片/形状编号及备注标记。`line_start/line_end` 对 Office 为 null，不编造页码或原文行号；旧 Context 原样回放，新结果哈希允许因结构扩展变化。
+- Excel 分别保存单元格字符串值、类型、数字格式、公式与缺失计算结果位置，并保留合并范围及隐藏工作表/行标记；不计算公式，不把缺失计算值写为零，不刷新外部链接。Word 合并格可能重复文本，嵌套表格、页眉页脚、修订、图片等不完整；PPT 保留形状文件顺序，不声称是视觉阅读顺序，组、图表和图片未解释。三类结果目前都标记 `partial`（部分提取）并附明确警告，不能视为完整文档理解。
 - PDF 使用预安装的 Poppler `pdfinfo/pdftotext`，仅提取嵌入文字并保留页码；无文字页记录未覆盖，全部无文字则明确失败。PDF 表格仅布局文本，不声称恢复单元格或理解图片；加密/损坏 PDF 拒绝。macOS 使用 `sandbox-exec`，Linux 提供 bubblewrap 启动适配，缺依赖或沙箱失败不退回宿主机。依赖由管理员预安装，不由模型或 API 下载。
 - PDF 子进程使用净化环境、无网络、任务临时目录、CPU/文件大小/墙钟时间约束；macOS 禁止派生进程并监测该 PID 的内存，Linux 设置地址空间上限。macOS 动态加载仅允许系统/Python/Homebrew 运行库与根目录本身读取（非递归用户目录授权），用户文件内容仍拒绝。Linux 实际隔离尚未在本机验证，不按 macOS 结果宣称通过。
 - 资源边界：本轮受信解析单文件 1 MiB、最多 10000 块、CSV 每行最多 1024 列、PDF 最多 200 页；解析并发每 API 进程 2。此为解析基线，不改变现有 Artifact 上传上限。读取函数每页最多 100 块/128 KiB并返回后续位置；现有 MySQL Context `TEXT` 限制下，每个序列化来源最多 60000 字节，超限选择更小块范围。不是模型输出 token 限制；未扩容数据库字段来掩盖过大输入。
-- 已有四个程序读取函数：`get_file_outline`（当前只返回块/页/表格行数和覆盖事实）、`search_file_content`、`read_file_content`、`read_file_table`。它们尚未注册为模型工具，无 `list_run_files` 新工具/API；不得声称 Agent 已能自主查阅文件。
+- 已有四个程序读取函数：`get_file_outline` 返回块/页/表格行数、已识别标题及有内容的工作表/幻灯片编号和遗漏事实；其余为 `search_file_content`、`read_file_content`、`read_file_table`。空工作表/幻灯片不产生内容块，目录不代表完整文档目录。它们尚未注册为模型工具，无 `list_run_files` 新工具/API；不得声称 Agent 已能自主查阅文件。
 - 新生成统一提供文字/表格，不要求 `native_input` 或视觉能力，四家 Provider 契约与 DeepSeek 流式入口已覆盖。Context 历史回放不重新解析；生成前复核原件归属、元数据和哈希，已替换/丢失对象不能利用旧快照继续发模型。旧 native Context 可以查询，但生成明确拒绝并要求建立新的解析输入。
 - 验证入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py apps/api/tests/test_parsed_file_context.py apps/api/tests/test_native_file_context.py -q`；真实 PDF 隔离单独运行 `NEXUSPILOT_TEST_PDF_SANDBOX=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py -k real_pdf -q`。默认快速测试跳过这两项，不代表 PDF 隔离已验收；本机 macOS 已单独通过提取与未绑定文件/网络拒绝两项测试。未调用真实 Provider，未运行真实 MySQL/MinIO 文件链路。
 
 #### 实施顺序与验收
 
-本轮验证结果：API 与模型包全量测试 393 项通过、6 项跳过（4 项原有真实基础设施测试及2项需显式开启的 PDF 隔离测试）；PDF 两项已在 macOS 单独开启并通过。Ruff 与差异检查通过。另补输出符号/硬链接拒绝、主进程不跟随解析器预置输出链接、跨 Provider 相同提取内容、DeepSeek SSE、Context 原文替换后拒绝生成与 MySQL TEXT 大小边界测试。没有进行数据库迁移或真实 Provider 调用。
+此前文本/PDF 实施验证：API 与模型包全量测试 393 项通过、6 项跳过（4 项原有真实基础设施测试及2项需显式开启的 PDF 隔离测试）；PDF 两项已在 macOS 单独开启并通过。Ruff 与差异检查通过。另补输出符号/硬链接拒绝、主进程不跟随解析器预置输出链接、跨 Provider 相同提取内容、DeepSeek SSE、Context 原文替换后拒绝生成与 MySQL TEXT 大小边界测试。没有进行数据库迁移或真实 Provider 调用。
+
+2026 年 9 月 7 日 Office 执行器实施验证：`NEXUSPILOT_TEST_FILE_RUNTIME=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -q` 最终运行 424 项通过、6 项跳过，耗时 49.58 秒。包含实际 Unix Socket → Docker → DOCX 提取 → API 块转换测试，以及四家 Provider 的受信 Artifact/Context 接口回归（Provider 和对象存储使用测试替身）。6 项跳过仍为上述原有基础设施/PDF 显式测试，本轮未重跑其真实环境。`make file-runtime-check` 的六项 Linux ARM64 容器检查通过，包括真实 DOCX/XLSX/PPTX 脚本；API 和执行脚本 Ruff、`git diff --check` 通过。未调用真实 Provider、未修改数据库或实际 `.env`；x86 构建失败与云端待验收项见阶段7运行说明。
 
 | 顺序 | 阶段2具体任务 | 测试与完成条件 |
 |---|---|---|

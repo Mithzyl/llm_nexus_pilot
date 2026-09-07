@@ -90,10 +90,16 @@ def test_missing_image_does_not_pull_or_start_a_container(launcher, monkeypatch)
 
 
 def test_build_context_excludes_application_and_user_files():
-    """The image build receives only its dedicated definition, pins and acceptance script."""
+    """The build receives only its definition, pins, parser and acceptance script."""
 
     patterns = (RUNTIME_DIRECTORY / ".dockerignore").read_text().splitlines()
-    assert patterns == ["*", "!Dockerfile", "!requirements.txt", "!check_runtime.py"]
+    assert patterns == [
+        "*",
+        "!Dockerfile",
+        "!requirements.txt",
+        "!check_runtime.py",
+        "!parse_office.py",
+    ]
     dockerfile = (RUNTIME_DIRECTORY / "Dockerfile").read_text()
     assert "USER 65532:65532" in dockerfile
     assert "COPY apps" not in dockerfile
@@ -119,7 +125,8 @@ def test_acceptance_requires_every_check_process_and_cleanup_to_succeed(
     report = {
         "status": "passed",
         "checks": {
-            name: {"status": "passed"} for name in ("isolation", "docx", "xlsx", "pptx", "pdf")
+            name: {"status": "passed"}
+            for name in ("isolation", "docx", "xlsx", "pptx", "pdf", "office_parser")
         },
     }
     if scenario == "missing_check":

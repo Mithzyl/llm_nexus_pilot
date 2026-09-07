@@ -22,8 +22,8 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - OpenAI、DeepSeek、Anthropic 和 Gemini 的独立 Provider codec；
 - 可配置的通用 OpenAI Chat Completions 兼容 Provider；
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
-- 预装文件依赖环境：`deployments/file-runtime` 提供 Office 库与 Poppler 的独立 Docker 镜像，已通过合成文档和容器限制检查；尚未作为产品解析入口。构建与验收见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
-- 文件输入：受信当前 Run Artifact 已可通过 `parsed_artifacts` 统一提取 UTF-8 文本、CSV/TSV、JSON 及有隔离环境的 PDF 正文，向各模型提供相同文字/表格和来源范围；新建原生直传 Context 已拒绝，历史证据仍可读。正式用户上传、Office/OCR、持久解析缓存和 Agent 文件工具循环尚未实现；使用与隔离验证见[阶段2文件输入说明](docs/implementation/phase-2-llm-core-capabilities.md)；
+- 文件执行环境：`deployments/file-runtime` 提供 Office/Poppler Linux 镜像，以及本机 Unix Socket 执行器。API 不直接访问 Docker；DOCX/XLSX/PPTX 在独立无网络容器中提取正文、表格及位置。构建、配置与云端验收要求见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
+- 文件输入：受信当前 Run Artifact 可通过 `parsed_artifacts` 提取 UTF-8 文本、CSV/TSV、JSON、PDF 正文及配置执行器后的 Office 内容，向各模型提供相同文字/表格和来源范围；旧原生 Context 保留查询，不用于新生成。正式用户上传、OCR、持久解析缓存和 Agent 文件工具循环尚未实现；详见[阶段2文件输入说明](docs/implementation/phase-2-llm-core-capabilities.md)；
 - `model_only_v1` Agent 工作流支持 Controller 规划、工作 Agent、Handoff、确定性验证、独立审核和最终汇总，并可返回或查询每个完整节点结果；
 - `POST /api/v1/runs/{run_id}/agent-workflows` 支持同步 JSON 和实时 SSE；Workflow、完整 Result、Node 及持久化事件回放提供独立查询接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；

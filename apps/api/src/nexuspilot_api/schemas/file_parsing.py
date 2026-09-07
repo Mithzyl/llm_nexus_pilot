@@ -47,11 +47,25 @@ class ParsedFileBlock(BaseModel):
     block_id: str
     kind: Literal["text", "table_row"] = "text"
     text: str
-    line_start: int = Field(ge=1)
-    line_end: int = Field(ge=1)
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
     page_number: int | None = Field(default=None, ge=1)
     row_number: int | None = Field(default=None, ge=1)
     cells: list[str] | None = None
+    paragraph_number: int | None = Field(default=None, ge=1)
+    heading_level: int | None = Field(default=None, ge=1, le=9)
+    table_number: int | None = Field(default=None, ge=1)
+    sheet_name: str | None = None
+    cell_range: str | None = None
+    cell_formulas: list[str | None] | None = None
+    cell_types: list[str] | None = None
+    cell_number_formats: list[str] | None = None
+    missing_formula_values: list[str] | None = None
+    merged_ranges: list[str] | None = None
+    hidden: bool | None = None
+    slide_number: int | None = Field(default=None, ge=1)
+    shape_number: int | None = Field(default=None, ge=1)
+    is_notes: bool | None = None
 
 
 class ParsedFileDocument(BaseModel):

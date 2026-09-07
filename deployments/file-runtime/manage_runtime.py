@@ -56,12 +56,15 @@ def container_create_arguments(name: str, image_id: str) -> list[str]:
     ]
 
 
-def build_runtime() -> int:
+def build_runtime(image_tag: str = IMAGE_TAG, platform: str | None = None) -> int:
     """Explicitly download and build only the dedicated runtime directory, without user data."""
 
+    arguments = ["docker", "build", "--tag", image_tag]
+    if platform:
+        arguments.extend(["--platform", platform])
     try:
         return subprocess.run(
-            ["docker", "build", "--tag", IMAGE_TAG, str(RUNTIME_DIRECTORY)],
+            [*arguments, str(RUNTIME_DIRECTORY)],
             check=False,
         ).returncode
     except (OSError, KeyboardInterrupt):
@@ -69,12 +72,12 @@ def build_runtime() -> int:
         return 1
 
 
-def check_runtime() -> int:
+def check_runtime(image_tag: str = IMAGE_TAG) -> int:
     """Verify an already-built image and clean up its container on success, failure or timeout."""
 
     try:
         image_id = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", IMAGE_TAG],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag],
             check=True,
             capture_output=True,
             text=True,
@@ -111,9 +114,9 @@ def check_runtime() -> int:
         # agree. No success based merely on container creation or dependency imports.
         report = json.loads(checked.stdout)
         report["image_id"] = image_id
-        report["image_tag"] = IMAGE_TAG
+        report["image_tag"] = image_tag
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        expected = {"isolation", "docx", "xlsx", "pptx", "pdf"}
+        expected = {"isolation", "docx", "xlsx", "pptx", "pdf", "office_parser"}
         checks = report.get("checks", {})
         if (
             checked.returncode == 0
@@ -141,14 +144,10 @@ def check_runtime() -> int:
                 timeout=15,
             )
             if cleanup.returncode:
-                print(
-                    f"Container cleanup failed; inspect only {name}.", file=sys.stderr
-                )
+                print(f"Container cleanup failed; inspect only {name}.", file=sys.stderr)
                 exit_code = 1
         except (OSError, subprocess.SubprocessError):
-            print(
-                f"Container cleanup unavailable; inspect only {name}.", file=sys.stderr
-            )
+            print(f"Container cleanup unavailable; inspect only {name}.", file=sys.stderr)
             exit_code = 1
     return exit_code
 
@@ -158,8 +157,12 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("build", "check"))
-    action = parser.parse_args().action
-    return build_runtime() if action == "build" else check_runtime()
+    parser.add_argument("--image", default=IMAGE_TAG)
+    parser.add_argument("--platform", choices=("linux/amd64", "linux/arm64"))
+    arguments = parser.parse_args()
+    if arguments.action == "build":
+        return build_runtime(arguments.image, arguments.platform)
+    return check_runtime(arguments.image)
 
 
 if __name__ == "__main__":
