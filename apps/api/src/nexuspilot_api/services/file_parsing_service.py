@@ -8,6 +8,7 @@ import csv
 import hashlib
 import io
 import json
+from collections import Counter
 
 from pydantic import ValidationError
 
@@ -23,6 +24,11 @@ from nexuspilot_api.schemas.file_parsing import (
     FileParseRequest,
     ParsedFileBlock,
     ParsedFileDocument,
+    ParsedFileSelection,
+    ParsedSlideStructure,
+    ParsedWorksheetStructure,
+    WorksheetSelection,
+    cell_range_bounds,
 )
 
 MAX_PARSE_BYTES = 1024 * 1024
@@ -115,13 +121,42 @@ def _validate_json_text(content: str) -> None:
         raise FileParsingError("Invalid or ambiguous JSON document") from exc
 
 
+def _parse_office_structure(extracted: dict, blocks: list[ParsedFileBlock], media_type: str):
+    """Validate optional executor inventory against format, source positions and block counts."""
+
+    raw = extracted.get("structure")
+    if raw is None:
+        return None  # Legacy images expose only locations for which they extracted content.
+    if media_type == OFFICE_MEDIA_TYPES[1]:
+        structure = ParsedWorksheetStructure.model_validate(raw)
+        locations = [entry.name for entry in structure.entries]
+        counts = Counter(block.sheet_name for block in blocks)
+    elif media_type == OFFICE_MEDIA_TYPES[2]:
+        structure = ParsedSlideStructure.model_validate(raw)
+        locations = [entry.number for entry in structure.entries]
+        if locations != list(range(1, len(locations) + 1)):
+            raise FileParsingError("Office slide structure is not contiguous")
+        counts = Counter(block.slide_number for block in blocks)
+    else:
+        raise FileParsingError("Office structure does not match document format")
+    if (
+        len(locations) != len(set(locations))
+        or not set(counts).issubset(locations)
+        or any(counts[location] != entry.block_count
+               for location, entry in zip(locations, structure.entries, strict=True))
+    ):
+        raise FileParsingError("Office structure does not match extracted blocks")
+    return structure
+
+
 def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileDocument:
     """Extract verified bytes into bounded blocks; no model, storage or arbitrary network calls.
 
     PDF launches the dedicated OS-isolated Poppler adapter; Office calls the
     configured executor, which runs a disposable offline Linux container.
     Unsupported, empty, corrupt or over-limit inputs raise FileParsingError;
-    PDF pages with no embedded text produce explicit partial coverage.
+    PDF pages with no embedded text produce explicit partial coverage. Optional
+    Office inventories retain locations without content and are checked against blocks.
     """
 
     if not 0 < len(content) <= MAX_PARSE_BYTES:
@@ -136,6 +171,7 @@ def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileD
     uncovered_pages: list[int] = []
     warnings: list[str] = []
     total_pages = None
+    structure = None
     parser_version = parser.version
     if media_type in OFFICE_MEDIA_TYPES:
         if not content.startswith(b"PK\x03\x04"):
@@ -157,6 +193,7 @@ def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileD
             parser_version = extracted["parser_version"]
             if len({block.block_id for block in blocks}) != len(blocks):
                 raise FileParsingError("Office executor returned duplicate block identities")
+            structure = _parse_office_structure(extracted, blocks, media_type)
         except OfficeExtractionError as exc:
             raise FileParsingError(str(exc)) from exc
         except (ValidationError, KeyError, TypeError) as exc:
@@ -244,6 +281,7 @@ def parse_file_content(request: FileParseRequest, content: bytes) -> ParsedFileD
         total_pages=total_pages,
         uncovered_pages=uncovered_pages,
         warnings=warnings,
+        structure=structure,
     )
 
 
@@ -305,6 +343,133 @@ def read_file_table(document: ParsedFileDocument, *, offset=0, limit=100) -> Fil
     return _read_blocks(rows, offset, limit)
 
 
+def _column_label(column: int) -> str:
+    """Convert a validated one-based column number to its source A1 coordinate label."""
+
+    label = ""
+    while column:
+        column, remainder = divmod(column - 1, 26)
+        label = chr(ord("A") + remainder) + label
+    return label
+
+
+def _select_worksheet_cells(
+    blocks: list[ParsedFileBlock], selection: WorksheetSelection
+) -> list[ParsedFileBlock]:
+    """Slice worksheet rows and aligned metadata without recalculation or source mutation."""
+
+    rows = [b for b in blocks if b.kind == "table_row" and b.sheet_name == selection.sheet_name]
+    if selection.cell_range is None:
+        return rows
+    min_column, min_row, max_column, max_row = cell_range_bounds(selection.cell_range)
+    selected = []
+    for row in rows:
+        if row.row_number is None or not min_row <= row.row_number <= max_row:
+            continue
+        try:
+            source_start, source_row, source_end, source_last_row = cell_range_bounds(
+                row.cell_range or ""
+            )
+            if (
+                source_row != row.row_number
+                or source_last_row != source_row
+                or row.cells is None
+                or len(row.cells) != source_end - source_start + 1
+            ):
+                raise ValueError("Inconsistent row positions")
+            first, last = max(source_start, min_column), min(source_end, max_column)
+            if first > last:
+                continue
+            start, end = first - source_start, last - source_start + 1
+            cells = row.cells[start:end]
+            updates = {
+                "cells": cells,
+                "text": json.dumps(cells, ensure_ascii=False),
+                "cell_range": (
+                    f"{_column_label(first)}{source_row}:{_column_label(last)}{source_row}"
+                ),
+            }
+            for name in ("cell_formulas", "cell_types", "cell_number_formats"):
+                values = getattr(row, name)
+                if values is not None:
+                    if len(values) != len(row.cells):
+                        raise ValueError("Inconsistent cell metadata")
+                    updates[name] = values[start:end]
+            if row.missing_formula_values is not None:
+                missing = []
+                for coordinate in row.missing_formula_values:
+                    column, number, last_column, last_number = cell_range_bounds(coordinate)
+                    if number != source_row or last_number != number or last_column != column:
+                        raise ValueError("Inconsistent formula position")
+                    if first <= column <= last:
+                        missing.append(coordinate)
+                updates["missing_formula_values"] = missing
+            if row.merged_ranges is not None:
+                merged = []
+                for area in row.merged_ranges:
+                    left, top, right, bottom = cell_range_bounds(area)
+                    if left <= last and right >= first and top <= source_row <= bottom:
+                        # A merge is a source fact, not a new merge clipped to our selected cells.
+                        merged.append(area)
+                updates["merged_ranges"] = merged
+        except ValueError as exc:
+            raise FileParsingError("Worksheet row metadata is invalid") from exc
+        selected.append(row.model_copy(update=updates))
+    return selected
+
+
+def select_file_blocks(
+    document: ParsedFileDocument, selection: ParsedFileSelection
+) -> list[ParsedFileBlock]:
+    """Match native source positions before pagination; wrong formats and empty ranges fail.
+
+    This selects already-extracted evidence, not the parser's execution range.
+    The caller retains full-document warnings and coverage in the Context snapshot.
+    A complete slide inventory supplies bounds even when the last slides have no text.
+    """
+
+    expected_types = {
+        "pdf_pages": "application/pdf",
+        "word_table": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "worksheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "slides": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    if document.media_type != expected_types[selection.kind]:
+        raise FileParsingError("Selected range does not match the document format")
+    if selection.kind == "pdf_pages":
+        if document.total_pages is None or selection.page_end > document.total_pages:
+            raise FileParsingError("Selected PDF page range exceeds known document pages")
+        selected = [
+            b
+            for b in document.blocks
+            if b.page_number is not None
+            and selection.page_start <= b.page_number <= selection.page_end
+        ]
+    elif selection.kind == "word_table":
+        selected = [
+            b
+            for b in document.blocks
+            if b.kind == "table_row" and b.table_number == selection.table_number
+        ]
+    elif selection.kind == "worksheet":
+        selected = _select_worksheet_cells(document.blocks, selection)
+    else:
+        if (
+            isinstance(document.structure, ParsedSlideStructure)
+            and selection.slide_end > len(document.structure.entries)
+        ):
+            raise FileParsingError("Selected slide range exceeds known document slides")
+        selected = [
+            b
+            for b in document.blocks
+            if b.slide_number is not None
+            and selection.slide_start <= b.slide_number <= selection.slide_end
+        ]
+    if not selected:
+        raise FileParsingError("Selected range has no readable extracted content")
+    return selected
+
+
 def search_file_content(document: ParsedFileDocument, query: str, *, offset=0, limit=100):
     """Search literal text in one fixed document; no regex, SQL, ranking or external retrieval."""
 
@@ -314,7 +479,11 @@ def search_file_content(document: ParsedFileDocument, query: str, *, offset=0, l
 
 
 def get_file_outline(document: ParsedFileDocument) -> dict:
-    """Return structural facts and coverage without inventing headings or semantic summaries."""
+    """Return all inventoried sheets/slides, or explicitly incomplete legacy block locations.
+
+    Complete structure means a complete worksheet/slide inventory, not full text,
+    images, charts, Word chapters or a PDF table of contents.
+    """
 
     return {
         "filename": document.filename,
@@ -329,6 +498,16 @@ def get_file_outline(document: ParsedFileDocument) -> dict:
             for block in document.blocks
             if block.heading_level is not None
         ],
-        "sheets": list(dict.fromkeys(b.sheet_name for b in document.blocks if b.sheet_name)),
-        "slides": list(dict.fromkeys(b.slide_number for b in document.blocks if b.slide_number)),
+        "structure_complete": document.structure is not None,
+        "structure": document.structure.model_dump() if document.structure else None,
+        "sheets": (
+            [entry.name for entry in document.structure.entries]
+            if isinstance(document.structure, ParsedWorksheetStructure)
+            else list(dict.fromkeys(b.sheet_name for b in document.blocks if b.sheet_name))
+        ),
+        "slides": (
+            [entry.number for entry in document.structure.entries]
+            if isinstance(document.structure, ParsedSlideStructure)
+            else list(dict.fromkeys(b.slide_number for b in document.blocks if b.slide_number))
+        ),
     }

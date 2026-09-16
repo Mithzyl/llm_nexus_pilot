@@ -1,6 +1,9 @@
-import type { ComponentPropsWithoutRef, ReactNode } from "react";
+import { Children, isValidElement, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
+import { sourceCodeFromRenderedText } from "./code-copy";
 
 type MarkdownContentProps = {
   content: string;
@@ -43,6 +46,23 @@ function MarkdownTable({ children }: { children?: ReactNode }) {
   );
 }
 
+/** Read the parser's code child, never DOM text that can contain toolbar labels. */
+function MarkdownPre({ children }: ComponentPropsWithoutRef<"pre">) {
+  const codeElement = Children.toArray(children).find((child) =>
+    isValidElement<ComponentPropsWithoutRef<"code">>(child) && child.type === "code",
+  );
+  if (!isValidElement<ComponentPropsWithoutRef<"code">>(codeElement)
+      || typeof codeElement.props.children !== "string") {
+    return <pre>{children}</pre>;
+  }
+  const language = /(?:^|\s)language-([^\s]+)/.exec(codeElement.props.className ?? "")?.[1] ?? "代码";
+  return (
+    <MarkdownCodeBlock code={sourceCodeFromRenderedText(codeElement.props.children)} language={language}>
+      {children}
+    </MarkdownCodeBlock>
+  );
+}
+
 /** Render trusted Markdown syntax while keeping model text outside the raw-HTML execution path. */
 export function MarkdownContent({ content }: MarkdownContentProps) {
   return (
@@ -55,6 +75,7 @@ export function MarkdownContent({ content }: MarkdownContentProps) {
           a: MarkdownLink,
           img: MarkdownImage,
           table: MarkdownTable,
+          pre: MarkdownPre,
         }}
       >
         {content}

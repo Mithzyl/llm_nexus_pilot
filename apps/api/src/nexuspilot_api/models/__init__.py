@@ -49,6 +49,7 @@ from nexuspilot_api.models.agent_workflow import (
 )
 from nexuspilot_api.models.base import Base, TimestampMixin, new_id
 from nexuspilot_api.models.context import LlmContextBuild, LlmContextSource
+from nexuspilot_api.models.conversation_turn import LlmConversationTurn
 from nexuspilot_api.models.enums import (
     AgentRunStatus,
     AgentTurnStatus,
@@ -154,6 +155,7 @@ __all__ = [
     "LlmAgentWorkflowNodeExecution",
     "LlmContextBuild",
     "LlmContextSource",
+    "LlmConversationTurn",
     "LlmEvaluationRule",
     "LlmEvaluationRuleSet",
     "LlmKnowledgeChunk",

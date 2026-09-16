@@ -235,7 +235,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .assistant-heading i { width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
 .assistant-heading i.failed-dot { background: var(--accent-contrast); box-shadow: 0 0 0 1px var(--text); }
 .assistant-content { padding-left: 41px; }
-.markdown-content { margin: 0 0 18px; color: color-mix(in srgb, var(--text) 86%, transparent); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.markdown-content { min-width: 0; max-width: 100%; margin: 0 0 18px; color: color-mix(in srgb, var(--text) 86%, transparent); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
 .markdown-content > :first-child { margin-top: 0; }
 .markdown-content > :last-child { margin-bottom: 0; }
 .markdown-content p { margin: 0 0 12px; }
@@ -258,7 +258,17 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .markdown-content a:hover { text-decoration-color: var(--text); }
 .markdown-content code { padding: 2px 5px; border-radius: 5px; background: var(--soft); font: 500 .9em/1.5 var(--font-geist-mono); }
 .markdown-content pre { margin: 15px 0 18px; padding: 14px 16px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); tab-size: 2; }
-.markdown-content pre code { display: block; min-width: max-content; padding: 0; border-radius: 0; background: transparent; color: var(--text); font-size: 12px; white-space: pre; }
+.markdown-content pre code { display: block; min-width: max-content; padding: 0; border-radius: 0; background: transparent; color: var(--text); font-size: 13px; white-space: pre; }
+.markdown-code-block { min-width: 0; max-width: 100%; margin: 15px 0 18px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+.markdown-code-toolbar { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 1.4; }
+.markdown-code-language { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.markdown-code-feedback { flex: 0 1 auto; color: var(--muted); overflow-wrap: anywhere; }
+.markdown-code-feedback:empty { display: none; }
+.markdown-code-copy { flex: 0 0 auto; min-height: 32px; padding: 5px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; line-height: 1.4; cursor: pointer; }
+.markdown-code-copy:hover:not(:disabled) { background: var(--panel); }
+.markdown-code-copy:disabled { cursor: wait; opacity: .65; }
+.markdown-code-copy:focus-visible, .markdown-code-block pre:focus-visible { outline: 2px solid var(--text); outline-offset: -3px; }
+.markdown-content .markdown-code-block pre { max-width: 100%; margin: 0; overflow-x: auto; border: 0; border-radius: 0; overscroll-behavior-x: contain; }
 .markdown-content hr { margin: 22px 0; border: 0; border-top: 1px solid var(--line); }
 .markdown-content del { color: var(--muted); }
 .markdown-content input[type="checkbox"] { margin: 0 7px 0 -20px; accent-color: var(--text); }

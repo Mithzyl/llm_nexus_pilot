@@ -90,7 +90,7 @@ def append_block(blocks: list[dict], text: str, **positions) -> None:
     blocks.append(block)
 
 
-def parse_word(content: bytes) -> list[dict]:
+def parse_word(content: bytes) -> tuple[list[dict], None]:
     """Read body paragraphs and table rows in document order; other stories remain omitted."""
 
     from docx import Document
@@ -126,7 +126,7 @@ def parse_word(content: bytes) -> list[dict]:
                 paragraph_number=paragraph_number,
                 heading_level=level,
             )
-    return blocks
+    return blocks, None
 
 
 def cell_text(value) -> str:
@@ -141,17 +141,19 @@ def cell_text(value) -> str:
     return str(value)
 
 
-def parse_excel(content: bytes) -> list[dict]:
-    """Read bounded sheets, preserving coordinates, formula text, types and stored values."""
+def parse_excel(content: bytes) -> tuple[list[dict], dict]:
+    """Inventory every worksheet and extract cells without calculating formulas or charts."""
 
     from openpyxl import load_workbook
 
     original = load_workbook(io.BytesIO(content), data_only=False, keep_links=False)
     cached = load_workbook(io.BytesIO(content), data_only=True, keep_links=False)
     blocks = []
+    entries = []
     scanned_cells = 0
     try:
         for sheet in original:
+            first_block = len(blocks)
             scanned_cells += sheet.max_row * sheet.max_column
             if sheet.max_row > 10000 or sheet.max_column > 1024 or scanned_cells > 200000:
                 raise ValueError("Workbook dimensions exceed the supported reading range")
@@ -190,20 +192,26 @@ def parse_excel(content: bytes) -> list[dict]:
                     hidden=sheet.sheet_state != "visible"
                     or sheet.row_dimensions[row[0].row].hidden,
                 )
+            entries.append({
+                "name": sheet.title, "visibility": sheet.sheet_state,
+                "block_count": len(blocks) - first_block,
+            })
     finally:
         original.close()
         cached.close()
-    return blocks
+    return blocks, {"kind": "worksheets", "entries": entries}
 
 
-def parse_powerpoint(content: bytes) -> list[dict]:
-    """Read slide text, tables and notes; shape order is retained, not claimed as visual order."""
+def parse_powerpoint(content: bytes) -> tuple[list[dict], dict]:
+    """Inventory all slides and extract text/tables/notes without claiming visual coverage."""
 
     from pptx import Presentation
 
     presentation = Presentation(io.BytesIO(content))
     blocks = []
+    entries = []
     for slide_number, slide in enumerate(presentation.slides, 1):
+        first_block = len(blocks)
         for shape_number, shape in enumerate(slide.shapes, 1):
             position = {"slide_number": slide_number, "shape_number": shape_number}
             if shape.has_text_frame:
@@ -223,11 +231,12 @@ def parse_powerpoint(content: bytes) -> list[dict]:
             frame = slide.notes_slide.notes_text_frame
             if frame is not None:
                 append_block(blocks, frame.text, slide_number=slide_number, is_notes=True)
-    return blocks
+        entries.append({"number": slide_number, "block_count": len(blocks) - first_block})
+    return blocks, {"kind": "slides", "entries": entries}
 
 
 def parse_request(request: dict) -> dict:
-    """Validate exact request fields and return extracted evidence with explicit omissions."""
+    """Validate request fields and return text plus optional complete sheet/slide inventory."""
 
     if not isinstance(request, dict) or set(request) != {
         "protocol",
@@ -245,7 +254,7 @@ def parse_request(request: dict) -> dict:
         "xl/workbook.xml": parse_excel,
         "ppt/presentation.xml": parse_powerpoint,
     }[OFFICE_TYPES[media_type]]
-    blocks = parser(content)
+    blocks, structure = parser(content)
     if not blocks:
         raise ValueError("Office document contains no supported text or table content")
     warnings = {
@@ -270,10 +279,11 @@ def parse_request(request: dict) -> dict:
         "protocol": "office_parse.v1",
         "source_hash": hashlib.sha256(content).hexdigest(),
         "media_type": media_type,
-        "parser_version": f"office-v1/{versions}",
+        "parser_version": f"office-v2/{versions}",
         "blocks": blocks,
         "status": "partial",
         "warnings": [warnings[parser]],
+        **({"structure": structure} if structure is not None else {}),
     }
 
 

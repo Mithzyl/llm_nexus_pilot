@@ -21,6 +21,7 @@ from nexuspilot_api.services.file_parsing_service import (
     FileParsingError,
     parse_file_content,
     read_file_content,
+    select_file_blocks,
 )
 
 PARSED_ARTIFACT_SOURCE = "parsed_artifact"
@@ -106,7 +107,12 @@ async def parse_run_artifact(
     run_id: str,
     reference: ParsedArtifactReference,
 ) -> tuple[dict, str]:
-    """Parse a verified source and select explicit blocks; no bytes or provider routing leak out."""
+    """Parse a verified source and pin selected positions before block pagination.
+
+    Sources without an inventory retain their previous hash and snapshot shape.
+    Native selections receive a range-bound source version while retaining the
+    complete document's hash, optional inventory, warnings and uncovered-page facts.
+    """
 
     parse_request, content = await _read_parse_source(
         db_session,
@@ -121,20 +127,29 @@ async def parse_run_artifact(
             content,
             limiter=FILE_PARSE_LIMITER,
         )
-        document_hash = hashlib.sha256(document.model_dump_json().encode()).hexdigest()
+        # Preserve old text/PDF/legacy-Office hashes when no structure was supplied.
+        absent_fields = {"structure"} if document.structure is None else set()
+        document_hash = hashlib.sha256(
+            document.model_dump_json(exclude=absent_fields).encode()
+        ).hexdigest()
+        selected_document = document
+        if reference.selection is not None:
+            selected_document = document.model_copy(
+                update={"blocks": select_file_blocks(document, reference.selection)}
+            )
         if reference.block_limit is None:
             if reference.block_offset:
                 raise FileParsingError("A block offset requires an explicit block limit")
-            blocks = document.blocks
+            blocks = selected_document.blocks
             reading = {
                 "offset": 0,
-                "total_blocks": len(blocks),
+                "total_blocks": len(selected_document.blocks),
                 "next_offset": None,
                 "has_more": False,
             }
         else:
             page = read_file_content(
-                document,
+                selected_document,
                 offset=reference.block_offset,
                 limit=reference.block_limit,
             )
@@ -143,19 +158,35 @@ async def parse_run_artifact(
                 raise FileParsingError("Requested Artifact range has no readable content")
             reading = page.model_dump(exclude={"blocks", "header_inferred"})
             reading["offset"] = reference.block_offset
-        snapshot = document.model_dump(exclude={"blocks"})
+        snapshot = document.model_dump(exclude={"blocks"} | absent_fields)
         snapshot.update(
             document_hash=document_hash,
             blocks=[b.model_dump() for b in blocks],
             reading=reading,
         )
+        if reference.selection is not None:
+            snapshot["selection"] = reference.selection.model_dump(mode="json")
+            reading["document_total_blocks"] = len(document.blocks)
+            snapshot["selection_hash"] = _hash_selected_snapshot(snapshot)
     except (FileParsingError, ValueError) as exc:
         raise ResourceConflictError(str(exc)) from exc
     if len(json.dumps(snapshot, ensure_ascii=False).encode()) > MAX_PARSED_CONTEXT_BYTES:
         raise ResourceConflictError(
             "Parsed content exceeds Context storage; select a smaller block range"
         )
-    return snapshot, document_hash
+    return snapshot, snapshot.get("selection_hash", document_hash)
+
+
+def _hash_selected_snapshot(snapshot: dict) -> str:
+    """Bind a native selection, pagination and exact returned blocks to the full parse hash."""
+
+    serialized = json.dumps(
+        {key: value for key, value in snapshot.items() if key != "selection_hash"},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 async def validate_parsed_context_sources(
@@ -187,7 +218,12 @@ async def validate_parsed_context_sources(
                 or snapshot["source_hash"] != request.source_hash
                 or snapshot["filename"] != request.filename
                 or snapshot["media_type"] != request.media_type.split(";", 1)[0].strip().lower()
-                or snapshot["document_hash"] != message.source_version
+                or snapshot.get("selection_hash", snapshot["document_hash"])
+                != message.source_version
+                or (
+                    "selection" in snapshot
+                    and snapshot.get("selection_hash") != _hash_selected_snapshot(snapshot)
+                )
             ):
                 raise ResourceConflictError("Parsed Context source changed after snapshot")
         except (ValueError, KeyError, IndexError, TypeError) as exc:

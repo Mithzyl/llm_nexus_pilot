@@ -1,3 +1,5 @@
+import type { AgentWorkflowStatus, MessageSummary, Run, RunDetail } from "./types";
+
 export type ConversationSyncEvent = {
   type: "submission-started" | "submission-finished";
   sessionId: string;
@@ -17,20 +19,40 @@ export type SubmissionLockResult<T> =
   | { acquired: false };
 
 /**
- * Report whether the latest persisted Run or Agent Workflow still owns the conversation.
- * A restored browser must not accept another submission while these server facts are active.
+ * Keep submissions blocked while persisted execution facts are active or insufficient.
+ * A pending generic Run alone is not evidence that a saved quick response is still executing.
  */
-export function isConversationExecutionActive(
-  runStatus: RunStatus | null,
-  workflowStatus: AgentWorkflowStatus | null,
-): boolean {
-  return (
-    runStatus === "pending" ||
-    runStatus === "running" ||
-    runStatus === "cancel_requested" ||
+export function isConversationExecutionActive({ run, workflowStatus, messages, workflowAbsentForRunId }: {
+  run: Run | RunDetail | null;
+  workflowStatus: AgentWorkflowStatus | null;
+  messages: readonly MessageSummary[];
+  workflowAbsentForRunId: string | null;
+}): boolean {
+  if (
     workflowStatus === "pending" ||
     workflowStatus === "running" ||
     workflowStatus === "waiting_for_input"
+  ) return true;
+  if (!run || !["pending", "running", "cancel_requested"].includes(run.status)) return false;
+
+  // Only the single-call quick-response case can finish while its generic Run stays pending.
+  // Workflow discovery errors, partial lists and generic Task/multi-call Runs remain blocked.
+  if (
+    run.status !== "pending" || workflowStatus !== null ||
+    workflowAbsentForRunId !== run.run_id || !run.session_id ||
+    !("attempts" in run) || run.attempts_has_more || run.tasks_has_more ||
+    run.tasks.length !== 0 || run.attempts.length !== 1
+  ) return true;
+  const attempt = run.attempts[0];
+  if (attempt.status !== "completed" || attempt.task_id !== null || attempt.run_id !== run.run_id) {
+    return true;
+  }
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
+  if (latestUser?.run_id !== run.run_id || latestUser.session_id !== run.session_id) return true;
+  return !messages.some((message) =>
+    message.role === "assistant" && message.run_id === run.run_id &&
+    message.session_id === run.session_id && message.sequence > latestUser.sequence &&
+    message.source_model_attempt_id === attempt.attempt_id,
   );
 }
 
@@ -69,4 +91,3 @@ export function isConversationSyncEvent(value: unknown): value is ConversationSy
     candidate.senderId.length > 0
   );
 }
-import type { AgentWorkflowStatus, RunStatus } from "./types";

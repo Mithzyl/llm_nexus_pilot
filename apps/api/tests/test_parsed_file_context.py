@@ -105,11 +105,12 @@ async def test_selected_range_records_unread_content_without_claiming_full_cover
 async def test_office_result_positions_reach_all_providers_and_context_history(
     client, monkeypatch, provider_name
 ):
-    """Keep Office results in the existing Run authorization and provider-neutral Context path."""
+    """Keep legacy Office snapshots compatible across providers without inventing structure."""
 
     import hashlib
 
     from nexuspilot_api.infrastructure.office_text_extraction import OFFICE_MEDIA_TYPES
+    from nexuspilot_api.schemas.file_parsing import ParsedFileBlock
 
     payload, provider, _ = await prepare_parsed_fixture(client, provider_name)
     content = b"PK\x03\x04protocol-fixture"
@@ -148,6 +149,20 @@ async def test_office_result_positions_reach_all_providers_and_context_history(
     assert snapshot["blocks"][0]["paragraph_number"] == 1
     assert snapshot["blocks"][0]["line_start"] is None
     assert snapshot["warnings"] == ["Images not extracted"]
+    assert "structure" not in snapshot
+    # Historical document serialization orders blocks before page and warning metadata.
+    legacy_fields = (
+        "schema_version", "source_id", "source_hash", "filename", "media_type",
+        "parser_name", "parser_version", "extraction_method", "status", "blocks",
+        "total_pages", "uncovered_pages", "warnings",
+    )
+    document = {key: snapshot[key] for key in legacy_fields}
+    # Context JSON sorts keys; restore the unchanged block schema's field order too.
+    document["blocks"] = [ParsedFileBlock.model_validate(block).model_dump()
+                          for block in snapshot["blocks"]]
+    assert snapshot["document_hash"] == hashlib.sha256(
+        json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
     assert not any(m.attachments for m in provider.requests[0].messages)
 
 

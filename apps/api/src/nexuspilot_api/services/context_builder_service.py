@@ -951,6 +951,10 @@ def _hash_runtime_request(payload: ContextBuildCreate) -> str:
         normalized_request["source_references"].pop("native_artifact_ids")
     if not normalized_request["source_references"]["parsed_artifacts"]:
         normalized_request["source_references"].pop("parsed_artifacts")
+    else:
+        for reference in normalized_request["source_references"]["parsed_artifacts"]:
+            if reference.get("selection") is None:
+                reference.pop("selection", None)
     serialized_request = json.dumps(
         normalized_request,
         ensure_ascii=False,

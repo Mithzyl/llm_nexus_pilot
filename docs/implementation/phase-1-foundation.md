@@ -66,6 +66,7 @@ GET   /api/v1/sessions?user_id=&status=
 PATCH /api/v1/sessions/{session_id}
 
 POST  /api/v1/sessions/{session_id}/messages
+POST  /api/v1/sessions/{session_id}/turns
 GET   /api/v1/sessions/{session_id}/messages
 GET   /api/v1/sessions/{session_id}/messages/full
 GET   /api/v1/sessions/{session_id}/messages/latest
@@ -90,6 +91,14 @@ created_at
 ```
 
 默认列表接口只返回摘要和 URI；前端恢复使用有界的 `messages/latest` 完整正文窗口，继续加载更早消息时使用其游标，避免单条消息的 N+1 查询。完整大内容仍写入 MinIO；`latest-run` 返回最新 RunDetail 的有界 Attempt/Task/Artifact 快照。
+
+#### 轮次保存与重试（2026 年 9 月 12 日兼容增强）
+
+`POST /sessions/{session_id}/turns` 将 Run 与当前 User Message 一起提交，可选 `idempotency_key` 为 8～128 字符。首次创建返回 201；同会话同 key、相同 `user_id/content_text/run_type/budget_limit` 返回原 Run/Message 和 200；输入不同返回 409。重放仍检查会话归属和用户启用状态。旧调用方省略 key 时保持每次新建，不猜测两段相同文字是重复提交。
+
+本次新增 `llm_conversation_turns`：联合主键 `session_id/key_hash`、`request_hash`、唯一 `run_id`、唯一 `message_id`、`created_at`。key 先做 SHA-256，避免 MySQL 大小写排序规则改变身份；不保存重复的正文，不修改旧 Message/Run 字段或回填历史 key。MySQL 先锁定 Session 行，再查询记录及提交 Run/Message/序号/去重映射；异常整体回滚。迁移 `20260912_0021` 在启用新版 Web 前执行；回退删除该映射会失去旧 key 的重放能力，但不删除 Run/Message。
+
+前端每次 `createConversationTurn` 调用生成或接收一个 key，只在网络/响应解码失败或 5xx 时最多重试一次，并复用相同请求体。403/409/422 等确定性拒绝不重试。这里只重试轮次保存，不调用 Provider，不替代工作流自身幂等；刷新或再次点击后复用 key、创建 Session 的幂等、模型执行请求未知结果恢复仍未实现。部署 key 仍是该基础接口的受信服务边界；新表不代表 FastAPI 全资源最终用户授权已经完成。
 
 ### Run
 

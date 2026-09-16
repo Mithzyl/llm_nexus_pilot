@@ -1,6 +1,6 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 9 月 2 日
+**文档日期：** 2026 年 9 月 12 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
@@ -15,7 +15,7 @@
 
 本文统一使用以下口径：
 
-- **当前实现**：以 2026 年 8 月 13 日的 Schema、迁移、Service、Router 和自动化测试为依据，说明现在可调用、可持久化和已验证的行为。
+- **当前实现**：以当前 Schema、迁移、Service、Router 和自动化测试为依据；历史验证记录按各自日期保留，不代表本次重新执行过全部环境验证。
 - **目标态**：阶段3完整验收或后续 `tool_enabled_v1` 需要增加的行为；目标态字段和接口不得被描述为当前已可用。
 
 ## 目标
@@ -34,11 +34,11 @@
 - `llm_runs`、`llm_tasks`、`llm_attempts`、`llm_evaluations` 和 `llm_artifacts` 已保存主要业务事实。
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
-- 阶段10 RabbitMQ 已因独立后台执行需求恢复规划但尚未实施，阶段7 Tool Runtime 仍暂停。阶段3第一实施配置只能使用模型调用和确定性程序节点，不提供文件、Shell、Git、MCP 或外部工具能力。
-- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成，真实 Provider 端到端验收仍未完成，工具视图等待阶段7稳定合同。
+- 阶段10 RabbitMQ 已因独立后台执行需求恢复规划但尚未实施。阶段7现为进行中：已提供预装文件环境和 Office 专用解析执行器，通用工具注册、授权与模型工具循环尚未实现，高风险 Shell/Git 仍暂停。这不改变阶段3 `model_only_v1` 仅使用模型调用和确定性程序节点的范围；模型仍不能自行读取文件或调用 Shell、Git、MCP 及外部工具。
+- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成。历史记录包含单个 Provider 的真实流程验证，完整真实 Provider 浏览器矩阵仍后置；工具视图等待阶段7稳定合同。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
-## 当前实施结果（更新至 2026 年 8 月 29 日）
+## 当前实施结果（核对至 2026 年 9 月 12 日）
 
 | 能力 | 当前状态 | 已验证行为与边界 |
 |---|---|---|
@@ -69,6 +69,8 @@
 
 ## 后续附件驱动工作流（2026 年 9 月 5 日，未开始）
 
+2026 年 9 月 12 日实施顺序调整：先开发并验证阶段2、阶段3、阶段4的基础能力，含文件上传的专用 Agent 编排后置。本节保持“未开始”；附件自动选择执行模式、文件准备节点、文件分析角色、按需读取循环及对应 Handoff 扩展均不在本轮实施。已有程序解析可用不等于附件上传或模型文件工具已可用，也不据此自动改变当前请求的执行模式。
+
 本工作项采用[路线图的统一文件解析设计](../architecture/platform-roadmap.md#统一文件解析与按需读取设计2026-年-9-月-5-日)：程序先解析，Controller 获得清单/目录/遗漏，小文件直接进入 Context，大文件通过阶段7受控工具按需读取。阶段3负责五类读取工具的模型循环、逐模型工具能力预检、可选分析角色及 Handoff 引用/覆盖，不实现第二套解析器，也不让 `model_only_v1` 隐式获得工具权限。共享文件引用不等于每个角色已读全文；质量审核不吞掉候选回答。独立执行/恢复仍依赖阶段10。本次仅确认设计，未实现上述新增流程。
 
 统一合同见[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)。原 `model_only_v1` 完成状态保持不变；本节是新增工作项，不代表当前已经可以上传或访问本地文件。
@@ -84,7 +86,7 @@
 
 ### `model_only_v1` 执行配置
 
-阶段7暂停期间，阶段3先交付不依赖工具的完整工作流：
+阶段3当前交付不依赖模型工具的完整工作流；阶段7专用文件解析执行器的存在不改变以下执行配置：
 
 ```text
 用户请求
@@ -867,7 +869,7 @@ stream
 - 新建 Workflow 的 POST 返回 HTTP `201`，即使业务结果是 `failed` 或 `outcome_unknown`；完全相同的幂等回放返回 `200`，请求校验、资源不存在和冲突分别沿用 `422`、`404` 和 `409`。
 - `stream` 是传输选择，不参与请求 hash；相同幂等 key 可以在 JSON 与 SSE 表现之间回放同一个持久化 Workflow，不会再次调用模型。
 - 创建请求超时后不能无条件自动创建新请求；调用方应使用原 idempotency key 重试或通过 Run 发现接口查询原 Workflow。
-- 当前最终用户身份未完成，接口仍处于受信调用方边界；阶段5完成后必须从 principal 派生 Run owner。
+- 阶段5已实现可选浏览器登录和 Web BFF 的用户归属检查，但 FastAPI 业务 Router 仍使用部署级 `X-API-Key`，Run 查询尚未从 principal 校验 owner。当前工作流后端仍只供受信服务调用；全资源主体授权属于阶段5后续任务，不能把已有登录等同于这些接口已具备多用户授权。
 
 ### 事件枚举
 
@@ -936,7 +938,7 @@ trace_id
 | 并行 Agent 数 | 1～2 | 只并行无依赖的模型工作节点，每个调用使用独立数据库会话 |
 | 每 Agent 实际 Model Turn | 1 | 当前没有工具循环或 Agent 内重试；Controller 计划合同也只接受字面值 `1`，不会接受无法执行的多轮预算 |
 | 单工作流模型调用 | 默认/最大 16；最小 3 或 4 | 不审核时最小 3，其他审核策略最小 4；控制费用 |
-| Reviewer 返工轮次 | 0 | 非阻断的 `needs_revision` 由最终汇总一次性应用；明确失败、错误级发现、要求重试或重新规划时终止工作流，不启动新的 Worker 返工轮次；未来最多允许 1 次返工 |
+| Reviewer 返工轮次 | 0 | 所有有效审核结果均约束最终汇总；`fail`、错误级发现、重试或重新规划要求使 Evaluation 失败，但不阻止回答投递。当前不创建新的 Worker 返工轮次；未来最多 1 次返工的规划仍后置，未实现 |
 | 同步总时长 | 默认/最大 600 秒；最小 1 秒 | 匹配当前无 Worker 边界 |
 | 单节点 `output` JSON | 64 KiB | 类型化输出超限明确失败；公共合同不自动切换为 Artifact |
 | 单事件 public payload | 固定小型投影 | 事件只包含节点 ID、类型、状态、错误摘要和权威查询路径，不内联节点完整输出或供应商响应 |
@@ -1121,6 +1123,8 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 ### 当前已验证
 
+2026 年 9 月 12 日在 `apps/api` 目录重新运行 `.venv/bin/pytest tests/test_agent_workflows.py tests/test_agent_runtime_architecture.py tests/test_workflow_definition_registry.py -q`，结果为 `68 passed`。本次使用隔离 SQLite、假 Provider 和内存对象存储，核对同步工作流、审核约束回答、上下文与思考配置透传、Handoff、并行、幂等、取消、持久化和定义登记；没有调用真实 Provider、MySQL、MinIO 或浏览器，也未验证跨进程恢复。以下为历史实施及验证记录。
+
 2026 年 8 月 13 日已在 `apps/api` 目录运行 `.venv/bin/pytest tests/test_agent_workflows.py tests/test_agent_runtime_architecture.py tests/test_workflow_definition_registry.py -q`，结果为 `39 passed`。当前定向测试覆盖：完整串行主流程和持久化节点、真实并发信号、并行会话隔离、Run 到 Workflow 发现、幂等回放与冲突、能力拒绝、调用前预算和价格拒绝、并发费用预留、有序事件回放、依赖 Handoff、Evaluation 归属、非法 Worker 输出清理、实时 SSE、显式取消及重复取消、Reviewer 绑定/跳过/拒绝/重试、完成原因校验、最终消息事务回滚、终态事务可见性、Provider 超时与请求中取消的未知结果、非法事件游标、OpenAPI JSON/SSE 合同、未注册输出版本、Handoff 所属 Task 校验，以及节点开始/事件事实先提交后调用 Provider 或通知 SSE observer 的事务顺序。
 
 工作流定义登记另有 4 项单元测试，覆盖固定节点和按任务生成的节点、重复工作流定义、未知输出类型、未知连接目标、运行时未知节点、节点类型不一致和非法节点连接。
@@ -1147,15 +1151,15 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 - 每个 `output_type` 正常、空列表、nullable 字段、额外字段、缺失字段、错误类型和字节上限。
 - 所有节点返回通用信封全部字段；POST、GET node 和 GET result 使用同一完整节点类型。SSE 只需验证其投影 ID、状态和详情路径指向同一持久化节点，不要求内联完整信封。
-- 大正文转换为 Artifact 引用后仍返回完整参数；不产生中途截断 JSON。
+- 当前节点 `output` 超过 64 KiB 时明确失败，不截断 JSON，也不自动转换为 Artifact；未来引入大型结果引用时，再增加引用完整性与读取失败测试。
 - 检查禁止字段：chain-of-thought、scratchpad、完整 prompt、Authorization、API Key 和原始凭据不得进入节点结果。
 
 ### 状态、幂等和恢复
 
-- 合法/非法状态转换、重复创建、重复节点完成、取消竞争、等待输入版本冲突和终态保护。
+- 当前同步范围：合法/非法状态转换、重复创建、重复节点完成、取消竞争和终态保护。
 - 同一 idempotency key 同内容返回原结果，不同内容返回 409。
-- 模型成功后数据库失败进入未知结果；显式恢复不重跑不可确认节点。
-- API 重启后运行中节点被审计为未知结果，不伪造恢复完成。
+- 当前验证模型调用和持久化失败的已知/未知结果处理；没有显式恢复接口，不承诺重试会恢复不可确认节点。
+- 阶段10后续测试（未实现）：等待输入版本冲突、显式恢复不重复计费调用，以及 API 重启后的运行中节点审计。当前进程中断仍可能留下 `running`，不能将目标行为写成已经验证。
 
 ### 计划和分派
 
@@ -1166,7 +1170,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 ### 验证、审核和汇总
 
 - 程序验证失败不能被 Reviewer 改成通过；无证据声明进入 unverified。
-- Reviewer 只读明确输入，不读取 Worker Working State；无错误级发现且不要求重试或重新规划的 `needs_revision` 交由 Final synthesis 应用，明确失败、错误级发现、重新规划或重试要求直接终止工作流，尚未实现 Worker 返工轮次。
+- Reviewer 只读明确输入，不读取 Worker Working State；所有有效审核输出交给 Final synthesis，失败或返工要求约束最终回答并保留失败的 Evaluation。非法审核输出仍按输出校验错误终止；当前没有 Worker 自动返工轮次。
 - Final synthesis 引用正确 Handoff/Evaluation/Artifact；Message 保存失败不再次调用模型。
 - 汇总 totals 与 Attempt 明细不一致时明确失败，不使用默认零值。
 
@@ -1175,7 +1179,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 同步返回所有完整节点；节点 sequence 稳定；结果快照版本一致。
 - SSE 乱序、重复、断开、事件过大降级为查询引用、最终事件缺失和 after-sequence 恢复。
 - 浏览器刷新后从 MySQL 事件和 result 恢复，不从计时器猜测进度。
-- 当前只验证 Workflow、Node、Task 与 Handoff 的资源归属关系；用户身份尚未实现。阶段5接入 principal 后再增加跨用户查询和创建拒绝测试。
+- 当前工作流测试验证 Workflow、Node、Task 与 Handoff 的引用归属关系。可选用户登录已实现，但 FastAPI 工作流资源尚未接入 principal 归属过滤；其跨用户查询、创建和取消拒绝测试由阶段5主体授权任务补齐，不能用现有引用检查代替。
 
 ### 可观测性
 
@@ -1192,7 +1196,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 | 3 | 工作流定义登记、预算和节点编排职责调整 | 已完成 | 状态服务、模型节点服务、成功/失败/取消状态收尾、版本化工作流定义、原子费用预留和节点顺序职责均已实现 | 架构依赖、工作流定义、工作流执行、预算并发测试和 Ruff 检查 |
 | 4 | 请求、上下文、Controller plan 和 plan validation | 已完成当前执行配置 | Controller 统一产生可验证任务图；简单请求由一个工作 Agent 执行，不增加绕过节点记录的隐藏直达路径 | 假 Provider、任务图、能力和预算测试 |
 | 5 | Task/Agent Run 分派与 model-only 工作 Agent | 已完成 | 依赖分组、最多两个工作 Agent 并行、每个 Provider 调用独立会话及 Attempt 关联已实现 | 分派、依赖输入、Attempt、真实并发信号和费用预留冲突测试 |
-| 6 | Handoff、确定性验证和 Reviewer | 已完成 | 下游只消费有效证据，审核独立且可阻断汇总 | Handoff/Evaluation 归属、审核拒绝和错误收敛测试 |
+| 6 | Handoff、确定性验证和 Reviewer | 已完成 | 下游只消费有效证据；确定性验证失败阻止汇总，有效 Reviewer 结果约束回答但不吞掉回答 | Handoff/Evaluation 归属、审核约束最终回答和非法输出失败测试 |
 | 7 | Final synthesis、completion 和 Assistant Message | 已完成 | 最终消息与汇总节点一致提交；完成节点、Workflow/Run 终态和两个完成事件使用一个事务；全量聚合可查询 | 消息回滚、终态原子可见性和汇总查询测试 |
 | 8 | HTTP/SSE、result 快照和恢复事件 | 已完成 | POST 实时事件、完整结果、持久事件回放和幂等显式取消可用；当前工作流没有等待状态，因此不提供空 `resume` 动作 | ASGI、SSE sequence、实时流、游标、非法游标、取消竞争与 OpenAPI 合同测试 |
 | 9 | 阶段6遥测关联边界 | 已完成本阶段边界 | trace/span 字段和敏感内容边界已固定；实际 exporter 由阶段6装配 | Schema 和持久化字段检查 |
@@ -1208,7 +1212,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 - 节点开始事实和开始事件提交成功后才调用 Provider；提交失败时不进入模型调用。
 - Provider 的超时、网络/连接错误、无法确认的内部错误或请求中取消会使当前 Node 与 Workflow 进入 `outcome_unknown`；已启动的 Task、Agent Run 和 Agent Turn 被收敛到其现有可表达的终态。
-- 节点输出校验失败、计划拒绝、验证失败，以及 Reviewer 的明确失败、错误级发现、重新规划或重试要求会终止当前 Workflow；非阻断的 `needs_revision` 进入最终汇总，不再被当作异常丢弃回答。
+- 节点输出校验失败、计划拒绝、确定性验证失败或其他执行错误会终止当前 Workflow。有效 Reviewer 输出中的明确失败、错误级发现、重新规划或重试要求不单独终止工作流：它们使候选 Evaluation 失败，并进入最终汇总，要求回答如实说明限制与未完成工作。
 - SSE observer 在事件提交后收到通知；通知失败会记录工作流、事件和序号后解除当前请求级observer，已提交事实和后续工作流执行不受影响。`asyncio.CancelledError`不被该隔离逻辑吞掉，仍进入既有取消收敛。
 - Final synthesis 的 Assistant Message 与最终汇总节点完成事件共用事务；测试已验证最终节点无法持久化时不会遗留成功消息。
 - 当前没有跨请求继续、等待输入、resume 或启动审计。同步请求所在进程意外退出仍可能留下 `running` 事实；该问题需要阶段10的可靠执行与恢复机制，不能由 API 进程内后台任务安全解决。
@@ -1225,7 +1229,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 
 - 节点返回合同若仍允许任意自由 `dict`、省略公共字段或把大型文本无限内联，停止实现并先修正 Schema。
 - 要求展示模型隐藏思维链、系统 Prompt、完整 Provider 原始响应或敏感工具参数时拒绝实施；改为可公开决定摘要和证据引用。
-- 阶段7暂停期间要求 Implementer、文件修改、Shell、Git 或 MCP 时，返回能力不可用，不能在 API 进程临时执行命令绕过工具层。
+- 当前 `model_only_v1` 要求 Implementer、文件修改、Shell、Git 或 MCP 时，返回能力不可用；阶段7专用解析执行器不授予这些模型能力，不能在 API 进程临时执行命令绕过工具授权。
 - 共享一个 `AsyncSession` 给并行 Agent、在模型 HTTP 调用期间持有数据库事务或允许并行超卖预算时，停止实现。
 - 需要请求结束后继续、自动崩溃恢复或跨进程 Agent 时，必须重新评估阶段10，不使用 `BackgroundTasks` 假装可靠执行。
 - OpenTelemetry 实验性 GenAI 属性发生变化时，只调整阶段6映射，不改变节点数据库合同。

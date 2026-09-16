@@ -144,6 +144,87 @@ test("local mode permits same-origin writes without cookies and overrides the ow
   } finally { globalThis.fetch = originalFetch; }
 });
 
+for (const origin of [
+  "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000",
+  "https://localhost:8443", "https://127.0.0.1:8443", "https://[::1]:8443",
+]) {
+  /** A browser's original Host must survive NextURL's loopback hostname normalization. */
+  test(`permits a same-origin write addressed to ${origin}`, async () => {
+    const originalUrl = new URL(origin);
+    const upstreamUrls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      upstreamUrls.push(String(input));
+      return String(input).endsWith("/api/v1/auth/me")
+        ? Response.json({ user_id: "nexuspilot-web", authentication_method: "local_deployment" })
+        : Response.json({ session_id: "local-session" }, { status: 201 });
+    }) as typeof fetch;
+    try {
+      const request = new NextRequest(`${origin}/api/nexus/sessions`, {
+        method: "POST",
+        headers: { origin, host: originalUrl.host, "content-type": "application/json" },
+        body: JSON.stringify({ title: "Same-origin creation" }),
+      });
+      assert.equal(request.nextUrl.origin, `${originalUrl.protocol}//localhost:${originalUrl.port}`);
+      const response = await POST(request, createContext("sessions"));
+      assert.equal(response.status, 201);
+      assert.deepEqual(upstreamUrls, [
+        "https://nexus.test/api/v1/auth/me",
+        "https://nexus.test/api/v1/sessions",
+      ]);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+}
+
+/** Invalid Origins and forged forwarding headers must fail before any upstream lookup. */
+test("rejects cross-origin authority, protocol, port and malformed Origin before lookup", async () => {
+  const cases: Array<{ name: string; origin?: string; host?: string; headers?: Record<string, string> }> = [
+    { name: "different loopback alias", host: "127.0.0.1:3000", origin: "http://localhost:3000" },
+    { name: "different IPv6 alias", host: "[::1]:3000", origin: "http://localhost:3000" },
+    { name: "different host", origin: "http://foreign.example:3000" },
+    { name: "different port", origin: "http://localhost:3001" },
+    { name: "different scheme", origin: "https://localhost:3000" },
+    { name: "missing Origin" },
+    { name: "opaque Origin", origin: "null" },
+    { name: "invalid Origin", origin: "not-an-origin" },
+    { name: "Origin path", origin: "http://localhost:3000/path" },
+    { name: "Origin credentials", origin: "http://user:secret@localhost:3000" },
+    { name: "multiple Origins", origin: "http://localhost:3000 https://foreign.example" },
+    { name: "invalid Host path", host: "localhost:3000/path", origin: "http://localhost:3000" },
+    { name: "invalid Host credentials", host: "user@localhost:3000", origin: "http://localhost:3000" },
+    { name: "invalid Host list", host: "localhost:3000,foreign.example", origin: "http://localhost:3000" },
+    {
+      name: "forged forwarded authority",
+      origin: "https://foreign.example",
+      headers: { "x-forwarded-host": "foreign.example", "x-forwarded-proto": "https" },
+    },
+    {
+      name: "forged forwarded scheme",
+      origin: "https://localhost:3000",
+      headers: { "x-forwarded-proto": "https", forwarded: "host=localhost:3000;proto=https" },
+    },
+  ];
+  let upstreamCalls = 0;
+  globalThis.fetch = (async () => {
+    upstreamCalls += 1;
+    return Response.json({ user_id: "nexuspilot-web", authentication_method: "local_deployment" });
+  }) as typeof fetch;
+  try {
+    for (const item of cases) {
+      const headers = new Headers({
+        host: item.host ?? "localhost:3000",
+        "content-type": "application/json",
+        ...item.headers,
+      });
+      if (item.origin !== undefined) headers.set("origin", item.origin);
+      const request = new NextRequest("http://localhost:3000/api/nexus/sessions", {
+        method: "POST", headers, body: JSON.stringify({ title: "Rejected creation" }),
+      });
+      assert.equal((await POST(request, createContext("sessions"))).status, 403, item.name);
+    }
+    assert.equal(upstreamCalls, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("returns an explicit unavailable response when principal lookup cannot connect", async () => {
   globalThis.fetch = (async () => { throw new Error("connection refused"); }) as typeof fetch;
   try {

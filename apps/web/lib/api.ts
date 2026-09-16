@@ -198,16 +198,28 @@ export function createRun(payload: {
 }
 
 /**
- * Atomically persist a Run and its immutable current User Message.
+ * Persist a keyed turn, retrying transport/5xx uncertainty once with identical bytes.
+ * This retries only the database submission, never a Provider or workflow execution.
+ * The key lasts for this call unless supplied by a caller; cross-reload retry is separate.
  */
-export function createConversationTurn(
+export async function createConversationTurn(
   sessionId: string,
-  payload: { content_text: string },
+  payload: { content_text: string; idempotency_key?: string },
 ): Promise<ConversationTurn> {
-  return nexusFetch<ConversationTurn>(`sessions/${encodeURIComponent(sessionId)}/turns`, {
+  const path = `sessions/${encodeURIComponent(sessionId)}/turns`;
+  const init = {
     method: "POST",
-    body: JSON.stringify(payload),
-  });
+    body: JSON.stringify({ ...payload, idempotency_key: payload.idempotency_key ?? crypto.randomUUID() }),
+  };
+  try {
+    return await nexusFetch<ConversationTurn>(path, init);
+  } catch (error) {
+    const retryable = error instanceof NexusApiError
+      ? error.status >= 500
+      : error instanceof TypeError || error instanceof SyntaxError;
+    if (!retryable) throw error;
+    return nexusFetch<ConversationTurn>(path, init);
+  }
 }
 
 /**

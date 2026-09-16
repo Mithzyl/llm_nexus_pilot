@@ -13,6 +13,33 @@ type WorkspacePrincipal = {
   authentication_method: "browser_session" | "local_deployment";
 };
 
+
+/**
+ * Compare the serialized browser Origin with the request's actual Host authority.
+ * NextURL rewrites loopback IPs to localhost, so its hostname loses this distinction.
+ * The protocol remains the framework's request protocol; forwarded headers are not
+ * additional trusted origin sources here. Host-less callers retain the URL check.
+ */
+function hasSameRequestOrigin(request: NextRequest): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    const originUrl = new URL(origin);
+    if (!["http:", "https:"].includes(originUrl.protocol) || origin !== originUrl.origin) {
+      return false;
+    }
+    const host = request.headers.get("host");
+    if (host === null) return origin === request.nextUrl.origin;
+    // Host is only an authority, never credentials, a path, or a forwarded-host list.
+    if (!host || /[\s\\/?#@%,]/u.test(host)) return false;
+    const requestOrigin = new URL(`${request.nextUrl.protocol}//${host}`).origin;
+    return origin === requestOrigin;
+  } catch {
+    return false;
+  }
+}
+
+
 /** Build the minimum authenticated header set for an upstream request. */
 function buildApiHeaders(request: NextRequest): Headers {
   const headers = new Headers({
@@ -408,7 +435,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
 
   const isAuthenticationRoute = path[0] === "auth";
   if (!["GET", "HEAD"].includes(request.method)) {
-    if (request.headers.get("origin") !== request.nextUrl.origin) {
+    if (!hasSameRequestOrigin(request)) {
       return Response.json({ detail: "请求来源未获授权。" }, { status: 403 });
     }
     if (isAuthenticationRoute && !["login", "logout"].includes(path[1])) {

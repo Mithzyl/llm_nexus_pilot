@@ -70,6 +70,8 @@ make api-migrate
 make api-run
 ```
 
+新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
+
 默认 `NEXUSPILOT_AUTHENTICATION_ENABLED=false`，本地打开 Web 即进入工作台，资源归属固定为历史本地用户 `nexuspilot-web`（不存在时由后端创建，不创建密码或登录会话）。该模式仅供个人本机使用，只监听回环地址，不能暴露到公网或不可信局域网；所有访问者会共享本地数据。生产环境拒绝关闭登录。
 
 需要登录时，在 `apps/api/.env` 设置 `NEXUSPILOT_AUTHENTICATION_ENABLED=true` 并重启 API，再通过可信终端预置首个可登录账户。密码只从终端交互读取，不接受命令行参数：

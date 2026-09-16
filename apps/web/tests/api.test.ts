@@ -22,6 +22,55 @@ import {
 
 const originalFetch = globalThis.fetch;
 
+test("retries a lost turn response once with the same key and exact body", async () => {
+  // A lost HTTP acknowledgement may follow a successful database commit.
+  const bodies: string[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    bodies.push(String(init?.body));
+    if (bodies.length === 1) throw new TypeError("network disconnected");
+    return Response.json({ run: { run_id: "one-run" }, message: { message_id: "one-message" } });
+  }) as typeof fetch;
+  try {
+    const turn = await createConversationTurn("session-1", { content_text: "hello" });
+    assert.equal(turn.run.run_id, "one-run");
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0], bodies[1]);
+    assert.ok(JSON.parse(bodies[0]).idempotency_key.length >= 8);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("does not retry rejected turn input or permission failures", async () => {
+  // Client errors are definitive and must not be converted to a fresh submission.
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests += 1;
+    return Response.json({ detail: "Denied" }, { status: 403 });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(createConversationTurn("session-1", { content_text: "hello" }));
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("turn transport retries stop after the second failure", async () => {
+  // Retrying the keyed database write must not become an unbounded background loop.
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests += 1;
+    throw new TypeError("offline");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(createConversationTurn("session-1", { content_text: "hello" }));
+    assert.equal(requests, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("loads provider names and their server-configured model options", async () => {
   globalThis.fetch = (async () =>
     Response.json({
@@ -222,6 +271,7 @@ test("atomically creates a run-linked current user message", async () => {
   try {
     const turn = await createConversationTurn("session-1", {
       content_text: "Current question",
+      idempotency_key: "turn-explicit-key",
     });
     assert.equal(turn.run.run_id, "run-1");
     assert.equal(turn.message.run_id, "run-1");
@@ -229,6 +279,7 @@ test("atomically creates a run-linked current user message", async () => {
     assert.equal(request!.init?.method, "POST");
     assert.deepEqual(JSON.parse(String(request!.init?.body)), {
       content_text: "Current question",
+      idempotency_key: "turn-explicit-key",
     });
   } finally {
     globalThis.fetch = originalFetch;

@@ -93,7 +93,7 @@ class MessageRead(ApiModel):
 
 
 class ConversationTurnCreate(BaseModel):
-    """Validate one user turn that must create its Run and Message atomically."""
+    """Validate an atomic turn; a session-scoped key permits retry without new facts."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +101,7 @@ class ConversationTurnCreate(BaseModel):
     content_text: str = Field(min_length=1, max_length=16_000)
     run_type: str = Field(default="general", min_length=1, max_length=64)
     budget_limit: Decimal | None = Field(default=None, ge=0)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class ConversationTurnRead(ApiModel):

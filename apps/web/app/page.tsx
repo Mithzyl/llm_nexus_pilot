@@ -285,6 +285,7 @@ export default function Home() {
   const [agentWorkflow, setAgentWorkflow] = useState<
     AgentWorkflowSummary | AgentWorkflowResult | null
   >(null);
+  const [workflowAbsentForRunId, setWorkflowAbsentForRunId] = useState<string | null>(null);
   const [agentWorkflowNodes, setAgentWorkflowNodes] = useState<AgentWorkflowNodeResult[]>([]);
   const [reasoningBlocksByAttemptId, setReasoningBlocksByAttemptId] = useState<
     Record<string, ReasoningBlockSnapshot[]>
@@ -337,6 +338,8 @@ export default function Home() {
   const lastResponseSequence = useRef(0);
   const activeRequestController = useRef<AbortController | null>(null);
   const restoredRouteKey = useRef<string | null>(null);
+  const sessionRestoreRequestId = useRef(0);
+  const workflowRestoreRequestId = useRef(0);
   const providerCatalogRequestId = useRef(0);
   const providerCatalogRequestController = useRef<AbortController | null>(null);
   const reasoningDisplayPreference = useRef<ReasoningDisplayPolicy | null>(null);
@@ -804,7 +807,12 @@ export default function Home() {
     activeSessionId && remoteBusySessionIds.has(activeSessionId),
   );
   const isPersistedConversationExecutionActive = Boolean(
-    activeSessionId && isConversationExecutionActive(run?.status ?? null, agentWorkflow?.status ?? null),
+    activeSessionId && isConversationExecutionActive({
+      run,
+      workflowStatus: agentWorkflow?.status ?? null,
+      messages,
+      workflowAbsentForRunId,
+    }),
   );
   const isConversationSubmissionBlocked =
     isActiveSessionBusyInAnotherTab || isPersistedConversationExecutionActive;
@@ -868,9 +876,11 @@ export default function Home() {
     }
   }
 
-  /** Clear Agent Workflow projections without changing the selected conversation or Run. */
+  /** Invalidate stale workflow reads and clear projections without changing the current Run. */
   function resetAgentWorkflowFacts() {
+    workflowRestoreRequestId.current += 1;
     setAgentWorkflow(null);
+    setWorkflowAbsentForRunId(null);
     setAgentWorkflowNodes([]);
     setReasoningBlocksByAttemptId({});
     setAgentEventState(EMPTY_AGENT_EVENT_STATE);
@@ -924,14 +934,20 @@ export default function Home() {
     if (result.error) setErrorMessage(result.error.public_message);
   }
 
-  /** Restore Workflow events and the latest bounded result for one persisted Run. */
+  /** Restore only the current Run's workflow facts; only a current 404 confirms absence. */
   async function restoreAgentWorkflowForRun(runId: string, assistantLocalId?: string) {
     resetAgentWorkflowFacts();
+    const requestId = workflowRestoreRequestId.current;
     let summary: AgentWorkflowSummary;
     try {
       summary = await getRunAgentWorkflow(runId);
+      if (workflowRestoreRequestId.current !== requestId) return;
     } catch (error) {
-      if (error instanceof NexusApiError && error.status === 404) return;
+      if (workflowRestoreRequestId.current !== requestId) return;
+      if (error instanceof NexusApiError && error.status === 404) {
+        setWorkflowAbsentForRunId(runId);
+        return;
+      }
       setErrorMessage(error instanceof Error ? error.message : "无法读取 Agent Workflow。");
       return;
     }
@@ -947,6 +963,7 @@ export default function Home() {
     let restoredEvents = EMPTY_AGENT_EVENT_STATE;
     try {
       const replay = await replayAgentWorkflowEvents(summary.workflow_execution_id, 0);
+      if (workflowRestoreRequestId.current !== requestId) return;
       await readAgentWorkflowEventStream(
         replay,
         (event) => {
@@ -954,8 +971,10 @@ export default function Home() {
         },
         { requireTerminalEvent: false },
       );
+      if (workflowRestoreRequestId.current !== requestId) return;
       setAgentEventState(restoredEvents);
     } catch (error) {
+      if (workflowRestoreRequestId.current !== requestId) return;
       setErrorMessage(
         `工作流事件回放不可用，当前以查询快照为准：${error instanceof Error ? error.message : "未知错误"}`,
       );
@@ -963,8 +982,10 @@ export default function Home() {
 
     try {
       const result = await getAgentWorkflowResult(summary.workflow_execution_id);
+      if (workflowRestoreRequestId.current !== requestId) return;
       applyAgentWorkflowResult(result, assistantLocalId);
     } catch (error) {
+      if (workflowRestoreRequestId.current !== requestId) return;
       setErrorMessage(
         `工作流摘要已恢复，但完整节点暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
       );
@@ -1068,8 +1089,10 @@ export default function Home() {
 
   /**
    * Load one immutable conversation history and either its latest or explicitly requested Run.
+   * Ignore late reads after another conversation, Run route or submission replaces this view.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
+    const requestId = ++sessionRestoreRequestId.current;
     const nextDraftStorageKey = conversationDraftStorageKey(sessionId, workspacePrincipal?.user_id);
     if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
@@ -1095,6 +1118,7 @@ export default function Home() {
               throw error;
             }),
       ]);
+      if (sessionRestoreRequestId.current !== requestId) return;
       const restoredMessages = page.items.map(messageFromMessage);
       const pendingRunId = pendingAssistantRunIdForLatestTurn(page.items, latestRun);
       const pendingAssistant = pendingRunId
@@ -1110,10 +1134,12 @@ export default function Home() {
           pendingAssistant?.local_id,
         );
       }
+      if (sessionRestoreRequestId.current !== requestId) return;
       const hasPersistedAssistant = hasSavedAssistantForLatestTurn(page.items);
       setResponseCompleted(hasPersistedAssistant);
       setAssistantSaved(hasPersistedAssistant);
     } catch (error) {
+      if (sessionRestoreRequestId.current !== requestId) return;
       setErrorMessage(error instanceof Error ? error.message : "无法读取会话消息");
       setMessages([]);
       setMessageCursor(null);
@@ -1139,8 +1165,9 @@ export default function Home() {
     await restoreSession(sessionId);
   }
 
-  /** Restore an exact owned Run and its conversation rather than substituting the latest Run. */
+  /** Restore the requested owned Run, ignoring older navigation reads that arrive later. */
   async function restoreRunRoute(runId: string) {
+    const requestId = ++sessionRestoreRequestId.current;
     showCurrentRunEvidence();
     setErrorMessage(null);
     setIsInspectorOpen(true);
@@ -1152,6 +1179,7 @@ export default function Home() {
     resetAgentWorkflowFacts();
     try {
       const runDetail = await getRun(runId);
+      if (sessionRestoreRequestId.current !== requestId) return;
       if (runDetail.session_id) {
         await restoreSession(runDetail.session_id, runDetail);
         return;
@@ -1160,6 +1188,7 @@ export default function Home() {
       restoreRunFacts(runDetail);
       await restoreAgentWorkflowForRun(runDetail.run_id);
     } catch (error) {
+      if (sessionRestoreRequestId.current !== requestId) return;
       setErrorMessage(error instanceof Error ? error.message : "无法读取运行详情");
     }
   }
@@ -1184,9 +1213,10 @@ export default function Home() {
   }
 
   /**
-   * Reset the local conversation view without deleting any persisted session.
+   * Invalidate previous reads and reset the view without deleting any persisted session.
    */
   function resetConversationView() {
+    sessionRestoreRequestId.current += 1;
     showCurrentRunEvidence();
     setActiveSessionId(null);
     setMessages([]);
@@ -1480,6 +1510,7 @@ export default function Home() {
 
   /**
    * Submit one atomic Run/Message turn, then stream its anchored quick or Agent response.
+   * Replace optimistic messages with saved records before deciding whether the turn is finished.
    */
   async function submitCurrentDraft() {
     const input = draft.trim();
@@ -1493,6 +1524,7 @@ export default function Home() {
       setErrorMessage("文件上传服务尚未启用，请移除待上传文件后再发送。");
       return;
     }
+    sessionRestoreRequestId.current += 1;
     const submittedMode = executionMode;
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
@@ -1537,6 +1569,11 @@ export default function Home() {
       });
       clearCommittedDraft();
       const createdRun = createdTurn.run;
+      setMessages((current) => current.map((message) =>
+        message.local_id === userMessage.local_id
+          ? { ...messageFromMessage(createdTurn.message), local_id: userMessage.local_id }
+          : message,
+      ));
       submittedRunId = createdRun.run_id;
       setRun(createdRun);
       setRunModelFacts({ provider: selectedProvider, model: selectedModel });
@@ -1639,7 +1676,7 @@ export default function Home() {
           });
           try {
             if (!completedText) throw new Error("响应没有可保存的文本。");
-            await createMessage(session.session_id, {
+            const savedMessage = await createMessage(session.session_id, {
               role: "assistant",
               content_text: completedText,
               run_id: createdRun.run_id,
@@ -1650,7 +1687,9 @@ export default function Home() {
             setAssistantSaved(true);
             setMessages((current) =>
               current.map((message) =>
-                message.local_id === assistantMessage.local_id ? { ...message, saving: false } : message,
+                message.local_id === assistantMessage.local_id
+                  ? { ...message, ...messageFromMessage(savedMessage), local_id: message.local_id, saving: false }
+                  : message,
               ),
             );
           } catch (error) {
@@ -1667,6 +1706,7 @@ export default function Home() {
             );
           }
           setRun(await getRun(createdRun.run_id));
+          await restoreAgentWorkflowForRun(createdRun.run_id);
         }
         if (event.type === "response.failed") {
           const message = data.error?.message ?? "模型生成失败，已保留已收到的部分文本。";

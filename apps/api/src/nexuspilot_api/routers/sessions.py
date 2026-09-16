@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Query, Response, status
 
 from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.pagination import CursorPage
@@ -54,10 +54,13 @@ async def post_conversation_turn(
     session_id: str,
     payload: ConversationTurnCreate,
     db_session: DatabaseSessionDependency,
+    response: Response,
 ) -> ConversationTurnRead:
-    """Commit one Run and its current User Message as a single conversation turn."""
+    """Create one turn (201), or replay the same committed key without new facts (200)."""
 
-    run, message = await create_conversation_turn(db_session, session_id, payload)
+    run, message, replayed = await create_conversation_turn(db_session, session_id, payload)
+    if replayed:
+        response.status_code = status.HTTP_200_OK
     return ConversationTurnRead(
         run=RunRead.model_validate(run),
         message=MessageRead.model_validate(message),

@@ -1,5 +1,7 @@
 """Conversation session and immutable message database use cases."""
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC
 
@@ -9,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.errors import (
     InvalidCursorError,
+    InvalidRequestError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
@@ -19,6 +22,7 @@ from nexuspilot_api.core.pagination import (
     database_query_fingerprint,
 )
 from nexuspilot_api.models import (
+    LlmConversationTurn,
     LlmMessage,
     LlmModelAttempt,
     LlmReasoningBlock,
@@ -205,15 +209,53 @@ async def create_conversation_turn(
     db_session: AsyncSession,
     session_id: str,
     payload: ConversationTurnCreate,
-) -> tuple[LlmRun, LlmMessage]:
-    """Atomically create one Run and its immutable, Run-linked User Message.
+) -> tuple[LlmRun, LlmMessage, bool]:
+    """Atomically persist a turn, or replay a matching key after checking its owner.
 
-    The existing Run and Message validators remain authoritative. Any ownership,
-    lifecycle, or sequence failure rolls back both facts so callers never need to
-    infer whether a partially submitted turn can be used as model context.
+    Lock the Session before reading its key map, so MySQL serializes same-session
+    requests. Key records, Run, message and sequence commit together. This does not
+    start or retry a Provider call. Legacy unkeyed requests remain separate turns.
     """
 
     try:
+        key_hash = None
+        request_hash = None
+        if payload.idempotency_key is not None:
+            conversation = await db_session.scalar(
+                select(LlmSession).where(LlmSession.session_id == session_id).with_for_update()
+            )
+            user = await db_session.get(User, payload.user_id)
+            if (
+                conversation is None
+                or conversation.user_id != payload.user_id
+                or user is None
+                or not user.is_active
+            ):
+                raise InvalidRequestError("Run session must belong to an active run user")
+            key_hash = hashlib.sha256(payload.idempotency_key.encode()).hexdigest()
+            normalized = payload.model_dump(mode="json", exclude={"idempotency_key"})
+            if payload.budget_limit is not None:
+                normalized["budget_limit"] = str(payload.budget_limit.normalize())
+            request_hash = hashlib.sha256(
+                json.dumps(normalized, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()
+            previous = await db_session.scalar(
+                select(LlmConversationTurn)
+                .where(
+                    LlmConversationTurn.session_id == session_id,
+                    LlmConversationTurn.key_hash == key_hash,
+                )
+                .with_for_update()
+            )
+            if previous is not None:
+                if previous.request_hash != request_hash:
+                    raise ResourceConflictError("Turn idempotency key was used for different input")
+                run = await db_session.get(LlmRun, previous.run_id)
+                message = await db_session.get(LlmMessage, previous.message_id)
+                if run is None or message is None:
+                    raise ResourceConflictError("Committed turn references are unavailable")
+                await db_session.commit()
+                return run, message, True
         run = await create_run(
             db_session,
             RunCreate(
@@ -235,10 +277,23 @@ async def create_conversation_turn(
             ),
             commit=False,
         )
+        if key_hash is not None:
+            db_session.add(
+                LlmConversationTurn(
+                    session_id=session_id,
+                    key_hash=key_hash,
+                    request_hash=request_hash,
+                    run_id=run.run_id,
+                    message_id=message.message_id,
+                )
+            )
         await db_session.commit()
         await db_session.refresh(run)
         await db_session.refresh(message)
-        return run, message
+        return run, message, False
+    except IntegrityError as exc:
+        await db_session.rollback()
+        raise ResourceConflictError("Turn submission conflict; retry with the same key") from exc
     except Exception:
         await db_session.rollback()
         raise

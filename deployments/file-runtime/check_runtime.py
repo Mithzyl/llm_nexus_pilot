@@ -93,7 +93,7 @@ def check_word(directory: Path) -> dict:
 
 
 def check_excel(directory: Path) -> dict:
-    """Verify XLSX sheets, merged cells and formulas without calculating or refreshing links."""
+    """Verify cells/formulas plus an empty hidden sheet without recalculation or external links."""
 
     from openpyxl import Workbook, load_workbook
 
@@ -106,6 +106,7 @@ def check_excel(directory: Path) -> dict:
     worksheet["B3"] = "=SUM(B2:B2)"
     worksheet.merge_cells("D1:E1")
     worksheet["D1"] = "合并标题"
+    workbook.create_sheet("空白隐藏表").sheet_state = "veryHidden"
     workbook.save(path)
     workbook.close()
     loaded = load_workbook(path, data_only=False, keep_links=False)
@@ -120,11 +121,11 @@ def check_excel(directory: Path) -> dict:
     finally:
         loaded.close()
         cached.close()
-    return {"sheets": 1, "formula_preserved": True, "formula_executed": False}
+    return {"sheets": 2, "formula_preserved": True, "formula_executed": False}
 
 
 def check_powerpoint(directory: Path) -> dict:
-    """Verify PPTX slide text, table cells and speaker notes using a synthetic presentation."""
+    """Verify text, table and notes, retaining a blank slide and an image-only slide in order."""
 
     from pptx import Presentation
     from pptx.util import Inches
@@ -137,13 +138,21 @@ def check_powerpoint(directory: Path) -> dict:
     table.cell(0, 0).text = "项目"
     table.cell(0, 1).text = "测试"
     slide.notes_slide.notes_text_frame.text = "演讲者备注"
+    presentation.slides.add_slide(presentation.slide_layouts[6])
+    image_slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    # One synthetic pixel; this fixture exercises inventory, not visual interpretation or OCR.
+    from PIL import Image
+
+    image_path = directory / "pixel.png"
+    Image.new("RGB", (1, 1), "white").save(image_path)
+    image_slide.shapes.add_picture(str(image_path), 0, 0, Inches(1), Inches(1))
     presentation.save(path)
     loaded = Presentation(path).slides[0]
     if loaded.shapes[0].text != "幻灯片正文" or loaded.shapes[1].table.cell(0, 1).text != "测试":
         raise RuntimeError("PPTX text or table round-trip failed")
     if loaded.notes_slide.notes_text_frame.text != "演讲者备注":
         raise RuntimeError("PPTX notes were lost")
-    return {"slides": 1, "tables": 1, "notes": True}
+    return {"slides": 3, "tables": 1, "notes": True}
 
 
 def check_pdf(directory: Path) -> dict:
@@ -223,7 +232,7 @@ def main() -> int:
 
 
 def check_office_parser(directory: Path) -> dict:
-    """Parse generated Office samples through the real bounded stdin/stdout entrypoint."""
+    """Check real extraction and complete sheet/slide inventory through bounded stdin/stdout."""
 
     fixtures = {
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -257,11 +266,21 @@ def check_office_parser(directory: Path) -> dict:
             assert row["cell_formulas"][1] == "=SUM(B2:B2)"
             assert row["missing_formula_values"] == ["B3"]
             assert row["cells"][1] == ""
+            assert report["structure"]["kind"] == "worksheets"
+            assert report["structure"]["entries"] == [
+                {"name": "数据", "visibility": "visible", "block_count": 3},
+                {"name": "空白隐藏表", "visibility": "veryHidden", "block_count": 0},
+            ]
         else:
             assert any(
                 block.get("is_notes") and block["text"] == "演讲者备注"
                 for block in report["blocks"]
             )
+            assert report["structure"] == {"kind": "slides", "entries": [
+                {"number": 1, "block_count": 3},
+                {"number": 2, "block_count": 0},
+                {"number": 3, "block_count": 0},
+            ]}
         results[extension] = {"blocks": len(report["blocks"]), "source_positions": True}
     return results
 

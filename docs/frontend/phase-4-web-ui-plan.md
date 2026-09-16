@@ -1,7 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
-**文档日期：** 2026 年 9 月 5 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录、消息运行证据与当前工作台解耦，以及阶段5浏览器登录门禁和当前主体BFF归属已实现；System Prompt前台隔离和浏览器本地文件选择已实现，后端文件上传仍待完成；会话归档按当前决定暂停，独立后台执行进入阶段10规划，其他Context来源、代码块完整门禁以及真实Provider矩阵仍待完成）
+**文档日期：** 2026 年 9 月 12 日
+**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录、消息运行证据与当前工作台解耦，以及阶段5浏览器登录和当前主体BFF归属已实现；System Prompt前台隔离、Context证据和浏览器本地文件选择已实现。2026年9月12日新增轮次幂等、代码块工具栏/复制，并修复127.0.0.1来源误拒绝及已保存快速回复刷新禁发；当前117项前端测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF浏览器测试通过，真实BFF在独立临时SQLite、FakeProvider和内存对象存储条件下通过两种本地入口、轮次重试、即时/刷新续聊及工作流查询失败禁发检查。后端Run状态未修改；正式上传、跨刷新提交key和完整模型执行恢复尚未实现，真实Provider/MinIO与HTTPS可信代理部署未验收；会话归档、Memory和真实Provider矩阵继续后置，附件专用Agent编排后续再实施）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -61,16 +61,28 @@ FastAPI
 | 运行审计 | Run、Task、内部审计接口 | 仅内部开发/运维视图使用，不默认暴露给普通用户 |
 | 模型 Agent 工作流 | Agent Workflow 创建、发现、结果、节点和事件回放接口 | 只在内部开发功能门禁下启用 `model_only_v1`；完整节点查询是权威事实，事件只驱动增量提示 |
 
-Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入开发者证据抽屉；它们不应阻塞对话阅读，也不能被前端自行组合成第二套调用链。后端 Prompt 属于 System Prompt，普通前端不显示其名称、版本、变量、正文或是否纳入，也不提供选择入口。Memory、Knowledge、Artifact和Agent来源只通过受控Context Build证据出现。
+Context Build和Model Catalog已有允许公开的证据展示；完整Evaluation开发视图仍待实施。证据查询不应阻塞对话阅读，也不能由前端组合成第二套模型调用链。后端 Prompt 属于 System Prompt，普通前端已移除其名称、版本、变量、正文、是否纳入及选择入口。Memory、Knowledge、Artifact和Agent来源只通过受控Context Build证据出现，未启用来源不能显示为已使用。
 
 ### 前端实施前必须处理的后端缺口
 
-- Session下的轮次提交接口已原子创建Run与当前User Message；该动作仍缺少客户端幂等键，因此浏览器超时后不能安全地自动重发未知结果的轮次。
+- Session下的轮次提交已新增可选客户端幂等键，匹配请求可重放原Run与User Message；Web仅在同一次提交调用内对网络/5xx不确定结果以同key再试一次。跨刷新/再次点击后的key持久化和完整模型执行恢复仍缺失，不能据此自动重发可能计费的模型请求，详见下节。
 - `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
 - 当前已有浏览器登录和 BFF 层资源归属，但 FastAPI 各业务 Router 尚未直接从主体派生 owner。公开部署前必须完成后端逐资源授权、个人程序调用和凭据安全门禁；部署级密钥仍只能由服务端持有。
 - `/responses` 已使用 `conversation-stream.v2` 信封持久化公开事件，并按 Attempt 提供有限回放。浏览器收到首个事件并取得 `attempt_id` 后，断线会从最后确认的 `sequence` 继续读取；若连接在首个事件前断开，仍只能通过 Run/Attempt 最终事实恢复，不能自动重发可能计费的请求。阶段3 Agent Workflow 保留自己的事件合同，两者不能混用。
 - 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
 - 阶段3后端当前提供显式取消、最多两个无依赖工作 Agent 并行和费用预留；前端已经完成对应合同、代理和交互适配。恢复、等待用户输入、进程重启恢复和大型节点结果 Artifact 降级仍不存在，前端不能显示这些动作，也不能把有限事件回放描述为持续订阅。
+
+### 轮次提交幂等与当前恢复范围（2026 年 9 月 12 日）
+
+状态：轮次幂等已实现；后端测试和当前117项完整前端测试通过，localhost与127.0.0.1本地入口经真实BFF与实际FastAPI路由完成限定范围检查，后端使用独立临时SQLite、FakeProvider和内存对象存储，详见本轮验证记录。首次轮次响应丢失后使用同key重试，不重复创建Run/User Message或调用Responses；来源误拒绝及已保存快速回复刷新禁发已修复并验证。本工作项只让一次User Message/Run数据库提交能够重复确认，不启动或重试Provider，不等于完整回答已可恢复。
+
+- `POST /api/v1/sessions/{session_id}/turns`新增可选`idempotency_key`。后端保存`llm_conversation_turns`，以Session与key的SHA-256组合确定同一次提交，记录请求哈希以及原Run/Message引用；轮次记录与Run、Message同事务提交。新建返回201，相同key和输入返回原对象及200，不同输入使用同key返回409。省略key保持旧行为，每次创建独立轮次。
+- 迁移`20260912_0021`新增该表，不为历史轮次猜测补key，不改写已有Run或Message。启用新的Web提交前先运行`make api-migrate`；迁移是否已应用到具体数据库须另行核对，不能由代码存在推定。
+- Web的`createConversationTurn`未收到调用方key时，每次调用生成一个新key；一次调用中的重试复用同一key和相同请求体。仅网络/5xx或无法确认响应的解析失败最多再试一次，4xx不重试；重试对象仅是轮次数据库提交，不是`/responses`或Workflow执行。
+- 当前没有跨刷新或再次点击发送后的key持久化。输入草稿恢复、Web Locks和相同key重放不能替代它；如果本次有限重试仍失败，保留输入并显示未确认，不宣称没有保存，也不声称再次点击会自动恢复原轮次。
+- 得到Run/Message后启动模型是另一个操作。未知Attempt的首事件前断线、创建轮次后尚未调用模型的中断、跨刷新完整执行恢复仍未解决；继续依据现有Run/Attempt/Workflow事实查询，不自动重发可能计费的请求。
+- 快速回复已保存后的续聊不再仅由通用Run的`pending`状态决定。只有当前Run明确无Workflow（本次查询返回404）、完整查询中无Task且仅一个无Task的`completed` Attempt、最新User属于同Run/Session、其后的已保存Assistant也属于同Run/Session并准确引用该Attempt时，才允许在Run仍`pending`时继续发送。活动Run/Workflow、查询失败、未知或不完整事实仍阻止发送；不将模型Attempt完成自动写成后端Run完成。
+- Workflow恢复读取记录请求代次，切换会话或开始新读取后忽略旧读取结果，避免旧会话结果覆盖当前状态。该改动处理静态检查发现的异步风险；修复前未稳定复现浏览器故障，不记作已复现缺陷。
 
 ## 后端阶段检查点驱动的前端交付设计
 
@@ -131,7 +143,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 - `/responses` 的普通与服务器发送事件（SSE）模式使用同一 Assistant 消息结构；`response.started`、文本增量、用量、完成和失败分别驱动界面。
 - Reasoning 使用 `reasoning.raw`、`reasoning.summary`、`reasoning.status` 可辨识联合类型；Chat 默认折叠公开文本，隐藏推理完成后不保留空状态行，Trajectory 保留不可见标记、时间和 Reasoning Token 证据。
 - 服务端按模型注册能力与当前展示策略裁剪公开数据。前端不允许把摘要提升为原始推理，也不接收 `reasoning_content`、`encrypted_content`、Provider response ID 或续接状态。
-- Context Build、Prompt Render和Evaluation进入独立开发者证据抽屉。Context Build按来源类型展示Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、Evaluation和Tool结果的纳入数量、排除原因、版本与信任级别；Evaluation必须把执行状态与verdict分开。
+- Context Build已在独立证据区域展示允许公开的来源纳入/排除、信任和策略事实，并过滤System Prompt存在性与全部元数据；Prompt Render不进入普通产品界面。完整Evaluation开发视图后续实施，必须把执行状态与verdict分开；Memory、Knowledge和Tool未启用时不能显示为已使用。
 - 前端不得直接调用Memory、Knowledge、Artifact或Agent内部接口补充Prompt。尚未启用的来源不显示为已使用；启用后的来源由Context Builder策略自动选择，或使用后端提供的受控高层选项，不能接受任意资源ID注入。
 
 **失败与恢复：**
@@ -144,7 +156,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 
 - 普通响应与 SSE 具有一致的完成、失败、用量和 Attempt 关联测试。
 - DeepSeek 原始推理、OpenAI 摘要或隐藏状态、推理 token、完成/中断、重复/乱序/断线回放、历史消息快照和敏感续接状态隔离均有合同测试。
-- Context、Prompt、Model Catalog 和 Evaluation 视图只显示后端证据，历史版本和未知能力行为与阶段2合同一致。
+- Context、Model Catalog 和后续 Evaluation 视图只显示允许公开的后端证据，历史版本和未知能力行为与阶段2合同一致；普通界面不提供Prompt视图。
 - 长响应按批次刷新，不能每个 token 重新解析全部 Markdown；生成期间页面交互和滚动保持可用。
 
 #### 思考程度选择与跨 Provider 对齐
@@ -250,7 +262,7 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 #### 创建请求设计
 
 - Agent Workflow 请求本身不包含用户目标；后端从所属 Run 的 `user_request` 读取目标。因此 Agent 提交模式必须先得到包含当前显式输入的 `run_id`，不能把 Composer 文本临时附加到 Workflow 请求或复用目标不一致的旧 Run。
-- 当前 Message/Run 创建与 Workflow POST 不是一个端到端幂等事务。浏览器只有在拿到确定的 `run_id` 后，才能依赖 Workflow `idempotency_key` 安全回放；User Message 或 Run 创建发生超时且结果未知时不得自动重建，应保留输入并显示对应部分失败。
+- 当前 Message/Run 轮次创建与 Workflow POST 不是一个端到端幂等事务。轮次创建可用同key重放原Run/Message；当前Web仅在同一次`createConversationTurn`调用内有限重试一次。浏览器拿到确定`run_id`后，才可依赖Workflow自身的`idempotency_key`查询或回放；轮次重放不代表Workflow已经启动，也不恢复丢失的模型请求身份。
 - Run 带有 `session_id` 时，阶段3后端会把最终 Assistant Message 与 `final_synthesis` 节点完成事实放在同一事务提交。Agent 模式不得沿用普通 `/responses` 流程再次保存 Assistant Message；前端在完成后读取 Result 和 Session Message 事实。
 - `workflow_name`、`workflow_version` 和 `execution_profile` 固定为 `model_only`、`1.0.0` 和 `model_only_v1`，在内部高级设置中只读展示，不允许任意文本输入。
 - 每次用户明确提交生成一个 `8`～`128` 字符的 `idempotency_key`，并在该提交恢复完成前持久保存在当前页面状态中。请求超时或断线后先发现原 Workflow；不能生成新 key 自动重试模型调用。
@@ -533,9 +545,9 @@ Context Build、Model Catalog和Evaluation在阶段2完成行为验收后进入�
 
 1. 前端服务端获取可用 Provider。
 2. 用户选择 Provider 和 Model，输入消息。
-3. Next.js 服务端按现有 API 创建或复用 User、创建 Session，并追加用户 Message。
-4. 创建可审计 Run；只有实际需要任务对象时才创建 Task，不伪造 Agent 任务。
-5. 调用 `/api/v1/responses`，请求内容只来自用户当前显式输入和明确填写的 instructions。
+3. BFF从后端`/auth/me`解析固定本地owner或当前登录主体，创建/读取其Session；Web不自行创建用户。
+4. 调用Session轮次接口，使用本次提交的幂等键原子创建Run与当前User Message；相同key/输入重放原对象，不创建第二个Run或消息。只有实际需要任务对象时才创建Task，不伪造Agent任务。
+5. 调用 `/api/v1/responses` 并传入确定的Run和当前Message锚点，由后端统一Context Builder组装已启用来源；浏览器不拼接会话历史或System Prompt。
 6. 普通响应一次渲染；SSE 响应按 sequence 去重并增量渲染。
 7. 完成后通过 Message 接口追加 Assistant Message；如果追加失败，界面保留已收到内容并显示“响应已生成，但会话保存失败”。在 Message 幂等合同完成前只能由用户查看 Run/Attempt 并人工处理，不得自动重试写入或重新请求模型。
 8. 详情抽屉读取 Attempt，展示 token、费用、耗时和 Provider 请求状态。
@@ -651,7 +663,7 @@ apps/web/
 | Run/Attempt 查询失败 | 正文仍可阅读，详情抽屉显示依赖暂不可用并允许手动重试 |
 | cursor 失效 | 清空对应分页窗口后从第一页重新加载，不混合新旧筛选结果 |
 | 异步 Task 暂无 Worker | 显示已接受或等待执行的后端事实，不显示虚假的执行百分比；允许动作由后端返回 |
-| Agent 模式的 User Message 或 Run 创建结果未知 | 保留输入并标记提交尚未确认；在统一幂等提交合同完成前不自动创建第二条 Message、第二个 Run 或 Workflow |
+| User Message 或 Run 创建结果未知 | 同一次轮次提交调用内仅对网络/5xx不确定结果使用原key和相同请求体再试一次；仍失败则保留输入并说明未确认。跨刷新/再次点击尚未恢复原key，不自动创建第二条Message、Run或Workflow来假装恢复 |
 | Agent Workflow POST 断流或超时 | 保留原 `idempotency_key`，先按 Run 发现 Workflow、回放已提交事件并读取 Summary/Result；不生成新 key 自动重试 |
 | 运行中查看历史回复证据 | 在独立检查器状态中按所选 Message 的 `run_id` 读取 Run、Workflow、Node、Reasoning 和 Context 证据；不跳转 `/runs/[runId]`，不重建工作台，不取消或替换当前执行 |
 | 页面恢复时最新 Run 仍在活动状态 | 恢复待完成 Assistant 投影并禁用新提交，允许读取或显式取消权威 Workflow；不把缺少本地 SSE reader 解释为运行已结束 |
@@ -685,18 +697,18 @@ apps/web/
 
 | 能力范围 | 当前已实现 | 当前未实现或未完成 | 状态 |
 |---|---|---|---|
-| 会话与路由 | 创建、选择和重命名会话，原子创建Run与当前User Message，最新消息窗口、历史游标分页、`/c/[sessionId]` 与 `/runs/[runId]` 稳定路由、首条回复持久化后再切换会话路由、刷新恢复消息、按会话隔离的标签页草稿、同会话多标签页提交互斥、不自动发送的“再次提问”，以及不改变路由和工作台状态的消息运行证据抽屉 | 会话归档/取消归档按当前决定暂停；轮次提交尚无客户端幂等键；首个事件前断线不能安全重发未知结果的请求 | 进行中 |
+| 会话与路由 | 创建、选择和重命名会话，原子创建Run与当前User Message，消息分页、稳定会话/运行路由、首条回复保存后切换路由、消息与草稿恢复、同会话多标签页互斥、再次提问和独立消息证据；轮次重试与已保存快速回复的即时/刷新续聊通过真实BFF和实际FastAPI检查，使用临时SQLite/FakeProvider/内存对象存储；仅在单completed Attempt、对应已保存Assistant、同会话消息顺序及明确Workflow 404等事实完整时允许pending Run续聊 | 会话归档/取消归档暂停；跨刷新/再次点击后的key持久化未实现，轮次重放不等于首事件前模型执行恢复；Workflow查询失败、活动/未知状态与不完整事实仍禁发，后端Run状态保持不变 | 进行中 |
 | Provider 与模型选择 | Web读取稳定模型目录，支持搜索、键盘选择、加载/失败/空目录状态，并提供只读 `/settings/models` 服务端模型事实页；保留旧Provider目录兼容接口 | 最终用户自己的Provider凭据和模型授权过滤等待阶段5；当前设置页不提供登记、密钥或启停操作 | 进行中 |
 | 稳定模型目录 | `llm_models`稳定模型实体、历史能力快照去重回填、内部登记/更新/显式Registry初始化、`GET /api/v1/models`、能力要求查询、不可用原因和Web选择器交集已实现 | `user_model_access`和最终用户授权过滤按边界留给阶段5 | 已完成 |
-| Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端System Prompt和明确引用的文本Artifact来源 | 现有普通产品入口错误提供System Prompt绑定，必须移除；未知Attempt的首事件前断线只能读取最终事实；Artifact产品绑定、Memory、Knowledge与Tool来源尚未启用；修复前的历史Message没有截断元数据，不进行猜测性回填 | 进行中 |
+| Responses流 | SSE增量正文、序号去重、缺口拒绝、已知Attempt有限回放、完成/保存/失败/取消状态分离、默认不发送输出Token上限、`length`截断证据持久化、Run锚定Session文本Context Build，以及后端System Prompt和明确引用的文本Artifact来源；普通Web的System Prompt选择、提交和提示已移除 | 未知Attempt的首事件前断线仍不能自动重发模型请求；Artifact产品绑定、Memory、Knowledge与Tool来源尚未启用；修复前的历史Message不猜测回填截断元数据 | 进行中 |
 | Reasoning 展示 | `raw`、`summary`、`status` 联合类型，Chat 折叠展示、Trajectory 状态与指标、动画帧批量更新、历史恢复 | 隐藏推理继续不可见；不从 Provider 名称推断推理正文 | 已完成 |
 | 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据、Composer合并入口、模型切换归一化以及快速回复/Agent Workflow透传已实现 | 真实Provider浏览器矩阵仍待后续执行 | 进行中 |
-| Markdown 与代码块 | 实时和历史 Assistant 共用安全 GitHub Flavored Markdown，支持标题、强调、列表、引用、表格及行内/围栏代码；禁用原始 HTML、危险链接和自动远程图片 | 代码块复制、可见语言工具条、长行滚动和可选语法高亮尚未实现 | 进行中 |
+| Markdown 与代码块 | 实时和历史Assistant共用安全GitHub Flavored Markdown；本轮新增语言工具栏、独立复制、成功/失败提示、13px代码和按钮、长行独立横滚；模拟BFF下桌面1200px及移动390px Chromium检查通过，继续禁用原始HTML、危险链接和自动远程图片 | 不代表真实BFF、Provider或完整跨浏览器验收；可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 320px 后内部滚动、空白输入拒绝、发送中状态和显式发送按钮；Enter 与 Shift+Enter 均只换行，不保留其他键盘发送快捷键；完整Composer高度驱动消息底部留白 | 输入区仍需随完整跨浏览器门禁持续验证 | 已完成 |
 | Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留、快照恢复、审核意见不吞掉最终回答、活动运行恢复后的重复提交保护，以及职责明确的公开活动摘要和可折叠生命周期瀑布流 | 脱离HTTP连接独立执行、跨进程恢复、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置；独立后台执行已进入阶段10规划 | 进行中 |
-| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 工作流尚无Prompt/Artifact产品配置；Memory、Knowledge及未来Tool结果等待正式门禁 | 进行中 |
-| 运行证据 | Workflow 摘要、11 类节点、Attempt Reasoning、用量、费用、并行组和安全错误；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断当前执行 | 完整 Task/Attempt/Retry/Artifact 视图、允许动作、Artifact 详情页、Context/Prompt/Evaluation 开发视图尚未实现 | 进行中 |
-| 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定 BFF 路由、资源归属、请求大小限制、前后端环境文件隔离、开发/生产构建目录隔离、Next.js加载/错误/不存在边界，以及桌面和移动Chromium的可复现Playwright基线 | 真实 Provider 浏览器端到端、完整可访问性、跨浏览器、敏感字段和 MinIO 门禁未完整执行 | 进行中 |
+| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 正式文件产品绑定未实现；System Prompt由后端决定，不增前台配置；Memory、Knowledge继续暂停，模型文件工具及附件专用编排后置 | 进行中 |
+| 运行证据 | Workflow摘要、11类节点、Attempt Reasoning、用量、费用、并行组、安全错误和脱敏Context证据；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断执行；Context已过滤System Prompt存在性及元数据 | 完整Task/Attempt/Retry/Artifact视图、允许动作、Artifact详情页及完整Evaluation开发视图尚未实现；普通产品不增加Prompt视图 | 进行中 |
+| 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定BFF路由、资源归属、请求大小限制、环境与构建目录隔离、Next.js页面边界；BFF按实际Host与请求协议严格比较Origin，两个本地入口同源POST通过、跨别名Origin返回403；117项测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF浏览器测试通过 | 真实Provider浏览器端到端、完整可访问性、跨浏览器、敏感字段和MinIO检查未完整执行；转发头可信代理及HTTPS真实部署未验收，不将本地同源修复作为公网安全通过 | 进行中 |
 | 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属可用于多用户前端联调 | FastAPI全资源主体授权、个人API Key和用户Provider凭据继续由阶段5完成；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker分别等待阶段6至阶段10 | 进行中 |
 
 ### 当前故障定位索引
@@ -735,7 +747,7 @@ apps/web/
 
 2026 年 8 月 20 日事实审计确认：当时 Web 的 50 项 Node 测试、TypeScript、ESLint 和 Next.js 生产构建已通过；后端与模型适配层合计 262 项通过、4 项真实基础设施测试按默认配置跳过，Ruff 全量检查通过。统一 Reasoning 联合类型、折叠展示、Trajectory 指标、动画帧批量更新、仅在消息流底部自动跟随、未知类型安全忽略、Attempt 归属校验、Responses 事件回放、安全 Markdown、首条回复稳定路由、截断证据和“默认不设置输出 Token 上限”已经实现。真实 DeepSeek 快速回复与单任务 Agent Workflow 均已通过 Playwright 的即时显示和刷新恢复验证；本地 MySQL 已迁移至 `20260820_0012`，该 Agent 回归的原始 Provider 证据已由本地 MinIO 保存和读取。该段保留为当日审计记录；当前设置页和自动化状态以下方2026年8月31日实现事实为准。
 
-当前明确不宣称完成的内容：会话归档/取消归档、最终用户登录与授权、正式 Message/Run 端到端幂等合同、Run/Task/Attempt/Retry/Artifact 完整证据和允许动作、Artifact 详情页、代码块完整浏览器门禁与可选语法高亮、Context/Prompt/Evaluation 开发视图、多模型/多审核策略/并行 Agent 的真实 Provider 矩阵、完整可访问性/跨浏览器/敏感字段门禁，以及 Agent 跨请求恢复和工具时间线。会话归档按用户当前决定暂停，不以隐藏按钮或临时本地状态代替服务端合同。
+当前明确不宣称完成的内容：会话归档/取消归档、FastAPI全资源主体授权、跨刷新/再次点击后的轮次key恢复和模型执行端到端恢复、Run/Task/Attempt/Retry/Artifact完整证据和允许动作、Artifact详情页、完整Evaluation开发视图、可选语法高亮、真实Provider浏览器矩阵、完整可访问性/跨浏览器/敏感字段验证、HTTPS可信代理部署，以及Agent跨请求恢复和工具时间线。可选登录、System Prompt前台移除和允许公开的Context证据已有；当前117项前端测试、ESLint、TypeScript、生产构建及20项桌面/移动模拟BFF浏览器检查通过。127.0.0.1来源误拒绝与已保存快速回复刷新禁发已修复，在临时SQLite/FakeProvider/内存对象存储条件下通过真实BFF轮次重试、即时/刷新续聊和工作流查询失败禁发检查；未修改后端Run状态。阶段4因上述剩余工作继续进行中；会话归档、Memory及真实Provider矩阵仍后置，不用本地状态替代服务端功能。
 
 ## 2026 年 8 月 31 日新增并完成的阶段4工作项
 
@@ -806,7 +818,7 @@ apps/web/
 | 对象型Message产品接入 | 阶段2补充后端读取合同，阶段4完成产品接入验收 | 进行中：当前只测试“不支持对象内容时明确失败”；正式上传后再实现允许类型和恢复行为 | 浏览器不读取对象存储、不解析`content_uri`、不自行校验哈希，也不把不支持对象转为空文本 |
 | System Prompt前台隔离 | 阶段4 | 已完成：普通Web不再代理或请求Prompt列表，Composer不再选择、展示或提交Prompt引用，BFF拒绝伪造引用，Context证据过滤Prompt来源；后端选择与渲染策略作为独立后端工作项定义 | 普通浏览器不接收名称、用途、版本、变量Schema、正文或是否纳入；内部管理与审计接口保持受内部密钥保护 |
 | Artifact普通产品绑定 | 阶段4 | 进行中：Responses引用合同、内存对象存储测试以及浏览器本地文件选择/删除已完成；后端上传、Artifact创建和受控引用提交尚未实现 | 本地文件仅显示“待上传”，存在待上传文件时阻止发送；不开放任意Artifact ID或URI输入，不允许跨Run资源，也不把测试夹具描述为生产上传 |
-| Context证据抽屉 | 阶段4 | 进行中：继续展示允许公开的来源纳入/排除、信任、预算和模型目录事实，同时过滤System Prompt存在性及其全部元数据；失败不遮挡已生成的对话正文 | 不展示完整系统指令、System Prompt存在性/正文/名称/版本/变量、来源ID、内容哈希、对象URI、Handoff全文或其他敏感内容，不把前端推测显示成后端事实 |
+| Context证据抽屉 | 阶段4 | 已完成当前范围：展示允许公开的来源纳入/排除、信任、预算和模型目录事实，同时过滤System Prompt存在性及其全部元数据；失败不遮挡已生成的对话正文 | 不展示完整系统指令、System Prompt存在性/正文/名称/版本/变量、来源ID、内容哈希、对象URI、Handoff全文或其他敏感内容，不把前端推测显示成后端事实 |
 
 System Prompt只能由后端策略选择、固定版本并渲染；当前快速回复在策略尚未定义时不猜测默认版本。普通浏览器不读取候选项、不提交Prompt引用，也不显示是否使用。Artifact在文件上传完成后使用独立的受控选择合同；资源在选择后被禁用、删除、跨Run引用或读取失败时，本轮必须在Provider调用前失败，不能静默移除后继续生成。
 
@@ -944,6 +956,8 @@ GET /api/v1/models
 
 ### 对话代码块展示优化
 
+2026 年 9 月 12 日状态：代码已修改，当前Chromium检查范围通过。新增`MarkdownCodeBlock`复用现有安全Markdown入口，展示语言标签、独立复制和成功/失败反馈；代码、工具栏与复制按钮为13px，长行在代码区独立横向滚动。复制只取代码正文，保留空白与换行；流式内容更新后不沿用旧内容的复制成功提示。主任务在真实Chromium的1200px桌面和390px移动视口，使用模拟BFF响应检查了中文/缩进/长行精确复制、未闭合围栏显示、失败反馈、键盘横滚与页面无横向溢出。截图见[桌面检查](../../output/playwright/phase234-desktop.png)和[移动检查](../../output/playwright/phase234-mobile.png)。未加入语法高亮；本结果不代表真实BFF、真实Provider或全部跨浏览器完成条件通过。
+
 - 继续复用当前 `MarkdownContent` 安全渲染入口，不创建第二套实时与历史消息渲染器。
 - 为围栏代码块增加可见语言标签、复制按钮和复制成功/失败状态；复制内容必须与原始代码一致，不能带工具栏文字或丢失换行。
 - 无语言代码块使用中性标签；长行默认横向滚动，代码区不能撑破中央阅读列或移动端视口，并保留缩进、空格和换行。
@@ -951,6 +965,25 @@ GET /api/v1/models
 - 继续禁止执行原始 HTML，不允许复制按钮或高亮组件绕过现有危险链接、远程图片和内容安全边界。
 
 完成条件：实时消息与历史消息展示一致；有语言、无语言、超长行、多代码块、复制原文、亮暗主题、移动端和流式完成切换测试通过；复制按钮具有可访问名称和键盘焦点；代码块不会导致横向页面溢出。
+
+### 2026 年 9 月 12 日本轮验证结果与限制
+
+以下记录区分修复前、删除未完成行后与两项问题修复后的结果。上一轮106项前端测试、ESLint和TypeScript由前端检查协作者执行；后端检查以及本轮117项测试、构建与浏览器检查由主任务执行并提供记录，文档协作者核对相关实现及本地证据位置后同步。有限范围检查通过不代表阶段4整体验收完成。
+
+- 后端与模型测试：`456 passed, 6 skipped`，包括真实隔离MySQL 8多连接轮次去重和Office运行环境；6项跳过不计为通过。
+- 修复前历史：前端相关定向测试20项通过，完整`npm test`为88项通过、18项失败，TypeScript检查失败。当时`apps/web/app/api/nexus/[...path]/route.ts:28`存在`if (session) headers.set`未完成行且`session`未定义，尚未获修复授权，因此保留原样；当时真实BFF轮次浏览器验收及生产构建未完成。这些记录不再代表当前检查状态。
+- 删除未完成行后的历史：用户当时仅授权删除上述行，主任务据此删除，没有调整来源校验或Run状态策略。在`apps/web`执行`npm test`，106项通过、0失败、0跳过；`npm run lint`与`npm run typecheck`均退出0，主任务执行`npm run build`通过。首次沙箱内测试因tsx本地IPC socket的`listen EPERM`未启动，获准在沙箱外重跑后通过。
+- 代码块UI：上述模拟BFF、真实Chromium桌面/移动检查通过；该项自身未验证真实BFF代理路径，也未请求真实Provider，不能与下一项的轮次验证范围混同。
+- 删除未完成行后的浏览器历史：主任务通过Playwright访问`http://localhost:3100`的生产前端，经真实BFF调用实际FastAPI路由，使用独立临时SQLite、FakeProvider和内存对象存储。`route.fetch`让首次轮次真实保存后故意中断该次浏览器响应；同key、相同请求体重试返回201→200，`sameRequest`、`sameRun`、`sameMessage`均为true，最终1条User Message、1条Assistant Message、1次Responses请求和1条Attempt，回复即时与刷新后均可见。同key改input返回409，伪造owner返回403；[当时截图](../../output/playwright/bff-turn-retry.png)为本地验收产物，未提交。当轮结束后临时服务与SQLite已清理，并恢复开发生成引用后再次通过TypeScript检查。
+- 两项问题的修复前事实：`http://127.0.0.1:3100`同源POST曾因NextURL把主机正规化为localhost，再与原始Origin比较不等而返回403；快速回复虽已保存、Attempt为`completed`，但Run仍`pending`，旧前端仅使用Run/Workflow状态判定活动，刷新后禁发。两问题当时超出仅删一行的授权，因此保留；用户随后明确授权修复，下列结果为当前状态，不再使用上述历史判定未修复。
+- 当前实现：`apps/web/app/api/nexus/[...path]/route.ts`按实际Host和请求协议严格比较序列化Origin，不把localhost与127.0.0.1视为同一来源；转发头不新增为可信来源。`apps/web/lib/conversation-submission.ts`仅在当前pending Run无Task、完整列表中恰有一个无Task的completed Attempt、同Run/Session最新User之后有准确引用该Attempt的已保存Assistant、且当前Workflow查询明确404时允许继续发送；活动、未知、查询失败和部分列表继续禁发。`apps/web/app/page.tsx`增加Workflow读取请求代次检查，旧读取不得覆盖当前会话事实。本轮没有修改后端Run状态；一个Run可承载多次模型调用，不能一概随Attempt完成而终止。
+- 当前自动化检查：主任务在`apps/web`执行目标测试34项通过，再执行完整`npm test`为117项通过（包含目标34项）；`npm run lint`、`npm run typecheck`与`npm run build`均通过。对最终构建执行`PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npm run test:e2e`，桌面/移动20项通过；这20项使用模拟BFF，不替代下列真实代理路径检查。
+- 当前真实BFF轮次与续聊：生产前端通过`http://127.0.0.1:3100`访问真实BFF及实际FastAPI路由，使用独立临时SQLite、FakeProvider和内存对象存储。首次轮次已提交后丢失浏览器响应，同key重试201→200、复用同Run与同User Message，仅一次Responses请求；同会话随后即时续聊，再刷新后续聊，共3条User、3条Assistant、3次Responses、3个Run各1条completed Attempt。Run仍为pending，所有已保存Assistant的`source_model_attempt_id`均与对应Attempt匹配，回复保存且可继续发；[续聊截图](../../output/playwright/quick-response-continued.png)为本地验收产物。
+- 当前来源与失败检查：真实BFF收到从localhost向127.0.0.1发送的跨别名Origin时返回403；localhost入口在最终构建下另实际发送，Session201、轮次201、Responses200、Assistant201，回复保存且仍可继续发。将Workflow查询注入503时禁发，恢复真实404后恢复可发，没有把查询失败当作无Workflow。
+- 旧读取结果检查：延迟旧会话A的真实Workflow 404，待新会话B的404查询完成后再释放A，B仍可继续发。请求代次检查用于防止静态检查发现的旧结果覆盖风险；修复前未稳定复现浏览器故障，不把本项写成旧浏览器失败的复现记录。
+- 证据与范围：`output/playwright/bff-repair-verification.js`、`output/playwright/stale-workflow-check.js`及上述续聊截图均为本地忽略文件，不是提交产物。本轮两项修复没有后端修改、没有开发数据库迁移，没有真实Provider调用，也未验收真实MinIO、生产数据库、转发头可信代理或HTTPS部署，不能称为公网安全验证通过。
+- 最终检查与清理：主任务对最终代码再次执行117项测试通过，并重拍查看续聊截图，确认3条回复可见且`canSend=true`；临时Next、FastAPI及专用浏览器已关闭，临时SQLite随服务生命周期清理。通过Next生成器保留原有`next-env.d.ts`开发引用后，最终TypeScript和ESLint再次退出0。
+- 剩余工作：跨刷新/再次点击key持久化、完整模型执行及跨进程恢复仍未实现；正式上传、完整前端证据视图和其他本节列明的未验收范围保持原状态。阶段4仍为进行中，不能以此次构建和限定环境浏览器检查代替整体验收。
 
 ### 取消 Enter 键盘发送
 
@@ -965,6 +998,8 @@ GET /api/v1/models
 完成条件：Enter 与 Shift+Enter 均只产生换行；中文等输入法组合不误发；点击或触摸发送按钮只提交一次；空白文本与生成中重复点击仍被拒绝；刷新恢复和首条回复即时显示行为保持不变。
 
 ## 新增项目导航与附件发送工作项（2026 年 9 月 5 日，未开始）
+
+2026 年 9 月 12 日实施顺序：先补齐阶段2—4基础功能。下述正式上传、项目文件页面仍未实现；“附件使用工作流处理”的自动模式切换与附件专用Agent编排后置，保留未来设计，不作为本轮已开通功能。当前本地选择仍显示待上传并阻止携带文件发送，不新增虚假上传或文件工作流入口。
 
 跨阶段数据、存储和权限合同以[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)为准。本工作项是设计，不改变目前“选文件后尚不能发送”的实际能力，也不恢复会话归档。
 
@@ -1003,13 +1038,13 @@ GET /api/v1/models
 | 对应后端检查点 | 前端工作项 | 依赖 | 完成条件 | 状态 |
 |---|---|---|---|---|
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
-| 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及Context/Prompt/Evaluation开发证据 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过 | 进行中 |
+| 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及允许公开的Context/Evaluation证据；System Prompt不进入普通产品 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过；Context当前范围已实现，完整Evaluation视图后续 | 进行中 |
 | 阶段2 + 阶段4 | 对象型Message受控读取与普通对话接入 | 阶段2对象读取合同、ObjectStorage受控访问和统一Context Builder | 当前明确拒绝测试通过；生产归属、MIME、大小、哈希、UTF-8、重放和浏览器错误恢复等待上传合同 | 进行中 |
 | 阶段4 | System Prompt前台隔离与Context证据抽屉 | 已实现的Prompt Release、`context_policy.v2`和脱敏Context证据接口 | 普通Web不请求或展示System Prompt候选/元数据、不提交Prompt引用；证据过滤System Prompt存在性；用户隔离、敏感正文隔离和局部失败测试通过 | 已完成 |
 | 阶段4 | Artifact普通产品绑定 | 已实现的受限文本Artifact读取、普通Responses引用合同和浏览器本地文件选择 | 内存对象存储合同与本地选择/删除/发送门禁测试已通过；正式文件上传、Artifact创建、受控引用和刷新恢复尚未完成 | 进行中 |
 | 阶段2 + 阶段4 | 稳定模型目录、数据库模型实体、Provider Registry 交集和 `/models` 选择数据 | `llm_models`、`llm_model_catalog_versions`与Provider Registry | 空库/存量库回填、唯一约束、启用/禁用、能力缺失、稳定排序、BFF固定路由和前端不可静默切换测试通过 | 已完成 |
 | 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
-| 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、仅按钮发送、可访问性、性能和检查点门禁 | 已验证的后端接口与稳定开发环境 | 本轮会话可靠性及桌面/移动确定性浏览器基线已通过；归档暂停，代码块完整门禁、真实Provider、跨浏览器、安全和可访问性门禁继续实施 | 进行中 |
+| 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、轮次幂等提交、仅按钮发送、可访问性和性能 | 后端接口与稳定开发环境 | 修复前及106项通过历史保留；当前117项测试、ESLint、TypeScript、生产构建和20项桌面/移动模拟BFF测试通过。来源误拒绝和已保存快速回复刷新禁发已修复，真实BFF轮次重试、续聊及失败禁发在临时SQLite/FakeProvider/内存对象存储下通过；跨刷新key、完整模型执行恢复和HTTPS可信代理部署等仍未完成，归档/Memory/真实Provider矩阵后置 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 进行中 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |
 | 阶段7 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段7完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |
