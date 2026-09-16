@@ -1,7 +1,7 @@
 """Resolve trusted Run artifacts into provider-independent immutable Context snapshots.
 
-No upload lifecycle or parse-cache table is introduced. Only selected extraction
-blocks are persisted in existing Context sources; complete originals stay in MinIO.
+Private uploads reuse their verified immutable parse objects; legacy trusted artifacts
+are parsed on demand. Selected blocks enter Context snapshots; originals stay in MinIO.
 """
 
 import hashlib
@@ -37,13 +37,19 @@ async def _read_parse_source(
     run_id: str,
     reference: ParsedArtifactReference,
 ) -> tuple[FileParseRequest, bytes]:
-    """Read one bounded, Run-scoped source and verify its hash without invoking any parser."""
+    """Read a Run-scoped source, reject revoked private uploads and verify the original hash."""
 
     artifact = await db_session.get(LlmRunArtifact, reference.artifact_id)
     if artifact is None:
         raise ResourceNotFoundError("Artifact")
     if artifact.run_id != run_id:
         raise ResourceConflictError("Parsed Artifact does not belong to the Run")
+    from nexuspilot_api.models import UserFile
+    private_file = await db_session.get(UserFile, artifact.artifact_id, populate_existing=True)
+    if private_file is not None and (
+        private_file.status != "ready" or private_file.run_id != run_id
+    ):
+        raise ResourceConflictError("文件已删除或不可读取。")
     if not 0 < artifact.size_bytes <= MAX_PARSE_BYTES:
         raise ResourceConflictError("Artifact exceeds the supported parsing size")
     try:
@@ -121,12 +127,16 @@ async def parse_run_artifact(
         reference=reference,
     )
     try:
-        document = await to_thread.run_sync(
-            parse_file_content,
-            parse_request,
-            content,
-            limiter=FILE_PARSE_LIMITER,
-        )
+        from nexuspilot_api.models import UserFile
+        from nexuspilot_api.services.user_file_service import read_parsed_file
+
+        private_file = await db_session.get(UserFile, reference.artifact_id)
+        if private_file is not None:
+            document = await read_parsed_file(storage, private_file)
+        else:
+            document = await to_thread.run_sync(
+                parse_file_content, parse_request, content, limiter=FILE_PARSE_LIMITER,
+            )
         # Preserve old text/PDF/legacy-Office hashes when no structure was supplied.
         absent_fields = {"structure"} if document.structure is None else set()
         document_hash = hashlib.sha256(

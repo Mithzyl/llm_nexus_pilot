@@ -102,6 +102,7 @@ class ConversationTurnCreate(BaseModel):
     run_type: str = Field(default="general", min_length=1, max_length=64)
     budget_limit: Decimal | None = Field(default=None, ge=0)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    file_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class ConversationTurnRead(ApiModel):

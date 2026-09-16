@@ -70,6 +70,11 @@ class FakeObjectStorage:
             size_bytes=len(content),
         )
 
+    def uri_for_object(self, object_name: str) -> str:
+        """Match deterministic test upload addresses before writing any bytes."""
+
+        return f"memory://test/{object_name}"
+
     async def open_object(
         self,
         storage_uri: str,

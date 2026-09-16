@@ -214,7 +214,8 @@ async def create_conversation_turn(
 
     Lock the Session before reading its key map, so MySQL serializes same-session
     requests. Key records, Run, message and sequence commit together. This does not
-    start or retry a Provider call. Legacy unkeyed requests remain separate turns.
+    start or retry a Provider call. Ready files bind atomically with message metadata.
+    Legacy unkeyed requests remain separate turns.
     """
 
     try:
@@ -234,6 +235,8 @@ async def create_conversation_turn(
                 raise InvalidRequestError("Run session must belong to an active run user")
             key_hash = hashlib.sha256(payload.idempotency_key.encode()).hexdigest()
             normalized = payload.model_dump(mode="json", exclude={"idempotency_key"})
+            if not payload.file_ids:
+                normalized.pop("file_ids", None)  # Preserve keys committed before file support.
             if payload.budget_limit is not None:
                 normalized["budget_limit"] = str(payload.budget_limit.normalize())
             request_hash = hashlib.sha256(
@@ -267,6 +270,13 @@ async def create_conversation_turn(
             ),
             commit=False,
         )
+        from nexuspilot_api.services.user_file_service import bind_files
+
+        if payload.file_ids:
+            conversation = await db_session.get(LlmSession, session_id)
+            if conversation.project_id is not None:
+                raise ResourceConflictError("项目文件授权尚未启用，当前只能在普通会话上传。")
+        files = await bind_files(db_session, payload.user_id, run.run_id, payload.file_ids)
         message = await create_message(
             db_session,
             session_id,
@@ -274,6 +284,7 @@ async def create_conversation_turn(
                 role="user",
                 content_text=payload.content_text,
                 run_id=run.run_id,
+                metadata_json={"files": files} if files else {},
             ),
             commit=False,
         )

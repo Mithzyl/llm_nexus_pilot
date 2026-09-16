@@ -1,5 +1,8 @@
 "use client";
 
+import { FileLibrary } from "../components/composer/FileLibrary";
+import { messageFiles, uploadUserFile, validateUploadFiles, type UserFile } from "../lib/user-files";
+
 import {
   browserCsrfHeaders,
   cancelAgentWorkflow,
@@ -144,6 +147,7 @@ type ReviewPolicy = "always" | "on_verification_failure" | "never";
 type AgentParallelism = 1 | 2;
 
 type LocalMessage = MessageSummary & {
+  metadata_json?: Record<string, unknown> | null;
   local_id: string;
   content: string;
   pending?: boolean;
@@ -270,6 +274,8 @@ export default function Home() {
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
   const [selectedModel, setSelectedModel] = useState("");
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState("");
+  const uploadedFileCache = useRef(new Map<string, UserFile>());
   const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
     null,
   );
@@ -760,8 +766,9 @@ export default function Home() {
     setErrorMessage(null);
   }
 
-  /** Remove one pending local file without reading or uploading its contents. */
+  /** Remove a pending selection; persisted leftovers remain explicitly manageable in My Files. */
   function handlePendingFileRemove(fileKey: string) {
+    uploadedFileCache.current.delete(fileKey);
     setPendingUploadFiles((currentFiles) =>
       currentFiles.filter((file) => pendingUploadFileKey(file) !== fileKey),
     );
@@ -1249,6 +1256,7 @@ export default function Home() {
       if (restoredRouteKey.current === currentRouteKey) return;
       restoredRouteKey.current = currentRouteKey;
       setPendingUploadFiles([]);
+      uploadedFileCache.current.clear();
 
       if (workspaceRoute.kind === "home") {
         switchDraftContext(null);
@@ -1490,8 +1498,12 @@ export default function Home() {
     }
   }
 
-  /** Cancel an Agent Workflow explicitly, or abort only the ordinary Response stream. */
+  /** Abort file preparation before any workflow exists; otherwise cancel the active execution. */
   function handleStop() {
+    if (uploadProgress) {
+      activeRequestController.current?.abort();
+      return;
+    }
     if (executionMode === "agent" && run) {
       void handleCancelAgentWorkflow();
       return;
@@ -1520,10 +1532,8 @@ export default function Home() {
       isPersistedConversationExecutionActive ||
       !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
     ) return;
-    if (pendingUploadFiles.length > 0) {
-      setErrorMessage("文件上传服务尚未启用，请移除待上传文件后再发送。");
-      return;
-    }
+    try { validateUploadFiles(pendingUploadFiles); }
+    catch (error) { setErrorMessage(error instanceof Error ? error.message : "文件不符合要求。"); return; }
     sessionRestoreRequestId.current += 1;
     const submittedMode = executionMode;
     let submittedRunId: string | null = null;
@@ -1551,9 +1561,24 @@ export default function Home() {
       assistantProjectionFrame.current = null;
     }
     const userMessage = createLocalMessage("user", input);
-    setMessages((current) => [...current, userMessage]);
 
     try {
+      const uploadController = new AbortController();
+      activeRequestController.current = uploadController;
+      const fileIds: string[] = [];
+      for (const file of pendingUploadFiles) {
+        setUploadProgress(`正在上传并解析：${file.name}`);
+        const key = pendingUploadFileKey(file);
+        let uploaded = uploadedFileCache.current.get(key);
+        if (!uploaded) {
+          uploaded = await uploadUserFile(file, crypto.randomUUID(), uploadController.signal);
+          uploadedFileCache.current.set(key, uploaded);
+        }
+        fileIds.push(uploaded.file_id);
+      }
+      if (uploadController.signal.aborted) return;
+      setUploadProgress("");
+      setMessages((current) => [...current, userMessage]);
       let session = activeSession;
       if (!session) {
         session = await createSession(input.slice(0, 42));
@@ -1566,7 +1591,10 @@ export default function Home() {
 
       const createdTurn = await createConversationTurn(session.session_id, {
         content_text: input,
+        ...(fileIds.length ? { file_ids: fileIds } : {}),
       });
+      setPendingUploadFiles([]);
+      uploadedFileCache.current.clear();
       clearCommittedDraft();
       const createdRun = createdTurn.run;
       setMessages((current) => current.map((message) =>
@@ -1763,6 +1791,7 @@ export default function Home() {
         );
       }
     } finally {
+      setUploadProgress("");
       activeRequestController.current = null;
       setIsSending(false);
       if (syncNotificationSessionId) {
@@ -1974,6 +2003,8 @@ export default function Home() {
                   <>
                     <div className="message-meta"><span>你</span><time>{formatTime(message.created_at)}</time></div>
                     <p className="user-bubble">{message.content}</p>
+                    {messageFiles(message.metadata_json).map((file) => <a className="message-file" key={file.file_id}
+                      href={`/api/nexus/files/${encodeURIComponent(file.file_id)}/content`}>{file.filename} ↓</a>)}
                   </>
                 ) : (
                   <>
@@ -2043,7 +2074,7 @@ export default function Home() {
               />
               {pendingUploadFiles.length > 0 && (
                 <p className="composer-file-notice" role="status">
-                  文件上传尚未启用，移除文件后可发送。
+                  {uploadProgress || "发送时上传并解析 · 每个文件不超过 1 MiB · 暂不支持扫描件与图片"}
                 </p>
               )}
               {executionMode === "agent" && (
@@ -2099,13 +2130,12 @@ export default function Home() {
                       Agent
                     </button>
                   </div>
-                  {executionMode === "response" && (
-                    <FilePickerButton
+                  <FilePickerButton
                       selectedFileCount={pendingUploadFiles.length}
                       disabled={isSending}
                       onFilesSelected={handlePendingFilesSelected}
                     />
-                  )}
+                  <FileLibrary disabled={isSending} />
                   {selectedReasoningPolicy && (
                     <ReasoningSettings
                       effort={reasoningEffort}
@@ -2150,7 +2180,7 @@ export default function Home() {
                       );
                     }}
                   />
-                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (pendingUploadFiles.length > 0 || isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
             </div>

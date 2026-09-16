@@ -1,3 +1,18 @@
+.file-library { position: relative; }
+.composer-quiet-button { background: transparent; border: 0; color: var(--muted); padding: 8px; font-size: 14px; cursor: pointer; }
+.file-library-panel { position: absolute; bottom: calc(100% + 12px); left: 0; width: min(440px, 80vw); max-height: 55vh; overflow: auto; background: var(--panel-strong); color: var(--text); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 8px 32px var(--shadow); z-index: 50; }
+.file-library-panel header, .file-library-panel li { display: flex; align-items: center; gap: 12px; }
+.file-library-panel header strong, .file-library-panel li > span { flex: 1; min-width: 0; }
+.file-library-panel ul { padding: 0; margin: 12px 0 0; list-style: none; }
+.file-library-panel li { padding: 12px 0; border-top: 1px solid #8883; font-size: 14px; }
+.file-library-panel li strong { display: block; overflow-wrap: anywhere; font-weight: 500; }
+.file-library-panel small { display: block; margin-top: 4px; color: #777; }
+.file-library-panel button, .file-library-panel a { border: 0; background: transparent; color: inherit; font-size: 14px; cursor: pointer; white-space: nowrap; padding: 4px; }
+.message-file { display: inline-block; margin: 8px 12px 0 0; font-size: 14px; overflow-wrap: anywhere; text-decoration: underline; }
+@media (max-width: 600px) {
+  .file-library-panel { position: fixed; left: 12px; right: 12px; bottom: 180px; width: auto; max-height: 50vh; }
+}
+
 :root {
   --page: #ffffff;
   --panel: #f7f7f7;

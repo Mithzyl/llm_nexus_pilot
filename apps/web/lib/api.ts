@@ -204,7 +204,7 @@ export function createRun(payload: {
  */
 export async function createConversationTurn(
   sessionId: string,
-  payload: { content_text: string; idempotency_key?: string },
+  payload: { content_text: string; idempotency_key?: string; file_ids?: string[] },
 ): Promise<ConversationTurn> {
   const path = `sessions/${encodeURIComponent(sessionId)}/turns`;
   const init = {

@@ -1,5 +1,7 @@
 "use client";
 
+import { FILE_ACCEPT } from "../../lib/user-files";
+
 import { useEffect, useRef } from "react";
 
 export type PendingUploadFileDescriptor = {
@@ -101,6 +103,7 @@ export function FilePickerButton({
           ref={fileInputRef}
           className="file-picker-input"
           type="file"
+          accept={FILE_ACCEPT}
           multiple
           aria-label="选择文件"
           disabled={disabled}

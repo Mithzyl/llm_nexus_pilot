@@ -83,6 +83,13 @@ class ObjectStorage:
             size_bytes=len(content),
         )
 
+    def uri_for_object(self, object_name: str) -> str:
+        """Derive a validated private address before writes so cleanup survives process failure."""
+
+        uri = f"minio://{self.settings.minio_bucket}/{object_name}"
+        self._object_name_from_uri(uri)
+        return uri
+
     async def delete_object(self, storage_uri: str) -> None:
         """Delete one configured-bucket object and ignore already-missing keys."""
 

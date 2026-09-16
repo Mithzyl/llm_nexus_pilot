@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     max_artifact_size_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     file_runtime_socket: str | None = Field(default=None, min_length=1, max_length=100)
+    user_file_quota_bytes: int = Field(default=500 * 1024 * 1024, ge=1)
+    user_file_count_limit: int = Field(default=500, ge=1, le=500)
     model_max_retries: int = Field(default=2, ge=0, le=5)
     model_retry_backoff_seconds: float = Field(default=0.1, ge=0, le=10)
     model_pricing_json: str = "{}"

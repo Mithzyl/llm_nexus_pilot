@@ -1,7 +1,7 @@
 type RoutePatternSegment = string | ":id";
 
 type AllowedRoute = {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   pattern: readonly RoutePatternSegment[];
 };
 
@@ -11,6 +11,12 @@ type AllowedRoute = {
  * the platform API key cannot become a general-purpose browser proxy.
  */
 const ALLOWED_ROUTES: readonly AllowedRoute[] = [
+  { method: "POST", pattern: ["files"] },
+  { method: "GET", pattern: ["files"] },
+  { method: "GET", pattern: ["files", ":id"] },
+  { method: "DELETE", pattern: ["files", ":id"] },
+  { method: "PUT", pattern: ["files", ":id", "content"] },
+  { method: "GET", pattern: ["files", ":id", "content"] },
   { method: "POST", pattern: ["auth", "login"] },
   { method: "POST", pattern: ["auth", "logout"] },
   { method: "GET", pattern: ["auth", "me"] },

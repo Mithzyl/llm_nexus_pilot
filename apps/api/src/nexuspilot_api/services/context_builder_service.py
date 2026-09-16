@@ -123,16 +123,49 @@ async def build_runtime_context(
 
     The idempotency key identifies one logical model input. Reusing it with a
     different request is rejected; reusing it with the same request returns the
-    stored source snapshots rather than re-reading mutable Session state.
+    stored source snapshots rather than re-reading mutable Session state. Private
+    files bound atomically to this Run are included for quick replies and Agent nodes alike.
     """
 
     if not payload.run_id or not payload.current_user_message_id or not payload.idempotency_key:
         raise InvalidRequestError("Runtime context fields are required")
+    from nexuspilot_api.models import UserFile
+    from nexuspilot_api.schemas.file_parsing import ParsedArtifactReference
+
+    bound_ids = list(
+        (
+            await db_session.scalars(
+                select(UserFile.file_id)
+                .where(
+                    UserFile.run_id == payload.run_id,
+                    UserFile.user_id == payload.user_id,
+                )
+                .order_by(UserFile.file_id)
+            )
+        ).all()
+    )
+    if bound_ids:
+        references = payload.source_references
+        explicit_ids = {ref.artifact_id for ref in references.parsed_artifacts}
+        payload = payload.model_copy(
+            update={
+                "source_references": references.model_copy(
+                    update={
+                        "parsed_artifacts": [
+                            *references.parsed_artifacts,
+                            *[
+                                ParsedArtifactReference(artifact_id=file_id)
+                                for file_id in bound_ids
+                                if file_id not in explicit_ids
+                            ],
+                        ],
+                    }
+                )
+            }
+        )
     request_hash = _hash_runtime_request(payload)
     existing = await db_session.scalar(
-        select(LlmContextBuild).where(
-            LlmContextBuild.request_key == payload.idempotency_key
-        )
+        select(LlmContextBuild).where(LlmContextBuild.request_key == payload.idempotency_key)
     )
     if existing is not None:
         if existing.request_hash != request_hash:
@@ -150,9 +183,7 @@ async def build_runtime_context(
     except IntegrityError as exc:
         await db_session.rollback()
         existing = await db_session.scalar(
-            select(LlmContextBuild).where(
-                LlmContextBuild.request_key == payload.idempotency_key
-            )
+            select(LlmContextBuild).where(LlmContextBuild.request_key == payload.idempotency_key)
         )
         if existing is None or existing.request_hash != request_hash:
             raise ResourceConflictError("Context Build idempotency conflict") from exc
@@ -348,19 +379,31 @@ async def _load_referenced_context_candidates(
         if object_storage is None:
             raise ResourceConflictError("Parsed Artifact object storage is unavailable")
         snapshot, document_hash = await parse_run_artifact(
-            db_session, object_storage, run_id=run.run_id, reference=reference,
+            db_session,
+            object_storage,
+            run_id=run.run_id,
+            reference=reference,
         )
         content = _serialize_untrusted_material(
-            source_type=PARSED_ARTIFACT_SOURCE, source_id=reference.artifact_id, payload=snapshot,
+            source_type=PARSED_ARTIFACT_SOURCE,
+            source_id=reference.artifact_id,
+            payload=snapshot,
         )
         if len(content.encode()) > MAX_PARSED_CONTEXT_BYTES:
             raise ResourceConflictError(
                 "Parsed Context exceeds storage; select a smaller block range"
             )
-        candidates.append(_candidate(
-            PARSED_ARTIFACT_SOURCE, reference.artifact_id, content, "user",
-            source_version=document_hash, trust_level="external_untrusted", required=True,
-        ))
+        candidates.append(
+            _candidate(
+                PARSED_ARTIFACT_SOURCE,
+                reference.artifact_id,
+                content,
+                "user",
+                source_version=document_hash,
+                trust_level="external_untrusted",
+                required=True,
+            )
+        )
     if references.prompt is not None:
         rendered_prompt = await render_prompt(db_session, references.prompt)
         prompt_version = await db_session.scalar(
@@ -492,9 +535,7 @@ async def _load_referenced_context_candidates(
                     payload={
                         "evaluation_type": evaluation.evaluation_type,
                         "verdict": evaluation.verdict.value,
-                        "score": (
-                            str(evaluation.score) if evaluation.score is not None else None
-                        ),
+                        "score": (str(evaluation.score) if evaluation.score is not None else None),
                         "findings": evaluation.findings_json,
                     },
                 ),
@@ -722,15 +763,12 @@ def _select_runtime_with_budget(
             "Required Context source is unavailable: "
             f"{unavailable_required.forced_exclusion_reason}"
         )
-    required_token_estimate = sum(
-        candidate.token_estimate for candidate in required_candidates
-    )
+    required_token_estimate = sum(candidate.token_estimate for candidate in required_candidates)
     if required_token_estimate > available_tokens:
         raise ResourceConflictError("Required model input exceeds the input token budget")
 
     selected_identities = {
-        (candidate.source_type, candidate.source_id)
-        for candidate in required_candidates
+        (candidate.source_type, candidate.source_id) for candidate in required_candidates
     }
     running_total = required_token_estimate
     prior_messages = [
@@ -937,9 +975,7 @@ def _message_candidate(message: LlmMessage) -> _ContextCandidate:
         forced_exclusion_reason=(
             None if message.content_text is not None else "unsupported_object_content"
         ),
-        trust_level=(
-            "user_content" if message.role == MessageRole.USER else "model_generated"
-        ),
+        trust_level=("user_content" if message.role == MessageRole.USER else "model_generated"),
     )
 
 

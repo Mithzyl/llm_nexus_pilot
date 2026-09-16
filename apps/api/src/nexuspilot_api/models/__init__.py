@@ -125,6 +125,7 @@ from nexuspilot_api.models.records import (
     LlmRunArtifact,
     LlmTaskEvaluation,
 )
+from nexuspilot_api.models.user_file import UserFile
 
 __all__ = [
     "AgentRunStatus",
@@ -156,6 +157,7 @@ __all__ = [
     "LlmContextBuild",
     "LlmContextSource",
     "LlmConversationTurn",
+    "UserFile",
     "LlmEvaluationRule",
     "LlmEvaluationRuleSet",
     "LlmKnowledgeChunk",

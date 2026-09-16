@@ -55,6 +55,21 @@
 
 ## 预装文件执行环境
 
+### Office 提取范围与执行时间（2026 年 9 月 16 日）
+
+浏览器上传已接入现有执行器，原件与解析结果保存由阶段2负责。macOS 使用 Docker Desktop 内的 Linux 容器，Linux 使用 Docker Engine；均需要管理员提前构建镜像、检查并启动 Unix Socket 执行器。任务不临时安装依赖。未配置执行器时 Office 上传明确失败，不改用宿主机解析。
+
+可复现实测：`python3 deployments/file-runtime/benchmark_office.py --image nexuspilot-file-runtime:structure-test --repeat 3`。样本在受限容器生成，含正文、表格、图片、公式、备注和图表；不读取用户文档。macOS Docker Desktop/Linux ARM64，镜像 `sha256:e4964d7144c5c3b279e6afa99c8043cbdf7034422a371585c5e01e5ed284fa82`。以下时间包括创建／启动／解析／销毁容器，不包括上传、MinIO、模型生成或首次镜像构建。
+
+| 合成样本 | 3次范围 / 中位数 | 实际结果 |
+|---|---|---|
+| DOCX，约38 KB，正文/表格/页眉/图片 | 321–355 / 333 ms | 正文、表格可读；页眉标记未提取，图片不做 OCR，partial |
+| XLSX，约7 KB，单元格/公式/合并/图表 | 350–360 / 360 ms | 单元格文字可读；图表标题标记未提取，partial |
+| PPTX，约34 KB，文本/备注/图片 | 361–381 / 370 ms | 文本与备注可读；图片幻灯片只有位置记录，partial |
+| PPTX，约40 KB，含嵌入工作簿图表 | 267–286 / 275 ms | 整份拒绝，`office_parse_failed`；嵌入对象命中现有安全检查 |
+
+这些是小文件的本机耗时，不是大文件或并发服务承诺。复杂排版、图表、图像、页眉页脚和阅读顺序不保证完整或语义正确；没有 OCR。PPTX 图表不能承诺仅忽略图表继续读取，部分文件会整份拒绝。保留现有嵌入对象拒绝规则；后续若开放需单独设计受限读取和测试。解析结果及页面保留“部分提取”，不得显示为完整理解。
+
 2026 年 9 月 7 日：通用依赖环境已在本机 Docker Desktop 的 Linux 容器中构建并通过合成文件检查，并新增 Office 专用执行器，服务于阶段2当前 Run Artifact 的程序解析。定义位于 `deployments/file-runtime`；不开放普通用户命令或 Docker HTTP 接口，不是可恢复后台 Worker。正式上传、文件版本与 Agent 自主文件循环仍未实现。
 
 宿主执行脚本需要 Python 3.10+ 和可访问的 Docker daemon（API 仍要求 Python 3.11+）；检查要求 Linux cgroup v2。构建需要访问镜像仓库、Debian 软件源和 Python 软件源，文件检查不联网、不拉取镜像。

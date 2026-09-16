@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Query, Request, Response, status
 
 from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.pagination import CursorPage
@@ -55,9 +55,20 @@ async def post_conversation_turn(
     payload: ConversationTurnCreate,
     db_session: DatabaseSessionDependency,
     response: Response,
+    request: Request,
 ) -> ConversationTurnRead:
-    """Create one turn (201), or replay the same committed key without new facts (200)."""
+    """Create/replay a turn; private attachments additionally require the actual file owner."""
 
+    if payload.file_ids:
+        from nexuspilot_api.core.config import get_settings
+        from nexuspilot_api.features.identity.dependencies import get_workspace_principal
+        from nexuspilot_api.routers.user_files import file_principal
+
+        principal = await get_workspace_principal(request, db_session, get_settings())
+        await file_principal(request, db_session, principal)
+        if principal.user_id != payload.user_id:
+            from nexuspilot_api.core.errors import ResourceNotFoundError
+            raise ResourceNotFoundError("File")
     run, message, replayed = await create_conversation_turn(db_session, session_id, payload)
     if replayed:
         response.status_code = status.HTTP_200_OK

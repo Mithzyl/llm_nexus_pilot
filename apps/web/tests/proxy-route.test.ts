@@ -9,6 +9,7 @@ let GET: typeof import("../app/api/nexus/[...path]/route").GET;
 let POST: typeof import("../app/api/nexus/[...path]/route").POST;
 let PATCH: typeof import("../app/api/nexus/[...path]/route").PATCH;
 let DELETE: typeof import("../app/api/nexus/[...path]/route").DELETE;
+let PUT: typeof import("../app/api/nexus/[...path]/route").PUT;
 const originalFetch = globalThis.fetch;
 
 test.before(async () => {
@@ -17,6 +18,7 @@ test.before(async () => {
   POST = route.POST;
   PATCH = route.PATCH;
   DELETE = route.DELETE;
+  PUT = route.PUT;
 });
 
 /** Build a same-origin request for one proxy path. */
@@ -48,6 +50,26 @@ function createRequest(
 function createContext(path: string) {
   return { params: Promise.resolve({ path: path.split("/") }) };
 }
+
+test("forwards bounded raw file bytes without JSON coercion and rejects excessive bytes", async () => {
+  const requests: RequestInit[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    requests.push(init ?? {});
+    return Response.json({ status: "ready" });
+  }) as typeof fetch;
+  try {
+    const accepted = await PUT(createRequest("files/test/content", {
+      method: "PUT", headers: { "content-type": "application/octet-stream" }, body: "hello",
+    }), createContext("files/test/content"));
+    assert.equal(accepted.status, 200);
+    assert.equal(new TextDecoder().decode(requests[0].body as Uint8Array), "hello");
+    const denied = await PUT(createRequest("files/test/content", {
+      method: "PUT", body: new Uint8Array(1024 * 1024 + 1),
+    }), createContext("files/test/content"));
+    assert.equal(denied.status, 413);
+    assert.equal(requests.length, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("forwards login cookies and does not require a pre-existing user session", async () => {
   const upstreamCalls: Array<{ url: string; cookie: string | null }> = [];

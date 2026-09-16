@@ -62,7 +62,7 @@ function buildApiHeaders(request: NextRequest): Headers {
 /** Copy the response headers that are safe and necessary across the server proxy. */
 function copySafeResponseHeaders(upstream: Response): Headers {
   const responseHeaders = new Headers({ "Cache-Control": "no-store" });
-  for (const headerName of ["content-type", "x-accel-buffering"]) {
+  for (const headerName of ["content-type", "x-accel-buffering", "content-disposition", "x-content-type-options"]) {
     const headerValue = upstream.headers.get(headerName);
     if (headerValue) responseHeaders.set(headerName, headerValue);
   }
@@ -463,9 +463,33 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     }
   }
 
-  const isBodyRequest = requiresJsonRequestBody(request.method, path);
-  let body: string | undefined;
+  const isFileUpload = request.method === "PUT" && path[0] === "files" && path[2] === "content";
+  const isBodyRequest = !isFileUpload && requiresJsonRequestBody(request.method, path);
+  let body: string | Uint8Array<ArrayBuffer> | undefined;
   let payload: JsonObject | undefined;
+  if (isFileUpload) {
+    const reader = request.body?.getReader();
+    if (!reader) return Response.json({ detail: "文件内容为空。" }, { status: 422 });
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 1024 * 1024) {
+          await reader.cancel();
+          return Response.json({ detail: "单文件不能超过 1 MiB。" }, { status: 413 });
+        }
+        chunks.push(value);
+      }
+      body = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    } catch {
+      return Response.json({ detail: "文件传输中断，请重试。" }, { status: 400 });
+    } finally { reader.releaseLock(); }
+  }
   if (isBodyRequest) {
     let parsedBody: Awaited<ReturnType<typeof readJsonBody>>;
     try {
@@ -593,5 +617,6 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
 
 export const GET = proxy;
 export const POST = proxy;
+export const PUT = proxy;
 export const PATCH = proxy;
 export const DELETE = proxy;
