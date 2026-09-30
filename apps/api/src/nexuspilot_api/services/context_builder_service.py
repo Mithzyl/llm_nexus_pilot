@@ -124,29 +124,22 @@ async def build_runtime_context(
     The idempotency key identifies one logical model input. Reusing it with a
     different request is rejected; reusing it with the same request returns the
     stored source snapshots rather than re-reading mutable Session state. Private
-    files bound atomically to this Run are included for quick replies and Agent nodes alike.
+    uploads from this conversation up to the anchor are included for replies and Agent nodes.
     """
 
     if not payload.run_id or not payload.current_user_message_id or not payload.idempotency_key:
         raise InvalidRequestError("Runtime context fields are required")
-    from nexuspilot_api.models import UserFile
     from nexuspilot_api.schemas.file_parsing import ParsedArtifactReference
+    from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 
-    bound_ids = list(
-        (
-            await db_session.scalars(
-                select(UserFile.file_id)
-                .where(
-                    UserFile.run_id == payload.run_id,
-                    UserFile.user_id == payload.user_id,
-                )
-                .order_by(UserFile.file_id)
-            )
-        ).all()
+    bound_ids = await conversation_file_ids(
+        db_session, payload.run_id, current_user_message_id=payload.current_user_message_id
     )
     if bound_ids:
         references = payload.source_references
         explicit_ids = {ref.artifact_id for ref in references.parsed_artifacts}
+        if len(explicit_ids | set(bound_ids)) > 10:
+            raise ResourceConflictError("单次上下文最多读取 10 个文件，请缩小引用范围。")
         payload = payload.model_copy(
             update={
                 "source_references": references.model_copy(

@@ -1,5 +1,6 @@
 """Verify actual private-upload binding and immutable parse reuse at the Responses boundary."""
 
+import pytest
 from test_parsed_file_context import prepare_parsed_fixture
 from test_user_files import reserve_file
 
@@ -65,9 +66,7 @@ async def test_uploaded_file_is_bound_to_turn_and_automatically_enters_context(c
         )
 
     with monkeypatch.context() as private_access:
-        private_access.setattr(
-            "nexuspilot_api.features.identity.file_access.get_workspace_principal", other_principal
-        )
+        private_access.setattr("legacy_file_access.get_workspace_principal", other_principal)
         assert (await client.get(f"/api/v1/artifacts/{file_id}/content")).status_code == 404
         assert (await client.post("/api/v1/responses", json=payload)).status_code == 404
         assert (
@@ -81,10 +80,11 @@ async def test_uploaded_file_is_bound_to_turn_and_automatically_enters_context(c
     assert (await client.post("/api/v1/responses", json=payload)).status_code == 409
 
 
+@pytest.mark.parametrize("followup", [False, True])
 async def test_agent_nodes_all_receive_bound_file_without_new_file_agent(
-    client, test_database_session_factory
+    client, test_database_session_factory, followup
 ):
-    """Controller, worker, reviewer and final synthesis use the same authorized parsed file."""
+    """All Agent nodes reuse the parsed file on the upload turn and on a later conversation turn."""
     from test_agent_workflows import (
         ScriptedAgentProvider,
         registered_agent_test_model,
@@ -113,6 +113,12 @@ async def test_agent_nodes_all_receive_bound_file_without_new_file_agent(
         json={"user_id": owner, "content_text": "Read this file", "file_ids": [file["file_id"]]},
     )
     assert turn.status_code == 201, turn.text
+    if followup:
+        turn = await client.post(
+            f"/api/v1/sessions/{session['session_id']}/turns",
+            json={"user_id": owner, "content_text": "Continue discussing the file"},
+        )
+        assert turn.status_code == 201, turn.text
     response = await client.post(
         f"/api/v1/runs/{turn.json()['run']['run_id']}/agent-workflows", json=workflow_payload()
     )

@@ -53,12 +53,20 @@ async def test_mysql_reservations_are_serialized_and_minio_bytes_are_verified(mo
         """Emulate an already authenticated isolated test owner, not a client-supplied owner."""
         return LocalWorkspacePrincipalRead(user_id=owner, display_name="test", scopes=[])
 
+    async def resource_principal(*_args):
+        """Use the same pre-authenticated fixture identity for resource authorization."""
+        return await principal()
+
     try:
         async with factory() as db:
             db.add(User(user_id=owner, display_name="upload test"))
             await db.commit()
         app.dependency_overrides[get_database_session] = session
         app.dependency_overrides[get_workspace_principal] = principal
+        monkeypatch.setattr(
+            "nexuspilot_api.features.identity.resource_access.get_workspace_principal",
+            resource_principal,
+        )
         app.dependency_overrides[get_object_storage] = lambda: storage
         monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 60000)
         async with httpx.AsyncClient(

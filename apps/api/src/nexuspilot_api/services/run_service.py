@@ -217,12 +217,13 @@ async def list_runs(
     created_before: datetime | None,
     limit: int,
 ) -> CursorPage[RunSummary]:
-    """Return a bounded run page with a cursor bound to all normalized filters."""
+    """Bind a run page to the authenticated owner and normalized filters."""
 
     normalized_after = _normalize_time_filter(created_after, "created_after")
     normalized_before = _normalize_time_filter(created_before, "created_before")
     if normalized_after and normalized_before and normalized_after >= normalized_before:
         raise InvalidRequestError("created_after must be earlier than created_before")
+    user_id = db_session.info.get("authorized_user_id", user_id)
     query_fingerprint = database_query_fingerprint(
         "runs",
         {
@@ -343,9 +344,12 @@ async def _query_run_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> RunDatabasePage:
-    """Query one ordered run page after an optional query-bound database key."""
+    """Filter runs by authenticated owner before ordering and limiting the page."""
 
-    statement = select(LlmRun)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmRun), LlmRun)
     if user_id is not None:
         statement = statement.where(LlmRun.user_id == user_id)
     if session_id is not None:

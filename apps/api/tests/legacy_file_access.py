@@ -1,4 +1,9 @@
-"""Enforce final-user access when legacy service endpoints reference new private uploads."""
+"""Historical file-access fixture for legacy trusted-service business tests only.
+
+Production uses identity.resource_access. This preserves pre-existing file tests
+while broad service-contract fixtures seed arbitrary owners; use resource_client
+to test the real authorization dependency. Never import this module from app code.
+"""
 
 from fastapi import Request
 from sqlalchemy import select

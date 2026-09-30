@@ -1,6 +1,10 @@
 # NexusPilot LLM Platform 总体规划
 
+2026 年 9 月 30 日上线安排：总体部署方案集中维护在[首次上线部署规划](../implementation/initial-release-checklist.md)。首版拟采用单台 Linux 主机、Docker Compose、HTTPS 前端入口和预置账号；API／MySQL／MinIO 不直接对公网发布，Office 使用主机执行器与受限 Socket。最新安全检查发现 JSON Content-Type 绕过仍未修复，需先完成 Phase 5 修复和回归，再准备生产配置及目标环境验收。已知默认凭据更换和网络隔离由部署落实；应用补生产误配置拒绝检查。工作流质量优化继续后置。
+
 ## 文件上传实施更新（2026 年 9 月 16 日）
+
+2026 年 9 月 26 日补齐基础文件对话：已支持同用户、同会话历史附件文字进入后续快速回复及 Agent 节点，并保存逐轮来源、哈希和文字快照。按照当前用户消息序号限制历史范围，后来的附件不会改变旧轮次；最多自动携带 10 个附件，不开放跨会话引用、OCR 或模型文件工具。当前规则统一见阶段2文件上传说明。
 
 正式浏览器上传、用户归属与额度预留、MinIO 原件及固定解析结果、下载／删除、失败清理、当前 Run 原子绑定和两种模式输入已实现。当前上传事实以[阶段2正式文件上传](../implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)为准，取代下文早期记录中的“正式上传与持久结果未实现”。同一上传复用固定结果，不是跨版本／跨文件缓存。Office 隔离执行器需要管理员提前启动；[本机提取范围及耗时](../implementation/phase-7-tool-runtime-plan.md#office-提取范围与执行时间2026-年-9-月-16-日)已记录，不保证图片、复杂排版与图表可用。
 
@@ -62,7 +66,7 @@
 | Knowledge 知识库 | 暂停 | Knowledge 属于独立知识库能力；现有结构代码仅作实验性准备，需求、数据来源、解析、检索和权限将在后续单独规划，不计入阶段2 |
 | RabbitMQ、Publisher、Worker | 规划中 | Agent Workflow 必须脱离浏览器和 HTTP/SSE 观察连接继续执行的需求已确认；阶段4只完成证据查看解耦和活动运行防重，Publisher/Worker/租约/恢复尚未实施 |
 | Agent、工具、MCP、OpenTelemetry、Web | Agent模型工作流已完成、Web与阶段7专用解析环境进行中 | 阶段3已实现`model_only_v1`同步流程、并行、费用预留、取消、节点结果及持久事件；Office程序解析执行器不授予模型工具权限。附件专用编排后置，高风险Shell/Git暂停；跨进程恢复、工具和遥测分别归阶段10、阶段7和阶段6 |
-| 最终用户认证与凭据管理 | 进行中 | 已实现预置账户、本地密码、Cookie会话、登录/退出/撤销/密码修改、认证审计、Web登录门禁和BFF当前用户归属；FastAPI全资源主体授权、个人API Key和用户Provider凭据尚未实现，详见阶段5 |
+| 最终用户认证与凭据管理 | 进行中 | 已实现预置账户、本地密码、Cookie会话、登录/退出/撤销/密码修改、认证审计、Web登录门禁和BFF当前用户归属；FastAPI资源主体授权已修复并通过本地验证；个人API Key、用户Provider凭据及目标部署验收未完成，详见阶段5 |
 
 ## 总体结构
 
@@ -104,13 +108,15 @@ Agent 只组合稳定的基础单元，不自行重复实现会话历史、记�
 
 ## 阶段路线图
 
+2026 年 9 月 17 日优先级调整：将已复现的跨用户读取、写入与冒填 owner 问题列入 Phase 5 既有资源授权迁移工作项，详见[全资源鉴权修复](../implementation/phase-5-platform-identity-credentials.md#全资源鉴权修复2026-年-9-月-17-日)。代码修复和本地验证已通过；公开多用户上线仍需目标 HTTPS／反向代理与网络验收。工作流质量优化仍可上线后继续，不与鉴权修复混为一项；其他暂停事项不变。
+
 | 阶段 | 交付目标 | 当前状态 | 完成门禁 |
 |---|---|---|---|
 | 阶段1：数据与控制平面 | 数据库事务、User、Session、Message、Run、Task、Attempt、Artifact、内部审计和完整查询 | 已完成 | 已通过完整 API、迁移、MySQL、MinIO、事务、分页、受信调用方权限边界和脱敏门禁 |
 | 阶段2：LLM 核心能力 | Model Gateway、Conversation Context、System Prompt/模型能力目录、Evaluation/Guardrail；Memory 只保留规划边界 | 已完成 | 运行能力可脱离 Agent 单独调用、测试和观测；System Prompt 只由后端策略选择，普通前端不能查看、选择或覆盖；`/responses` 不隐式读取 Memory；Knowledge 不计入本阶段 |
 | 阶段3：Agent Runtime 与工作流 | 完整节点结果、Controller/工作模型、依赖分组、有界并行、确定性验证、独立审核和显式取消 | 已完成 | `model_only_v1` 主流程、数据库事实、核心 HTTP/SSE、原子费用预留、终态一致提交和失败收敛已通过自动化验证；工具恢复后以新的执行配置扩展，不回退本阶段；详见 [`phase-3-agent-workflow-plan.md`](../implementation/phase-3-agent-workflow-plan.md) |
 | 阶段4：Web 前端 | 对话平台及Run、Agent、模型证据展示 | 进行中 | 核心对话和独立运行/Context证据已有，System Prompt前台已移除，文件仍仅本地选择。117项前端测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF测试通过；来源误拒绝及已保存快速回复刷新禁发已修复，真实BFF的两种本地入口、轮次重试、续聊及查询失败禁发在临时SQLite/FakeProvider/内存对象存储下通过。正式上传、跨刷新key、模型执行恢复及HTTPS可信代理部署未完成验收。详见 [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md) |
-| 阶段5：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 进行中 | 可选登录、Cookie会话和BFF归属已有；仍须完成FastAPI全资源主体授权、个人Bearer凭据、scope、跨用户隔离与凭据管理的实现和验证，不能将本列目标视为已通过；详见 [`phase-5-platform-identity-credentials.md`](../implementation/phase-5-platform-identity-credentials.md) |
+| 阶段5：平台身份、授权与凭据管理 | 最终用户登录、当前主体、浏览器会话、个人 API Key、用户供应商凭据和资源授权迁移 | 进行中 | 可选登录、Cookie会话和BFF归属已有；FastAPI资源主体授权及双向隔离已修复并通过本地验证；仍须完成目标部署验收、个人Bearer凭据、scope与凭据管理，不能将本列目标视为已通过；详见 [`phase-5-platform-identity-credentials.md`](../implementation/phase-5-platform-identity-credentials.md) |
 | 阶段6：可观测性 | API、工作流节点、模型、未来消息/Worker/工具的 trace、metrics 和关联 | 未开始 | 阶段3已固定 ID、span 层级和敏感字段边界；本阶段完成遥测装配、采样、指标、导出、安全诊断及模型提示词缓存命中诊断，MySQL 始终是事实源 |
 | 阶段7：工具能力 | 工具契约、权限、Workspace、文件、搜索、隔离命令、Git 和调用证据 | 进行中 | Office 专用 Unix Socket 执行器与每请求无网络容器已实现，服务于阶段2受信 Artifact 解析；模型自主文件工具未实现，高风险 Shell/Git 继续暂停；详见 [`phase-7-tool-runtime-plan.md`](../implementation/phase-7-tool-runtime-plan.md) |
 | 阶段8：代码搜索增强 | 文件索引、ripgrep、Tree-sitter，按需 LSP | 未开始 | 复用阶段7只读工具与 Workspace 权限；结果包含稳定文件位置、定义引用和可复核证据 |
@@ -331,7 +337,7 @@ MinIO 可以部署在同一台个人电脑或服务器的持久磁盘上，但�
 - 阶段2已完成：Model Gateway、Context、Prompt/模型能力目录和 Evaluation 已通过快速测试、真实基础设施与迁移门禁。Memory 当前只保留规划和实验性准备代码，不进入实际模型响应链路；Knowledge 已移出本阶段，等待独立规划。
 - 阶段3已完成：同步 `model_only_v1` 编排、完整节点返回参数、最多两个无依赖工作 Agent 并行、业务事件、原子费用预留、显式取消、审核证据约束、完成事务和核心查询接口已经实现并验证。有效 Reviewer 失败结论不再吞掉用户回答；跨进程恢复、工具运行和遥测分别留在阶段10、阶段7和阶段6。
 - 阶段4进行中：核心对话、Agent/Reasoning、Responses回放、重命名/草稿/标签页互斥、模型目录、稳定路由及独立运行/Context证据已实现，System Prompt前台已移除；代码块工具栏、精确复制、反馈、13px字号与独立横滚通过模拟BFF桌面/移动Chromium检查，未加语法高亮。删除代理未完成行后的106项通过保留为历史；用户后续授权修复来源误拒绝及已保存快速回复刷新禁发，当前117项前端测试、ESLint、TypeScript、生产构建及20项桌面/移动模拟BFF测试通过。BFF按实际Host与协议严格比较Origin；真实BFF和实际FastAPI在临时SQLite/FakeProvider/内存对象存储下通过两个本地入口、跨别名Origin403、首次轮次响应丢失后201→200同key重试、即时/刷新续聊与Workflow503禁发/404恢复。连续3轮共有3User、3Assistant、3次Responses及3Run各1条completed Attempt，Run仍pending、Assistant来源绑定匹配；未修改后端Run状态。旧Workflow读取增加请求代次检查，防止旧结果覆盖当前会话，该静态风险不记作修复前已复现浏览器故障。详见[本轮验证记录](../frontend/phase-4-web-ui-plan.md#2026-年-9-月-12-日本轮验证结果与限制)。本轮没有后端修改或开发数据库迁移；真实Provider、生产数据库、真实MinIO、转发头可信代理与HTTPS部署未验收，不代表公网安全通过。跨刷新/再次点击key、完整模型执行及跨进程恢复仍未实现；正式上传、项目文件及附件专用编排未开通，归档、Memory、真实Provider矩阵继续后置。
-- 阶段5进行中：已实现本地密码与浏览器Cookie身份链路、登录会话管理、可选Web登录门禁和BFF主体归属。后端登录默认关闭，个人本机使用固定本地owner；显式启用后要求浏览器会话，生产禁止关闭登录。身份表与现有 `users` 和业务资源保留在同一MySQL数据库中，以维持外键和事务；通过独立非 `llm_` 表及 `features/identity` 模块隔离职责。FastAPI全资源主体迁移、个人API Key、用户Provider凭据和公网发布门禁尚未完成。
+- 阶段5进行中：已实现本地密码与浏览器Cookie身份链路、登录会话管理、可选Web登录门禁和BFF主体归属。后端登录默认关闭，个人本机使用固定本地owner；显式启用后要求浏览器会话，生产禁止关闭登录。身份表与现有 `users` 和业务资源保留在同一MySQL数据库中，以维持外键和事务；通过独立非 `llm_` 表及 `features/identity` 模块隔离职责。FastAPI资源主体迁移已修复并本地验证；个人API Key、用户Provider凭据和公网发布验收尚未完成。
 - 阶段6未开始：下一步在服务可用闭环上补齐 trace、metrics、导出和内部诊断，并按Provider已确认字段记录缓存输入Token、命中Token与稳定前缀版本；普通阶段4页面不展示原始Provider请求，不以遥测替代MySQL业务事实。
 - 阶段7进行中：2026 年 9 月 7 日先完成预装文件环境的构建与检查，详见[运行说明](../implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；正式工具调用仍需授权与审计，高风险 Shell/Git 工作项继续暂停。
 - 阶段8、阶段9未开始：代码搜索复用阶段7的只读能力与 Workspace 权限；MCP 调用必须经过阶段7工具权限层。

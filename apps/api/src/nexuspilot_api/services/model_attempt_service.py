@@ -111,7 +111,7 @@ async def list_model_attempts(
     started_before: datetime | None,
     limit: int,
 ) -> CursorPage[ModelAttemptSummary]:
-    """Return an owner-scoped model invocation page with query-bound pagination."""
+    """Bind model-call cursors to the authenticated owner as well as query filters."""
 
     if run_id is None and task_id is None:
         raise InvalidRequestError("run_id or task_id is required")
@@ -129,6 +129,7 @@ async def list_model_attempts(
     query_fingerprint = database_query_fingerprint(
         "attempts",
         {
+            "owner": db_session.info.get("authorized_user_id"),
             "run_id": run_id,
             "task_id": task_id,
             "provider": provider,
@@ -233,9 +234,12 @@ async def _query_model_attempt_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> ModelAttemptDatabasePage:
-    """Query one ordered model invocation page after an optional query-bound key."""
+    """Restrict model calls to the authenticated owner's runs before pagination."""
 
-    statement = select(LlmModelAttempt)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmModelAttempt), LlmModelAttempt)
     if run_id is not None:
         statement = statement.where(LlmModelAttempt.run_id == run_id)
     if task_id is not None:

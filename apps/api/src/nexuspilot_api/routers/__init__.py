@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 from nexuspilot_api.core.security import require_api_key
 from nexuspilot_api.features.agent_runtime.routers import agent_workflows
-from nexuspilot_api.features.identity.file_access import enforce_private_file_references
+from nexuspilot_api.features.identity.resource_access import authorize_resource_request
 from nexuspilot_api.features.memory.routers import (
     internal_agent_working_memory,
     internal_collaboration_memory,
@@ -32,7 +32,7 @@ from nexuspilot_api.routers import (
 
 api_router = APIRouter(
     prefix="/api/v1",
-    dependencies=[Depends(require_api_key), Depends(enforce_private_file_references)],
+    dependencies=[Depends(require_api_key), Depends(authorize_resource_request)],
 )
 api_router.include_router(providers.router)
 api_router.include_router(responses.router)

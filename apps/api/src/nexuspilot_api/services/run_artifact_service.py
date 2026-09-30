@@ -126,7 +126,7 @@ async def list_run_artifacts(
     mime_type: str | None,
     limit: int,
 ) -> CursorPage[RunArtifactSummary]:
-    """Return an owner-scoped Run Artifact page with query-bound pagination."""
+    """Bind Artifact cursors to the authenticated owner and requested parent filters."""
 
     if run_id is None and task_id is None:
         raise InvalidRequestError("run_id or task_id is required")
@@ -139,6 +139,7 @@ async def list_run_artifacts(
     query_fingerprint = database_query_fingerprint(
         "artifacts",
         {
+            "owner": db_session.info.get("authorized_user_id"),
             "run_id": run_id,
             "task_id": task_id,
             "artifact_type": artifact_type,
@@ -231,9 +232,12 @@ async def _query_run_artifact_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> RunArtifactDatabasePage:
-    """Query one ordered Run Artifact page after an optional query-bound key."""
+    """Restrict Artifacts to the authenticated owner's runs before pagination."""
 
-    statement = select(LlmRunArtifact)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmRunArtifact), LlmRunArtifact)
     if run_id is not None:
         statement = statement.where(LlmRunArtifact.run_id == run_id)
     if task_id is not None:

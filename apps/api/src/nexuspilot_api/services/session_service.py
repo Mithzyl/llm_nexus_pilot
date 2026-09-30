@@ -93,8 +93,9 @@ async def list_sessions(
     session_status: SessionStatus | None,
     limit: int,
 ) -> CursorPage[SessionRead]:
-    """Return a signed-cursor page of conversations filtered by owner or status."""
+    """Bind conversation pagination to the authenticated owner and requested status."""
 
+    user_id = db_session.info.get("authorized_user_id", user_id)
     query_fingerprint = database_query_fingerprint(
         "sessions",
         {
@@ -496,9 +497,12 @@ async def _query_session_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> SessionDatabasePage:
-    """Query one stable database page of conversations after an optional key."""
+    """Filter conversations by authenticated owner in SQL before applying the cursor."""
 
-    statement = select(LlmSession)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmSession), LlmSession)
     if user_id is not None:
         statement = statement.where(LlmSession.user_id == user_id)
     if session_status is not None:

@@ -91,13 +91,14 @@ async def list_tasks(
     assigned_role: str | None,
     limit: int,
 ) -> CursorPage[TaskSummary]:
-    """Return a bounded task page with a cursor bound to all normalized filters."""
+    """Bind task pagination to the authenticated owner and normalized filters."""
 
     if run_id is not None:
         await require_run(db_session, run_id)
     query_fingerprint = database_query_fingerprint(
         "tasks",
         {
+            "owner": db_session.info.get("authorized_user_id"),
             "run_id": run_id,
             "status": task_status.value if task_status else None,
             "task_type": task_type,
@@ -211,9 +212,12 @@ async def _query_task_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> TaskDatabasePage:
-    """Query one ordered task page after an optional query-bound database key."""
+    """Restrict tasks to the authenticated owner's runs before pagination."""
 
-    statement = select(LlmTask)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmTask), LlmTask)
     if run_id is not None:
         statement = statement.where(LlmTask.run_id == run_id)
     if task_status is not None:

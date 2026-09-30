@@ -1,7 +1,7 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
 **文档日期：** 2026 年 9 月 5 日
-**文档状态：** 原阶段已完成；新增文件输入工作项进行中（浏览器私有上传、不可变原件与解析结果保存、当前轮次引用已实现；逻辑文件版本历史、跨文件解析缓存、OCR及模型工具循环尚未完成）
+**文档状态：** 原阶段已完成；新增文件输入工作项进行中（浏览器私有上传、不可变原件与解析结果保存、同会话连续文件上下文及逐轮快照已实现；逻辑文件版本历史、跨文件解析缓存、OCR及模型工具循环尚未完成）
 
 ## 正式文件上传（2026 年 9 月 16 日）
 
@@ -11,7 +11,9 @@
 - 仅接受非空且不超过 1 MiB 的 `.txt/.md/.py/.js/.ts/.css/.json/.csv/.tsv/.yaml/.yml/.xml/.pdf/.docx/.xlsx/.pptx`，每轮最多 10 个。文件名不能含路径或控制字符；解析器继续检查内容。图片、扫描 PDF OCR、旧 Office、宏文件、音视频及通用压缩包不开放。
 - 当前 MySQL Context 正文仍是 `TEXT`；完整解析 JSON 超过 55000 字节会在创建轮次前拒绝，提示拆分，不静默截断。此限制不是模型输出 token 上限。多附件仍须满足已有模型输入预算。尚无前端分段选择、大文件后台解析。
 - `reserved → uploading → ready`；失败记录保留 `failed`，删除先变 `deleting`，两个精确对象键清理成功才变 `deleted`。接收字节限时 60 秒；预留／上传租约 2 小时。每用户默认 500 MiB、最多 500 条活记录，包含原件和每份 55000 字节解析预留；失败对象未清理前不释放额度。上传接受后不允许覆盖原件或改变解析结果。
-- 用户消息提交通过 `file_ids` 原子绑定本轮 Run，并保存附件名称。每份上传仅绑定一次；快速回复及 Controller、Worker、Reviewer、最终汇总从统一 Context Builder 读取固定解析内容，不直接给 Provider 发送文件。后续新轮次**不会自动重新注入历史附件全文**；需要重新选择上传。刷新可查看和下载已保存附件，但列表尚不提供重新绑定入口。项目内文件提交明确拒绝，等待项目授权实现。
+- 用户消息提交通过 `file_ids` 原子绑定首次上传所在 Run，并保存附件名称。2026 年 9 月 26 日补齐同一会话连续追问：快速回复及 Controller、Worker、Reviewer、最终汇总从统一 Context Builder 复用当前用户、当前会话、当前 User Message 序号之前已提交的附件解析结果，不直接给 Provider 发送文件。后续轮次无需重新上传；文件本身不重复绑定、不复制原件。其他会话及之后上传的文件不会自动进入本轮，旧的普通 Artifact 仍禁止跨 Run 引用。项目内文件提交继续拒绝，等待项目授权实现。
+- 文件文字的上下文记录保存在既有 `llm_context_builds`／`llm_context_sources`：包含当轮来源文件 ID、内容快照、哈希、解析版本和提取范围；可通过 Context 查询重新读取。同一请求重放不重新解析，之后的新附件不改变旧消息锚点的上下文。原始文件和完整解析结果仍在 MinIO；消息附件信息仍随消息保存。删除原件不删除历史快照，但新的生成会明确拒绝读取已删除文件，不能静默忽略附件后继续回答。
+- 会话自动携带文件最多 10 个；累计超过上限或必要文件内容超过模型输入预算时明确拒绝，需新建会话并只上传需要的文件。当前没有历史附件的逐轮选择／移除控件，也没有大文件分段选择；不承诺无限附件或无损压缩。
 - `GET /files`、`GET /files/{id}`、`GET /files/{id}/content` 和 `DELETE /files/{id}` 均校验当前用户；身份不取自上传请求。启用登录时写入还校验 Origin 和会话 CSRF。下载强制 attachment、nosniff、no-store，不向浏览器暴露对象地址。删除撤销后续读取，但不会删除已保存回答和 Context 摘录。
 - 上传前先记录两个确定的对象键；对象存储或数据库失败可按记录补偿，不扫描整桶。运维从 `apps/api` 显式执行 `PYTHONPATH=src .venv/bin/python -m nexuspilot_api.services.user_file_cleanup --limit 100`，重试失败删除及过期预留。命令会再次原子检查状态，不删除已变为 ready 的文件；**没有自动定时任务**，需运维配置调度。请求进程崩溃不自动恢复解析。
 - 固定解析对象复用于同一上传，避免每个模型节点重复解析；不是按文件哈希跨用户共享缓存，也不是逻辑文件版本历史。附件专用 Agent、自动模式切换、工具循环与后台恢复继续后置。
@@ -19,6 +21,8 @@
 验证：独立 MySQL 8.4 和 MinIO 的并发幂等预留、额度、真实上传下载删除已通过；SQLite 测试覆盖归属、CSRF、失败补偿、清理竞争、删除撤销和两种模式的内容传递。浏览器使用真实 BFF/API/MinIO 与 FakeProvider 验证上传发送和刷新附件，不代表真实 Provider 或公网部署验收。Office 范围与时间见[执行环境评估](phase-7-tool-runtime-plan.md#office-提取范围与执行时间2026-年-9-月-16-日)。
 
 本次执行记录：`NEXUSPILOT_TEST_FILE_RUNTIME=1 FILE_RUNTIME_TEST_IMAGE=nexuspilot-file-runtime:structure-test apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -q` → 481 通过、8 跳过（未启用的可选基础设施检查，不计通过）；上传专项 `test_user_file_infrastructure.py` 在显式配置的独立 MySQL/MinIO 上另行通过 1 项。Ruff 通过。数据库提交前失败及提交成功后响应不确定两种故障均有测试，后者保留 ready 对象，不误删。此次未连接真实模型、未迁移开发数据库，也未启用自动清理调度。
+
+2026-09-26 连续文件上下文验证：先复现后续轮次丢失文件文字及删除后错误地继续生成 Context，再修复。新增 `test_conversation_file_context.py` 验证真实授权路径上的后续文字传递、来源／哈希／内容快照保存与重读、重放稳定、未来附件排除、跨会话拒绝和删除撤销；已有 Agent 测试同时覆盖上传轮次及后续轮次。完整后端与模型测试 499 通过、8 跳过；独立 MySQL/MinIO 文件上下文专项 5 通过。Context 内容与来源逐字段一致；时间比较按既有 MySQL DATETIME 秒精度处理，不将数据库精度差异误判为文字快照变化。没有新增迁移、没有修改前端组件，也没有本轮浏览器验收或真实 Provider 调用。
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 

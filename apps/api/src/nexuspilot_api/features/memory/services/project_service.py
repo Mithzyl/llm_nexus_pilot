@@ -91,8 +91,9 @@ async def list_projects(
     project_status: ProjectStatus | None,
     limit: int,
 ) -> CursorPage[ProjectRead]:
-    """Return a filter-bound, signed-cursor page of Projects."""
+    """Filter Projects by authenticated owner and bind that owner into the cursor."""
 
+    owner_user_id = db_session.info.get("authorized_user_id", owner_user_id)
     query_fingerprint = database_query_fingerprint(
         "projects",
         {
@@ -103,7 +104,10 @@ async def list_projects(
     after_database_key = codec.decode_query(cursor) if cursor else None
     if after_database_key and after_database_key.query_fingerprint != query_fingerprint:
         raise InvalidCursorError
-    statement = select(LlmProject)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(LlmProject), LlmProject)
     if owner_user_id is not None:
         statement = statement.where(LlmProject.owner_user_id == owner_user_id)
     if project_status is not None:

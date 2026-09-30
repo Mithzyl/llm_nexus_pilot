@@ -19,6 +19,7 @@ os.environ["NEXUSPILOT_INTERNAL_API_KEY"] = "test-internal-key-long-enough"
 os.environ["NEXUSPILOT_DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS"] = "http://test"
 
+from legacy_file_access import enforce_private_file_references
 from nexuspilot_models.contracts import (  # noqa: E402
     ModelRequest,
     ModelResponse,
@@ -34,6 +35,7 @@ from nexuspilot_api.core.dependencies import (  # noqa: E402
     get_price_catalog,
     get_provider_registry,
 )
+from nexuspilot_api.features.identity.resource_access import authorize_resource_request
 from nexuspilot_api.infrastructure.database import (  # noqa: E402
     get_database_session,
     get_database_session_factory,
@@ -192,6 +194,13 @@ async def test_database_session_factory(
 ) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     """Yield a database session factory backed by a fresh database and dispose it afterward."""
 
+    if url := os.environ.get("NEXUSPILOT_TEST_AUTH_MYSQL_URL"):
+        from resource_infrastructure import authorization_mysql_factory
+
+        async with authorization_mysql_factory(url) as factory:
+            yield factory
+        return
+
     test_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
 
     @event.listens_for(test_engine.sync_engine, "connect")
@@ -214,7 +223,12 @@ async def test_database_session_factory(
 async def client(
     test_database_session_factory: async_sessionmaker[AsyncSession],
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Yield an authenticated ASGI client with isolated dependencies."""
+    """Run legacy business contracts with trusted fixture setup, not end-user authorization.
+
+    Historical tests create arbitrary owners. Keep their existing private-file
+    checks. Use resource_client for actual new authorization, without this override.
+    This dependency replacement exists only in tests, never application settings.
+    """
 
     async def override_database_session() -> AsyncIterator[AsyncSession]:
         """Yield an isolated database session connected to this test database."""
@@ -232,6 +246,7 @@ async def client(
     app.dependency_overrides[get_object_storage] = lambda: fake_object_storage
     app.dependency_overrides[get_provider_registry] = fake_provider_registry
     app.dependency_overrides[get_price_catalog] = fake_price_catalog
+    app.dependency_overrides[authorize_resource_request] = enforce_private_file_references
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(
         transport=transport,
@@ -240,3 +255,27 @@ async def client(
     ) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def resource_client(client):
+    """Exercise real authorization; optional MinIO settings must name a loopback test instance."""
+    app.dependency_overrides.pop(authorize_resource_request, None)
+    if endpoint := os.environ.get("NEXUSPILOT_TEST_AUTH_MINIO_ENDPOINT"):
+        from nexuspilot_api.core.config import Settings
+        from nexuspilot_api.infrastructure.object_storage import ObjectStorage
+
+        if not endpoint.startswith(("127.0.0.1:", "localhost:")):
+            raise ValueError("Authorization tests require a loopback MinIO")
+        storage = ObjectStorage(
+            Settings(
+                _env_file=None,
+                minio_endpoint=endpoint,
+                minio_access_key=os.environ["NEXUSPILOT_TEST_AUTH_MINIO_ACCESS_KEY"],
+                minio_secret_key=os.environ["NEXUSPILOT_TEST_AUTH_MINIO_SECRET_KEY"],
+                minio_bucket="authorization-audit",
+                minio_secure=False,
+            )
+        )
+        app.dependency_overrides[get_object_storage] = lambda: storage
+    yield client

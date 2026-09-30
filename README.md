@@ -23,7 +23,7 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - 可配置的通用 OpenAI Chat Completions 兼容 Provider；
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
 - 文件执行环境：`deployments/file-runtime` 提供 Office/Poppler Linux 镜像，以及本机 Unix Socket 执行器。API 不直接访问 Docker；DOCX/XLSX/PPTX 在独立无网络容器中提取正文、表格及位置。构建、配置与云端验收要求见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
-- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON、PDF 正文及配置执行器后的 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，当前轮次的快速回复和 Agent 节点收到相同文字/表格。支持私有文件列表、下载与删除；OCR、跨版本解析缓存及 Agent 文件工具循环未实现。限制与部署见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
+- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON、PDF 正文及配置执行器后的 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除；OCR、跨版本解析缓存及 Agent 文件工具循环未实现。限制与部署见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
 - `model_only_v1` Agent 工作流支持 Controller 规划、工作 Agent、Handoff、确定性验证、独立审核和最终汇总，并可返回或查询每个完整节点结果；
 - `POST /api/v1/runs/{run_id}/agent-workflows` 支持同步 JSON 和实时 SSE；Workflow、完整 Result、Node 及持久化事件回放提供独立查询接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；
@@ -58,6 +58,8 @@ apps/api/src/nexuspilot_api/
 `packages/models` 是独立的模型供应商适配包，不依赖 FastAPI 和平台数据库。新增接口时应在对应资源 Router 和 Service 中扩展，不再向单一聚合路由文件追加所有行为。
 
 ## 后端本地启动
+
+2026 年 9 月 17 日授权变更：FastAPI 业务接口现在独立校验当前用户和资源归属；启用登录时，仅部署 `X-API-Key` 不再足以读取会话或调用模型。关闭登录仍固定为本地 `nexuspilot-web`，不能通过请求指定其他 owner。用户创建／更新、兼容 Attempt 记录写入及 System Prompt 管理／渲染等管理接口需要部署 Key 与内部 Key，且不接受浏览器 Cookie/Bearer；原有受信脚本需按[Phase 5 兼容说明](docs/implementation/phase-5-platform-identity-credentials.md#本次实现与调用方兼容说明)调整。没有新增数据库迁移；旧分页 cursor 可能失效，重新读取第一页即可。
 
 后端必须使用项目虚拟环境：
 

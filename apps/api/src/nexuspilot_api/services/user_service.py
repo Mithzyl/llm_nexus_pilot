@@ -63,11 +63,11 @@ async def list_users(
     is_active: bool | None,
     limit: int,
 ) -> CursorPage[UserRead]:
-    """Return a stable signed-cursor page of optionally filtered users."""
+    """Return a user page whose cursor and SQL scope include the authenticated owner."""
 
     query_fingerprint = database_query_fingerprint(
         "users",
-        {"is_active": is_active},
+        {"is_active": is_active, "owner": db_session.info.get("authorized_user_id")},
     )
     after_database_key = codec.decode_query(cursor) if cursor else None
     if after_database_key and after_database_key.query_fingerprint != query_fingerprint:
@@ -113,9 +113,12 @@ async def _query_user_database_page(
     query_fingerprint: str,
     limit: int,
 ) -> UserDatabasePage:
-    """Query one ordered user page after an optional database pagination key."""
+    """Query only the authenticated user's row before applying pagination."""
 
-    statement = select(User)
+    # Apply the authenticated owner in SQL before cursor filtering and LIMIT.
+    from nexuspilot_api.features.identity.resource_access import owned_list_statement
+
+    statement = owned_list_statement(db_session, select(User), User)
     if is_active is not None:
         statement = statement.where(User.is_active == is_active)
     if after_database_key is not None:

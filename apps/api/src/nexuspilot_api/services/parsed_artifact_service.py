@@ -37,19 +37,24 @@ async def _read_parse_source(
     run_id: str,
     reference: ParsedArtifactReference,
 ) -> tuple[FileParseRequest, bytes]:
-    """Read a Run-scoped source, reject revoked private uploads and verify the original hash."""
+    """Read scoped sources; private uploads may come from earlier turns of the same conversation."""
 
     artifact = await db_session.get(LlmRunArtifact, reference.artifact_id)
     if artifact is None:
         raise ResourceNotFoundError("Artifact")
-    if artifact.run_id != run_id:
-        raise ResourceConflictError("Parsed Artifact does not belong to the Run")
     from nexuspilot_api.models import UserFile
+    from nexuspilot_api.services.conversation_file_service import conversation_file_ids
+
     private_file = await db_session.get(UserFile, artifact.artifact_id, populate_existing=True)
     if private_file is not None and (
-        private_file.status != "ready" or private_file.run_id != run_id
+        private_file.status != "ready" or private_file.run_id != artifact.run_id
     ):
         raise ResourceConflictError("文件已删除或不可读取。")
+    if artifact.run_id != run_id:
+        if private_file is None or artifact.artifact_id not in await conversation_file_ids(
+            db_session, run_id
+        ):
+            raise ResourceConflictError("文件不属于当前会话已提交的历史附件。")
     if not 0 < artifact.size_bytes <= MAX_PARSE_BYTES:
         raise ResourceConflictError("Artifact exceeds the supported parsing size")
     try:
