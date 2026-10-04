@@ -1,6 +1,8 @@
 """Exercise the real authorization dependency across the full HTTP policy inventory."""
 
 import asyncio
+import hashlib
+import json
 import re
 
 import httpx
@@ -8,6 +10,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
 from test_authentication import login, provision_user
+from test_context_builds import create_model_capability
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.features.identity.resource_access import RESOURCES
@@ -279,6 +282,7 @@ async def test_local_mode_cannot_select_arbitrary_owner(
 
 async def test_concurrent_requests_do_not_share_owner_state(two_users):
     """Independent SQL sessions retain their own identity during concurrent list requests."""
+
     async def read_owned(owner):
         """Assert every returned row belongs to the browser issuing this request."""
         response = await owner["client"].get("/api/v1/sessions")
@@ -287,3 +291,79 @@ async def test_concurrent_requests_do_not_share_owner_state(two_users):
         assert all(item["user_id"] == owner["user"] for item in response.json()["items"])
 
     await asyncio.gather(*(read_owned(owner) for _ in range(6) for owner in two_users))
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        None,
+        "application/json",
+        "Application/JSON",
+        "application/vnd.api+json",
+        "application/json; charset=utf-8",
+        "APPLICATION/PROBLEM+JSON",
+    ],
+)
+async def test_json_media_types_cannot_bypass_body_ownership(two_users, content_type):
+    """Enforce ownership for every JSON representation accepted by FastAPI."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"X-API-Key": get_settings().api_key},
+    ) as service:
+        await create_model_capability(service)
+    headers = {"Content-Type": content_type} if content_type else {}
+    for own, other in (two_users, list(reversed(two_users))):
+        client = own["client"]
+        payload = {
+            "user_id": other["user"],
+            "session_id": other["sessions"][0]["session_id"],
+            "provider": "openai",
+            "model": "test-model",
+            "token_budget": 2048,
+        }
+        denied = await client.post(
+            "/api/v1/context-builds/preview", headers=headers, content=json.dumps(payload)
+        )
+        assert denied.status_code == 404, (content_type, denied.text)
+        write = await client.post(
+            "/api/v1/sessions",
+            headers=headers,
+            content=json.dumps({"user_id": other["user"], "title": "forged"}),
+        )
+        assert write.status_code == 404
+        allowed = await client.post(
+            "/api/v1/context-builds/preview",
+            headers=headers,
+            content=json.dumps(
+                {**payload, "user_id": own["user"], "session_id": own["sessions"][0]["session_id"]}
+            ),
+        )
+        assert allowed.status_code == 201, allowed.text
+        sessions = await other["client"].get("/api/v1/sessions")
+        assert all(row["title"] != "forged" for row in sessions.json()["items"])
+
+
+@pytest.mark.parametrize("content_type", [None, "application/json", "application/octet-stream"])
+async def test_uploaded_json_bytes_are_data_not_api_resource_parameters(two_users, content_type):
+    """Raw file content may mention another user without being interpreted as a resource locator."""
+    own, other = two_users
+    content = json.dumps({"user_id": other["user"], "text": "untrusted document"}).encode()
+    client = own["client"]
+    reserved = await client.post(
+        "/api/v1/files",
+        json={
+            "filename": "example.json",
+            "size_bytes": len(content),
+            "content_hash": hashlib.sha256(content).hexdigest(),
+            "idempotency_key": "json-document-test",
+        },
+    )
+    assert reserved.status_code == 201, reserved.text
+    uploaded = await client.put(
+        f"/api/v1/files/{reserved.json()['file_id']}/content",
+        content=content,
+        headers={"Content-Type": content_type} if content_type else {},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["status"] == "ready"

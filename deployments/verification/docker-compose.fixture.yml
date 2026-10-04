@@ -1,0 +1,28 @@
+# Local preverification ONLY. Combine with the production Compose using a fresh
+# nexus-preverify-* project/config and loopback ports. No real Provider is called.
+services:
+  api:
+    environment:
+      NEXUSPILOT_DEEPSEEK_API_KEY: local-preverify-provider
+      NEXUSPILOT_DEEPSEEK_MODELS: deepseek-v4-flash
+    volumes:
+      - ../verification:/verification:ro
+  fixture-provider:
+    image: nexuspilot-api:${RELEASE_TAG}
+    command: [python, /verification/provider_fixture.py]
+    volumes:
+      - ../verification:/verification:ro
+    networks: [egress]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 32
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+networks:
+  egress:
+    internal: true

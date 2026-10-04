@@ -1,0 +1,28 @@
+# Install only after creating the dedicated user/group and checking the target-architecture image.
+[Unit]
+Description=NexusPilot restricted Office parser executor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=nexus-file-runtime
+Group=nexus-file-runtime
+SupplementaryGroups=docker
+RuntimeDirectory=nexuspilot-file-runtime
+RuntimeDirectoryMode=0750
+EnvironmentFile=/etc/nexuspilot/file-runtime.env
+WorkingDirectory=/opt/nexuspilot/current
+ExecStart=/usr/bin/python3 /opt/nexuspilot/current/deployments/file-runtime/serve_runtime.py --socket /run/nexuspilot-file-runtime/executor.sock --image ${FILE_RUNTIME_IMAGE}
+KillSignal=SIGINT
+TimeoutStopSec=140
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0027
+# A crash requires inspection; never blindly unlink an existing socket or restart a job.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

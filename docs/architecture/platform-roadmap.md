@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform 总体规划
 
-2026 年 9 月 30 日上线安排：总体部署方案集中维护在[首次上线部署规划](../implementation/initial-release-checklist.md)。首版拟采用单台 Linux 主机、Docker Compose、HTTPS 前端入口和预置账号；API／MySQL／MinIO 不直接对公网发布，Office 使用主机执行器与受限 Socket。最新安全检查发现 JSON Content-Type 绕过仍未修复，需先完成 Phase 5 修复和回归，再准备生产配置及目标环境验收。已知默认凭据更换和网络隔离由部署落实；应用补生产误配置拒绝检查。工作流质量优化继续后置。
+2026 年 10 月 4 日部署更新：`codex/deployment` 已提供生产 Compose、HTTPS、私有凭据生成与预检、非 root API/Web、显式迁移及 MinIO 应用权限初始化，并按用户要求合入 `main` 作为后续开发基础。JSON Content-Type 绕过和生产默认凭据接受问题已修复并通过回归；目标 AMD64 服务器已完成自签 HTTPS、认证、文本上传、真实 Flash 流式回复和容器重建保留的基础验收。受信任证书、异机备份、独立无代理外网端口扫描及 Office 服务仍未完成；默认 API 容器 PDF 沙箱受限。具体证据见[服务器部署记录](../implementation/server-deployment-20261004.md)，操作见[生产部署说明](../../deployments/production/README.md)，总体安排见[首次上线规划](../implementation/initial-release-checklist.md)。Git 合并不自动推送或重新部署；工作流质量优化继续后置。
 
 ## 文件上传实施更新（2026 年 9 月 16 日）
 

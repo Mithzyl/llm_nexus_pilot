@@ -59,6 +59,8 @@ apps/api/src/nexuspilot_api/
 
 ## 后端本地启动
 
+生产部署说明见 [deployments/production/README.md](deployments/production/README.md)：包含独立生产 Compose、随机私有配置生成、HTTPS、非 root 镜像和单独迁移步骤。2026 年 10 月 4 日目标服务器已完成自签 HTTPS 基础部署与验收，范围和剩余限制见[服务器部署记录](docs/implementation/server-deployment-20261004.md)。部署分支合入 `main` 后，后续开发以 `main` 为基础；本地合并不会自动更新远端仓库或服务器。开发 Compose 不直接用于公网；当前容器 PDF 沙箱、Office 执行器、受信任证书和备份恢复仍有未完成事项。
+
 2026 年 9 月 17 日授权变更：FastAPI 业务接口现在独立校验当前用户和资源归属；启用登录时，仅部署 `X-API-Key` 不再足以读取会话或调用模型。关闭登录仍固定为本地 `nexuspilot-web`，不能通过请求指定其他 owner。用户创建／更新、兼容 Attempt 记录写入及 System Prompt 管理／渲染等管理接口需要部署 Key 与内部 Key，且不接受浏览器 Cookie/Bearer；原有受信脚本需按[Phase 5 兼容说明](docs/implementation/phase-5-platform-identity-credentials.md#本次实现与调用方兼容说明)调整。没有新增数据库迁移；旧分页 cursor 可能失效，重新读取第一页即可。
 
 后端必须使用项目虚拟环境：

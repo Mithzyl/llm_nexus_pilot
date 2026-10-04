@@ -5,9 +5,11 @@ caller-declared user. Request sessions carry an owner for SQL list filtering; no
 global mutable identity or process-wide ORM interception is used.
 """
 
+from email.message import Message
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
+from fastapi.params import Form
 from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +31,19 @@ from nexuspilot_api.features.identity.services.authentication_service import (
 from nexuspilot_api.infrastructure.database import get_database_session
 
 OWNER_SESSION_KEY = "authorized_user_id"
+
+
+def uses_json_body(content_type: str | None) -> bool:
+    """Match FastAPI's JSON media-type interpretation, including absent headers and +json."""
+    if not content_type:
+        return True
+    media = Message()
+    media["content-type"] = content_type
+    return media.get_content_maintype() == "application" and (
+        media.get_content_subtype() == "json" or media.get_content_subtype().endswith("+json")
+    )
+
+
 RESOURCES = {
     "user_id": m.User,
     "owner_user_id": m.User,
@@ -181,7 +196,8 @@ async def authorize_resource_request(
     db: Annotated[AsyncSession, Depends(get_database_session)],
 ) -> None:
     """Require classified service or final-user authority before each versioned business route."""
-    route = request.scope["route"].path.removeprefix("/api/v1")
+    route_definition = request.scope["route"]
+    route = route_definition.path.removeprefix("/api/v1")
     policy = (request.method, route)
     if policy in INTERNAL_ROUTES:
         await require_internal_api_key(request.headers.get("x-internal-api-key"))
@@ -211,9 +227,15 @@ async def authorize_resource_request(
     # Check every repeated query value rather than trusting first/last parameter precedence.
     for key, value in request.query_params.multi_items():
         await validate_resource_references(db, {key: value}, principal.user_id)
-    if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.headers.get(
-        "content-type", ""
-    ).startswith("application/json"):
+    # Raw file streams and form uploads are not JSON API parameters even if their
+    # bytes happen to contain user_id. Follow the route's actual body parser too.
+    body_field = route_definition.body_field
+    if (
+        body_field is not None
+        and not isinstance(body_field.field_info, Form)
+        and request.method in {"POST", "PATCH", "PUT", "DELETE"}
+        and uses_json_body(request.headers.get("content-type"))
+    ):
         try:
             payload = await request.json()
         except ValueError:

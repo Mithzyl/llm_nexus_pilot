@@ -1,0 +1,24 @@
+# Root build context: never ship worktrees, secrets, user files or local environments.
+**/.env
+**/*.env
+**/.env.*
+**/*.pem
+**/*.key
+# macOS AppleDouble metadata is not Python source (including migration .py sidecars).
+**/._*
+**/.DS_Store
+.git
+.claude
+.idea
+output
+.playwright-cli
+**/node_modules
+**/.venv
+**/.next
+**/.next-dev
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/*.tsbuildinfo
+deployments/production/runtime
+deployments/data

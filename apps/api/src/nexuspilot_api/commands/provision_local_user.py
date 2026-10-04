@@ -11,6 +11,8 @@ import argparse
 import asyncio
 import getpass
 
+# Register the complete ORM before identity services import individual model modules.
+import nexuspilot_api.models  # noqa: F401
 from nexuspilot_api.features.identity.services.authentication_service import (
     provision_local_password_user,
 )

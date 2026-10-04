@@ -74,3 +74,43 @@ def test_authentication_session_absolute_lifetime_cannot_precede_idle_lifetime()
             authentication_session_idle_seconds=7_200,
             authentication_session_absolute_seconds=3_600,
         )
+
+
+def production_settings():
+    """Return explicit synthetic production credentials independent of local environment files."""
+    return dict(
+        environment="production",
+        authentication_enabled=True,
+        authentication_cookie_secure=True,
+        authentication_allowed_origins="https://chat.example.test",
+        api_key="a" * 64,
+        internal_api_key="b" * 64,
+        cursor_signing_key="c" * 64,
+        provider_continuation_encryption_key="d" * 64,
+        database_url="mysql+aiomysql://app:" + "e" * 64 + "@mysql/nexuspilot",
+        minio_access_key="app-files",
+        minio_secret_key="f" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("api_key", "local-development-key-change-me"),
+        ("internal_api_key", "local-internal-key-change-me"),
+        ("api_key", "test-api-key-long-enough"),
+        ("cursor_signing_key", None),
+        ("database_url", "mysql+aiomysql://nexuspilot:nexuspilot@mysql/nexuspilot"),
+        ("database_url", "mysql+aiomysql://app@mysql/nexuspilot"),
+        ("minio_secret_key", "local-development-secret-change-me"),
+    ],
+)
+def test_production_rejects_known_or_missing_credentials(field, value):
+    """A deployment cannot silently inherit sample service keys or database/storage passwords."""
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{**production_settings(), field: value})
+
+
+def test_production_accepts_explicit_separate_credentials():
+    """Accept deployment-injected credentials without requiring secrets to live in source."""
+    assert Settings(_env_file=None, **production_settings()).environment == "production"

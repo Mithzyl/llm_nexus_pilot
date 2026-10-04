@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Self
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         env_prefix="NEXUSPILOT_",
         case_sensitive=False,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     environment: str = "development"
@@ -127,7 +128,36 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "authentication_allowed_origins must use HTTPS outside development"
                 )
+            self.validate_production_credentials()
         return self
+
+    def validate_production_credentials(self) -> None:
+        """Reject absent, short or known sample secrets without disclosing their values."""
+        secrets = {
+            "api_key": self.api_key,
+            "internal_api_key": self.internal_api_key.get_secret_value(),
+            "cursor_signing_key": self.cursor_signing_key.get_secret_value()
+            if self.cursor_signing_key
+            else "",
+            "provider_continuation_encryption_key": self.continuation_encryption_secret(),
+            "minio_secret_key": self.minio_secret_key,
+        }
+        for field, value in secrets.items():
+            if len(value) < 32 or value.lower().startswith(
+                ("local-", "test-", "replace-", "change-me")
+            ):
+                raise ValueError(f"{field} must be an explicit non-example production secret")
+        if len(set(list(secrets.values())[:4])) != 4:
+            raise ValueError(
+                "Production service, internal, cursor and continuation secrets must differ"
+            )
+        password = unquote(urlsplit(self.database_url).password or "")
+        if len(password) < 16 or password.lower().startswith(
+            ("local-", "test-", "replace-", "change-me")
+        ):
+            raise ValueError(
+                "database_url must contain an explicit non-example production password"
+            )
 
     def continuation_encryption_secret(self) -> str:
         """Return the dedicated secret or the development-only internal-key fallback."""

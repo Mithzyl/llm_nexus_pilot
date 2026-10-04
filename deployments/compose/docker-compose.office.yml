@@ -1,0 +1,12 @@
+# Optional overlay, after the host executor is checked and its socket directory exists.
+services:
+  api:
+    environment:
+      NEXUSPILOT_FILE_RUNTIME_SOCKET: /run/nexuspilot-file-runtime/executor.sock
+    group_add: ["${FILE_RUNTIME_GID:?Set the host executor group ID}"]
+    volumes:
+      - type: bind
+        source: /run/nexuspilot-file-runtime
+        target: /run/nexuspilot-file-runtime
+        read_only: true
+        bind: {create_host_path: false}

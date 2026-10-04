@@ -65,3 +65,4 @@ pnpm-debug.log*
 # Local container overrides and persisted service data
 docker-compose.override.yml
 deployments/data/
+deployments/production/runtime/

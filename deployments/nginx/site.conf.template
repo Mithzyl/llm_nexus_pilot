@@ -1,0 +1,63 @@
+# Render only NEXUS_HOST/PUBLIC_ORIGIN; the initializer validates their syntax.
+server {
+    listen 127.0.0.1:8080;
+    access_log off;
+    location = /healthz { return 200 'ok'; }
+    location / { return 404; }
+}
+server { listen 80 default_server; server_name _; return 444; }
+server {
+    listen 80;
+    server_name ${NEXUS_HOST};
+    return 308 ${PUBLIC_ORIGIN}$request_uri;
+}
+server {
+    listen 443 ssl default_server;
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    server_name _;
+    return 444;
+}
+server {
+    listen 443 ssl;
+    server_name ${NEXUS_HOST};
+    ssl_certificate /etc/nginx/tls/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    add_header Strict-Transport-Security 'max-age=31536000' always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy no-referrer always;
+    add_header Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'" always;
+    limit_conn clients 20;
+    # Overwrite client-supplied forwarding identity; API has proxy headers disabled.
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header Forwarded "";
+    proxy_set_header Connection "";
+    proxy_http_version 1.1;
+    proxy_read_timeout 700s;
+    proxy_send_timeout 140s;
+    proxy_next_upstream off;
+    proxy_cache off;
+    proxy_buffering off;
+    # Re-resolve Compose service addresses after Web container replacement.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $web_upstream http://web:3000;
+    location = /api/nexus/auth/login {
+        limit_req zone=login burst=5 nodelay;
+        proxy_pass $web_upstream;
+    }
+    location /api/nexus/ {
+        limit_req zone=api burst=30 nodelay;
+        proxy_pass $web_upstream;
+    }
+    # FastAPI paths and documentation are never routed directly from the public domain.
+    location /api/v1/ { return 404; }
+    location = /docs { return 404; }
+    location = /redoc { return 404; }
+    location = /openapi.json { return 404; }
+    location / { proxy_pass $web_upstream; }
+}
