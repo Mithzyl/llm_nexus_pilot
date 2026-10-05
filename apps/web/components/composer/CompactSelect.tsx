@@ -39,6 +39,7 @@ export function CompactSelect({
     const closeFromOutsidePointer = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) setIsOpen(false);
     };
+
     window.addEventListener("pointerdown", closeFromOutsidePointer);
     return () => window.removeEventListener("pointerdown", closeFromOutsidePointer);
   }, [isOpen]);

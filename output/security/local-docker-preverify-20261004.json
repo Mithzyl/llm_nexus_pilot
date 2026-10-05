@@ -1,0 +1,47 @@
+{
+  "completed_date": "2026-10-04",
+  "base_commit": "83d335e",
+  "working_tree": "uncommitted deployment preparation",
+  "platform": "Docker Desktop Linux ARM64",
+  "project": "nexus-preverify-6s3pjy",
+  "fixture_provider": true,
+  "before": {
+    "https_identity_and_file": "passed",
+    "file_followup": "passed",
+    "sse_unbuffered": "passed",
+    "delta_span_seconds": 1.257
+  },
+  "after": {
+    "cold_recreation_persistence": "passed",
+    "file_context_after_recreation": "passed",
+    "delete_and_revoked_cookie": "passed"
+  },
+  "internal": {
+    "direct_api_anonymous_and_service_only": "passed",
+    "direct_api_cross_user_and_json_variants": "passed",
+    "browser_cannot_elevate_with_internal_key": "passed",
+    "api_nonroot": "passed",
+    "migration_and_database_dml_permissions": "passed",
+    "storage_bucket_scope": "passed",
+    "pdf_sandbox": {
+      "status": "failed",
+      "exit_code": 1,
+      "diagnostic": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> or <file:///usr/share/doc/bubblewrap/README.Debian.gz>."
+    }
+  },
+  "additional": {
+    "idle_expired_cookie": "passed",
+    "web_nonroot": "passed",
+    "public_static_files_scanned": 20,
+    "runtime_service_key_absent_in_public_assets": "passed",
+    "published_ports": "only nginx at 127.0.0.1:19480,19443",
+    "office_runtime_image_checks": "6 groups passed; production socket not tested",
+    "backup_restore": "not executed; volume-preserving container recreation only",
+    "real_provider": "not executed"
+  },
+  "images": {
+    "nexuspilot-api:local-preverify": "sha256:8f488a254b7ee55a469d722665d25a3c60b3cc7f22cb19d68b46fac87d32e441",
+    "nexuspilot-web:local-preverify": "sha256:455a0f9d8e3fa81946ed70bca230a2ad4f5b2c320ac123b4be67e11c73e28a75",
+    "nexuspilot-mysql:local-preverify": "sha256:c98dd0dcfe64a0c34fc4ca596fbf436a11ffe1ee9632d20a2777fa727ff0c070"
+  }
+}
