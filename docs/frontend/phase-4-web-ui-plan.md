@@ -10,8 +10,8 @@
 
 实际查看桌面及 390×844 布局，文件面板在窄屏左右保留 12px；刷新后真实下载文件名为 `upload-sample.txt`。截图位于本地忽略目录 `output/playwright/upload-desktop.png`、`output/playwright/upload-mobile-final.png`，不是版本化测试夹具。快速回复页面查询不存在的 Agent 工作流返回 404，按现有行为处理，不将其计作文件上传失败。
 
-**文档日期：** 2026 年 9 月 12 日
-**文档状态：** 进行中（统一Reasoning协议、Chat/Trajectory展示、安全Markdown、消息历史恢复、Responses事件回放、新会话首条回复恢复、标题重命名、未发送草稿、同会话多标签页提交互斥、只读模型目录页、路由错误边界、显式按钮发送、Session文本上下文运行时接入、稳定模型目录、消息运行证据与当前工作台解耦，以及阶段5浏览器登录和当前主体BFF归属已实现；System Prompt前台隔离、Context证据和浏览器本地文件选择已实现。2026年9月12日新增轮次幂等、代码块工具栏/复制，并修复127.0.0.1来源误拒绝及已保存快速回复刷新禁发；当前117项前端测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF浏览器测试通过，真实BFF在独立临时SQLite、FakeProvider和内存对象存储条件下通过两种本地入口、轮次重试、即时/刷新续聊及工作流查询失败禁发检查。后端Run状态未修改；正式上传及固定解析结果已实现并通过隔离MinIO验证；跨刷新提交key、完整模型执行恢复、真实Provider与HTTPS可信代理部署未验收；会话归档、Memory和真实Provider矩阵继续后置，附件专用Agent编排后续再实施）
+**文档日期：** 2026 年 10 月 5 日
+**文档状态：** 进行中。对话、推理、独立运行/Context 证据、代码块工具栏、正式文件上传与浏览器身份已实现；仍缺跨刷新提交 key、完整执行恢复、项目文件、完整 Evaluation 视图和代码语法高亮。2026-10-04 目标服务器自签 HTTPS、Flash 新回复和刷新保留通过基础验收，见[部署记录](../implementation/server-deployment-20261004.md)。下文带日期的测试数量与环境是历史验证范围，不代替当前全部能力验收；归档、Memory、真实 Provider 矩阵和附件专用 Agent 编排仍后置。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 **数据与控制平面依据：** [`phase-1-foundation.md`](../implementation/phase-1-foundation.md)
 **LLM 核心能力依据：** [`phase-2-llm-core-capabilities.md`](../implementation/phase-2-llm-core-capabilities.md)
@@ -50,7 +50,7 @@ Next.js Server / Backend-for-Frontend
 FastAPI
 ```
 
-浏览器不能直接持有 `X-API-Key` 或 `X-Internal-API-Key`。当前已实现登录主体、不透明 Session Cookie、精确 Origin/跨站请求伪造防护、退出、会话撤销和 BFF 资源归属；FastAPI 业务 Router 全面改为主体依赖、个人 API Key 与用户 Provider 凭据仍未完成，因此仍不满足公网发布门禁。
+浏览器不能直接持有 `X-API-Key` 或 `X-Internal-API-Key`。当前已实现登录主体、不透明 Session Cookie、精确 Origin/跨站请求伪造防护、退出、会话撤销、BFF 归属和 FastAPI 资源主体授权。目标服务器仅完成认证和部分资源隔离冒烟，完整部署矩阵仍待执行；个人 API Key 未实现，用户 Provider 凭据暂停。
 
 阶段5的 `/auth/login`、`/auth/logout`、`/auth/me`、会话列表/撤销和密码修改已经提供稳定首版；`/me/api-keys`、`/me/provider-credentials`、找回密码与账户安全页面尚未实现。Next.js 已不再注入固定开发用户，而是从当前登录主体派生 `user_id`；部署级 API Key 要等 FastAPI 各业务路由完成主体授权迁移后才能退出最终用户请求链。
 
@@ -77,7 +77,7 @@ Context Build和Model Catalog已有允许公开的证据展示；完整Evaluatio
 
 - Session下的轮次提交已新增可选客户端幂等键，匹配请求可重放原Run与User Message；Web仅在同一次提交调用内对网络/5xx不确定结果以同key再试一次。跨刷新/再次点击后的key持久化和完整模型执行恢复仍缺失，不能据此自动重发可能计费的模型请求，详见下节。
 - `/responses` 不会自动追加用户或 Assistant Message。第一版 BFF 可以显式编排，但必须记录每一步结果并处理部分失败，不能把多次 HTTP 调用描述为原子事务。
-- 当前已有浏览器登录和 BFF 层资源归属，但 FastAPI 各业务 Router 尚未直接从主体派生 owner。公开部署前必须完成后端逐资源授权、个人程序调用和凭据安全门禁；部署级密钥仍只能由服务端持有。
+- FastAPI 已通过共享主体授权依赖检查资源归属，并通过本地双向隔离检查；目标部署完整资源矩阵仍未执行。部署级服务密钥仍只能由服务端持有，个人程序调用凭据尚未实现。
 - `/responses` 已使用 `conversation-stream.v2` 信封持久化公开事件，并按 Attempt 提供有限回放。浏览器收到首个事件并取得 `attempt_id` 后，断线会从最后确认的 `sequence` 继续读取；若连接在首个事件前断开，仍只能通过 Run/Attempt 最终事实恢复，不能自动重发可能计费的请求。阶段3 Agent Workflow 保留自己的事件合同，两者不能混用。
 - 当前 `response.tool_call.delta` 不是工具执行事实。正式工具时间线必须等待 Tool Call API 和运行事件合同。
 - 阶段3后端当前提供显式取消、最多两个无依赖工作 Agent 并行和费用预留；前端已经完成对应合同、代理和交互适配。恢复、等待用户输入、进程重启恢复和大型节点结果 Artifact 降级仍不存在，前端不能显示这些动作，也不能把有限事件回放描述为持续订阅。
@@ -825,9 +825,9 @@ apps/web/
 
 | 工作项 | 归属 | 阶段4负责的结果 | 明确不负责 |
 |---|---|---|---|
-| 对象型Message产品接入 | 阶段2补充后端读取合同，阶段4完成产品接入验收 | 进行中：当前只测试“不支持对象内容时明确失败”；正式上传后再实现允许类型和恢复行为 | 浏览器不读取对象存储、不解析`content_uri`、不自行校验哈希，也不把不支持对象转为空文本 |
+| 对象型Message产品接入 | 阶段2补充后端读取合同，阶段4完成产品接入验收 | 进行中：仅有 `content_uri` 的历史 Message 仍标记 `unsupported_object_content`；已实现的上传使用 UserFile/Artifact，不等于已支持对象型 Message | 浏览器不读取对象存储、不解析`content_uri`、不自行校验哈希，也不把不支持对象转为空文本 |
 | System Prompt前台隔离 | 阶段4 | 已完成：普通Web不再代理或请求Prompt列表，Composer不再选择、展示或提交Prompt引用，BFF拒绝伪造引用，Context证据过滤Prompt来源；后端选择与渲染策略作为独立后端工作项定义 | 普通浏览器不接收名称、用途、版本、变量Schema、正文或是否纳入；内部管理与审计接口保持受内部密钥保护 |
-| Artifact普通产品绑定 | 阶段4 | 进行中：Responses引用合同、内存对象存储测试以及浏览器本地文件选择/删除已完成；后端上传、Artifact创建和受控引用提交尚未实现 | 本地文件仅显示“待上传”，存在待上传文件时阻止发送；不开放任意Artifact ID或URI输入，不允许跨Run资源，也不把测试夹具描述为生产上传 |
+| Artifact普通产品绑定 | 阶段4 | 基础上传已实现：UserFile 保存原件和固定解析结果，轮次原子绑定并创建 Run Artifact，消息显示附件且刷新可恢复；项目选择和分段引用待实施 | 不开放任意 Artifact ID 或 URI 输入；上传失败保留草稿且不发送缺失附件的提问；不把本机 PDF/Office 验证当作服务器已可用 |
 | Context证据抽屉 | 阶段4 | 已完成当前范围：展示允许公开的来源纳入/排除、信任、预算和模型目录事实，同时过滤System Prompt存在性及其全部元数据；失败不遮挡已生成的对话正文 | 不展示完整系统指令、System Prompt存在性/正文/名称/版本/变量、来源ID、内容哈希、对象URI、Handoff全文或其他敏感内容，不把前端推测显示成后端事实 |
 
 System Prompt只能由后端策略选择、固定版本并渲染；当前快速回复在策略尚未定义时不猜测默认版本。普通浏览器不读取候选项、不提交Prompt引用，也不显示是否使用。Artifact在文件上传完成后使用独立的受控选择合同；资源在选择后被禁用、删除、跨Run引用或读取失败时，本轮必须在Provider调用前失败，不能静默移除后继续生成。
@@ -1049,12 +1049,12 @@ GET /api/v1/models
 |---|---|---|---|---|
 | 阶段1 | 会话外壳、完整消息分页、Run/Task/Attempt/Retry/Artifact 证据和允许动作 | 阶段1已完成的安全查询 API | 归属、分页、局部失败、刷新恢复和浏览器脱敏测试通过 | 进行中 |
 | 阶段2 | Provider/Model、普通响应、SSE、共享Context Build及允许公开的Context/Evaluation证据；System Prompt不进入普通产品 | 阶段2已完成的LLM核心API及新增运行时Context关联 | 两轮会话、不同模型窗口、断流、费用、能力拒绝和证据版本测试通过；Context当前范围已实现，完整Evaluation视图后续 | 进行中 |
-| 阶段2 + 阶段4 | 对象型Message受控读取与普通对话接入 | 阶段2对象读取合同、ObjectStorage受控访问和统一Context Builder | 当前明确拒绝测试通过；生产归属、MIME、大小、哈希、UTF-8、重放和浏览器错误恢复等待上传合同 | 进行中 |
+| 阶段2 + 阶段4 | 对象型Message受控读取与普通对话接入 | 阶段2对象读取合同、ObjectStorage受控访问和统一Context Builder | 当前明确拒绝测试通过；对象型 Message 的允许类型及恢复仍待实施，正式 UserFile 上传不能代替此检查 | 进行中 |
 | 阶段4 | System Prompt前台隔离与Context证据抽屉 | 已实现的Prompt Release、`context_policy.v2`和脱敏Context证据接口 | 普通Web不请求或展示System Prompt候选/元数据、不提交Prompt引用；证据过滤System Prompt存在性；用户隔离、敏感正文隔离和局部失败测试通过 | 已完成 |
-| 阶段4 | Artifact普通产品绑定 | 已实现的受限文本Artifact读取、普通Responses引用合同和浏览器本地文件选择 | 内存对象存储合同与本地选择/删除/发送门禁测试已通过；正式文件上传、Artifact创建、受控引用和刷新恢复尚未完成 | 进行中 |
+| 阶段4 | Artifact普通产品绑定 | 正式 UserFile 上传、原子轮次绑定、Run Artifact 与统一解析内容 | 基础上传、下载/删除、消息附件刷新恢复已验证；目标服务器文字对话通过；项目文件选择和分段引用未实现，PDF/Office 部署限制见部署记录 | 进行中 |
 | 阶段2 + 阶段4 | 稳定模型目录、数据库模型实体、Provider Registry 交集和 `/models` 选择数据 | `llm_models`、`llm_model_catalog_versions`与Provider Registry | 空库/存量库回填、唯一约束、启用/禁用、能力缺失、稳定排序、BFF固定路由和前端不可静默切换测试通过 | 已完成 |
 | 阶段3 | 已接入`model_only_v1`创建/发现/结果/节点/事件、Agent/Turn/Handoff、验证、审核、取消、并行组、费用预留、Session历史及协作类型化Context来源 | 后端八个接口、完整节点合同和阶段2共享Context Build；既有BFF归属保护，工具视图另等阶段7 | 不同角色模型Context、真实Provider JSON/SSE、幂等、失败/未知结果和刷新恢复测试通过后完成 | 进行中 |
-| 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、轮次幂等提交、仅按钮发送、可访问性和性能 | 后端接口与稳定开发环境 | 修复前及106项通过历史保留；当前117项测试、ESLint、TypeScript、生产构建和20项桌面/移动模拟BFF测试通过。来源误拒绝和已保存快速回复刷新禁发已修复，真实BFF轮次重试、续聊及失败禁发在临时SQLite/FakeProvider/内存对象存储下通过；跨刷新key、完整模型执行恢复和HTTPS可信代理部署等仍未完成，归档/Memory/真实Provider矩阵后置 | 进行中 |
+| 阶段4 | Next.js、BFF、主题、响应式、标题重命名、标签页草稿、同会话提交互斥、再次提问、只读模型目录、路由边界、代码块工具栏、轮次幂等提交、仅按钮发送、可访问性和性能 | 后端接口与稳定开发环境 | 早期 106/117 项记录保留；正式上传后的 121 项前端测试和构建记录见文首及部署记录，目标 HTTPS 新回复与刷新保留通过。跨刷新 key、完整执行恢复及完整部署矩阵未完成，归档/Memory/真实 Provider 矩阵后置 | 进行中 |
 | 阶段5 | 登录、会话安全、个人 API Key、供应商凭据与多用户授权迁移 | 阶段5身份/凭据 API 和资源授权完成 | Cookie/Bearer、安全存储、撤销、跨用户和公开发布端到端测试通过 | 进行中 |
 | 阶段6 | 关联标识、耗时分解和内部诊断页 | 阶段6完成公开/内部遥测分层 | 业务事实不被追踪覆盖；敏感字段扫描和缺失追踪测试通过 | 未开始 |
 | 阶段7 | Tool Call、风险提示、批准、工具结果与 Artifact | 阶段7完成并提供工具权限/批准合同 | 提议与执行不混淆；权限、批准竞争、超时和脱敏测试通过 | 未开始 |

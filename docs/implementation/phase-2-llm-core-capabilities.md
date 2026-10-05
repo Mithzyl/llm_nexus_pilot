@@ -47,7 +47,7 @@
 - 已验证：四家 Provider、OpenAI-compatible codec、统一 Responses、SSE、重试、费用与原始响应证据；DeepSeek 使用专用 Chat Completions 适配器完成最新模型、思考参数和流终止约束。
 - 当前实现：带`current_user_message_id`的`POST /api/v1/responses`会在Provider调用前创建Run锚定的Context Build，并把`context_build_id`关联到Model Attempt；未带锚点的低层兼容调用仍只使用显式`input`，不宣称具有Session语义。
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
-- 当前实现：平台已提供可选登录和 Cookie 会话，Web BFF 使用当前用户归属；FastAPI 业务接口仍按公共 API Key 与内部 API Key 的受信调用方方式工作，尚未完成全资源主体授权。现有 Memory 详情、纠正和删除不能因此声称已完成用户本人越权隔离。
+- 当前实现：平台已提供可选登录和 Cookie 会话，Web BFF 与 FastAPI 均校验资源主体归属；公共和内部服务 Key 不替代生产用户身份。现有资源授权已通过本地双向检查，目标服务器仅完成部分资源冒烟；不将这些结果解释为已暂停 Memory 能力可以正式启用。验证范围见[阶段5](phase-5-platform-identity-credentials.md)。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
 - 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时引用的System Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。System Prompt引用只允许由后端策略或受信内部调用生成，普通浏览器不能选择、提交或查看。Memory、Knowledge和Tool来源仍未通过正式启用门禁。
 - 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
