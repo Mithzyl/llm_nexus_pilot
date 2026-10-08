@@ -28,12 +28,38 @@ python3 deployments/verification/check_https.py "$VERIFY_DIR" after
 此步骤验证 Cookie 和已保存数据跨容器重建，而不是工作流执行中断恢复。若隔了超过登录闲置期限再继续，应先验证旧 Cookie 被拒绝、重新登录，再进行重建；不能把正常会话过期记成数据丢失。
 
 7. `check_internal.py` 在该 API 容器内运行，以 stdin 接收测试 B 的 Cookie/CSRF 及 A 的 session_id，检查直接 API 和资源权限。只输出状态，不输出凭据。`check_https.Client.cookies()` 可从私有 Cookie jar 提取测试值；不要将它们放进命令行参数或日志。
-8. 单独运行 `manage_runtime.py check --image nexuspilot-file-runtime:structure-test` 可验证已有文件运行镜像；这不代表生产 API 已连接 Office Socket，也不代表 API 内的 PDF 沙箱能运行。
+8. 单独运行 `manage_runtime.py check --image nexuspilot-file-runtime:unified-local` 可验证新版文件镜像；这不代表生产 API 已连接 PDF/Office Socket。新版 API 不再包含本地 PDF 沙箱，按下节单独验证 Socket 与文件 Context。
 9. 保存去除秘密的验证报告后，对该测试项目执行 `down --volumes`，删除它的临时配置、Cookie、证书和测试数据。该删除仅适用于自己创建的一次性项目；不对实际开发／生产项目执行。
 
 本次结果见[本地部署预验证报告](../../docs/implementation/local-docker-preverification.md)。
 
+## 本地统一文件解析验收
+
+2026-10-07 按用户要求只在本地开发，不连接或更新服务器。以下命令不调用真实 Provider，也不读取开发数据库或用户文件。需要 macOS Docker Desktop 或 Linux Docker Engine、API `.venv`，以及用于**合成样本生成**的独立开发 Python（预装 reportlab、python-docx、openpyxl、python-pptx）。这些样本依赖不装入 API；执行任务时不运行 pip。
+
+```bash
+python3 deployments/file-runtime/manage_runtime.py build --image nexuspilot-file-runtime:unified-local
+python3 deployments/file-runtime/manage_runtime.py check --image nexuspilot-file-runtime:unified-local
+
+# 使用已包含上述样本生成依赖的 Python；目标目录必须不存在，避免覆盖。
+python3 deployments/verification/create_file_fixtures.py /tmp/nexus-synthetic-file-fixtures
+
+NEXUSPILOT_TEST_FILE_RUNTIME=1 \
+FILE_RUNTIME_TEST_IMAGE=nexuspilot-file-runtime:unified-local \
+NEXUSPILOT_TEST_FILE_FIXTURES=/tmp/nexus-synthetic-file-fixtures \
+apps/api/.venv/bin/pytest -c apps/api/pyproject.toml \
+  apps/api/tests/test_office_runtime_executor.py \
+  apps/api/tests/test_file_runtime_context.py -q
+```
+
+镜像检查实际运行非 root、无网络、只读根文件系统、资源受限的临时 Linux 容器。测试启动自己的本地 Socket，结束后关闭；只删除自己创建的解析容器，不改用户 `.env`，不替换默认 `:local` 镜像。
+
+`test_file_runtime_context.py` 检查 PDF/DOCX/XLSX/PPTX 的真实提取、HTTP 上传/下载、两种模式首轮和后续轮的实际模型输入、解析不重复执行、Context 来源/版本及重新读取；另检查中文 PDF、空白第二页和加密 PDF 上传失败。该部分使用 SQLite 和内存对象存储、固定 Provider 响应，**不是 MySQL/MinIO、真实 Provider 或浏览器验收**。只有显式开启环境变量才运行，默认跳过不计作通过。真实存储验证仍使用 `test_user_file_infrastructure.py` 的独立 MySQL/MinIO 配置；不得连接开发或生产库代替。
+
+本机应用需要长期使用解析服务时，先通过上述检查，再按[Socket 启动说明](../../docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)显式启动执行器，并将该服务路径配置到 API。单次测试结束不会留下常驻服务；新 API 对 PDF/Office 缺少 Socket 会明确失败，不回退宿主解析。
+
 ## 存储镜像专项验证
+
 
 `check_storage_image.py` 用于更换 MinIO 镜像后的专项验证。需要 Docker Engine、已下载的目标镜像和项目 API 虚拟环境依赖；不需要数据库、Provider Key 或完整 Web 服务。从仓库根目录运行：
 

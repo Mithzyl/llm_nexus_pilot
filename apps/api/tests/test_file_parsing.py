@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-import sys
+import runpy
 from pathlib import Path
 
 import pytest
@@ -134,23 +134,23 @@ def test_pdf_partial_coverage_and_page_locations(monkeypatch):
     assert document.warnings
 
 
-def test_pdf_sandbox_unavailable_does_not_run_unrestricted(monkeypatch):
+def test_pdf_executor_unavailable_does_not_run_unrestricted(monkeypatch):
     """Missing isolation is a failure, never a reason to parse on the host directly."""
 
     monkeypatch.setattr(
-        "nexuspilot_api.infrastructure.pdf_text_extraction.shutil.which", lambda _: None
+        "nexuspilot_api.infrastructure.file_runtime_client.get_settings",
+        lambda: type("Settings", (), {"file_runtime_socket": None})(),
     )
-    with pytest.raises(FileParsingError, match="unavailable"):
+    with pytest.raises(FileParsingError, match="configured"):
         parse_fixture(b"%PDF-1.7\nfixture", "application/pdf")
 
 
 def test_pdf_output_reader_rejects_links_and_oversized_results(tmp_path):
     """Parser-controlled paths cannot make the parent read outside files or oversized output."""
 
-    from nexuspilot_api.infrastructure.pdf_text_extraction import (
-        PdfExtractionError,
-        _read_output_text,
-    )
+    parser = runpy.run_path(str(Path(__file__).resolve().parents[3]
+                               / "deployments/file-runtime/parse_pdf.py"))
+    _read_output_text = parser["read_output_text"]
 
     original = tmp_path / "original.txt"
     original.write_text("fixture outside parser result", encoding="utf-8")
@@ -159,50 +159,34 @@ def test_pdf_output_reader_rejects_links_and_oversized_results(tmp_path):
     hard_link = tmp_path / "hard.txt"
     os.link(original, hard_link)
     for path in (symbolic, hard_link):
-        with pytest.raises(PdfExtractionError):
+        with pytest.raises((ValueError, OSError)):
             _read_output_text(path, maximum_bytes=100)
     plain = tmp_path / "plain.txt"
     plain.write_text("content", encoding="utf-8")
-    with pytest.raises(PdfExtractionError):
+    with pytest.raises((ValueError, OSError)):
         _read_output_text(plain, maximum_bytes=3)
     assert _read_output_text(plain, maximum_bytes=100) == "content"
 
 
 def test_pdf_metadata_capture_never_opens_parser_controlled_output_paths(tmp_path, monkeypatch):
-    """A parser-created output symlink must not make the parent truncate an outside file."""
+    """The container parser captures metadata on private descriptors, not predictable paths."""
 
-    from nexuspilot_api.infrastructure import pdf_text_extraction as extractor
-
+    parser = runpy.run_path(str(Path(__file__).resolve().parents[3]
+                               / "deployments/file-runtime/parse_pdf.py"))
     marker = tmp_path / "outside.txt"
     marker.write_text("unchanged", encoding="utf-8")
     workspace = tmp_path / "work"
     workspace.mkdir()
     (workspace / "command-output").symlink_to(marker)
-    monkeypatch.setattr(extractor, "_sandbox_command", lambda directory, command: command)
 
-    class FinishedFixtureProcess:
-        """Return fixed metadata using only the provided descriptor; never run a command."""
+    def completed(arguments, **kwargs):
+        """Simulate Poppler output without executing a parser or opening any paths."""
+        kwargs["stdout"].write(b"Pages: 1\n")
+        kwargs["stdout"].flush()
 
-        returncode = 0
-
-        def __init__(self, *args, **kwargs):
-            """Write a harmless metadata response to simulate a completed parser child."""
-            kwargs["stdout"].write(b"Pages: 1\n")
-            kwargs["stdout"].flush()
-
-        def poll(self):
-            """Report a completed process without OS interaction."""
-            return 0
-
-        def wait(self, **kwargs):
-            """Return the completed fixture status."""
-            return 0
-
-    monkeypatch.setattr(extractor.subprocess, "Popen", FinishedFixtureProcess)
-    try:
-        assert extractor._run_pdf_command(workspace, ["fixture"]) == "Pages: 1\n"
-    finally:
-        assert marker.read_text(encoding="utf-8") == "unchanged"
+    monkeypatch.setattr(parser["subprocess"], "run", completed)
+    assert parser["run_pdf_command"](workspace, ["fixture"]) == "Pages: 1\n"
+    assert marker.read_text(encoding="utf-8") == "unchanged"
 
 
 def build_text_pdf_fixture() -> bytes:
@@ -230,58 +214,3 @@ def build_text_pdf_fixture() -> bytes:
         f"trailer\n<< /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
     )
     return bytes(content)
-
-
-@pytest.mark.infrastructure
-@pytest.mark.skipif(
-    os.environ.get("NEXUSPILOT_TEST_PDF_SANDBOX") != "1", reason="explicit PDF sandbox opt-in"
-)
-def test_real_pdf_extraction_uses_os_sandbox():
-    """Exercise installed Poppler and OS isolation without a model or external service."""
-
-    document = parse_fixture(build_text_pdf_fixture(), "application/pdf")
-    assert document.total_pages == 1
-    assert document.status == "complete"
-    assert "Unified file parsing" in "".join(b.text for b in document.blocks)
-    assert "poppler-sha256:" in document.parser_version
-
-
-@pytest.mark.infrastructure
-@pytest.mark.skipif(
-    os.environ.get("NEXUSPILOT_TEST_PDF_SANDBOX") != "1", reason="explicit PDF sandbox opt-in"
-)
-def test_real_pdf_sandbox_denies_unbound_file_and_network(tmp_path):
-    """Use harmless probes to confirm isolation, not just successful document extraction."""
-
-    from nexuspilot_api.infrastructure.pdf_text_extraction import _run_pdf_command
-
-    workspace = tmp_path / "allowed"
-    workspace.mkdir()
-    forbidden = tmp_path / "outside.txt"
-    forbidden.write_text("fixture only", encoding="utf-8")
-    probe = (
-        "import errno,socket,sys\n"
-        "try: open(sys.argv[1]).read()\n"
-        "except OSError as exc: assert exc.errno in (errno.EPERM,errno.EACCES,errno.ENOENT)\n"
-        "else: raise AssertionError('unbound file was readable')\n"
-        "try:\n"
-        " s=socket.socket();s.connect(('127.0.0.1',9))\n"
-        "except OSError as exc:\n"
-        " assert exc.errno in (errno.EPERM,errno.EACCES,errno.ENETUNREACH,errno.ECONNREFUSED)\n"
-        "else: raise AssertionError('unexpected network connection')\n"
-        "print('file denied')\n"
-    )
-    # On macOS network denial must be a permission error, not merely a closed port.
-    if sys.platform == "darwin":
-        probe = probe.replace(
-            "errno.EPERM,errno.EACCES,errno.ENETUNREACH,errno.ECONNREFUSED",
-            "errno.EPERM,errno.EACCES",
-        )
-    elif sys.platform == "linux":
-        host_network = os.stat("/proc/self/ns/net").st_ino
-        probe = f"import os\nassert os.stat('/proc/self/ns/net').st_ino != {host_network}\n" + probe
-    output = _run_pdf_command(
-        workspace.resolve(),
-        [str(Path(sys.executable).resolve()), "-I", "-c", probe, str(forbidden)],
-    )
-    assert output.strip() == "file denied"

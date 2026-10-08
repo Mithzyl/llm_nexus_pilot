@@ -1,6 +1,6 @@
-"""Extract OOXML files inside the offline, disposable file-runtime container.
+"""Dispatch fixed Office/PDF parsing inside the offline disposable file-runtime container.
 
-Input is one bounded office_parse.v1 JSON line on stdin, containing only MIME
+Input is one bounded office_parse.v1 or file_parse.v1 JSON line, containing only MIME
 and base64 bytes. Output is one bounded JSON result; no paths, commands or URLs
 are accepted. Run through the administrator-owned executor, never on API hosts.
 """
@@ -236,7 +236,7 @@ def parse_powerpoint(content: bytes) -> tuple[list[dict], dict]:
 
 
 def parse_request(request: dict) -> dict:
-    """Validate request fields and return text plus optional complete sheet/slide inventory."""
+    """Validate the fixed protocol; keep old Office responses and dispatch PDF without commands."""
 
     if not isinstance(request, dict) or set(request) != {
         "protocol",
@@ -244,10 +244,26 @@ def parse_request(request: dict) -> dict:
         "content_base64",
     }:
         raise ValueError("Invalid Office parse request")
-    if request["protocol"] != "office_parse.v1":
-        raise ValueError("Unsupported Office parse protocol")
+    protocol = request["protocol"]
+    if protocol not in ("office_parse.v1", "file_parse.v1"):
+        raise ValueError("Unsupported file parse protocol")
+    if not isinstance(request["media_type"], str) or not isinstance(request["content_base64"], str):
+        raise ValueError("Invalid file request fields")
     content = base64.b64decode(request["content_base64"], validate=True)
     media_type = request["media_type"]
+    if protocol == "file_parse.v1" and media_type == "application/pdf":
+        # Isolated mode excludes the script directory from sys.path. Load only the
+        # adjacent administrator-built module, never a caller-supplied module/path.
+        import runpy
+
+        from pathlib import Path
+
+        parser = runpy.run_path(str(Path(__file__).with_name("parse_pdf.py")))
+        pages, version = parser["extract_pages"](content)
+        return {
+            "protocol": protocol, "source_hash": hashlib.sha256(content).hexdigest(),
+            "media_type": media_type, "parser_version": version, "pages": pages,
+        }
     validate_package(content, media_type)
     parser = {
         "word/document.xml": parse_word,
@@ -276,7 +292,7 @@ def parse_request(request: dict) -> dict:
         for name in ("python-docx", "openpyxl", "python-pptx")
     )
     return {
-        "protocol": "office_parse.v1",
+        "protocol": protocol,
         "source_hash": hashlib.sha256(content).hexdigest(),
         "media_type": media_type,
         "parser_version": f"office-v2/{versions}",
@@ -288,15 +304,18 @@ def parse_request(request: dict) -> dict:
 
 
 def main() -> int:
-    """Bound process resources and emit a sanitized failure instead of partial successful output."""
+    """Bound resources and emit sanitized failures, preserving legacy Office error codes."""
 
     resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_RESULT_BYTES, MAX_RESULT_BYTES))
+    protocol = None
     try:
         encoded = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
         if len(encoded) > MAX_REQUEST_BYTES or not encoded.endswith(b"\n"):
             raise ValueError("Office request size or framing is invalid")
-        report = parse_request(json.loads(encoded))
+        request = json.loads(encoded)
+        protocol = request.get("protocol") if isinstance(request, dict) else None
+        report = parse_request(request)
         output = json.dumps(report, ensure_ascii=False, allow_nan=False).encode()
         if len(output) > MAX_RESULT_BYTES:
             raise ValueError("Office result exceeds the supported size")
@@ -304,7 +323,8 @@ def main() -> int:
         return 0
     except Exception:
         # Library exceptions can include source text; never send their messages upstream.
-        print(json.dumps({"error": "office_parse_failed"}))
+        print(json.dumps({"error": "office_parse_failed" if protocol == "office_parse.v1"
+                          else "file_parse_failed"}))
         return 1
 
 

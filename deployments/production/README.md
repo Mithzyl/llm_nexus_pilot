@@ -24,7 +24,7 @@
 - JSON 归属检查覆盖大小写、`+json`、参数及缺少 Content-Type；原始文件字节按文件处理。生产拒绝已知示例、过短或缺失的服务秘密，且关键用途使用不同秘密。
 - macOS Docker Desktop 的 Linux ARM64 上已构建并启动真实生产配置：迁移到 `20260916_0022`、MinIO 初始化、匿名请求拒绝、HTTPS 登录、双用户会话隔离、文件上传／下载／删除、退出后拒绝均通过。TLS 使用独立实验 CA，测试只绑定本机回环；未调用真实 Provider。
 - API/Web 实测 UID 为 10001；数据库应用账号没有 DDL／授权权限，MinIO 应用账号只能访问指定 bucket。只有 Nginx 有宿主端口映射。
-- **PDF 限制：** 镜像已安装 Poppler/bubblewrap，但实测默认 Docker 权限拒绝创建其嵌套命名空间。此配置不能宣称 PDF 已可用；应用会明确返回解析失败。后续应将 PDF 接入独立受控执行器或验证合适的独立 Linux 运行环境，不使用 privileged 或关闭整体安全限制来启用。文本／CSV／JSON 上传可用；Office 另见下节。
+- **PDF/Office 依赖：** 当前开发代码要求专用解析 Socket，API 镜像不再安装 Poppler/bubblewrap。未配置执行器时两类文件均明确失败。线上仍为 2026-10-04 旧版本，PDF 嵌套 namespace 失败、Office 未部署的记录不变；2026-10-07 用户要求只做本地开发，本次不发布。文本／CSV／JSON 不依赖该服务。
 - 目标 AMD64 实例已启动并完成基础验收；Office systemd 服务、证书自动续期、独立无代理端口扫描及备份恢复演练尚未验收。当前适用于预置账号的受限使用，不表示公开多用户验收全部完成。
 - 当前准备版本的本地自动化检查：后端／模型 524 通过、8 项可选检查跳过；前端 121 通过，TypeScript、ESLint、Ruff 和差异检查通过。MySQL、API、Web 镜像构建、实际空库迁移、Nginx 语法及 HTTPS 冒烟另行验证。JSON 绕过和账号命令均先复现失败，再修复。
 
@@ -113,7 +113,9 @@ docker compose --env-file deployments/production/runtime/.env \
 
 Nginx 将 HTTPS Origin/Host 传到 Web；API 关闭通用代理头信任。入口设置登录频率、API 请求频率和连接数限制，并关闭代理响应缓存、缓冲和自动上游重试。后端仍保留账号失败限制；API 看到的是 Web 的地址，不将其当作真实公网来源 IP。
 
-## 5. 可选 Office 执行器
+## 5. 可选 PDF／Office 执行器
+
+2026-10-07 本地代码已增加固定 PDF 解析分支，API 不再启动嵌套沙箱；服务器安装与发布按用户要求暂停。新协议、旧 Office 兼容、发布/恢复顺序及目标验收以[阶段7解析部署与服务器验收计划](../../docs/implementation/phase-7-tool-runtime-plan.md#文件解析部署与服务器验收计划2026-年-10-月-6-日)为准；下列配置可供统一执行器部署使用，但本地测试不代替目标主机验收。任务工作目录和 Python／Shell 是后续经工具 Registry/权限检查的独立工作项，不通过该解析 Socket 接受任意命令。
 
 先按[阶段7执行环境说明](../../docs/implementation/phase-7-tool-runtime-plan.md#linux-云服务器兼容与验收)在目标架构构建、检查镜像。不要把本机 ARM64 测试镜像直接当作 AMD64 云主机的验收结果。
 
@@ -131,7 +133,7 @@ docker compose --env-file deployments/production/runtime/.env \
   -f deployments/compose/docker-compose.office.yml up -d api
 ```
 
-未验证执行器前不宣称 Office 可用；默认配置不挂该目录。即使 Office 正常，也不代表 API 容器内的 PDF 沙箱已可用。
+未验证执行器前不宣称 PDF/Office 可用；默认配置不挂该目录。先检查兼容两种协议的执行器，再更新 API；新版 PDF 不再使用 API 容器内沙箱。
 
 ## 6. 发布验收、备份与更新
 

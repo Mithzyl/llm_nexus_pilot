@@ -3,10 +3,8 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
-# Runtime PDF dependencies remain subject to the existing OS sandbox checks.
-RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils bubblewrap \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 nexus && useradd --uid 10001 --gid nexus --no-create-home nexus
+# PDF/Office dependencies live only in the dedicated file-runtime image.
+RUN groupadd --gid 10001 nexus && useradd --uid 10001 --gid nexus --no-create-home nexus
 
 COPY apps/api/requirements.txt ./apps/api/requirements.txt
 RUN python -m pip install --no-cache-dir -r apps/api/requirements.txt

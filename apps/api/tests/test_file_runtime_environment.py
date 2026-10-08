@@ -99,6 +99,7 @@ def test_build_context_excludes_application_and_user_files():
         "!requirements.txt",
         "!check_runtime.py",
         "!parse_office.py",
+        "!parse_pdf.py",
     ]
     dockerfile = (RUNTIME_DIRECTORY / "Dockerfile").read_text()
     assert "USER 65532:65532" in dockerfile

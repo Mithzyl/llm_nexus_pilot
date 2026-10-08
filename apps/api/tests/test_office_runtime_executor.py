@@ -4,6 +4,7 @@ Set NEXUSPILOT_TEST_FILE_RUNTIME=1 after building the image to run the real
 container test. No production documents, database services or Providers are used.
 """
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -159,12 +160,15 @@ def test_socket_configuration_rejects_relative_paths():
         Settings(_env_file=None, file_runtime_socket="relative.sock")
 
 
+@pytest.mark.parametrize("format_name", ["docx", "pdf"])
 @pytest.mark.skipif(
     os.environ.get("NEXUSPILOT_TEST_FILE_RUNTIME") != "1",
     reason="Requires explicit real Docker permission and a built Linux file image",
 )
-def test_real_office_socket_container_and_context_blocks(executor, monkeypatch):
-    """Run a source fixture through actual socket, Docker, parser and API result conversion."""
+def test_real_file_socket_container_and_context_blocks(executor, monkeypatch, format_name):
+    """Run Office/PDF through actual socket, Docker, parser and API result conversion."""
+
+    from test_file_parsing import build_text_pdf_fixture
 
     image_id = executor.resolve_image(os.environ.get("FILE_RUNTIME_TEST_IMAGE", executor.IMAGE_TAG))
     with tempfile.TemporaryDirectory(prefix="of-", dir="/tmp") as temporary:
@@ -173,24 +177,57 @@ def test_real_office_socket_container_and_context_blocks(executor, monkeypatch):
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
             monkeypatch.setattr(get_settings(), "file_runtime_socket", path)
-            content = word_fixture()
+            content = word_fixture() if format_name == "docx" else build_text_pdf_fixture()
             request = FileParseRequest(
                 source_id="00000000-0000-0000-0000-000000000001",
                 source_hash=hashlib.sha256(content).hexdigest(),
-                filename="示例.docx",
-                media_type=OFFICE_MEDIA_TYPES[0],
+                filename=f"示例.{format_name}",
+                media_type=OFFICE_MEDIA_TYPES[0] if format_name == "docx" else "application/pdf",
             )
             try:
                 document = parse_file_content(request, content)
-                assert document.blocks[0].text == "中文 Office 文件"
-                assert document.blocks[0].paragraph_number == 1
+                if format_name == "docx":
+                    assert document.blocks[0].text == "中文 Office 文件"
+                    assert document.blocks[0].paragraph_number == 1
+                else:
+                    assert "Unified file parsing" in "".join(b.text for b in document.blocks)
+                    assert document.total_pages == 1
+                    assert document.status == "complete"
+                    assert document.blocks[0].page_number == 1
                 assert image_id in document.parser_version
+                # Old Office remains compatible; new protocol also preserves its content.
+                from nexuspilot_api.infrastructure.file_runtime_client import request_file_parse
+
+                report = request_file_parse(word_fixture(), OFFICE_MEDIA_TYPES[0],
+                                            protocol="file_parse.v1")
+                assert report["blocks"][0]["text"] == "中文 Office 文件"
                 with pytest.raises(OfficeExtractionError, match="corrupt"):
                     extract_office_content(b"not a document", OFFICE_MEDIA_TYPES[0])
             finally:
                 server.shutdown()
                 thread.join(timeout=130)
         assert not Path(path).exists()
+
+
+@pytest.mark.parametrize("protocol,media_type,extra", [
+    ("unknown", "application/pdf", {}),
+    ("office_parse.v1", "application/pdf", {}),
+    ("file_parse.v1", "application/pdf", {"command": "python"}),
+    ("file_parse.v1", "application/pdf", {"path": "/etc/passwd"}),
+])
+def test_parser_rejects_unsupported_protocol_and_command_fields(protocol, media_type, extra):
+    """The fixed parser cannot be turned into a path reader or command execution API."""
+
+    spec = importlib.util.spec_from_file_location(
+        "file_parser", RUNTIME_DIRECTORY / "parse_office.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(ValueError):
+        module.parse_request({
+            "protocol": protocol, "media_type": media_type,
+            "content_base64": base64.b64encode(b"%PDF-fixture").decode(), **extra,
+        })
 
 
 def test_timed_out_container_is_removed(executor, monkeypatch):

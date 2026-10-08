@@ -1,4 +1,4 @@
-"""Serve only Office parsing over a permission-restricted local Unix socket.
+"""Serve fixed Office/PDF parsing over a permission-restricted local Unix socket.
 
 Run as an administrator-managed executor on macOS Docker Desktop or Linux
 Docker Engine. The API uses the socket, never the Docker daemon. Each accepted
@@ -82,17 +82,22 @@ def parse_in_container(encoded: bytes, image_id: str) -> dict:
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not selector.select(remaining):
-                        raise TimeoutError("Office execution timed out")
+                        raise TimeoutError("File execution timed out")
                     chunk = os.read(process.stdout.fileno(), 65536)
                     if not chunk:
                         break
                     result.extend(chunk)
                     if len(result) > MAX_RESULT_BYTES + 1:
-                        raise ValueError("Office output exceeds the supported size")
-            if process.wait(timeout=max(0.01, deadline - time.monotonic())):
-                return {"error": "office_parse_failed"}
+                        raise ValueError("File output exceeds the supported size")
+            exit_code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
         report = json.loads(result)
-        if not isinstance(report, dict) or report.get("protocol") != "office_parse.v1":
+        if exit_code:
+            if report in ({"error": "office_parse_failed"}, {"error": "file_parse_failed"}):
+                return report
+            raise ValueError("Invalid failed parser output")
+        if not isinstance(report, dict) or report.get("protocol") not in (
+            "office_parse.v1", "file_parse.v1",
+        ):
             raise ValueError("Invalid parser output")
         report["parser_version"] += "/" + image_id
         return report

@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_INDEX=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 HOME=/tmp LANG=C.UTF-8
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends poppler-utils \
+    && apt-get install -y --no-install-recommends poppler-utils poppler-data \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /opt/file-runtime/requirements.txt
 RUN PIP_NO_INDEX=0 python -m pip install --no-cache-dir -r /opt/file-runtime/requirements.txt \
@@ -16,6 +16,7 @@ RUN PIP_NO_INDEX=0 python -m pip install --no-cache-dir -r /opt/file-runtime/req
 
 COPY check_runtime.py /opt/file-runtime/check_runtime.py
 COPY parse_office.py /opt/file-runtime/parse_office.py
+COPY parse_pdf.py /opt/file-runtime/parse_pdf.py
 WORKDIR /tmp
 USER 65532:65532
 ENTRYPOINT ["python", "-I", "/opt/file-runtime/check_runtime.py"]

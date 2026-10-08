@@ -156,8 +156,10 @@ def check_powerpoint(directory: Path) -> dict:
 
 
 def check_pdf(directory: Path) -> dict:
-    """Build a tiny valid text PDF and exercise the preinstalled Poppler binaries offline."""
+    """Check Poppler and the actual file protocol with synthetic PDF bytes inside isolation."""
 
+    if not Path("/usr/share/poppler/cMap/Adobe-GB1/UniGB-UCS2-H").is_file():
+        raise RuntimeError("Poppler CJK mapping data is missing")
     text_stream = b"BT /F1 12 Tf 40 160 Td (File runtime PDF check) Tj ET"
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -193,10 +195,33 @@ def check_pdf(directory: Path) -> dict:
     if b"Pages:" not in metadata.stdout or "File runtime PDF check" not in output.read_text():
         raise RuntimeError("Poppler failed to extract the PDF fixture")
     version = subprocess.run(["pdftotext", "-v"], check=True, capture_output=True, timeout=10)
+    parsed = subprocess.run(
+        ["python", "-I", "/opt/file-runtime/parse_office.py"],
+        input=json.dumps({
+            "protocol": "file_parse.v1", "media_type": "application/pdf",
+            "content_base64": base64.b64encode(content).decode(),
+        }).encode() + b"\n", check=True, capture_output=True, timeout=45,
+    )
+    report = json.loads(parsed.stdout)
+    if report["protocol"] != "file_parse.v1" or len(report["pages"]) != 1:
+        raise RuntimeError("PDF protocol or page count mismatch")
+    if "File runtime PDF check" not in report["pages"][0]:
+        raise RuntimeError("PDF protocol did not preserve text")
+    for invalid in (b"%PDF-corrupt", bytes(content).replace(text_stream, b" " * len(text_stream))):
+        rejected = subprocess.run(
+            ["python", "-I", "/opt/file-runtime/parse_office.py"],
+            input=json.dumps({
+                "protocol": "file_parse.v1", "media_type": "application/pdf",
+                "content_base64": base64.b64encode(invalid).decode(),
+            }).encode() + b"\n", capture_output=True, timeout=45,
+        )
+        if rejected.returncode != 1 or json.loads(rejected.stdout) != {"error": "file_parse_failed"}:
+            raise RuntimeError("Corrupt or textless PDF incorrectly succeeded")
     return {
         "pages": 1,
         "embedded_text": True,
         "version": version.stderr.decode().splitlines()[0],
+        "file_protocol": True, "corrupt_and_textless_rejected": True,
     }
 
 

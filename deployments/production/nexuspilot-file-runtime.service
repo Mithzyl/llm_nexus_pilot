@@ -1,6 +1,6 @@
 # Install only after creating the dedicated user/group and checking the target-architecture image.
 [Unit]
-Description=NexusPilot restricted Office parser executor
+Description=NexusPilot restricted PDF and Office parser executor
 After=docker.service
 Requires=docker.service
 

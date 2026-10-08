@@ -1,11 +1,15 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 9 月 5 日
-**文档状态：** 原阶段已完成；新增文件输入工作项进行中（浏览器私有上传、不可变原件与解析结果保存、同会话连续文件上下文及逐轮快照已实现；逻辑文件版本历史、跨文件解析缓存、OCR及模型工具循环尚未完成）
+**文档日期：** 2026 年 10 月 8 日
+**文档状态：** 原阶段已完成；新增文件输入工作项进行中（浏览器私有上传、不可变原件与解析结果保存、同会话连续文件上下文及逐轮快照已实现；逻辑文件版本历史、跨文件解析缓存及 OCR 尚未完成；模型工具能力统一由工具主计划安排）
+
+> 2026-10-08 规划归并：本文维护模型编解码、Context 和文件解析/来源规则；新增工具参数适配、结果消息与续接测试作为[工具主计划](phase-7-tool-runtime-plan.md)同一交付中的实施任务，不再在阶段2单列工具完成条件。基础上传当前状态以下节为准，早期带日期的基线不代表当前待办。
 
 ## 正式文件上传（2026 年 9 月 16 日）
 
 本节是当前上传状态，替代下文早期基线中的“没有上传表／没有持久解析结果”描述；历史基线的测试范围不变。
+
+2026-10-06 后续安排：先部署 Office 执行器，将 PDF 从 API 内嵌套隔离改接同一专用解析服务，再在目标服务器验收真实文件文字、两种模式输入和连续 Context。2026-10-07 本地代码已改为专用 Socket 统一解析，移除 API 嵌套沙箱；按用户要求不部署服务器，服务器验收暂停。调用协议兼容、发布顺序和测试统一见[阶段7解析部署与验收计划](phase-7-tool-runtime-plan.md#文件解析部署与服务器验收计划2026-年-10-月-6-日)。本阶段继续负责归属、统一解析结果和快照，不把固定解析请求当成模型 Tool Call；不更改历史原件、解析对象、上传限额或默认输出 token 设置。
 
 - `POST /api/v1/files` 先保存身份归属、额度预留、文件大小、SHA-256 和幂等键；`PUT /files/{id}/content` 接收原始字节，验证后解析。成功时原件和完整 `ParsedFileDocument` 分别保存 MinIO，并回读校验；数据库 `user_files` 只有引用、状态与提取摘要，不保存文件正文。迁移为 `20260916_0022`。
 - 仅接受非空且不超过 1 MiB 的 `.txt/.md/.py/.js/.ts/.css/.json/.csv/.tsv/.yaml/.yml/.xml/.pdf/.docx/.xlsx/.pptx`，每轮最多 10 个。文件名不能含路径或控制字符；解析器继续检查内容。图片、扫描 PDF OCR、旧 Office、宏文件、音视频及通用压缩包不开放。
@@ -113,17 +117,9 @@
 
 #### 模型可见读取合同
 
-阶段2定义可进入 Context 的来源/结果含义，阶段7负责受控执行，阶段3负责模型循环；复用既有 `ToolDefinition`/`ToolCall`/Tool Message，不另建协议。
+文件工具定义已集中到[工具主计划的文件工具目录](phase-7-tool-runtime-plan.md#文件工具只是目录中的一组)，本文不再维护第二份工具名称/参数/执行待办。现有解析模块继续提供确定性正文、表格、目录和搜索服务，工具适配器调用它们，不在模型层执行 Shell。
 
-| 拟用工具名 | 输入范围 | 输出与边界 |
-|---|---|---|
-| `list_run_files` | 运行内分页游标，Run 由服务端绑定 | 获准文件、固定版本、解析状态和后续游标 |
-| `get_file_outline` | 获准解析结果 ID | 章节/页/工作表目录及遗漏，不用生成摘要冒充目录 |
-| `search_file_content` | 解析结果 ID、关键词、游标 | 有界命中及位置；未命中不等于完整文件无相关信息；不开放任意 SQL/Shell |
-| `read_file_content` | 解析结果 ID、块/页/行范围 | 原文、引用标识、实际范围及后续位置，不静默截断 |
-| `read_file_table` | 解析结果 ID、表格/单元格范围 | 结构化单元格、表头、公式/值区别及来源 |
-
-模型只提供业务参数，不提供 owner、存储地址或权限上限。每次读取重新校验用户/项目及 Run 文件绑定；跨范围拒绝。小文件可由程序直接组装，大文件按范围分页读取，完整解析结果不因模型预算永久裁剪。压缩后的上下文保留固定引用及读取位置，不用摘要替代完整原件，也不新增输出 token 上限。无工具能力的模型只使用程序准备的内容；不声称支持自主查阅，不自动换模型。
+本模块保证：Context 保存固定来源、哈希、实际读取范围和覆盖事实；模型/浏览器不能指定 owner、任意存储地址或权限。完整结果与模型输入分开，超出上下文容量时明确说明范围；不把摘要当全文，不新增统一低输出 token 上限。工具调用、Provider 能力预检、续接、运行权限与端到端测试统一在工具主计划交付。
 
 #### 已实现与未实现（代码核对）
 
@@ -133,7 +129,7 @@
 | 统一 Context Builder | 已实现消息锚点、预算、固定来源及历史回放；支持 System Prompt、文本 Artifact、Handoff、节点和 Evaluation 来源 | 新增正式文件版本/解析结果/内容范围来源；当前文本 Artifact 读取不等于完整解析服务 |
 | System Prompt 与模型目录 | 已实现版本、启停、渲染、模型能力和思考配置 | 保留 System Prompt 后端边界，工具循环依据逐模型工具能力，不依据原生附件能力 |
 | Evaluation/Guardrail | 已实现规则校验、幂等和结果查询 | 复用错误与证据机制；解析质量和引用完整性需新样本验收 |
-| 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达 | 执行权限/登记归阶段7，读取循环归阶段3，尚不能直接调用文件工具 |
+| 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达 | 按工具主计划统一交付登记、权限、读取循环与模型适配；当前尚不能直接调用文件工具 |
 | 原生文件直传基线 | 新建 native Context 返回 409 并指向 `parsed_artifacts`；历史 Context 可只读回放，禁止用于新生成；低层 codec/合同保留兼容 | 不再作为产品输入路径，保留旧证据，不把原生测试计作解析验收 |
 | 文件解析器及统一结果 | 已实现 UTF-8/CSV/TSV/JSON、隔离 PDF 正文、独立容器 DOCX/XLSX/PPTX 提取与统一结果转换；新版 Office 结果包含完整工作表/幻灯片位置清单 | OCR、结构化 PDF 表格、Word/PDF 完整章节目录和 Office 复杂视觉内容尚未实现 |
 | 正式文件上下文 | 已实现当前 Run Artifact 解析、块分页、PDF 页、Word 表格、Excel 工作表/单元格和 PPT 幻灯片范围选择、结果哈希和 Context 固定快照；正式用户文件版本尚未实现 | 阶段5落实版本/权限存储，阶段3/7后续接通模型读取工具 |
@@ -149,8 +145,8 @@
 - 2026 年 9 月 7 日新增 DOCX/XLSX/PPTX：配置 `NEXUSPILOT_FILE_RUNTIME_SOCKET` 后，同一 `parsed_artifacts` 入口将已验证的文件字节交给独立执行器，每次创建固定镜像、无网络容器；API 不导入 Office 库、不访问 Docker daemon。缺配置、执行器离线/繁忙、解析失败均在模型调用前返回明确错误，不在宿主机尝试替代解析。详见[阶段7运行说明](phase-7-tool-runtime-plan.md#预装文件执行环境)。
 - Office 来源结构复用 `parsed_file.v1` 并增加可空位置字段：Word 使用段落/表格编号和已识别的 Heading 样式级别，Excel 使用工作表、行和单元格范围，PPT 使用幻灯片/形状编号及备注标记。`line_start/line_end` 对 Office 为 null，不编造页码或原文行号；旧 Context 原样回放，新结果哈希允许因结构扩展变化。
 - Excel 分别保存单元格字符串值、类型、数字格式、公式与缺失计算结果位置，并保留合并范围及隐藏工作表/行标记；不计算公式，不把缺失计算值写为零，不刷新外部链接。Word 合并格可能重复文本，嵌套表格、页眉页脚、修订、图片等不完整；PPT 保留形状文件顺序，不声称是视觉阅读顺序，组、图表和图片未解释。三类结果目前都标记 `partial`（部分提取）并附明确警告，不能视为完整文档理解。
-- PDF 使用预安装的 Poppler `pdfinfo/pdftotext`，仅提取嵌入文字并保留页码；无文字页记录未覆盖，全部无文字则明确失败。PDF 表格仅布局文本，不声称恢复单元格或理解图片；加密/损坏 PDF 拒绝。macOS 使用 `sandbox-exec`，Linux 提供 bubblewrap 启动适配，缺依赖或沙箱失败不退回宿主机。依赖由管理员预安装，不由模型或 API 下载。
-- PDF 子进程使用净化环境、无网络、任务临时目录、CPU/文件大小/墙钟时间约束；macOS 禁止派生进程并监测该 PID 的内存，Linux 设置地址空间上限。macOS 动态加载仅允许系统/Python/Homebrew 运行库与根目录本身读取（非递归用户目录授权），用户文件内容仍拒绝。Linux 实际隔离尚未在本机验证，不按 macOS 结果宣称通过。
+- PDF 使用预安装的 Poppler `pdfinfo/pdftotext`，仅提取嵌入文字并保留页码；无文字页记录未覆盖，全部无文字则明确失败。PDF 表格仅布局文本，不声称恢复单元格或理解图片；加密/损坏 PDF 拒绝。2026-10-07 起 macOS/Linux API 均通过 `NEXUSPILOT_FILE_RUNTIME_SOCKET` 请求专用 Linux 解析容器，缺配置或执行器失败不退回宿主机。Poppler 与中文映射数据仅在解析镜像构建时安装，不由模型或 API 下载。
+- PDF 子进程在专用无网络容器内使用净化环境、私有临时目录和 CPU/文件大小/墙钟时间约束；与 Office 共用非 root、只读根文件系统、内存/进程限制。API 不持有 Docker 权限，不挂载应用凭据到解析容器；本机 Linux ARM64 检查不替代目标服务器验收。
 - 资源边界：本轮受信解析单文件 1 MiB、最多 10000 块、CSV 每行最多 1024 列、PDF 最多 200 页；解析并发每 API 进程 2。此为解析基线，不改变现有 Artifact 上传上限。读取函数每页最多 100 块/128 KiB并返回后续位置；现有 MySQL Context `TEXT` 限制下，每个序列化来源最多 60000 字节，超限选择更小块范围。不是模型输出 token 限制；未扩容数据库字段来掩盖过大输入。
 - 已有四个程序读取函数：`get_file_outline` 返回块/页/表格行数、已识别标题、工作表/幻灯片位置和遗漏事实；其余为 `search_file_content`、`read_file_content`、`read_file_table`。新版 Office 结果的可选 `structure` 保存全部工作表（含 hidden/veryHidden）或全部幻灯片，按原件顺序记录各位置的已提取块数；空白或纯图片位置也保留，但不伪造正文。`structure_complete=true` 仅表示位置清单完整，不表示文字、图片或章节已完整理解，Office 结果仍为 `partial`。旧镜像没有清单时，只列有内容的位置并返回 `structure_complete=false`。这些函数尚未注册为模型工具，无 `list_run_files` 新工具/API；不得声称 Agent 已能自主查阅文件。
 
@@ -158,7 +154,7 @@
 - 2026 年 9 月 16 日新增结构清单校验：格式、位置唯一性、连续幻灯片编号及逐位置块数须与正文一致，否则拒绝执行器结果。清单随选定内容进入 Context 固定快照，即使只读部分单元格，也保留完整位置清单和遗漏说明。解析器版本为 `office-v2/依赖版本`；缺少清单的旧结果不新增 `structure:null` 到快照或文档哈希输入，保留旧序列化行为。整个文件均无可读块时仍明确失败，未新增纯图片理解。
 - 范围快照保存原件的 `document_hash`、全文警告/遗漏、实际选择和分页事实，以 `selection_hash` 固定返回内容的来源版本；历史未指定选择的请求哈希和快照保持兼容。测试入口为 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_parsed_file_ranges.py -q`；它验证当前受信 Run Artifact 到 Context 的接入，不证明真实用户上传已实现。
 - 新生成统一提供文字/表格，不要求 `native_input` 或视觉能力，四家 Provider 契约与 DeepSeek 流式入口已覆盖。Context 历史回放不重新解析；生成前复核原件归属、元数据和哈希，已替换/丢失对象不能利用旧快照继续发模型。旧 native Context 可以查询，但生成明确拒绝并要求建立新的解析输入。
-- 验证入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py apps/api/tests/test_parsed_file_context.py apps/api/tests/test_native_file_context.py -q`；真实 PDF 隔离单独运行 `NEXUSPILOT_TEST_PDF_SANDBOX=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py -k real_pdf -q`。默认快速测试跳过这两项，不代表 PDF 隔离已验收；本机 macOS 已单独通过提取与未绑定文件/网络拒绝两项测试。未调用真实 Provider，未运行真实 MySQL/MinIO 文件链路。
+- 验证入口：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_file_parsing.py apps/api/tests/test_parsed_file_context.py apps/api/tests/test_native_file_context.py -q`；真实 PDF/Office 验证改用 `NEXUSPILOT_TEST_FILE_RUNTIME=1 FILE_RUNTIME_TEST_IMAGE=nexuspilot-file-runtime:unified-local apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_office_runtime_executor.py -q`，先构建指定镜像。四格式两种模式与中文/加密样本检查见[本地文件验收说明](../../deployments/verification/README.md#本地统一文件解析验收)。默认跳过容器测试不计为通过；不调用真实 Provider，不把 SQLite/内存对象测试当作 MySQL/MinIO 验收。
 
 #### 实施顺序与验收
 
@@ -1300,7 +1296,7 @@ internal_error
 - Model Attempt 必须保存用户选择或稳定模型默认形成的统一配置、思考策略版本和最终解析结果；历史 Attempt 不因 `llm_models` 后续更新而改变解释。
 - OpenAI-compatible自定义端点仍不能从协议名称推断思考字段；在实现专用codec前，内部模型管理接口拒绝为其写入思考映射，其模型不会因伪造策略进入可提交状态。
 
-Agent角色透传属于阶段3集成项；Composer选择器、模型切换行为及浏览器门禁属于阶段4集成项，记录在[`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md#思考程度选择与跨-provider-对齐新增规划)。
+Agent角色透传属于阶段3集成项；Composer选择器、模型切换行为及浏览器门禁属于阶段4集成项，记录在[`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md#思考程度选择与跨-provider-对齐)。
 
 ### 2026 年 8 月 28 日思考程度合同验收
 
