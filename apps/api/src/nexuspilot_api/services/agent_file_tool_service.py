@@ -6,7 +6,6 @@ Each call is committed before reading storage and its exact result before model 
 
 import asyncio
 import json
-from dataclasses import dataclass
 from typing import Literal
 
 from nexuspilot_models.contracts import ToolCall, ToolDefinition
@@ -29,6 +28,7 @@ from nexuspilot_api.services.file_parsing_service import (
     read_file_table,
     search_file_content,
 )
+from nexuspilot_api.services.tool_catalog import RegisteredTool, ToolCatalog
 from nexuspilot_api.services.user_file_service import read_parsed_file
 
 
@@ -66,50 +66,91 @@ class FileToolResult(BaseModel):
     error_code: str | None = None
 
 
-@dataclass(frozen=True)
-class RegisteredFileTool:
-    """Pin the only approved implementation and input schema for a built-in read tool."""
+class CatalogSearchArguments(EmptyArguments):
+    """Bound literal catalog searches without exposing owner, scope or execution policy inputs."""
 
-    name: str
-    description: str
-    arguments: type[EmptyArguments]
-    version: str = "1.0.0"
+    query: str = Field(default="", max_length=256)
+    offset: int = Field(default=0, ge=0, le=10000)
+    limit: int = Field(default=10, ge=1, le=20)
 
-    def definition(self) -> ToolDefinition:
-        """Publish callable metadata without storage addresses or execution privileges."""
-        return ToolDefinition(
-            name=self.name,
-            description=self.description,
-            input_schema=self.arguments.model_json_schema(),
-        )
+
+class DescribeToolArguments(EmptyArguments):
+    """Select one exact version to describe and load for the next model request."""
+
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    version: str = Field(min_length=1, max_length=32, pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def register_file_tool(name, description, arguments, *, keywords=(), initially_loaded=False):
+    """Create trusted read-tool metadata with the same result envelope used in persisted calls."""
+    return RegisteredTool(
+        name=name,
+        version="1.0.0",
+        description=description,
+        arguments=arguments,
+        output=FileToolResult,
+        required_capabilities=frozenset({"read"}),
+        keywords=keywords,
+        initially_loaded=initially_loaded,
+    )
 
 
 FILE_TOOLS = tuple(
     [
-        RegisteredFileTool(
-            "list_run_files", "List files attached at this conversation turn.", EmptyArguments
+        register_file_tool(
+            "list_run_files",
+            "List files attached at this conversation turn.",
+            EmptyArguments,
+            keywords=("附件", "文件", "列表"),
+            initially_loaded=True,
         ),
-        RegisteredFileTool(
+        register_file_tool(
             "get_file_outline",
             "Read extracted headings and coverage; not a complete visual outline.",
             FileArguments,
+            keywords=("结构", "目录", "章节", "outline"),
         ),
-        RegisteredFileTool(
+        register_file_tool(
             "read_file_content",
             "Read extracted blocks using zero-based offset and limit; follow next_offset.",
             PageArguments,
+            keywords=("正文", "文字", "读取"),
+            initially_loaded=True,
         ),
-        RegisteredFileTool(
+        register_file_tool(
             "read_file_table",
             "Read extracted table rows; formulas are not executed.",
             PageArguments,
+            keywords=("表格", "Excel", "CSV", "行"),
         ),
-        RegisteredFileTool(
+        register_file_tool(
             "search_file_content",
             "Find literal text in extracted blocks; paginate matches with offset.",
             SearchArguments,
+            keywords=("搜索", "查找", "文字"),
         ),
     ]
+)
+
+FILE_TOOL_CATALOG = ToolCatalog(
+    (
+        *FILE_TOOLS,
+        register_file_tool(
+            "search_tools",
+            "Search permitted built-in tools by purpose; searching does not load them.",
+            CatalogSearchArguments,
+            keywords=("工具", "搜索"),
+            initially_loaded=True,
+        ),
+        register_file_tool(
+            "describe_tools",
+            "Describe one exact tool version and load its schema NEXT model round. "
+            "This does not grant access to files or allow commands.",
+            DescribeToolArguments,
+            keywords=("工具", "说明", "加载"),
+            initially_loaded=True,
+        ),
+    )
 )
 
 
@@ -117,12 +158,31 @@ class AgentFileToolService:
     """Authorize and record tool reads with no independently callable execution endpoint."""
 
     def __init__(self, db: AsyncSession, storage: ObjectStorage):
-        """Bind request-scoped persistence and the existing private object storage."""
+        """Bind one Worker's read-only policy and initially loaded tools to existing storage."""
         self.db = db
         self.storage = storage
+        self.capabilities = frozenset({"read"})
+        self.catalog = FILE_TOOL_CATALOG
+        self.loaded_versions = {
+            entry.name: entry.version for entry in self.catalog.entries if entry.initially_loaded
+        }
 
-    async def execute(self, *, attempt_id: str, call: ToolCall) -> LlmModelToolCall:
-        """Claim a call once, record denial/error/success, and never retry reads implicitly."""
+    def definitions(self) -> list[ToolDefinition]:
+        """Resolve loaded versions against current policy before each Provider request."""
+        return [
+            entry.definition()
+            for name, version in self.loaded_versions.items()
+            if (entry := self.catalog.get(name, version, self.capabilities)) is not None
+        ]
+
+    async def execute(
+        self,
+        *,
+        attempt_id: str,
+        call: ToolCall,
+        offered_versions: dict[str, str] | None = None,
+    ) -> LlmModelToolCall:
+        """Claim once and check policy; committed descriptions load next-round tools."""
         if len(call.id) > 255:
             raise ResourceConflictError("Provider tool call identifier exceeds supported length")
         attempt = await self.db.get(LlmModelAttempt, attempt_id)
@@ -139,7 +199,17 @@ class AgentFileToolService:
             raise ResourceConflictError(
                 "Tool call already recorded; execution will not be repeated"
             )
-        tool = next((tool for tool in FILE_TOOLS if tool.name == call.name), None)
+        offered_versions = dict(
+            self.loaded_versions if offered_versions is None else offered_versions
+        )
+        tool = next(
+            (
+                entry
+                for entry in self.catalog.entries
+                if entry.name == call.name and entry.required_capabilities <= self.capabilities
+            ),
+            None,
+        )
         record = LlmModelToolCall(
             attempt_id=attempt_id,
             provider_tool_call_id=call.id,
@@ -159,6 +229,8 @@ class AgentFileToolService:
         try:
             if tool is None:
                 return await self._finish(record, "permission_denied", error="tool_not_allowed")
+            if offered_versions.get(tool.name) != tool.version:
+                return await self._finish(record, "permission_denied", error="tool_not_loaded")
             arguments = tool.arguments.model_validate(call.arguments)
             record.permission_decision = "allowed"
             record.status = "running"
@@ -169,9 +241,14 @@ class AgentFileToolService:
                 return await self._finish(
                     record, "failed", error="result_too_large_use_smaller_page"
                 )
-            return await self._finish(record, "completed", result=result)
+            finished = await self._finish(record, "completed", result=result)
+            if tool.name == "describe_tools":
+                self.loaded_versions[result["name"]] = result["version"]
+            return finished
         except ValidationError:
             return await self._finish(record, "failed", error="invalid_arguments")
+        except ToolUnavailableError:
+            return await self._finish(record, "permission_denied", error="tool_unavailable")
         except (ResourceConflictError, ResourceNotFoundError):
             return await self._finish(record, "permission_denied", error="file_unavailable")
         except ValueError:
@@ -187,10 +264,24 @@ class AgentFileToolService:
             raise
 
     async def _read(self, run_id: str, name: str, arguments: EmptyArguments) -> dict:
-        """Recheck owner, conversation anchor and file readiness before every storage read."""
+        """Search permitted metadata or recheck owner and file readiness before reading content."""
         run = await self.db.get(LlmRun, run_id, populate_existing=True)
         if run is None:
             raise ResourceNotFoundError("Run")
+        if name == "search_tools":
+            assert isinstance(arguments, CatalogSearchArguments)
+            return self.catalog.search(
+                arguments.query,
+                capabilities=self.capabilities,
+                offset=arguments.offset,
+                limit=arguments.limit,
+            )
+        if name == "describe_tools":
+            assert isinstance(arguments, DescribeToolArguments)
+            entry = self.catalog.get(arguments.name, arguments.version, self.capabilities)
+            if entry is None:
+                raise ToolUnavailableError
+            return entry.describe()
         ids = await conversation_file_ids(self.db, run_id)
         if name == "list_run_files":
             files = list(
@@ -247,7 +338,22 @@ class AgentFileToolService:
         run = await self.db.get(LlmRun, run_id, populate_existing=True)
         allowed = await conversation_file_ids(self.db, run_id)
         for record in records:
+            if (
+                self.catalog.get(record.tool_name, record.tool_version or "", self.capabilities)
+                is None
+            ):
+                if record.status == "completed":
+                    raise ResourceConflictError("Previously used tool is no longer available")
             result = (record.output_json or {}).get("result") or {}
+            if record.tool_name == "describe_tools" and record.status == "completed":
+                if self.catalog.get(result["name"], result["version"], self.capabilities) is None:
+                    raise ResourceConflictError("Previously described tool is no longer available")
+            if record.tool_name == "search_tools" and record.status == "completed":
+                if any(
+                    self.catalog.get(item["name"], item["version"], self.capabilities) is None
+                    for item in result["items"]
+                ):
+                    raise ResourceConflictError("Previously discovered tool is no longer available")
             sources = result.get("files", []) if record.tool_name == "list_run_files" else [result]
             for source in sources:
                 file_id = source.get("file_id")
@@ -277,3 +383,7 @@ class AgentFileToolService:
         record.completed_at = utc_now()
         await self.db.commit()
         return record
+
+
+class ToolUnavailableError(Exception):
+    """Represent hidden, absent or incompatible catalog entries without revealing which one."""

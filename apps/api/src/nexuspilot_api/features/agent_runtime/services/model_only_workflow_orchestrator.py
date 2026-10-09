@@ -211,7 +211,7 @@ class ModelOnlyWorkflowOrchestrator:
         workflow: LlmAgentWorkflowExecution,
         payload: AgentWorkflowCreate,
     ) -> None:
-        """Run the shared graph with explicit model-only or read-tool worker permissions."""
+        """Run the graph, budgeting discovery and reads only for the explicit tool profile."""
 
         current_node: LlmAgentWorkflowNodeExecution | None = None
         try:
@@ -315,7 +315,9 @@ class ModelOnlyWorkflowOrchestrator:
                         {
                             "tool_guidance": (
                                 "Workers may list/read/search attached files. Allocate enough "
-                                "max_model_calls for tool requests and a final JSON answer, "
+                                "max_model_calls for discovery, describe/load, file tool requests "
+                                "and a final JSON answer. Only list_run_files/read_file_content "
+                                "are preloaded; outline/table/search require describe_tools first, "
                                 "within the workflow budget."
                             ),
                             "remaining_model_calls": max(0, workflow.max_model_calls - 3),

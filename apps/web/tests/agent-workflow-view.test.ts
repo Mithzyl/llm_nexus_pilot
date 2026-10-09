@@ -17,7 +17,7 @@ import {
 } from "../lib/agent-workflow-view";
 import type { AgentWorkflowEvent, AgentWorkflowNodeResult, AgentWorkflowSummary } from "../lib/types";
 
-/** Persisted tool evidence must remain visible even when its worker has not returned output. */
+/** Persisted reads and discovery remain visible even when the worker has no final output. */
 test("renders committed tool results for a running or failed worker after reload", () => {
   const workflow: AgentWorkflowSummary = {
     workflow_execution_id: "wf", run_id: "run", workflow_name: "model_only",
@@ -38,11 +38,15 @@ test("renders committed tool results for a running or failed worker after reload
     input: { schema_version: "1", input_hash: "", source_node_execution_ids: [],
       message_ids: [], artifact_ids: [], handoff_ids: [], context_build_id: null, prompt_release_id: null },
     transition: { selected_transition: null, next_node_keys: [], skipped_node_keys: [], condition_summary: "" },
-    evidence: { model_attempt_ids: [], tool_call_ids: ["call"], evaluation_ids: [], artifact_ids: [],
+    evidence: { model_attempt_ids: [], tool_call_ids: ["call", "search", "describe"], evaluation_ids: [], artifact_ids: [],
       handoff_ids: [], tool_results: [{ tool_call_id: "call", tool_name: "read_file_content",
-        version: "1.0.0", status: "completed", error_code: null, file_id: "file" }] },
+        version: "1.0.0", status: "completed", error_code: null, file_id: "file" },
+        { tool_call_id: "search", tool_name: "search_tools", version: "1.0.0",
+          status: "completed", error_code: null, file_id: null },
+        { tool_call_id: "describe", tool_name: "describe_tools", version: "1.0.0",
+          status: "completed", error_code: null, file_id: null }] },
     usage: { input_tokens: 30, output_tokens: 10, cached_tokens: 0, estimated_cost: "0",
-      model_call_count: 1, tool_call_count: 1 },
+      model_call_count: 1, tool_call_count: 3 },
     budget: { cost_limit: null, cost_used_before: "0", cost_used_after: "0", reserved_estimated_cost: "0",
       remaining_model_calls: 14, remaining_nodes: 18, remaining_wall_time_ms: 20000, remaining_cost: null },
     timing: { started_at: "", completed_at: null, duration_ms: 1 },
@@ -55,8 +59,10 @@ test("renders committed tool results for a running or failed worker after reload
     }));
     assert.match(markup, /附件读取工作流/);
     assert.match(markup, /读取文件文字/);
+    assert.match(markup, /查找可用工具/);
+    assert.match(markup, /查看工具说明/);
     assert.match(markup, /读取结果已保存/);
-    assert.match(markup, /1 次工具调用/);
+    assert.match(markup, /3 次工具调用/);
     assert.doesNotMatch(markup, /output_json|provider_continuation/);
   }
 });

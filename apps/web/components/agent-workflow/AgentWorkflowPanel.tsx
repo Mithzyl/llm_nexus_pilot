@@ -37,6 +37,8 @@ const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
 };
 
 const FILE_TOOL_LABELS: Record<string, string> = {
+  search_tools: "查找可用工具",
+  describe_tools: "查看工具说明",
   list_run_files: "列出附件",
   get_file_outline: "查看文件结构",
   search_file_content: "搜索文件文字",
@@ -297,7 +299,7 @@ export function AgentWorkflowPanel({
                     ))}
                   </dl>
                   {(node.evidence.tool_results ?? []).length > 0 && (
-                    <ul aria-label="附件工具调用">
+                    <ul aria-label="工具调用">
                       {node.evidence.tool_results?.map((call) => (
                         <li key={call.tool_call_id}>
                           {FILE_TOOL_LABELS[call.tool_name] ?? "未授权工具"}

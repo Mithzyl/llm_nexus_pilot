@@ -796,7 +796,7 @@ class WorkflowExecutionStateService:
         node.evidence_json = evidence.model_dump(mode="json")
         node.usage_json = usage.model_dump(mode="json")
         count = len(evidence.tool_call_ids)
-        summary = f"已记录 {count} 次附件工具调用，Agent 继续处理"
+        summary = f"已记录 {count} 次工具调用，Agent 继续处理"
         activity = {
             "schema_version": "node_activity_summary.v1",
             "phase": "running",

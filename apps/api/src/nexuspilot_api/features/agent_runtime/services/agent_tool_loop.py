@@ -13,7 +13,7 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 
 
 async def run_file_tool_loop(service, workflow, node, options):
-    """Execute complete calls, preserving private continuation and enforcing task budgets."""
+    """Execute only this round's loaded versions; descriptions affect the next model request."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -32,6 +32,10 @@ async def run_file_tool_loop(service, workflow, node, options):
         remaining = deadline - monotonic()
         if remaining < 1:
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
+        definitions = tools.definitions()
+        offered_versions = {
+            definition.name: tools.loaded_versions[definition.name] for definition in definitions
+        }
         response = await service._call_model_round(
             workflow,
             node,
@@ -43,6 +47,8 @@ async def run_file_tool_loop(service, workflow, node, options):
             },
             round_index=round_index,
             tool_messages=history,
+            tool_definitions=definitions,
+            tool_versions=offered_versions,
         )
         if not response.tool_calls:
             return response
@@ -75,14 +81,19 @@ async def run_file_tool_loop(service, workflow, node, options):
         history.append(assistant)
         for call in response.tool_calls:
             await service.workflow_state.ensure_workflow_running(workflow)
-            fingerprint = json.dumps([call.name, call.arguments], sort_keys=True)
+            # A call previously denied as unloaded can legitimately succeed after describing it.
+            fingerprint = json.dumps([call.name, call.arguments, offered_versions], sort_keys=True)
             if fingerprint in seen:
                 raise InvalidRequestError(
                     "Agent repeated an unchanged tool request without progress"
                 )
             seen.add(fingerprint)
             async with asyncio.timeout(max(0, deadline - monotonic())):
-                record = await tools.execute(attempt_id=response.id, call=call)
+                record = await tools.execute(
+                    attempt_id=response.id,
+                    call=call,
+                    offered_versions=offered_versions,
+                )
             records.append(record)
             await service.workflow_state.record_tool_progress(workflow, node)
             history.append(

@@ -36,10 +36,35 @@ class FileToolProvider(ScriptedAgentProvider):
         self.repeat = repeat
 
     async def generate(self, request):
-        """Return a tool call before the normal worker result and budget two worker rounds."""
+        """Describe deferred tools before reading; retain original permission/error checks."""
         if request.metadata["agent_node_key"] == "worker_execution":
             previous = [message for message in request.messages if message.role.value == "tool"]
-            if not previous or self.repeat:
+            deferred = self.tool_name in {
+                "get_file_outline",
+                "read_file_table",
+                "search_file_content",
+            }
+            if deferred and not previous and request.tools:
+                self.requests.append(request)
+                return ModelResponse(
+                    tool_calls=[
+                        ToolCall(
+                            id="load-1",
+                            name="describe_tools",
+                            arguments={"name": self.tool_name, "version": "1.0.0"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                    input_tokens=30,
+                    output_tokens=10,
+                    latency_ms=1,
+                    raw_response={"fixture": "describe-file-tool"},
+                )
+            if (
+                not previous
+                or self.repeat
+                or (deferred and previous[-1].tool_name == "describe_tools")
+            ):
                 self.requests.append(request)
                 return ModelResponse(
                     tool_calls=[
@@ -112,7 +137,12 @@ async def test_tool_workflow_persists_result_and_continues(
     worker_requests = [
         r for r in provider.requests if r.metadata["agent_node_key"] == "worker_execution"
     ]
-    assert len(worker_requests[0].tools) == 5
+    assert {tool.name for tool in worker_requests[0].tools} == {
+        "list_run_files",
+        "read_file_content",
+        "search_tools",
+        "describe_tools",
+    }
     assert worker_requests[0].output_schema is None
     assert worker_requests[0].json_object_output is False
     assert worker_requests[1].messages[-1].tool_call_id == "read-1"
@@ -253,7 +283,9 @@ async def test_file_tools_read_real_uploaded_parse_and_preserve_context(
     assert response.json()["status"] == "completed", response.text
     storage = app.dependency_overrides[get_object_storage]()
     async with test_database_session_factory() as db:
-        record = await db.scalar(select(LlmModelToolCall))
+        record = await db.scalar(
+            select(LlmModelToolCall).where(LlmModelToolCall.tool_name == tool_name)
+        )
         assert record.status == "completed"
         assert record.output_json["result"]["file_id"] == file["file_id"]
         assert record.output_json["result"]["source_hash"] == hashlib.sha256(content).hexdigest()

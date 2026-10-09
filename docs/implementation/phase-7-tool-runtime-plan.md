@@ -22,7 +22,7 @@
 
 - `packages/models` 已有 Provider 无关的 `ToolDefinition`、`ToolCall` 和 Tool Message 合同；它们只表达“模型请求调用什么”，不负责执行、权限和审计。
 - `llm_tool_calls` 已有实际文件工具写入流程；本次迁移增加 Provider 调用 ID、固定工具版本、结果 JSON、错误码和 `(attempt_id, provider_tool_call_id)` 唯一约束。调用状态区分请求、执行、完成、拒绝、超时、取消与失败；通用副作用恢复和动态注册尚未实现。
-- `GET /api/v1/internal/tool-calls` 及详情接口保留脱敏只读审计。新增 `AgentFileToolService` 和静态 `RegisteredFileTool`，仅执行下方五个附件读取工具；通用工具目录、任务 Workspace 和生成代码执行尚未实现。
+- `GET /api/v1/internal/tool-calls` 及详情接口保留脱敏只读审计。`AgentFileToolService` 使用静态 `RegisteredTool`/`ToolCatalog` 执行五个附件工具及两个目录工具；动态注册、任务 Workspace 和生成代码执行尚未实现。
 - 当前有 `/responses` 与同步/POST SSE 的 `model_only_v1` 工作流；阶段10已恢复独立后台执行规划但未实施。阶段7当前同步设计不承诺请求断开或 API 重启后继续执行。
 - 当前阶段5已实现浏览器登录和 FastAPI 资源主体授权，但这不等于模型工具权限已实现。阶段7仍只服务受信内部调用和后续 Agent 进程，不提供普通用户可直接提交 `run_command` 的 HTTP 接口。
 - 当前解析部署选择：复用宿主 Unix Socket 执行器，由其创建无网络临时 Linux 容器，PDF 与 Office 统一走该路径，具体步骤见下节。通用命令执行的启用策略、镜像供应链验证及 Git worktree 时机仍需在对应工作项实施前确认；不能把解析部署决定视为通用命令授权。
@@ -34,7 +34,7 @@
 | 工作项 | 可独立验收的结果 | 必要依赖 | 当前状态 |
 |---|---|---|---|
 | 连续使用基础工具 | 单个 Worker 多轮调用已授权读取/搜索工具，处理可恢复错误，最终回答引用实际结果；Web 显示真实调用与产物 | 现有 Gateway、Context、用户归属、工具登记/审计 | 进行中：首批五个附件只读工具已实现；本地验证，不代表真实 Provider/目标部署验收 |
-| 按需发现工具 | Agent 搜索目录、查看说明、加载固定版本后直接调用；不可见工具不泄露，缺依赖不返回假成功 | 上一项的 Registry 与调用流程 | 未开始 |
+| 按需发现工具 | Agent 搜索目录、查看说明、加载固定版本后直接调用；不可见工具不泄露，缺依赖不返回假成功 | 上一项的 Registry 与调用流程 | 进行中：内置只读目录、固定版本加载及本地验收已完成；动态/外部工具依赖检查随后续来源实现 |
 | 工作目录与代码组合 | 同一任务多次 Python/Shell 调用复用文件；程序可通过受控 SDK 组合已有工具，每次子调用仍鉴权和记录 | 真实容器隔离、任务目录、结果保存、执行授权 | 未开始 |
 | 创建并使用任务工具 | Agent 提交定义、代码和样本，经平台验证后在当前任务注册；下一轮可调用固定版本 | 代码组合、生成工具验证器、版本与作用域记录 | 未开始 |
 | 个人与项目工具复用 | 按授权保存、搜索、停用和升级工具，不覆盖运行中版本、不泄露其他用户代码与数据 | 任务工具；项目共享前必须有项目成员权限 | 未开始 |
@@ -49,10 +49,10 @@
 
 当前代码支持 `tool_enabled_v1`：在 Web 选择 Agent，再将“Agent 文件工具”从默认“不使用”切换为“读取附件”。`model_only_v1` 保持默认；快速回复不执行工具。两种执行配置仍使用 `workflow_name=model_only`、版本 `1.0.0` 的现有流程定义，名称兼容历史记录，不表示工具配置无效。Controller、审核和最终汇总仍提交原有结构化输出；仅 Worker 中间轮允许返回工具调用，最终轮再校验节点 JSON。
 
-已实现的工具是 `list_run_files`、`get_file_outline`、`read_file_content`、`read_file_table`、`search_file_content`。输入类型同时生成模型 Schema 和服务端参数检查；第一批是静态登记的 `RegisteredFileTool`，不是下文完整动态 `RegisteredTool`。列文件读取当前已保存回合允许的附件；其余工具接收 `file_id`，分段工具接受块偏移/数量，搜索额外接收字面关键词。结果复用已经持久保存的解析内容，返回来源哈希、解析版本、遗漏警告和读取数据；不重新执行上传文件内的代码，不补造 OCR、PDF 表格或目录。未来目录中设计的高级页范围、列文件游标等不能当作当前参数使用。
+已实现的文件工具是 `list_run_files`、`get_file_outline`、`read_file_content`、`read_file_table`、`search_file_content`。输入类型同时生成模型 Schema 和服务端参数检查；当前采用下节说明的静态 `RegisteredTool`，不等同完整动态工具发布能力。列文件读取当前已保存回合允许的附件；其余工具接收 `file_id`，分段工具接受块偏移/数量，搜索额外接收字面关键词。结果复用已经持久保存的解析内容，返回来源哈希、解析版本、遗漏警告和读取数据；不重新执行上传文件内的代码，不补造 OCR、PDF 表格或目录。未来目录中设计的高级页范围、列文件游标等不能当作当前参数使用。
 
 - 权限：从 Attempt → Run → 用户/会话及固定消息附件关系取权限，不接受模型提供 owner、存储地址、绝对路径或命令。每次执行及再次发送历史工具结果前校验文件归属、当前回合附件、删除状态和来源哈希。已知其他用户或其他会话的文件 ID 也不能读取。
-- 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正，重复同名同参数调用停止。一个模型响应最多 8 个调用，第一版顺序执行；每次读取最长 15 秒，单次结果最多 65,536 字节，过大返回错误要求缩小读取范围，不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
+- 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正，加载集合未变化时，重复同名同参数调用停止。一个模型响应最多 8 个调用，第一版顺序执行；每次读取最长 15 秒，单次结果最多 65,536 字节，过大返回错误要求缩小读取范围，不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
 - 持久记录：迁移 `20261008_0023` 在原 `llm_tool_calls` 增加四个可空字段和唯一约束，旧记录保留。重复逻辑调用拒绝再次执行，不以旧缓存绕过撤销检查。节点证据聚合全部轮次及工具状态，Handoff 的 `files_read` 来自成功读取记录。工具结果提交后发出 `agent.node.progress`，运行中和刷新后的详情均可查看调用状态；浏览器不接收原始工具结果、私有续接内容或对象存储地址。
 - 上下文：每轮保留原 Context 构建 ID，在私有 Attempt 请求记录保存包含工具消息的 `effective_messages`；模型收到原有消息加本次完整工具历史。当前 Context 抽屉仍展示基础构建快照，尚未逐条展开工具消息；工具调用详情以节点证据及内部审计记录为准。工具消息过大时明确失败，不虚构完整上下文或自动摘要替换文件。
 - Provider：本地协议测试覆盖 OpenAI、OpenAI-compatible/DeepSeek、Anthropic、Gemini 的调用/结果配对；有签名或私有推理续接时按原序保留在后端。中间工具轮不同时强制最终 JSON Schema，最终结果仍必须通过类型校验。未调用真实 Provider，也未完成真实浏览器 Provider 矩阵。
@@ -60,17 +60,17 @@
 
 运行前先备份并确认目标库，执行 `make api-migrate` 升级到 `20261008_0023`，再重启 API 和 Web；本次仅在隔离 SQLite 中验证迁移，未修改实际开发数据库。MinIO 沿用已有上传配置，PDF/Office 仍要求下文专用执行器；工具读取已保存解析结果，不创建另一套解析沙箱。回退应用时优先保留新增记录和列，不在有新调用数据的库上自动降级迁移。
 
-主要位置：`services/agent_file_tool_service.py` 负责读取和保存；`features/agent_runtime/services/agent_tool_loop.py` 负责模型续接；`workflow_execution_state_service.py` 负责进度及累计用量；Web Composer 与运行证据负责开关和展示。动态工具、工作目录和工具发现仍按下文未开始的工作项实施。
+主要位置：`services/agent_file_tool_service.py` 负责读取和保存；`services/tool_catalog.py` 负责内置目录；`features/agent_runtime/services/agent_tool_loop.py` 负责加载及模型续接；`workflow_execution_state_service.py` 负责进度及累计用量；Web Composer 与运行证据负责开关和展示。动态工具及任务工作目录仍未实现。
 
-验证记录（2026-10-09，当前未提交的工具实现）：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs` 为 556 通过、13 跳过、4 项按标记未选择；13 项需显式 MySQL/MinIO 或真实 Docker 样本配置。`apps/web` 下 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 123 通过。工具测试使用隔离 SQL、内存对象存储和脚本模型验证上传、真实文本解析、五类读取、错误后继续、跨用户/会话拒绝、撤销、重复、超时、事件排序及迁移；不代表 MySQL/MinIO/真实模型联调。Playwright 使用本地 Web 与模拟 API 检查桌面/窄屏工具开关及菜单，工具节点展示由前端渲染测试验证；未进行真实 Provider 浏览器流程。后台恢复及真实服务矩阵仍未执行。
+验证记录（2026-10-09，`2daefd0` 提交前的首批工具实现）：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs` 为 556 通过、13 跳过、4 项按标记未选择；13 项需显式 MySQL/MinIO 或真实 Docker 样本配置。`apps/web` 下 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 123 通过。工具测试使用隔离 SQL、内存对象存储和脚本模型验证上传、真实文本解析、五类读取、错误后继续、跨用户/会话拒绝、撤销、重复、超时、事件排序及迁移；不代表 MySQL/MinIO/真实模型联调。Playwright 使用本地 Web 与模拟 API 检查桌面/窄屏工具开关及菜单，工具节点展示由前端渲染测试验证；未进行真实 Provider 浏览器流程。后台恢复及真实服务矩阵仍未执行。
 
 私有续接依据：[Anthropic 扩展思考与工具使用](https://platform.claude.com/cookbook/extended-thinking-extended-thinking-with-tool-use)、[Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)。这些说明约束适配器处理签名内容，不授权向产品页面公开隐藏推理。
 
-补充验证：新增“列附件 → 使用返回 ID 读取正文 → 提交答案”三轮测试后，`pytest -c apps/api/pyproject.toml apps/api/tests/test_agent_file_tools.py -q` 为 16 通过；此后未改后端实现。窄屏菜单换行溢出已通过 Playwright 发现并修正，两个选项切换及 Escape 关闭均复验通过。截图保存于本地忽略目录 `output/playwright/agent-file-tools-desktop.png` 与 `agent-file-tools-mobile.png`。
+补充验证：新增“列附件 → 使用返回 ID 读取正文 → 提交答案”三轮测试后，`pytest -c apps/api/pyproject.toml apps/api/tests/test_agent_file_tools.py -q` 为 16 通过；该记录属于首批工具验收；后续目录修改的验收见下节。窄屏菜单换行溢出已通过 Playwright 发现并修正，两个选项切换及 Escape 关闭均复验通过。截图保存于本地忽略目录 `output/playwright/agent-file-tools-desktop.png` 与 `agent-file-tools-mobile.png`。
 
 ### 一份定义用于模型和执行器
 
-下文 `RegisteredTool` 是拟新增的执行定义，`packages/models.ToolDefinition` 是已经存在的模型请求结构。注册定义包含名称/版本、用途/不适用场景、输入输出 Schema、示例、执行实现、所需权限、运行环境/依赖、错误/重试规则和结果读取方式。平台从同一输入定义生成 Provider Schema，避免模型参数与实际执行参数漂移。
+当前 `RegisteredTool` 已实现内置工具名称/版本、用途、关键词、输入输出类型、所需能力及默认加载标志；`packages/models.ToolDefinition` 是模型请求结构。执行仍由受信服务中的固定实现分派，不支持模型注册代码。下文完整目标还包含示例、执行实现引用、运行环境/依赖、错误/重试规则及结果读取方式，随动态工具和执行环境补齐。平台从同一输入定义生成 Provider Schema，避免模型参数与实际执行参数漂移。
 
 - 执行实现分为内置函数、隔离脚本、组合程序和后续 MCP 适配器。模型调用方式一致；不必为每种工具增加一种 Agent。
 - 内置工具可由 Pydantic 类型生成 Schema；生成工具只接受受支持的声明式 JSON Schema，经独立校验器验证。不在 API 进程导入或执行模型生成的 Python 类型/注册代码。
@@ -79,7 +79,17 @@
 
 ### 可搜索目录
 
-拟新增 `search_tools` 与 `describe_tools`；第一版工具少时常用工具直接加载，其余按需发现，不强制先引入向量数据库。搜索支持用途关键词、输入/输出类型和能力分类，按当前用户/项目可见范围过滤。返回用途、固定版本、依赖可用性、是否可调用及安全的不可用原因，不泄露他人的私有名称、代码、连接或凭据。
+2026-10-09 已实现 `search_tools` 与 `describe_tools`，目录目前仅包含内置只读工具，不含个人/项目/外部工具。首轮加载 `list_run_files`、`read_file_content` 和两个目录工具；文件结构、表格、正文搜索的 Schema 按需加载，避免每轮发送所有定义。
+
+- `search_tools(query, offset, limit)`：按名称、用途和中英文关键词作不区分大小写的字面匹配，先过滤服务端能力许可，再稳定排序分页。关键词为空列出可见工具，无匹配返回空列表。首版不提供向量检索或输入/输出类型筛选；不访问外部目录。
+- `describe_tools(name, version)`：读取精确版本的输入/输出 Schema 和用途，记录成功后才将该版本加入当前 Worker 的下一轮模型请求。同一响应批次中抢先调用尚未加载的工具返回 `tool_not_loaded`；加载变化后可以重新提出该调用，不误判为无进展。未知、不可见或错误版本统一返回 `tool_unavailable`，不静默升级。
+- 同一个工具名称仅允许一个活动版本，重复名称在登记时拒绝。加载状态不在 Worker 间共享；每次生成请求及执行时重新检查许可和版本。搜索/说明结果再次进入模型历史前也检查版本是否仍可用。
+- 每轮 Attempt 的私有请求 metadata 保存 `loaded_tool_versions` JSON 字符串，兼容现有字符串型 metadata；目录调用与读取调用均写入 `llm_tool_calls`，使用既有预算和进度事件。Web 显示“查找可用工具”“查看工具说明”，不向前端暴露 Schema、内部实现引用或凭据。
+- `available` 仅说明当前内置实现可调用，不保证某个文件存在、归属正确或已解析；实际文件授权与状态仍在执行前检查。动态工具的缺依赖、个人/项目可见性和外部连接状态需在对应来源实现时补齐，不返回虚构的能力。
+
+本次没有新增配置或迁移，数据库仍要求 `20261008_0023`。模型原先直接使用表格/结构/搜索工具的行为改为先描述加载，其余请求和历史读取接口保持不变；Controller 已提示为发现、加载和最终回答预留模型调用次数。任务工作目录与 Python/Shell 尚未实现，目录不会返回这些未开放能力。
+
+验证（2026-10-09，本地）：新增目录测试先确认缺少实现失败，再实现过滤/版本/分页/Worker 隔离；API 流程测试验证搜索、加载、读取、同批拒绝、错误版本及描述后撤销。完整命令 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs`：569 通过、13 跳过、4 按标记未选择；跳过项需要显式 MySQL/MinIO 或 Docker 样本环境。前端类型检查、lint、123 项测试通过；Playwright 用模拟运行快照检查真实 Web 详情展示，截图为本地忽略文件 `output/playwright/tool-discovery-evidence.png`。真实 Provider、真实服务联调和生产部署未执行。
 
 “已注册、可发现、已加载、本次获准执行、依赖可用”分别记录。搜索不是授权；加载不是执行。平台在搜索/描述结果提交后的下一轮模型请求中加入选中的 Schema，保留每轮工具版本快照。加载与真实执行之间发生撤销时，以执行前权限检查为准。
 
@@ -402,7 +412,7 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 `RegisteredTool.input_schema → Provider ToolDefinition → ToolCall → ToolExecutionRequest → Registry/权限/Workspace 检查 → ExecutionBackend → ToolExecutionResult → Tool Message` 是唯一模型工具调用流程。
 
-- `ToolDefinition`、`ToolCall` 和 Tool Message 已在 `packages/models` 定义；Registry、执行服务和审计写入仍是本阶段待实现内容。不能仅向 Provider 发送工具 Schema 就声称工具已经可用。
+- `ToolDefinition`、`ToolCall` 和 Tool Message 已在 `packages/models` 定义；内置只读 Registry、执行服务和审计写入已有实现。任务工作目录及 Python/Shell 还需补执行权限、环境和结果保存，不能仅登记 Schema 就声称工具可用。
 - 文件工具复用既定 `list_run_files`、`get_file_outline`、`search_file_content`、`read_file_content`、`read_file_table`；工作目录工具复用 `list_files`、`read_file`、`write_file` 等既有目录。第一批文件分析不依赖 Git 工具，也不新增一个强制“文件 Agent”。
 - Python／Shell 使用已有 `run_command` 的结构化 `executable`、`arguments[]`、相对工作目录和有界 stdin，不再新增一套通用 `execute_python`/`execute_shell` 合同。平台把允许的解释器标识解析为镜像内固定程序，宿主启动器始终使用参数数组和 `shell=False`。
 - Python 只在任务沙箱内执行，首版允许已保存的获准脚本路径或有界 stdin，使用隔离启动参数；脚本读写仍依赖容器挂载/权限约束。不能把“可执行文件在允许列表”当成脚本行为已获安全证明。
@@ -420,7 +430,7 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 先补 Registry/参数/授权/重复 Tool Call 测试，再实现工作目录物化和执行。真实容器测试至少覆盖双用户双任务隔离、第二次调用读取第一次输出、输入只读、链接逃逸、环境变量/密钥不可见、网络/安装请求拒绝、stdout/stderr 并发输出、非零退出、超时和取消、结果存储失败及精确清理。Python/Shell 均按可执行任意代码的风险验证，不能仅凭固定解析器安全测试通过就开放。
 
-只读文件工具可先交付，`run_command` 需独立通过执行权限、实际容器隔离和审计检查后才启用。当前任务只规划，不安装依赖、不启用工具、不实施表迁移；现有 `llm_tool_calls` 的必要迁移沿用下文数据模型设计。阶段10负责脱离观察连接的执行所有权与重启恢复，本工作项不另建内存后台任务冒充可靠 Worker。
+只读文件工具可先交付，`run_command` 需独立通过执行权限、实际容器隔离和审计检查后才启用。任务工作目录仍处于设计阶段，尚未安装新依赖、启用命令工具或实施目录表迁移；现有 `llm_tool_calls` 的必要迁移沿用下文数据模型设计。阶段10负责脱离观察连接的执行所有权与重启恢复，本工作项不另建内存后台任务冒充可靠 Worker。
 
 ## 核心合同
 
