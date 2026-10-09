@@ -50,6 +50,16 @@ test("uses prompted JSON for DeepSeek and native schema for supported providers"
   assert.equal(agentStructuredOutputMode("openai"), "native_schema");
 });
 
+/** Keep committed tool progress in the same ordered stream as node lifecycle events. */
+test("accepts tool progress without treating the running node as completed", () => {
+  const event = workflowEvent(5, "agent.node.progress");
+  const parsed = parseAgentWorkflowSseBlock(
+    `id: 5\nevent: agent.node.progress\ndata: ${JSON.stringify(event)}`,
+  );
+  assert.deepEqual(parsed, event);
+  assert.equal(parsed?.node_status, "running");
+});
+
 test("deduplicates workflow events and reports sequence gaps without reordering facts", () => {
   const first = appendAgentWorkflowEvent(
     { events: [], lastSequence: 0, hasGap: false },

@@ -33,7 +33,9 @@ class OpenAIResponsesProvider:
 
     name = ProviderName.OPENAI
 
-    def __init__(self, transport: HttpTransport, *, base_url: str, api_key: str) -> None:
+    def __init__(
+        self, transport: HttpTransport, *, base_url: str, api_key: str
+    ) -> None:
         """Configure the OpenAI endpoint and credential without owning the shared transport."""
 
         self.transport = transport
@@ -155,7 +157,11 @@ class OpenAIResponsesProvider:
                     )
                     sequence += 1
                 elif event_type in {"response.failed", "error"}:
-                    error = event.get("error") or (event.get("response") or {}).get("error") or {}
+                    error = (
+                        event.get("error")
+                        or (event.get("response") or {}).get("error")
+                        or {}
+                    )
                     raise ModelProviderError(
                         "provider_unavailable",
                         str(error.get("message") or "OpenAI stream failed."),
@@ -179,11 +185,15 @@ class OpenAIResponsesProvider:
                     ToolCall(
                         id=value["id"],
                         name=value["name"],
-                        arguments=parse_json_arguments(value["arguments"], context="tool call"),
+                        arguments=parse_json_arguments(
+                            value["arguments"], context="tool call"
+                        ),
                     )
                     for value in tool_parts.values()
                 ],
-                structured_output=parse_structured_output(text) if request.output_schema else None,
+                structured_output=parse_structured_output(text)
+                if request.output_schema
+                else None,
                 finish_reason="stop",
                 latency_ms=self._elapsed_ms(started),
                 raw_response={"streamed": True},
@@ -235,13 +245,14 @@ class OpenAIResponsesProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Translate portable text/native attachments, functions and JSON Schema to Responses input."""
+        """Preserve ordered assistant calls and per-round encrypted reasoning in Responses input."""
 
         input_items: list[dict[str, Any]] = []
         continuation_state = request.provider_continuation_state
         if (
             continuation_state
-            and continuation_state.kind is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS
+            and continuation_state.kind
+            is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS
         ):
             input_items.extend(continuation_state.encrypted_reasoning_items)
         for message in request.messages:
@@ -254,11 +265,30 @@ class OpenAIResponsesProvider:
                     }
                 )
             else:
-                input_items.append({
-                    "role": message.role.value,
-                    "content": native_content_blocks(message, self.name)
-                    if message.attachments else message.content,
-                })
+                state = message._provider_continuation_state
+                if (
+                    state
+                    and state.kind is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS
+                ):
+                    input_items.extend(state.encrypted_reasoning_items)
+                if message.content:
+                    input_items.append(
+                        {
+                            "role": message.role.value,
+                            "content": native_content_blocks(message, self.name)
+                            if message.attachments
+                            else message.content,
+                        }
+                    )
+                input_items.extend(
+                    {
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments),
+                    }
+                    for call in message.tool_calls
+                )
         payload: dict[str, Any] = {
             "model": request.model,
             "input": input_items,
@@ -394,7 +424,9 @@ class OpenAIResponsesProvider:
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text) if request.output_schema else None,
+            structured_output=parse_structured_output(text)
+            if request.output_schema
+            else None,
             finish_reason=finish_reason or payload.get("status", "stop"),
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
@@ -415,9 +447,13 @@ class OpenAIResponsesProvider:
         return {
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
-            "cached_tokens": (usage.get("input_tokens_details") or {}).get("cached_tokens"),
+            "cached_tokens": (usage.get("input_tokens_details") or {}).get(
+                "cached_tokens"
+            ),
             "cache_miss_tokens": self._cache_miss_tokens(usage),
-            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get("reasoning_tokens"),
+            "reasoning_tokens": (usage.get("output_tokens_details") or {}).get(
+                "reasoning_tokens"
+            ),
         }
 
     def _cache_miss_tokens(self, usage: dict[str, Any]) -> int | None:
@@ -450,7 +486,9 @@ class OpenAIResponsesProvider:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
-            raise ModelProviderError("invalid_request", "Request was routed to the wrong provider.")
+            raise ModelProviderError(
+                "invalid_request", "Request was routed to the wrong provider."
+            )
         if request.json_object_output:
             raise ModelProviderError(
                 "unsupported_capability",

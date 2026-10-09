@@ -10,6 +10,8 @@ from nexuspilot_models.contracts import (
     MessageRole,
     ModelRequest,
     ModelResponse,
+    ProviderContinuationKind,
+    ProviderContinuationState,
     ProviderName,
     StreamEvent,
     StreamEventType,
@@ -29,7 +31,9 @@ class AnthropicMessagesProvider:
 
     name = ProviderName.ANTHROPIC
 
-    def __init__(self, transport: HttpTransport, *, base_url: str, api_key: str) -> None:
+    def __init__(
+        self, transport: HttpTransport, *, base_url: str, api_key: str
+    ) -> None:
         """Configure the Anthropic endpoint and credential without owning transport shutdown."""
 
         self.transport = transport
@@ -90,7 +94,9 @@ class AnthropicMessagesProvider:
                 if event_type == "message_start":
                     native_message = event.get("message") or {}
                     request_id = native_message.get("id")
-                    normalized_usage = self._normalize_usage(native_message.get("usage") or {})
+                    normalized_usage = self._normalize_usage(
+                        native_message.get("usage") or {}
+                    )
                     input_tokens = normalized_usage["input_tokens"]
                     cached_tokens = normalized_usage["cached_tokens"]
                     cache_write_tokens = normalized_usage["cache_write_tokens"]
@@ -133,7 +139,9 @@ class AnthropicMessagesProvider:
                         )
                         sequence += 1
                 elif event_type == "message_delta":
-                    stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+                    stop_reason = (event.get("delta") or {}).get(
+                        "stop_reason"
+                    ) or stop_reason
                     usage = event.get("usage") or {}
                     output_tokens = usage.get("output_tokens", output_tokens)
                     yield StreamEvent(
@@ -165,11 +173,15 @@ class AnthropicMessagesProvider:
                 ToolCall(
                     id=value["id"],
                     name=value["name"],
-                    arguments=parse_json_arguments(value["arguments"], context="tool call"),
+                    arguments=parse_json_arguments(
+                        value["arguments"], context="tool call"
+                    ),
                 )
                 for _, value in sorted(tools.items())
             ],
-            structured_output=parse_structured_output(text) if request.output_schema else None,
+            structured_output=parse_structured_output(text)
+            if request.output_schema
+            else None,
             finish_reason=self._finish_reason(stop_reason),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -200,7 +212,7 @@ class AnthropicMessagesProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Translate portable text/native attachments, tools and structured output to Messages JSON."""
+        """Translate complete tool exchanges, retaining signed assistant content unchanged."""
 
         messages: list[dict[str, Any]] = []
         for message in request.messages:
@@ -218,14 +230,52 @@ class AnthropicMessagesProvider:
                     }
                 )
             else:
-                messages.append({
-                    "role": message.role.value,
-                    "content": native_content_blocks(message, self.name)
-                    if message.attachments else message.content,
-                })
+                if message.tool_calls:
+                    state = message._provider_continuation_state
+                    content = (
+                        state.signed_content_blocks
+                        if state
+                        and state.kind is ProviderContinuationKind.ANTHROPIC_CONTENT
+                        else (
+                            [{"type": "text", "text": message.content}]
+                            if message.content
+                            else []
+                        )
+                        + [
+                            {
+                                "type": "tool_use",
+                                "id": call.id,
+                                "name": call.name,
+                                "input": call.arguments,
+                            }
+                            for call in message.tool_calls
+                        ]
+                    )
+                    messages.append({"role": "assistant", "content": content})
+                    continue
+                messages.append(
+                    {
+                        "role": message.role.value,
+                        "content": native_content_blocks(message, self.name)
+                        if message.attachments
+                        else message.content,
+                    }
+                )
+        # Parallel results from one assistant turn belong to a single user message.
+        merged = []
+        for item in messages:
+            if (
+                merged
+                and item["role"] == merged[-1]["role"] == "user"
+                and isinstance(item["content"], list)
+                and isinstance(merged[-1]["content"], list)
+            ):
+                merged[-1]["content"].extend(item["content"])
+            else:
+                merged.append(item)
         payload: dict[str, Any] = {
             "model": request.model,
-            "messages": messages,
+            "messages": merged,
             "max_tokens": request.max_output_tokens or MAX_PROVIDER_OUTPUT_TOKENS,
             "stream": stream,
         }
@@ -251,10 +301,12 @@ class AnthropicMessagesProvider:
                 }
             }
         if request.reasoning:
-            payload["thinking"] = {"type": "adaptive" if request.reasoning.enabled else "disabled"}
+            payload["thinking"] = {
+                "type": "adaptive" if request.reasoning.enabled else "disabled"
+            }
             if request.reasoning.enabled:
-                payload.setdefault("output_config", {})["effort"] = self._provider_reasoning_effort(
-                    request
+                payload.setdefault("output_config", {})["effort"] = (
+                    self._provider_reasoning_effort(request)
                 )
         return payload
 
@@ -266,7 +318,7 @@ class AnthropicMessagesProvider:
         latency_ms: int,
         attempts: list,
     ) -> ModelResponse:
-        """Normalize Anthropic text and tool-use content blocks."""
+        """Normalize visible text and preserve complete signed tool turns as private state."""
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
@@ -278,7 +330,9 @@ class AnthropicMessagesProvider:
                     ToolCall(
                         id=block.get("id", ""),
                         name=block.get("name", ""),
-                        arguments=parse_json_arguments(block.get("input", {}), context="tool call"),
+                        arguments=parse_json_arguments(
+                            block.get("input", {}), context="tool call"
+                        ),
                     )
                 )
         text = "".join(text_parts) or None
@@ -287,7 +341,17 @@ class AnthropicMessagesProvider:
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text) if request.output_schema else None,
+            provider_continuation_state=(
+                ProviderContinuationState(
+                    kind=ProviderContinuationKind.ANTHROPIC_CONTENT,
+                    signed_content_blocks=payload.get("content") or [],
+                )
+                if tool_calls
+                else None
+            ),
+            structured_output=parse_structured_output(text)
+            if request.output_schema
+            else None,
             finish_reason=self._finish_reason(payload.get("stop_reason")),
             input_tokens=normalized_usage["input_tokens"],
             output_tokens=usage.get("output_tokens"),
@@ -351,7 +415,9 @@ class AnthropicMessagesProvider:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
-            raise ModelProviderError("invalid_request", "Request was routed to the wrong provider.")
+            raise ModelProviderError(
+                "invalid_request", "Request was routed to the wrong provider."
+            )
         if request.json_object_output:
             raise ModelProviderError(
                 "unsupported_capability",

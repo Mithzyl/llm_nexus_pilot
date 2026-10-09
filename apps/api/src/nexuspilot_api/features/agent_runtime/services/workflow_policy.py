@@ -132,6 +132,14 @@ def validate_controller_plan(
     )
 
     for task in plan.tasks:
+        if payload.execution_profile == "model_only_v1" and task.max_model_calls != 1:
+            capability_gaps.append(
+                {
+                    "task_key": task.task_key,
+                    "capability": "multi_turn_tools",
+                    "reason_code": "agent_capability_unavailable",
+                }
+            )
         if task.assigned_role not in MODEL_ONLY_ALLOWED_ROLES:
             capability_gaps.append(
                 {
@@ -149,10 +157,10 @@ def validate_controller_plan(
                 }
             )
         for capability in task.required_capabilities:
-            if (
-                capability in MODEL_ONLY_DENIED_CAPABILITIES
-                or capability not in MODEL_ONLY_ALLOWED_CAPABILITIES
-            ):
+            allowed = MODEL_ONLY_ALLOWED_CAPABILITIES | (
+                {"read", "tool"} if payload.execution_profile == "tool_enabled_v1" else set()
+            )
+            if capability not in allowed:
                 capability_gaps.append(
                     {
                         "task_key": task.task_key,

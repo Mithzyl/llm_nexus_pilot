@@ -4,6 +4,8 @@
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
+2026-10-09 工具扩展：新增显式 `tool_enabled_v1`，Worker 可多轮调用五类已上传附件只读工具；工具请求、结果、累计用量和进度持久保存，模型继续后才提交节点输出。默认 `model_only_v1` 不变。此项归[工具主计划及本地验证范围](phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)，不在本阶段重复维护工具待办；尚未提供独立后台恢复、Python/Shell 或动态工具。
+
 2026 年 9 月 16 日文件接入：上传文件绑定当前 Run 后，各模型节点通过统一 Context Builder 读取同一固定解析结果。测试检查 Controller、Worker、Reviewer 和最终汇总的实际模型请求均含附件文字；不新增 File Agent，不自动切换模式，不开放 Shell 或模型文件工具。这里只是既有 `model_only_v1` 的输入扩展，附件驱动编排与独立后台恢复仍后置。具体上传限制见[阶段2正式文件上传](phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)。
 **前端事件依据：** [`phase-4-web-ui-plan.md`](../frontend/phase-4-web-ui-plan.md)
 

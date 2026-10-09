@@ -36,6 +36,19 @@ const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   workflow_completion: "工作流完成",
 };
 
+const FILE_TOOL_LABELS: Record<string, string> = {
+  list_run_files: "列出附件",
+  get_file_outline: "查看文件结构",
+  search_file_content: "搜索文件文字",
+  read_file_content: "读取文件文字",
+  read_file_table: "读取表格",
+};
+const TOOL_STATUS_LABELS: Record<string, string> = {
+  completed: "读取结果已保存", permission_denied: "未获授权或文件不可用",
+  failed: "读取失败", timed_out: "读取超时", cancelled: "已取消",
+  requested: "等待执行", running: "正在读取", outcome_unknown: "结果待确认",
+};
+
 /** Convert workflow status values into stable user-facing labels without inventing actions. */
 export function agentWorkflowStatusLabel(status: AgentWorkflowStatus): string {
   const labels: Record<AgentWorkflowStatus, string> = {
@@ -221,7 +234,7 @@ export function AgentWorkflowPanel({
     <section className="agent-workflow" aria-label="Agent 工作流证据">
       <div className="agent-workflow-heading">
         <div>
-          <p className="eyebrow">model_only_v1</p>
+          <p className="eyebrow">{workflow.execution_profile === "tool_enabled_v1" ? "附件读取工作流" : "纯模型工作流"}</p>
           <h3>{agentWorkflowStatusLabel(workflow.status)}</h3>
         </div>
         <span>{workflow.current_stage ?? "等待首个节点"}</span>
@@ -276,15 +289,26 @@ export function AgentWorkflowPanel({
                 </summary>
                 <div className="agent-node-details">
                   <dl>
-                    {nodeOutputFacts(node).map(([label, value]) => (
-                      <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+                    {nodeOutputFacts(node).map(([label, value], index) => (
+                      <div key={`${label}-${index}`}><dt>{label}</dt><dd>{value}</dd></div>
                     ))}
                     {agentNodeBudgetSummary(node.budget).map(([label, value]) => (
                       <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
                     ))}
                   </dl>
+                  {(node.evidence.tool_results ?? []).length > 0 && (
+                    <ul aria-label="附件工具调用">
+                      {node.evidence.tool_results?.map((call) => (
+                        <li key={call.tool_call_id}>
+                          {FILE_TOOL_LABELS[call.tool_name] ?? "未授权工具"}
+                          {" · "}{TOOL_STATUS_LABELS[call.status] ?? "状态待确认"}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <p>
                     {node.usage.model_call_count} 次模型调用 · {node.usage.input_tokens + node.usage.output_tokens} tokens ·
+                    {node.usage.tool_call_count > 0 && ` ${node.usage.tool_call_count} 次工具调用 · `}
                     剩余 {node.budget.remaining_model_calls} 次调用
                   </p>
                   {node.evidence.model_attempt_ids.flatMap(

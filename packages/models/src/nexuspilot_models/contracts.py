@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 MAX_PROVIDER_OUTPUT_TOKENS = 65_536
 
@@ -102,6 +102,8 @@ class ProviderContinuationKind(StrEnum):
     DEEPSEEK_RAW_REASONING = "deepseek.raw-reasoning-replay.v1"
     OPENAI_ENCRYPTED_ITEMS = "openai.encrypted-items.v1"
     OPENAI_RESPONSE_ID = "openai.response-id.v1"
+    ANTHROPIC_CONTENT = "anthropic.signed-content.v1"
+    GEMINI_PARTS = "gemini.signed-parts.v1"
 
 
 class ModelReasoningCapabilities(ContractModel):
@@ -144,6 +146,7 @@ class ProviderContinuationState(ContractModel):
     encrypted_reasoning_items: list[dict[str, Any]] = Field(default_factory=list)
     tool_call_ids: list[str] = Field(default_factory=list)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    signed_content_blocks: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_kind_payload(self) -> "ProviderContinuationState":
@@ -154,10 +157,22 @@ class ProviderContinuationState(ContractModel):
                 raise ValueError("DeepSeek continuation requires raw reasoning")
         elif self.kind is ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS:
             if not self.encrypted_reasoning_items:
-                raise ValueError("OpenAI encrypted-item continuation requires output items")
+                raise ValueError(
+                    "OpenAI encrypted-item continuation requires output items"
+                )
         elif self.kind is ProviderContinuationKind.OPENAI_RESPONSE_ID:
             if not self.provider_response_id:
-                raise ValueError("OpenAI response-id continuation requires a response ID")
+                raise ValueError(
+                    "OpenAI response-id continuation requires a response ID"
+                )
+        elif self.kind in {
+            ProviderContinuationKind.ANTHROPIC_CONTENT,
+            ProviderContinuationKind.GEMINI_PARTS,
+        }:
+            if not self.signed_content_blocks:
+                raise ValueError(
+                    "Signed continuation requires unchanged content blocks"
+                )
         return self
 
 
@@ -281,19 +296,35 @@ class NativeFileContent(ContractModel):
         return len(self.data_base64) * 3 // 4 - padding_count
 
 
+class ToolCall(ContractModel):
+    """Represent one normalized function request emitted by a model."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
 class Message(ContractModel):
     """Represent text with optional verified user attachments, independent of provider wire blocks."""
 
     role: MessageRole
-    content: str = Field(min_length=1)
+    content: str
+    tool_calls: list[ToolCall] = Field(default_factory=list, max_length=128)
+    _provider_continuation_state: ProviderContinuationState | None = PrivateAttr(
+        default=None
+    )
     attachments: list[NativeFileContent] = Field(default_factory=list, max_length=10)
     tool_call_id: str | None = Field(default=None, max_length=256)
     tool_name: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def validate_message_content(self) -> "Message":
-        """Validate tool identity and prohibit binary content on assistant or tool history."""
+        """Validate complete assistant calls and results; private state is never public input."""
 
+        if self.tool_calls and self.role is not MessageRole.ASSISTANT:
+            raise ValueError("tool_calls are only valid on assistant messages")
+        if not self.content and not self.tool_calls:
+            raise ValueError("Message requires text or assistant tool calls")
         if self.attachments and self.role is not MessageRole.USER:
             raise ValueError("native attachments are allowed only on user messages")
         if self.role is MessageRole.TOOL and not self.tool_call_id:
@@ -312,14 +343,6 @@ class ToolDefinition(ContractModel):
     description: str = Field(min_length=1, max_length=4096)
     input_schema: dict[str, Any]
     strict: bool = False
-
-
-class ToolCall(ContractModel):
-    """Represent one normalized function request emitted by a model."""
-
-    id: str
-    name: str
-    arguments: dict[str, Any]
 
 
 class TransportAttempt(ContractModel):

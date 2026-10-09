@@ -357,6 +357,7 @@ export type AgentWorkflowEventType =
   | "agent.workflow.outcome_unknown"
   | "agent.node.started"
   | "agent.node.completed"
+  | "agent.node.progress"
   | "agent.node.failed"
   | "agent.node.cancelled"
   | "agent.node.outcome_unknown";
@@ -372,7 +373,7 @@ export type AgentModelBinding = {
 export type AgentWorkflowCreate = {
   workflow_name: "model_only";
   workflow_version: "1.0.0";
-  execution_profile: "model_only_v1";
+  execution_profile: "model_only_v1" | "tool_enabled_v1";
   idempotency_key: string;
   role_bindings: Partial<
     Record<"controller" | "planner" | "researcher" | "reviewer" | "verifier", AgentModelBinding>
@@ -478,7 +479,7 @@ export type AgentWorkflowNodeOutputMap = {
       completion_criteria: string[];
       priority: number;
       timeout_seconds: number;
-      max_model_calls: 1;
+      max_model_calls: number;
     }>;
     dependencies: Array<{
       task_key: string;
@@ -543,6 +544,14 @@ export type AgentWorkflowNodeOutputMap = {
       unknowns: string[];
     };
     requested_tool_calls: [];
+    tool_results?: Array<{
+      tool_call_id: string;
+      tool_name: string;
+      version: string | null;
+      status: string;
+      error_code: string | null;
+      file_id: string | null;
+    }>;
     finish_reason: string;
     provider_request_id: string | null;
     input_tokens: number | null;
@@ -691,6 +700,7 @@ type AgentWorkflowNodeBase = {
   evidence: {
     model_attempt_ids: string[];
     tool_call_ids: string[];
+    tool_results?: AgentWorkflowNodeOutputMap["agent_model_execution"]["tool_results"];
     evaluation_ids: string[];
     artifact_ids: string[];
     handoff_ids: string[];

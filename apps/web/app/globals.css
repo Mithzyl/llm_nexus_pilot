@@ -361,6 +361,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .compact-select-list button { display: flex; min-height: 38px; width: 100%; align-items: center; gap: 18px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: var(--ui-control-size); text-align: left; white-space: nowrap; cursor: pointer; }
 .compact-select-list button:hover, .compact-select-list button.is-active { background: var(--soft); }
 .compact-select-list button i { margin-left: auto; font-style: normal; }
+/* Keep the rightmost Agent tool menu inside the narrow Composer. */
+.agent-file-tools .compact-select-list { left: auto; right: 0; }
 .reasoning-settings { position: relative; }
 .reasoning-settings-trigger { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 7px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: var(--ui-control-size); cursor: pointer; }
 .reasoning-settings-trigger:hover, .reasoning-settings-trigger[aria-expanded="true"] { background: var(--soft); color: var(--text); }
@@ -518,6 +520,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .agent-node-list summary time { color: var(--muted); font: 500 8px var(--font-geist-mono); }
 .agent-node-details { padding: 0 0 13px 19px; animation: riseIn 180ms both ease-out; }
 .agent-node-details dl { margin: 0; }
+.agent-node-details ul { margin: 10px 0; padding-left: 18px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.agent-node-details li + li { margin-top: 6px; }
 .agent-node-details dl div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; padding: 5px 0; }
 .agent-node-details dt { color: var(--muted); font-size: 8px; }
 .agent-node-details dd { margin: 0; font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -574,6 +578,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .composer-config-controls { flex-wrap: wrap; }
   .composer-actions { width: 100%; justify-content: flex-end; }
   .agent-config-shelf { align-items: flex-start; flex-wrap: wrap; gap: 7px 14px; }
+  .agent-file-tools { margin-left: auto; }
   .agent-model-role { width: 100%; margin-left: 0; }
 }
 

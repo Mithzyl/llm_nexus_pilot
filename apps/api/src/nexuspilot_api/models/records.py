@@ -27,6 +27,9 @@ class LlmModelToolCall(Base):
 
     __tablename__ = "llm_tool_calls"
     __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", "provider_tool_call_id", name="uq_tool_attempt_provider_call"
+        ),
         Index(
             "ix_tool_attempt_status_started_id",
             "attempt_id",
@@ -41,6 +44,10 @@ class LlmModelToolCall(Base):
         ForeignKey("llm_attempts.attempt_id", ondelete="CASCADE"), index=True
     )
     tool_name: Mapped[str] = mapped_column(String(128))
+    provider_tool_call_id: Mapped[str | None] = mapped_column(String(255))
+    tool_version: Mapped[str | None] = mapped_column(String(64))
+    output_json: Mapped[dict | None] = mapped_column(JSON)
+    error_code: Mapped[str | None] = mapped_column(String(64))
     risk_level: Mapped[str] = mapped_column(String(32))
     input_json: Mapped[dict] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32))

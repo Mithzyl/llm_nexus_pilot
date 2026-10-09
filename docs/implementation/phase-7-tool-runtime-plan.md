@@ -1,7 +1,7 @@
 # 阶段7：Agent 工具发现、执行与自主扩展主计划
 
-**文档日期：** 2026 年 10 月 8 日
-**文档状态：** 进行中；Office/PDF 已改为统一专用执行器，本地解析与 Context 验证通过（SQL/对象存储/Provider 为测试替身，不代表真实部署验收）。2026-10-07 用户限定仅本地开发，服务器部署/验收暂停，线上版本未改变。任务工作目录及受控 Python／Shell 尚未实现，Git 等其他高风险能力继续暂停。
+**文档日期：** 2026 年 10 月 9 日
+**文档状态：** 进行中；Office/PDF 统一专用执行器及首批五个附件工具循环已有本地实现和验证（SQL/对象存储/Provider 为测试替身，不代表真实部署验收）。2026-10-07 用户限定仅本地开发，服务器部署/验收暂停，线上版本未改变。动态工具、任务工作目录及受控 Python／Shell 尚未实现，Git 等其他高风险能力继续暂停。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 > 2026-10-08 规划调整：本文是工具能力从发现、调用、模型循环、隔离执行到自主创建、验证、复用和产品验收的唯一主计划。代码仍放在现有模型、Agent、工具和 Web 模块，不因代码跨目录而拆成多个独立阶段待办。阶段2/3/4仅保留已有模块接口与历史记录；阶段8代码搜索、阶段9 MCP 作为本计划的后续工具来源，不另建执行流程。阶段10保留通用后台执行机制的详细设计，本文负责工具任务接入与验收。
@@ -21,19 +21,19 @@
 ## 当前事实
 
 - `packages/models` 已有 Provider 无关的 `ToolDefinition`、`ToolCall` 和 Tool Message 合同；它们只表达“模型请求调用什么”，不负责执行、权限和审计。
-- `llm_tool_calls` 已能保存 `attempt_id`、工具名称、单一风险等级、输入、状态、权限结论、结果 URI 和错误，但尚无写入执行流程、稳定状态枚举、幂等键、工具版本、输出摘要或执行时长。
-- `GET /api/v1/internal/tool-calls` 及详情接口已经提供脱敏只读审计查询；当前没有工具注册表、权限判定器、Workspace 边界或执行 Service。
+- `llm_tool_calls` 已有实际文件工具写入流程；本次迁移增加 Provider 调用 ID、固定工具版本、结果 JSON、错误码和 `(attempt_id, provider_tool_call_id)` 唯一约束。调用状态区分请求、执行、完成、拒绝、超时、取消与失败；通用副作用恢复和动态注册尚未实现。
+- `GET /api/v1/internal/tool-calls` 及详情接口保留脱敏只读审计。新增 `AgentFileToolService` 和静态 `RegisteredFileTool`，仅执行下方五个附件读取工具；通用工具目录、任务 Workspace 和生成代码执行尚未实现。
 - 当前有 `/responses` 与同步/POST SSE 的 `model_only_v1` 工作流；阶段10已恢复独立后台执行规划但未实施。阶段7当前同步设计不承诺请求断开或 API 重启后继续执行。
 - 当前阶段5已实现浏览器登录和 FastAPI 资源主体授权，但这不等于模型工具权限已实现。阶段7仍只服务受信内部调用和后续 Agent 进程，不提供普通用户可直接提交 `run_command` 的 HTTP 接口。
 - 当前解析部署选择：复用宿主 Unix Socket 执行器，由其创建无网络临时 Linux 容器，PDF 与 Office 统一走该路径，具体步骤见下节。通用命令执行的启用策略、镜像供应链验证及 Git worktree 时机仍需在对应工作项实施前确认；不能把解析部署决定视为通用命令授权。
 
 ## 统一交付范围与工作项
 
-状态：进行中，只有固定 PDF/Office 解析环境及其本地验证已有实现；下列模型工具工作项均未开始。2026-10-08 只调整规划，不启用工具、不安装依赖、不迁移数据库、不提交代码、不部署服务器。后续实施按工作项包含后端、前端、测试与运行说明，不再要求用户逐阶段拼接同一个功能。
+状态：进行中。2026-10-08 统一规划后，2026-10-09 开始实现首批附件工具循环；具体已实现范围、验证和限制见下一节。未迁移实际开发库或服务器，未部署服务器。每项交付包含后端、前端、测试与运行说明，不再要求用户逐阶段拼接同一个功能。
 
 | 工作项 | 可独立验收的结果 | 必要依赖 | 当前状态 |
 |---|---|---|---|
-| 连续使用基础工具 | 单个 Worker 多轮调用已授权读取/搜索工具，处理可恢复错误，最终回答引用实际结果；Web 显示真实调用与产物 | 现有 Gateway、Context、用户归属、工具登记/审计 | 未开始 |
+| 连续使用基础工具 | 单个 Worker 多轮调用已授权读取/搜索工具，处理可恢复错误，最终回答引用实际结果；Web 显示真实调用与产物 | 现有 Gateway、Context、用户归属、工具登记/审计 | 进行中：首批五个附件只读工具已实现；本地验证，不代表真实 Provider/目标部署验收 |
 | 按需发现工具 | Agent 搜索目录、查看说明、加载固定版本后直接调用；不可见工具不泄露，缺依赖不返回假成功 | 上一项的 Registry 与调用流程 | 未开始 |
 | 工作目录与代码组合 | 同一任务多次 Python/Shell 调用复用文件；程序可通过受控 SDK 组合已有工具，每次子调用仍鉴权和记录 | 真实容器隔离、任务目录、结果保存、执行授权 | 未开始 |
 | 创建并使用任务工具 | Agent 提交定义、代码和样本，经平台验证后在当前任务注册；下一轮可调用固定版本 | 代码组合、生成工具验证器、版本与作用域记录 | 未开始 |
@@ -44,6 +44,29 @@
 基础循环可以先在明确同步限制下验收；后台能力未完成前不开放声称“离开页面仍会继续”的长任务。Git、联网、外部写入和全平台工具发布不是第一项交付条件，继续暂停启用；这里新增设计不等于获得相应操作授权。
 
 ## 工具定义、发现与加载
+
+### 首批附件工具实现与运行（2026-10-09）
+
+当前代码支持 `tool_enabled_v1`：在 Web 选择 Agent，再将“Agent 文件工具”从默认“不使用”切换为“读取附件”。`model_only_v1` 保持默认；快速回复不执行工具。两种执行配置仍使用 `workflow_name=model_only`、版本 `1.0.0` 的现有流程定义，名称兼容历史记录，不表示工具配置无效。Controller、审核和最终汇总仍提交原有结构化输出；仅 Worker 中间轮允许返回工具调用，最终轮再校验节点 JSON。
+
+已实现的工具是 `list_run_files`、`get_file_outline`、`read_file_content`、`read_file_table`、`search_file_content`。输入类型同时生成模型 Schema 和服务端参数检查；第一批是静态登记的 `RegisteredFileTool`，不是下文完整动态 `RegisteredTool`。列文件读取当前已保存回合允许的附件；其余工具接收 `file_id`，分段工具接受块偏移/数量，搜索额外接收字面关键词。结果复用已经持久保存的解析内容，返回来源哈希、解析版本、遗漏警告和读取数据；不重新执行上传文件内的代码，不补造 OCR、PDF 表格或目录。未来目录中设计的高级页范围、列文件游标等不能当作当前参数使用。
+
+- 权限：从 Attempt → Run → 用户/会话及固定消息附件关系取权限，不接受模型提供 owner、存储地址、绝对路径或命令。每次执行及再次发送历史工具结果前校验文件归属、当前回合附件、删除状态和来源哈希。已知其他用户或其他会话的文件 ID 也不能读取。
+- 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正，重复同名同参数调用停止。一个模型响应最多 8 个调用，第一版顺序执行；每次读取最长 15 秒，单次结果最多 65,536 字节，过大返回错误要求缩小读取范围，不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
+- 持久记录：迁移 `20261008_0023` 在原 `llm_tool_calls` 增加四个可空字段和唯一约束，旧记录保留。重复逻辑调用拒绝再次执行，不以旧缓存绕过撤销检查。节点证据聚合全部轮次及工具状态，Handoff 的 `files_read` 来自成功读取记录。工具结果提交后发出 `agent.node.progress`，运行中和刷新后的详情均可查看调用状态；浏览器不接收原始工具结果、私有续接内容或对象存储地址。
+- 上下文：每轮保留原 Context 构建 ID，在私有 Attempt 请求记录保存包含工具消息的 `effective_messages`；模型收到原有消息加本次完整工具历史。当前 Context 抽屉仍展示基础构建快照，尚未逐条展开工具消息；工具调用详情以节点证据及内部审计记录为准。工具消息过大时明确失败，不虚构完整上下文或自动摘要替换文件。
+- Provider：本地协议测试覆盖 OpenAI、OpenAI-compatible/DeepSeek、Anthropic、Gemini 的调用/结果配对；有签名或私有推理续接时按原序保留在后端。中间工具轮不同时强制最终 JSON Schema，最终结果仍必须通过类型校验。未调用真实 Provider，也未完成真实浏览器 Provider 矩阵。
+- 失败与恢复：当前仍由 HTTP/SSE 请求持有执行，事件回放只能恢复查看，不能保证断线或进程重启继续执行。读取成功后模型失败时保留已经提交的工具记录。没有通用命令、联网、运行时 pip、动态注册、批准后恢复或后台执行。
+
+运行前先备份并确认目标库，执行 `make api-migrate` 升级到 `20261008_0023`，再重启 API 和 Web；本次仅在隔离 SQLite 中验证迁移，未修改实际开发数据库。MinIO 沿用已有上传配置，PDF/Office 仍要求下文专用执行器；工具读取已保存解析结果，不创建另一套解析沙箱。回退应用时优先保留新增记录和列，不在有新调用数据的库上自动降级迁移。
+
+主要位置：`services/agent_file_tool_service.py` 负责读取和保存；`features/agent_runtime/services/agent_tool_loop.py` 负责模型续接；`workflow_execution_state_service.py` 负责进度及累计用量；Web Composer 与运行证据负责开关和展示。动态工具、工作目录和工具发现仍按下文未开始的工作项实施。
+
+验证记录（2026-10-09，当前未提交的工具实现）：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs` 为 556 通过、13 跳过、4 项按标记未选择；13 项需显式 MySQL/MinIO 或真实 Docker 样本配置。`apps/web` 下 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 123 通过。工具测试使用隔离 SQL、内存对象存储和脚本模型验证上传、真实文本解析、五类读取、错误后继续、跨用户/会话拒绝、撤销、重复、超时、事件排序及迁移；不代表 MySQL/MinIO/真实模型联调。Playwright 使用本地 Web 与模拟 API 检查桌面/窄屏工具开关及菜单，工具节点展示由前端渲染测试验证；未进行真实 Provider 浏览器流程。后台恢复及真实服务矩阵仍未执行。
+
+私有续接依据：[Anthropic 扩展思考与工具使用](https://platform.claude.com/cookbook/extended-thinking-extended-thinking-with-tool-use)、[Gemini thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)。这些说明约束适配器处理签名内容，不授权向产品页面公开隐藏推理。
+
+补充验证：新增“列附件 → 使用返回 ID 读取正文 → 提交答案”三轮测试后，`pytest -c apps/api/pyproject.toml apps/api/tests/test_agent_file_tools.py -q` 为 16 通过；此后未改后端实现。窄屏菜单换行溢出已通过 Playwright 发现并修正，两个选项切换及 Escape 关闭均复验通过。截图保存于本地忽略目录 `output/playwright/agent-file-tools-desktop.png` 与 `agent-file-tools-mobile.png`。
 
 ### 一份定义用于模型和执行器
 
@@ -133,7 +156,7 @@ SDK 子调用仍通过同一执行服务，记录父调用、子调用序号、�
 - 保存个人/项目工具展示用途、测试范围和权限变化，不暗示“自测通过即可信”；记录停用和版本升级，不影响旧证据读取。
 - 长任务使用[阶段10执行机制](phase-10-rabbitmq-task-execution-plan.md)。保存每轮模型/工具引用、目录检查点及产物后推进游标；浏览器只观察，断开不取消。Worker 重启不得重复执行结果未知的写操作；显式取消才停止后续工作并清理实际进程。
 
-当前程序仍由 HTTP/SSE 请求持有执行任务；上述行为尚未实现。先验收同步循环时必须标明断线/进程重启限制，不能将事件回放当成执行恢复。
+当前程序仍由 HTTP/SSE 请求持有执行任务；首批工具提交进度与刷新展示已实现，批准、工具保存和独立执行尚未实现。同步循环必须标明断线/进程重启限制，不能将事件回放当成执行恢复。
 
 ## 后续代码检索与 MCP 工具来源
 
@@ -241,7 +264,7 @@ macOS Docker Desktop/Linux ARM64 检查用于开发兼容；目标 Linux AMD64 �
 - 根目录运行 `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml packages/models/tests -q`：**56 passed**。单独运行模型包时必须带此配置以启用项目已有 asyncio 模式；首次遗漏配置的运行报异步测试未支持，修正命令后通过，未改测试标准。
 - `apps/api/.venv/bin/python -m ruff check apps/api packages/models deployments/file-runtime deployments/verification/create_file_fixtures.py` 与 `git diff --check` 通过。复现说明见[本地统一文件解析验收](../../deployments/verification/README.md#本地统一文件解析验收)。
 
-范围说明：真实 Socket、Docker、解析器、HTTP 应用、Context 构建与读取已验证；数据库为 SQLite、对象存储为内存替身，Provider 为固定测试响应。真实 MySQL/MinIO、浏览器、目标 AMD64、生产部署和真实模型结果未验收。任务工作目录、Registry/授权/审计及 Python/Shell 工具仍未实现，按下方既有工具工作项继续；不把固定文件解析当作已开放模型执行工具。
+该次解析验收范围：真实 Socket、Docker、解析器、HTTP 应用、Context 构建与读取已验证；数据库为 SQLite、对象存储为内存替身，Provider 为固定测试响应。该次没有验收真实 MySQL/MinIO、浏览器、目标 AMD64、生产部署或真实模型。后续首批工具登记、读取授权和调用记录见文首 2026-10-09 实现节；任务工作目录、动态 Registry 和 Python/Shell 仍未实现，不把固定解析当作通用命令工具。
 
 ## 现有模块的实现职责
 
@@ -353,7 +376,7 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 ## 个人项目文件工作区补充（2026 年 9 月 5 日，设计已完成，实施未开始）
 
-本工作项同时承接[路线图的统一文件解析设计](../architecture/platform-roadmap.md#统一文件解析与按需读取设计2026-年-9-月-5-日)：提供解析进程隔离，以及 `list_run_files`、`get_file_outline`、`search_file_content`、`read_file_content`、`read_file_table` 的受控执行。复用本计划 `RegisteredTool`、权限判定和调用审计，不建立第二套执行器。每次读取核验主体/项目/Run 固定文件与解析版本；禁止模型提供存储地址或身份。解析沙箱不可用即拒绝，不降级到宿主机；工具有界分页保留后续位置。阶段2定义解析/来源合同，阶段3编排循环；本小范围文件能力不恢复高风险 Shell/Git，也不依赖阶段9 MCP。当前仍未实现。
+本工作项同时承接[路线图的统一文件解析设计](../architecture/platform-roadmap.md#统一文件解析与按需读取设计2026-年-9-月-5-日)：五类已上传附件工具的当前实现见文首，不建立第二套解析器。它们限定 Run/会话允许的固定解析版本，不接受模型提供身份或存储路径。这里后续的项目本地文件/Workspace 读取仍未实现，须补项目成员权限和磁盘隔离，不能用上传附件授权代替。完整动态 `RegisteredTool`、高级选择与目录操作仍按后续工作项实施，不恢复高风险 Shell/Git，也不依赖阶段9 MCP。
 
 统一数据与文件生命周期见[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)。复用 `llm_project_workspaces`，不能把当前登记 locator 当作真实文件权限；本次不恢复 Shell/Git/任意工具执行。
 

@@ -39,6 +39,7 @@ from nexuspilot_api.infrastructure.provider_continuation_store import (
 )
 from nexuspilot_api.models import (
     AttemptStatus,
+    LlmContextBuild,
     LlmModelAttempt,
     LlmModelTransportAttempt,
     LlmProviderContinuationState,
@@ -133,8 +134,13 @@ class ModelInvocationService:
         payload: ResponsesRequest,
         *,
         context_source_references: RuntimeContextSourceReferences | None = None,
+        tool_messages: list[Message] | None = None,
     ) -> ResponsesResult:
-        """Execute a response and finalize its durable LLM model invocation record."""
+        """Execute a response; append server-owned tool history after persisted base Context.
+
+        Tool history is an internal runtime argument, never an HTTP request field.
+        The exact effective messages are stored in the private attempt request audit.
+        """
 
         model_attempt_id = new_id()
         request, context_build_id = await self._apply_runtime_context(
@@ -145,6 +151,26 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        if tool_messages:
+            if context_build_id:
+                context = await self.db_session.get(LlmContextBuild, context_build_id)
+                # The existing Context policy bounds model input, not model output.
+                # Count the additional native history conservatively as UTF-8 bytes.
+                history_estimate = len(
+                    json.dumps(
+                        [message.model_dump(mode="json") for message in tool_messages],
+                        ensure_ascii=False,
+                    ).encode()
+                )
+                if (
+                    context
+                    and context.input_token_estimate + history_estimate
+                    > context.token_budget - context.reserved_output_tokens
+                ):
+                    raise InvalidRequestError(
+                        "Tool history exceeds the registered model context window"
+                    )
+            request = request.model_copy(update={"messages": [*request.messages, *tool_messages]})
         request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
             payload,
@@ -502,6 +528,10 @@ class ModelInvocationService:
         await self.db_session.commit()
         try:
             raw_request = payload.model_dump(mode="json", exclude={"idempotency_key"})
+            if request.tools:
+                raw_request["effective_messages"] = [
+                    message.model_dump(mode="json") for message in request.messages
+                ]
             stored_raw_request = await self.storage.put_bytes(
                 f"{payload.run_id}/{model_attempt.attempt_id}/raw-request.json",
                 json.dumps(raw_request, ensure_ascii=False).encode(),
@@ -1221,10 +1251,16 @@ class ModelInvocationService:
         if isinstance(value, list):
             return [cls._sanitize_raw_response_for_audit(item) for item in value]
         if isinstance(value, dict):
+            if (
+                value.get("type") in {"thinking", "redacted_thinking"}
+                or value.get("thought") is True
+            ):
+                return {"type": "private_continuation_redacted"}
             return {
                 key: cls._sanitize_raw_response_for_audit(item)
                 for key, item in value.items()
-                if key not in {"reasoning_content", "encrypted_content"}
+                if key
+                not in {"reasoning_content", "encrypted_content", "signature", "thoughtSignature"}
             }
         return value
 

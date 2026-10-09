@@ -176,7 +176,7 @@ class WorkflowDefinitionRegistry:
 
 
 def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
-    """Create the registry containing the current model_only_v1 workflow definition."""
+    """Register compatible node graphs with separate model-only and read-tool permissions."""
 
     registry = WorkflowDefinitionRegistry()
     registry.register(
@@ -252,6 +252,15 @@ def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
                     (),
                 ),
             ),
+        )
+    )
+    model_only = registry.require_definition("model_only", "1.0.0", "model_only_v1")
+    registry.register(
+        AgentWorkflowDefinition(
+            workflow_name="model_only",
+            workflow_version="1.0.0",
+            execution_profile="tool_enabled_v1",
+            node_definitions=model_only.node_definitions,
         )
     )
     return registry

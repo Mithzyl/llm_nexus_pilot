@@ -4,7 +4,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { AgentWorkflowActivityFeed } from "../components/agent-workflow/AgentWorkflowPanel";
+import { AgentWorkflowActivityFeed, AgentWorkflowPanel } from "../components/agent-workflow/AgentWorkflowPanel";
 import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
@@ -15,7 +15,51 @@ import {
   isAgentWorkflowAssistantMessage,
   isAgentWorkflowCancellable,
 } from "../lib/agent-workflow-view";
-import type { AgentWorkflowEvent } from "../lib/types";
+import type { AgentWorkflowEvent, AgentWorkflowNodeResult, AgentWorkflowSummary } from "../lib/types";
+
+/** Persisted tool evidence must remain visible even when its worker has not returned output. */
+test("renders committed tool results for a running or failed worker after reload", () => {
+  const workflow: AgentWorkflowSummary = {
+    workflow_execution_id: "wf", run_id: "run", workflow_name: "model_only",
+    workflow_version: "1.0.0", execution_profile: "tool_enabled_v1", status: "running",
+    version: 1, snapshot_version: 2, current_stage: "worker_execution",
+    primary_node_execution_id: "node", active_node_execution_ids: ["node"],
+    model_call_count: 2, max_model_calls: 16, node_count: 6, max_nodes: 24,
+    started_at: null, completed_at: null, created_at: "", updated_at: "", error: null,
+  };
+  const node: AgentWorkflowNodeResult = {
+    schema_version: "agent_workflow_node_result.v1", workflow_execution_id: "wf",
+    workflow_name: "model_only", workflow_version: "1.0.0", node_execution_id: "node",
+    node_key: "worker_execution.one", node_type: "model", node_version: "1.0.0",
+    node_sequence: 6, node_attempt: 1, parent_node_execution_id: null, run_id: "run",
+    task_id: "task", agent_run_id: "agent", agent_turn_id: null, agent_role: "planner",
+    status: "running", output_type: "agent_model_execution",
+    output_schema_version: "agent_model_execution.v1", output: null,
+    input: { schema_version: "1", input_hash: "", source_node_execution_ids: [],
+      message_ids: [], artifact_ids: [], handoff_ids: [], context_build_id: null, prompt_release_id: null },
+    transition: { selected_transition: null, next_node_keys: [], skipped_node_keys: [], condition_summary: "" },
+    evidence: { model_attempt_ids: [], tool_call_ids: ["call"], evaluation_ids: [], artifact_ids: [],
+      handoff_ids: [], tool_results: [{ tool_call_id: "call", tool_name: "read_file_content",
+        version: "1.0.0", status: "completed", error_code: null, file_id: "file" }] },
+    usage: { input_tokens: 30, output_tokens: 10, cached_tokens: 0, estimated_cost: "0",
+      model_call_count: 1, tool_call_count: 1 },
+    budget: { cost_limit: null, cost_used_before: "0", cost_used_after: "0", reserved_estimated_cost: "0",
+      remaining_model_calls: 14, remaining_nodes: 18, remaining_wall_time_ms: 20000, remaining_cost: null },
+    timing: { started_at: "", completed_at: null, duration_ms: 1 },
+    public_view: { status_label: "running", summary: "工具结果已保存", progress_current: 6, progress_total: 11 },
+    observability: { trace_id: null, span_id: null }, warnings: [], error: null, created_at: "",
+  };
+  for (const status of ["running", "failed"] as const) {
+    const markup = renderToStaticMarkup(createElement(AgentWorkflowPanel, {
+      workflow, nodes: [{ ...node, status }], events: [], hasEventGap: false,
+    }));
+    assert.match(markup, /附件读取工作流/);
+    assert.match(markup, /读取文件文字/);
+    assert.match(markup, /读取结果已保存/);
+    assert.match(markup, /1 次工具调用/);
+    assert.doesNotMatch(markup, /output_json|provider_continuation/);
+  }
+});
 
 /** Build one durable node event with an optional versioned public activity. */
 function activityEvent(

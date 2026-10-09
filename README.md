@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；阶段4 Web 与阶段5身份认证正在实施，阶段6可观测性随后进行。阶段7工具、阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；阶段4 Web 与阶段5身份认证正在实施，阶段6可观测性随后进行。阶段7工具已开始本地实现，阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
 
 ## 当前能力
 
@@ -23,7 +23,7 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - 可配置的通用 OpenAI Chat Completions 兼容 Provider；
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
 - 文件执行环境：`deployments/file-runtime` 提供 Office/Poppler Linux 镜像，以及本机 Unix Socket 执行器。API 不直接访问 Docker；PDF/DOCX/XLSX/PPTX 在独立无网络容器中提取正文、表格及位置。构建、配置与云端验收要求见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
-- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除；OCR、跨版本解析缓存及 Agent 文件工具循环未实现。限制与部署见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
+- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除。Agent 可显式启用五个附件读取/搜索工具并多轮处理结果，默认关闭；本地验证范围见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。OCR、跨版本解析缓存和通用 Python/Shell 尚未实现。上传限制见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
 - `model_only_v1` Agent 工作流支持 Controller 规划、工作 Agent、Handoff、确定性验证、独立审核和最终汇总，并可返回或查询每个完整节点结果；
 - `POST /api/v1/runs/{run_id}/agent-workflows` 支持同步 JSON 和实时 SSE；Workflow、完整 Result、Node 及持久化事件回放提供独立查询接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；
@@ -76,7 +76,7 @@ make api-run
 
 新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
 
-文件上传另需迁移 `20260916_0022`（新增 `user_files`），并启动 MinIO。执行 `make api-migrate` 后重启 API；本次开发验证只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
+文件上传需启动 MinIO；当前代码要求迁移到 `20261008_0023`（包含 `user_files` 和新增工具调用记录字段）。备份并确认目标库后执行 `make api-migrate`，再重启 API；本次只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
 
 默认 `NEXUSPILOT_AUTHENTICATION_ENABLED=false`，本地打开 Web 即进入工作台，资源归属固定为历史本地用户 `nexuspilot-web`（不存在时由后端创建，不创建密码或登录会话）。该模式仅供个人本机使用，只监听回环地址，不能暴露到公网或不可信局域网；所有访问者会共享本地数据。生产环境拒绝关闭登录。
 

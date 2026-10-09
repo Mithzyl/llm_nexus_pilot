@@ -37,12 +37,12 @@ make web-run
 - 未发送文本按当前登录用户及新会话或具体 Session 保存在当前标签页的 `sessionStorage`；刷新和会话切换后恢复，切换账号不会读取其他账号草稿，User Message 持久化成功后才清除。同一浏览器内同一 Session 使用 Web Locks 阻止两个标签页同时进入计费提交，并通过不含正文的 `BroadcastChannel` 通知其他标签页刷新服务端事实。
 - “再次提问”只恢复所选 Assistant 回复对应的用户问题，不自动发送、不修改历史，也不创建计费调用。会话归档、取消归档和永久删除当前没有实现。
 - 模型响应完成和 Assistant Message 保存是两个独立状态；只有写入成功才显示“响应已保存”，保存失败时保留文本并明确提示。
-- Composer 可以显式切换“快速回复”和 `model_only_v1` Agent Workflow。Agent 模式使用当前 Provider/Model 绑定 Controller、Planner 和按策略启用的 Reviewer，并允许选择串行或最多两个无依赖工作 Agent 并行；DeepSeek 使用 prompted JSON，其他当前 Provider 使用原生 Schema。
+- Composer 可以显式切换“快速回复”和 Agent Workflow。Agent 默认 `model_only_v1`，将“Agent 文件工具”设为“读取附件”后使用 `tool_enabled_v1`，仅开放已上传附件的五个只读工具。当前 Provider/Model 绑定 Controller、Planner 和按策略启用的 Reviewer，支持串行或最多两个无依赖工作 Agent 并行；工具中间轮不强制最终 JSON，最终节点仍须通过结构校验。后端须先迁移至 `20261008_0023`；运行与验证范围统一见[工具主计划](../../docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。
 - Agent Workflow 通过 POST SSE 接收实时持久化事件，按 `event_sequence` 去重和检测缺口；刷新或断线后使用 Run 发现、有限事件回放和 Result 快照恢复，不把 GET `/events` 描述为持续订阅。运行中可以通过独立 `/cancel` 动作持久取消后续节点，关闭 SSE 不会被误当成服务器端取消。
 - 运行检查器展示 Workflow 摘要、模型调用/节点上限、11 类完整节点结果、Handoff、确定性验证、Reviewer、执行组、已消费费用和当前费用预留。阶段3后端负责保存最终 Assistant Message，前端不会重复写入。
 - 桌面端默认打开运行详情，窄屏默认收起但保留顶部“运行详情”入口。
 - 桌面端输入区保持为对话主区约 80% 宽度，Provider/Model 选择位于输入框右下角；三栏共享同一动态视口高度，避免侧栏、对话区和运行详情底部错位。
-- 恢复、等待用户输入、工具、Memory、Knowledge 和大型节点 Artifact 降级仍未开放；界面不生成相应按钮或虚假执行状态。
+- 附件工具结果提交后显示进度，运行详情与刷新后快照显示真实工具名称和状态；不显示私有工具正文或 Provider 续接内容。独立执行恢复、等待用户输入、动态工具、Python/Shell、Memory、Knowledge 和大型节点 Artifact 降级仍未开放。
 
 ## 验证
 

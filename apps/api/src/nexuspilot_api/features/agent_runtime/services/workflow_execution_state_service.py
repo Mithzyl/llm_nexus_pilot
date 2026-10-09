@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from nexuspilot_api.core.errors import (
     InvalidRequestError,
@@ -55,6 +56,7 @@ from nexuspilot_api.models import (
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
     LlmModelAttempt,
+    LlmModelToolCall,
     LlmRun,
     LlmTask,
     LlmTaskDependency,
@@ -726,24 +728,93 @@ class WorkflowExecutionStateService:
         workflow: LlmAgentWorkflowExecution,
         node: LlmAgentWorkflowNodeExecution,
     ) -> tuple[NodeEvidenceRead, NodeUsageRead]:
-        """Recover one persisted model Attempt when post-call node handling fails."""
+        """Recover every model round and tool record, including failed intermediate calls."""
 
         request_key = f"agent:{workflow.workflow_execution_id}:{node.node_sequence}"
-        attempt = await self.db_session.scalar(
-            select(LlmModelAttempt).where(LlmModelAttempt.request_key == request_key)
+        attempts = list(
+            await self.db_session.scalars(
+                select(LlmModelAttempt)
+                .where(
+                    or_(
+                        LlmModelAttempt.request_key == request_key,
+                        LlmModelAttempt.request_key.like(f"{request_key}:round:%"),
+                    )
+                )
+                .order_by(LlmModelAttempt.started_at)
+            )
         )
-        if attempt is None:
-            return NodeEvidenceRead(), NodeUsageRead()
+        ids = [attempt.attempt_id for attempt in attempts]
+        tool_records = list(
+            await self.db_session.scalars(
+                select(LlmModelToolCall)
+                .where(LlmModelToolCall.attempt_id.in_(ids))
+                .order_by(LlmModelToolCall.started_at, LlmModelToolCall.tool_call_id)
+            )
+        )
+        tool_ids = [call.tool_call_id for call in tool_records]
         return (
-            NodeEvidenceRead(model_attempt_ids=[attempt.attempt_id]),
-            NodeUsageRead(
-                input_tokens=attempt.input_tokens or 0,
-                output_tokens=attempt.output_tokens or 0,
-                cached_tokens=attempt.cached_tokens or 0,
-                estimated_cost=attempt.estimated_cost or Decimal("0"),
-                model_call_count=1,
-                tool_call_count=0,
+            NodeEvidenceRead(
+                model_attempt_ids=ids,
+                tool_call_ids=tool_ids,
+                tool_results=[
+                    {
+                        "tool_call_id": call.tool_call_id,
+                        "tool_name": call.tool_name,
+                        "version": call.tool_version,
+                        "status": call.status,
+                        "error_code": call.error_code,
+                        "file_id": call.input_json.get("file_id"),
+                    }
+                    for call in tool_records
+                ],
             ),
+            NodeUsageRead(
+                input_tokens=sum(a.input_tokens or 0 for a in attempts),
+                output_tokens=sum(a.output_tokens or 0 for a in attempts),
+                cached_tokens=sum(a.cached_tokens or 0 for a in attempts),
+                estimated_cost=sum(
+                    (a.estimated_cost or Decimal("0") for a in attempts), Decimal("0")
+                ),
+                model_call_count=len(attempts),
+                tool_call_count=len(tool_ids),
+            ),
+        )
+
+    async def record_tool_progress(self, workflow, node) -> None:
+        """Commit read-tool evidence and a replayable progress event while the Worker continues."""
+        # The same workflow row serializes event numbers from concurrent Workers in MySQL.
+        await self.db_session.execute(
+            select(LlmAgentWorkflowExecution)
+            .where(
+                LlmAgentWorkflowExecution.workflow_execution_id == workflow.workflow_execution_id
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        await self.ensure_workflow_running(workflow)
+        evidence, usage = await self.node_attempt_evidence_and_usage(workflow, node)
+        node.evidence_json = evidence.model_dump(mode="json")
+        node.usage_json = usage.model_dump(mode="json")
+        count = len(evidence.tool_call_ids)
+        summary = f"已记录 {count} 次附件工具调用，Agent 继续处理"
+        activity = {
+            "schema_version": "node_activity_summary.v1",
+            "phase": "running",
+            "text": summary,
+            "source": "typed_output",
+        }
+        node.public_view_json = {
+            **(node.public_view_json or {}),
+            "summary": summary,
+            "activity": activity,
+        }
+        self.bump_snapshot(workflow)
+        await self.append_event(
+            workflow,
+            event_type="agent.node.progress",
+            node=node,
+            public_summary=summary,
+            public_payload={"node_key": node.node_key, "activity": activity},
         )
 
     async def assert_workflow_usage_matches_model_attempts(
@@ -751,7 +822,7 @@ class WorkflowExecutionStateService:
         workflow: LlmAgentWorkflowExecution,
         nodes: list[LlmAgentWorkflowNodeExecution],
     ) -> None:
-        """Reject final aggregation when committed node usage diverges from model Attempts."""
+        """Reject final aggregation when node usage diverges from persisted models or tools."""
 
         attempts = list(
             (
@@ -785,7 +856,12 @@ class WorkflowExecutionStateService:
                 Decimal("0"),
             ),
             model_call_count=len(attempts),
-            tool_call_count=0,
+            tool_call_count=await self.db_session.scalar(
+                select(func.count())
+                .select_from(LlmModelToolCall)
+                .where(LlmModelToolCall.attempt_id.in_([a.attempt_id for a in attempts]))
+            )
+            or 0,
         )
         if node_totals != attempt_totals:
             raise InvalidRequestError(
@@ -797,11 +873,19 @@ class WorkflowExecutionStateService:
         workflow: LlmAgentWorkflowExecution,
         node: LlmAgentWorkflowNodeExecution,
     ) -> bool:
-        """Return whether cancellation left this node's Provider Attempt indeterminate."""
+        """Return whether cancellation left any Provider round in this node indeterminate."""
 
         request_key = f"agent:{workflow.workflow_execution_id}:{node.node_sequence}"
         attempt_status = await self.db_session.scalar(
-            select(LlmModelAttempt.status).where(LlmModelAttempt.request_key == request_key)
+            select(LlmModelAttempt.status)
+            .where(
+                or_(
+                    LlmModelAttempt.request_key == request_key,
+                    LlmModelAttempt.request_key.like(f"{request_key}:round:%"),
+                ),
+                LlmModelAttempt.status == AttemptStatus.OUTCOME_UNKNOWN,
+            )
+            .limit(1)
         )
         return attempt_status == AttemptStatus.OUTCOME_UNKNOWN
 
@@ -956,15 +1040,31 @@ class WorkflowExecutionStateService:
         node: LlmAgentWorkflowNodeExecution | None = None,
         commit_event: bool = True,
     ) -> LlmAgentWorkflowEvent:
-        """Stage an ordered event and optionally commit before notifying live observers."""
+        """Allocate event sequence in SQL, then commit before notifying live observers.
 
-        workflow.event_count += 1
+        Worker progress may commit through another session, so an in-memory counter
+        can be stale even when the coordinator is about to record a terminal error.
+        """
+        await self.db_session.execute(
+            update(LlmAgentWorkflowExecution)
+            .where(
+                LlmAgentWorkflowExecution.workflow_execution_id == workflow.workflow_execution_id
+            )
+            .values(event_count=LlmAgentWorkflowExecution.event_count + 1)
+            .execution_options(synchronize_session=False)
+        )
+        event_sequence = await self.db_session.scalar(
+            select(LlmAgentWorkflowExecution.event_count).where(
+                LlmAgentWorkflowExecution.workflow_execution_id == workflow.workflow_execution_id
+            )
+        )
+        set_committed_value(workflow, "event_count", event_sequence)
         event = LlmAgentWorkflowEvent(
             event_id=new_id(),
             workflow_execution_id=workflow.workflow_execution_id,
             run_id=workflow.run_id,
             node_execution_id=node.node_execution_id if node else None,
-            event_sequence=workflow.event_count,
+            event_sequence=event_sequence,
             event_type=event_type,
             workflow_status=workflow.status.value,
             node_status=node.status.value if node else None,

@@ -10,6 +10,8 @@ from nexuspilot_models.contracts import (
     MessageRole,
     ModelRequest,
     ModelResponse,
+    ProviderContinuationKind,
+    ProviderContinuationState,
     ProviderName,
     StreamEvent,
     StreamEventType,
@@ -29,7 +31,9 @@ class GeminiGenerateContentProvider:
 
     name = ProviderName.GEMINI
 
-    def __init__(self, transport: HttpTransport, *, base_url: str, api_key: str) -> None:
+    def __init__(
+        self, transport: HttpTransport, *, base_url: str, api_key: str
+    ) -> None:
         """Configure Gemini REST access without exposing its URL or credential to callers."""
 
         self.transport = transport
@@ -129,7 +133,9 @@ class GeminiGenerateContentProvider:
         response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text) if request.output_schema else None,
+            structured_output=parse_structured_output(text)
+            if request.output_schema
+            else None,
             finish_reason=self._finish_reason(finish_reason),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -153,7 +159,7 @@ class GeminiGenerateContentProvider:
         )
 
     def _build_payload(self, request: ModelRequest) -> dict[str, Any]:
-        """Translate portable text/native attachments, tools and system instructions to Gemini JSON."""
+        """Translate complete tool exchanges without dropping provider thought signatures."""
 
         contents: list[dict[str, Any]] = []
         for message in request.messages:
@@ -179,10 +185,39 @@ class GeminiGenerateContentProvider:
                 )
             else:
                 role = "model" if message.role is MessageRole.ASSISTANT else "user"
-                contents.append({"role": role, "parts": native_content_blocks(message, self.name)})
-        payload: dict[str, Any] = {"contents": contents}
+                if message.tool_calls:
+                    state = message._provider_continuation_state
+                    parts = (
+                        state.signed_content_blocks
+                        if state and state.kind is ProviderContinuationKind.GEMINI_PARTS
+                        else ([{"text": message.content}] if message.content else [])
+                        + [
+                            {
+                                "functionCall": {
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "args": call.arguments,
+                                }
+                            }
+                            for call in message.tool_calls
+                        ]
+                    )
+                    contents.append({"role": role, "parts": parts})
+                    continue
+                contents.append(
+                    {"role": role, "parts": native_content_blocks(message, self.name)}
+                )
+        merged = []
+        for item in contents:
+            if merged and item["role"] == merged[-1]["role"] == "user":
+                merged[-1]["parts"].extend(item["parts"])
+            else:
+                merged.append(item)
+        payload: dict[str, Any] = {"contents": merged}
         if request.system_instruction:
-            payload["systemInstruction"] = {"parts": [{"text": request.system_instruction}]}
+            payload["systemInstruction"] = {
+                "parts": [{"text": request.system_instruction}]
+            }
         generation_config: dict[str, Any] = {}
         if request.temperature is not None:
             generation_config["temperature"] = request.temperature
@@ -218,7 +253,7 @@ class GeminiGenerateContentProvider:
         latency_ms: int,
         attempts: list,
     ) -> ModelResponse:
-        """Normalize the first Gemini candidate and its parts."""
+        """Normalize visible parts and retain the unchanged signed tool turn privately."""
 
         candidates = payload.get("candidates") or []
         if not candidates:
@@ -231,7 +266,7 @@ class GeminiGenerateContentProvider:
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for part in (candidate.get("content") or {}).get("parts") or []:
-            if isinstance(part.get("text"), str):
+            if isinstance(part.get("text"), str) and not part.get("thought"):
                 text_parts.append(part["text"])
             elif isinstance(part.get("functionCall"), dict):
                 call = part["functionCall"]
@@ -239,7 +274,9 @@ class GeminiGenerateContentProvider:
                     ToolCall(
                         id=call.get("id") or f"tool-{len(tool_calls)}",
                         name=call.get("name", ""),
-                        arguments=parse_json_arguments(call.get("args", {}), context="tool call"),
+                        arguments=parse_json_arguments(
+                            call.get("args", {}), context="tool call"
+                        ),
                     )
                 )
         text = "".join(text_parts) or None
@@ -247,7 +284,17 @@ class GeminiGenerateContentProvider:
         return ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text) if request.output_schema else None,
+            provider_continuation_state=(
+                ProviderContinuationState(
+                    kind=ProviderContinuationKind.GEMINI_PARTS,
+                    signed_content_blocks=candidate["content"]["parts"],
+                )
+                if tool_calls
+                else None
+            ),
+            structured_output=parse_structured_output(text)
+            if request.output_schema
+            else None,
             finish_reason=self._finish_reason(candidate.get("finishReason")),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -303,7 +350,9 @@ class GeminiGenerateContentProvider:
         """Reject wrong routing and portable capabilities not implemented by this codec."""
 
         if request.provider is not self.name:
-            raise ModelProviderError("invalid_request", "Request was routed to the wrong provider.")
+            raise ModelProviderError(
+                "invalid_request", "Request was routed to the wrong provider."
+            )
         if request.json_object_output:
             raise ModelProviderError(
                 "unsupported_capability",

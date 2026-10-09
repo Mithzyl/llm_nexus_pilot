@@ -18,6 +18,7 @@ const WORKFLOW_EVENT_TYPES = new Set([
   "agent.workflow.outcome_unknown",
   "agent.node.started",
   "agent.node.completed",
+  "agent.node.progress",
   "agent.node.failed",
   "agent.node.cancelled",
   "agent.node.outcome_unknown",

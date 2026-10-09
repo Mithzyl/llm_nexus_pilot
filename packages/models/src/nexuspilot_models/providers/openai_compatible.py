@@ -275,7 +275,7 @@ class OpenAICompatibleChatProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Translate the public contract to OpenAI Chat Completions compatible JSON."""
+        """Encode ordered tool exchanges and attach each turn's private reasoning exactly once."""
 
         messages: list[dict[str, Any]] = []
         if request.system_instruction:
@@ -285,6 +285,7 @@ class OpenAICompatibleChatProvider:
             continuation_state = request.provider_continuation_state
             if (
                 message.role is MessageRole.TOOL
+                and not any(item.tool_calls for item in request.messages)
                 and not continuation_inserted
                 and continuation_state
                 and continuation_state.kind
@@ -317,6 +318,27 @@ class OpenAICompatibleChatProvider:
             }
             if message.role is MessageRole.TOOL:
                 item["tool_call_id"] = message.tool_call_id
+            if message.tool_calls:
+                item["content"] = message.content or None
+                item["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.name,
+                            "arguments": json.dumps(call.arguments),
+                        },
+                    }
+                    for call in message.tool_calls
+                ]
+                state = message._provider_continuation_state
+                if (
+                    state
+                    and state.kind is ProviderContinuationKind.DEEPSEEK_RAW_REASONING
+                ):
+                    item["reasoning_content"] = (
+                        state.raw_reasoning_for_tool_continuation
+                    )
             messages.append(item)
         payload: dict[str, Any] = {
             "model": request.model,
@@ -414,7 +436,9 @@ class OpenAICompatibleChatProvider:
                     {
                         "id": tool_call.id,
                         "name": tool_call.name,
-                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
+                        "arguments": json.dumps(
+                            tool_call.arguments, ensure_ascii=False
+                        ),
                     }
                     for tool_call in tool_calls
                 ],
@@ -454,7 +478,10 @@ class OpenAICompatibleChatProvider:
         """Reject wrong routing, unsupported features, and unsafe tool continuation."""
 
         if any(message.attachments for message in request.messages):
-            raise ModelProviderError("unsupported_capability", "This codec does not support native file input.")
+            raise ModelProviderError(
+                "unsupported_capability",
+                "This codec does not support native file input.",
+            )
         if request.provider is not self.name:
             raise ModelProviderError(
                 "invalid_request",
@@ -508,7 +535,11 @@ class OpenAICompatibleChatProvider:
         if isinstance(detailed_cached_tokens, int):
             return detailed_cached_tokens
         compatible_cached_tokens = usage.get("prompt_cache_hit_tokens")
-        return compatible_cached_tokens if isinstance(compatible_cached_tokens, int) else None
+        return (
+            compatible_cached_tokens
+            if isinstance(compatible_cached_tokens, int)
+            else None
+        )
 
     def _cache_miss_tokens(self, usage: dict[str, Any]) -> int | None:
         """Read an explicit miss count or derive it from the normalized prompt total."""

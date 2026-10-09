@@ -282,6 +282,7 @@ export default function Home() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
   const [maxParallelAgents, setMaxParallelAgents] = useState<AgentParallelism>(1);
+  const [fileToolsEnabled, setFileToolsEnabled] = useState(false);
   const [reasoningDisplayPolicy, setReasoningDisplayPolicy] =
     useState<ReasoningDisplayPolicy>("hidden");
   const [reasoningEffort, setReasoningEffort] =
@@ -1000,7 +1001,7 @@ export default function Home() {
   }
 
   /**
-   * Execute the current Run through the model-only workflow and return its
+   * Execute the current Run with the explicitly selected read-tool permissions and return its
    * terminal snapshot without duplicating the backend-created final Message.
    */
   async function executeAgentWorkflow(
@@ -1021,7 +1022,7 @@ export default function Home() {
       {
         workflow_name: "model_only",
         workflow_version: "1.0.0",
-        execution_profile: "model_only_v1",
+        execution_profile: fileToolsEnabled ? "tool_enabled_v1" : "model_only_v1",
         idempotency_key: crypto.randomUUID(),
         role_bindings: {
           controller: binding,
@@ -2106,6 +2107,19 @@ export default function Home() {
                       onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
                     />
                   </div>
+                  <div className="agent-config-item agent-file-tools">
+                    <span>工具</span>
+                    <CompactSelect
+                      label="Agent 文件工具"
+                      value={fileToolsEnabled ? "read_files" : "disabled"}
+                      options={[
+                        { value: "disabled", label: "不使用" },
+                        { value: "read_files", label: "读取附件" },
+                      ]}
+                      disabled={isSending}
+                      onChange={(value) => setFileToolsEnabled(value === "read_files")}
+                    />
+                  </div>
                   <div className="agent-config-item agent-model-role">
                     <span>模型角色</span>
                     <strong>所有角色使用当前模型</strong>
@@ -2277,7 +2291,7 @@ export default function Home() {
           </ol>
         </section>
 
-        <div className="future-note"><span>预留</span><p><strong>Agent Workflow</strong>切换到 Agent 模式后显示真实节点；工具执行仍等待后续合同。</p></div>
+        <div className="future-note"><p><strong>Agent Workflow</strong>发送后可查看执行过程；文件工具可在 Agent 设置中启用。</p></div>
           </>
         )}
         {!isInspectingHistoricalRun && errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}

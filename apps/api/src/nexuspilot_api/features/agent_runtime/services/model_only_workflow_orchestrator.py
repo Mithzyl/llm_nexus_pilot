@@ -69,6 +69,7 @@ from nexuspilot_api.models import (
     LlmAgentWorkflowNodeExecution,
     LlmMessage,
     LlmModelAttempt,
+    LlmModelToolCall,
     LlmRun,
     LlmTask,
     LlmTaskDependency,
@@ -210,7 +211,7 @@ class ModelOnlyWorkflowOrchestrator:
         workflow: LlmAgentWorkflowExecution,
         payload: AgentWorkflowCreate,
     ) -> None:
-        """Run every model_only_v1 node in order and persist terminal failure evidence."""
+        """Run the shared graph with explicit model-only or read-tool worker permissions."""
 
         current_node: LlmAgentWorkflowNodeExecution | None = None
         try:
@@ -221,7 +222,13 @@ class ModelOnlyWorkflowOrchestrator:
                 complexity="complex",
                 requires_decomposition=True,
                 constraints=[
-                    "model_only_v1 cannot execute tools, files, shell, Git, or network actions"
+                    (
+                        "Workers may use only conversation file read tools; "
+                        "no Shell, Git, network or writes"
+                        if workflow.execution_profile == "tool_enabled_v1"
+                        else "model_only_v1 cannot execute tools, files, shell, Git, "
+                        "or network actions"
+                    )
                 ],
                 acceptance_criteria=["Return an evidence-bounded final answer"],
                 explicit_assumptions=[],
@@ -302,7 +309,20 @@ class ModelOnlyWorkflowOrchestrator:
                     "allowed_roles": sorted(
                         {"planner", "researcher"}.intersection(payload.role_bindings)
                     ),
-                    "allowed_capabilities": ["model_generation", "text_analysis"],
+                    "allowed_capabilities": ["model_generation", "text_analysis"]
+                    + (["read", "tool"] if workflow.execution_profile == "tool_enabled_v1" else []),
+                    **(
+                        {
+                            "tool_guidance": (
+                                "Workers may list/read/search attached files. Allocate enough "
+                                "max_model_calls for tool requests and a final JSON answer, "
+                                "within the workflow budget."
+                            ),
+                            "remaining_model_calls": max(0, workflow.max_model_calls - 3),
+                        }
+                        if workflow.execution_profile == "tool_enabled_v1"
+                        else {}
+                    ),
                     "maximum_tasks": 8,
                     "review_policy": payload.review_policy,
                 },
@@ -641,7 +661,7 @@ class ModelOnlyWorkflowOrchestrator:
         dependency_keys_by_task_key: dict[str, list[str]],
         topological_task_order: list[str],
     ) -> dict[str, WorkerExecutionRecord]:
-        """Run each dependency-ready Worker group with at most two independent sessions."""
+        """Run dependency-ready Workers with their validated per-task model-call budgets."""
 
         completion_criteria_by_task_key = {
             planned_task.task_key: planned_task.completion_criteria for planned_task in plan.tasks
@@ -669,6 +689,9 @@ class ModelOnlyWorkflowOrchestrator:
                         binding=payload.role_bindings[agent_run_by_task_key[task_key].agent_role],
                         reasoning=payload.reasoning,
                         completion_criteria=completion_criteria_by_task_key[task_key],
+                        max_model_calls=next(
+                            t.max_model_calls for t in plan.tasks if t.task_key == task_key
+                        ),
                         dependency_records=dependency_records,
                         dispatch_node_execution_id=dispatch_node_execution_id,
                     )
@@ -705,10 +728,11 @@ class ModelOnlyWorkflowOrchestrator:
         binding: AgentModelBinding,
         reasoning: ReasoningConfiguration | None,
         completion_criteria: list[str],
+        max_model_calls: int,
         dependency_records: list[WorkerExecutionRecord],
         dispatch_node_execution_id: str,
     ) -> PreparedWorkerExecution:
-        """Commit one Worker's Task, Agent Run, node, and Turn before Provider entry."""
+        """Commit a Worker and carry its validated call allowance into model execution."""
 
         await self._start_task_and_agent(task, agent_run)
         dependency_results = [self._worker_record_input(record) for record in dependency_records]
@@ -748,6 +772,11 @@ class ModelOnlyWorkflowOrchestrator:
                 "task": {"title": task.title, "objective": task.objective},
                 "run_objective": run.user_request,
                 "dependency_results": dependency_results,
+                **(
+                    {"max_model_calls": max_model_calls}
+                    if workflow.execution_profile == "tool_enabled_v1"
+                    else {}
+                ),
             },
             timeout_seconds=task.timeout_seconds,
         )
@@ -807,6 +836,7 @@ class ModelOnlyWorkflowOrchestrator:
                 db_session=worker_session,
                 workflow_definitions=self.workflow_definitions,
             )
+            state_service.set_event_sink(self.workflow_state.event_sink)
             model_service = ModelInvocationService(
                 registry=self.registry,
                 prices=self.prices,
@@ -837,7 +867,7 @@ class ModelOnlyWorkflowOrchestrator:
         workflow: LlmAgentWorkflowExecution,
         outcome: WorkerModelCallOutcome,
     ) -> WorkerExecutionRecord:
-        """Persist a successful Worker Turn, node, Handoff, Task, and Agent Run in order."""
+        """Persist a Worker with all intermediate model attempts and safe tool-result summaries."""
 
         prepared = outcome.prepared
         assert outcome.worker_output is not None
@@ -863,6 +893,7 @@ class ModelOnlyWorkflowOrchestrator:
             raise RuntimeError("Successful Worker execution facts are unavailable")
         await self._complete_agent_turn(turn, agent_run, outcome.response.id)
         node.agent_turn_id = turn.agent_turn_id
+        evidence, usage = await self.workflow_state.node_attempt_evidence_and_usage(workflow, node)
         model_node_output = AgentModelExecutionOutput(
             agent_turn_id=turn.agent_turn_id,
             model_attempt_id=outcome.response.id,
@@ -871,6 +902,7 @@ class ModelOnlyWorkflowOrchestrator:
             text_preview=(outcome.response.output_text or "")[:1_000] or None,
             structured_output=outcome.worker_output,
             requested_tool_calls=[],
+            tool_results=evidence.tool_results,
             finish_reason=outcome.response.finish_reason,
             provider_request_id=outcome.response.provider_request_id,
             input_tokens=outcome.response.usage.input_tokens,
@@ -888,10 +920,10 @@ class ModelOnlyWorkflowOrchestrator:
             transition=NodeTransitionRead(
                 selected_transition="submit_handoff",
                 next_node_keys=[f"handoff_submission.{prepared.task_key}"],
-                condition_summary="Worker returned schema-valid model-only output",
+                condition_summary="Worker returned schema-valid final output",
             ),
-            evidence=self._model_evidence(outcome.response),
-            usage=self._model_usage(outcome.response),
+            evidence=evidence,
+            usage=usage,
             status_label="Agent task complete",
             summary=f"{agent_run.agent_role} completed the assigned analysis",
             activity_context={"task_title": task.title},
@@ -1232,11 +1264,23 @@ class ModelOnlyWorkflowOrchestrator:
         *,
         handoff_node_execution_id: str,
     ) -> AgentHandoffOutput:
-        """Persist one complete model-only Handoff using the collaboration contract."""
+        """Persist model findings plus file-read references derived from successful tool records."""
 
         handoff_json = _build_complete_worker_handoff(
             task_objective=task.objective,
             worker_output=worker_output,
+        )
+        tool_records = list(
+            await self.db_session.scalars(
+                select(LlmModelToolCall)
+                .join(LlmModelAttempt, LlmModelAttempt.attempt_id == LlmModelToolCall.attempt_id)
+                .where(
+                    LlmModelAttempt.task_id == task.task_id, LlmModelToolCall.status == "completed"
+                )
+            )
+        )
+        handoff_json["files_read"] = sorted(
+            {call.input_json["file_id"] for call in tool_records if call.input_json.get("file_id")}
         )
         result = await submit_handoff(
             self.db_session,
@@ -1549,7 +1593,7 @@ class ModelOnlyWorkflowOrchestrator:
         handoff_ids: list[str],
         evaluation_ids: list[str],
     ) -> None:
-        """Persist the aggregation node, then atomically mark workflow and Run completed."""
+        """Aggregate every model/tool record, then atomically mark workflow and Run completed."""
 
         existing_nodes = list(
             (
@@ -1592,7 +1636,13 @@ class ModelOnlyWorkflowOrchestrator:
             task_ids=task_ids,
             agent_run_ids=agent_run_ids,
             model_attempt_ids=list(dict.fromkeys(model_attempt_ids)),
-            tool_call_ids=[],
+            tool_call_ids=list(
+                dict.fromkeys(
+                    call_id
+                    for item in existing_nodes
+                    for call_id in (item.evidence_json or {}).get("tool_call_ids", [])
+                )
+            ),
             evaluation_ids=evaluation_ids,
             artifact_ids=[],
             handoff_ids=handoff_ids,

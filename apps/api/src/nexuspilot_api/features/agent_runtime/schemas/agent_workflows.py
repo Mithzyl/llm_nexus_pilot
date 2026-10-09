@@ -35,11 +35,11 @@ class AgentModelBinding(StrictContract):
 
 
 class AgentWorkflowCreate(StrictContract):
-    """Validate one synchronous model-only workflow creation request."""
+    """Validate synchronous workflows with explicit model-only or file-read permissions."""
 
     workflow_name: Literal["model_only"] = "model_only"
     workflow_version: Literal["1.0.0"] = "1.0.0"
-    execution_profile: Literal["model_only_v1"] = "model_only_v1"
+    execution_profile: Literal["model_only_v1", "tool_enabled_v1"] = "model_only_v1"
     idempotency_key: str = Field(min_length=8, max_length=128)
     role_bindings: dict[
         Literal["controller", "planner", "researcher", "reviewer", "verifier"],
@@ -117,6 +117,7 @@ class NodeEvidenceRead(StrictContract):
 
     model_attempt_ids: list[str] = Field(default_factory=list)
     tool_call_ids: list[str] = Field(default_factory=list)
+    tool_results: list[dict] = Field(default_factory=list)
     evaluation_ids: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     handoff_ids: list[str] = Field(default_factory=list)
@@ -231,7 +232,7 @@ class PlannedAgentTask(StrictContract):
     completion_criteria: list[str] = Field(min_length=1, max_length=20)
     priority: int = Field(default=0, ge=-100, le=100)
     timeout_seconds: int = Field(default=300, ge=1, le=600)
-    max_model_calls: Literal[1] = 1
+    max_model_calls: int = Field(default=1, ge=1, le=16)
 
 
 class PlannedTaskDependency(StrictContract):
@@ -362,6 +363,7 @@ class AgentModelExecutionOutput(StrictContract):
     text_artifact_id: str | None = None
     structured_output: AgentWorkerModelOutput
     requested_tool_calls: list[dict] = Field(default_factory=list, max_length=0)
+    tool_results: list[dict] = Field(default_factory=list)
     finish_reason: str
     provider_request_id: str | None = None
     input_tokens: int | None = Field(default=None, ge=0)
