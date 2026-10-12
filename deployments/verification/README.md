@@ -72,7 +72,20 @@ apps/api/.venv/bin/python deployments/verification/check_storage_image.py \
 
 这不是目标服务器的完整应用验收，也不测试原有数据升级。已有开发／生产存储不能挂入此脚本。
 
-## 已授权服务器的 HTTPS 验收
+## 本地真实 DeepSeek 文件工具检查
+
+`check_live_file_tools.py` 是需要明确费用授权的真实模型检查，不是默认测试，也不部署服务器。使用独立 Compose 项目 `nexus-deepseek-tools-20261012`，叠加 `deployments/verification/docker-compose.deepseek.yml`，只启动 `mysql minio`；环境变量分别设置 `NEXUSPILOT_MYSQL_HOST_PORT=127.0.0.1:13306`、`NEXUSPILOT_MINIO_API_HOST_PORT=127.0.0.1:19000`、`NEXUSPILOT_MINIO_CONSOLE_HOST_PORT=127.0.0.1:19001`。现有开发卷不挂入该项目。
+
+1. 在 `apps/api` 目录用 `NEXUSPILOT_DATABASE_URL=mysql+aiomysql://nexuspilot:nexuspilot@127.0.0.1:13306/nexuspilot .venv/bin/alembic upgrade head` 迁移新库。只允许用于这个新建本地项目，示例凭据不能用于上线。
+2. 运行检查脚本的 `--seed`：同时设置上述数据库 URL、`NEXUSPILOT_MINIO_ENDPOINT=127.0.0.1:19000`。脚本拒绝含用户或模型的库；保留迁移预置的 DeepSeek 地址，仅创建本地已配置模型的验证记录。Context 数值是本次输入预算，不作为模型真实最大窗口的声明。
+3. 按前文生成合成样本。启动已构建的专用文件执行器，Socket 例如 `/tmp/nexus-ds-live-20261012/executor.sock`。
+4. 用当前 API 虚拟环境启动 `uvicorn nexuspilot_api.main:app --app-dir apps/api/src --host 127.0.0.1 --port 18000`，设置独立数据库 URL、MinIO 地址、Compose 中的测试存储凭据、独立 bucket、`NEXUSPILOT_FILE_RUNTIME_SOCKET`、`NEXUSPILOT_MODEL_MAX_RETRIES=0`。DeepSeek Key 继续从 `apps/api/.env` 读取，不复制进脚本/日志。保持 development、登录关闭，仅本机访问。
+5. 使用同样的数据库 URL 和 MinIO 地址分别执行 `apps/api/.venv/bin/python deployments/verification/check_live_file_tools.py --mode quick --fixtures /absolute/synthetic-fixtures --output /absolute/new-quick-report.json` 和 `--mode agent`（使用新的输出路径）。每种模式计划首轮 DOCX、续聊 PDF；真实调用失败时停止该模式，退出非零，保留已经完成的 SQL/MinIO 记录和无秘密报告。请求明确要求使用文件读取工具核对原文，但不传 tools 或 execution_profile；验收检查实际工具调用、标记、Context 和最终答案。不是单凭回答包含标记判为通过。
+6. 验收后停止自己启动的 API、执行器及该 Compose 项目；使用 `stop` 保留测试卷供调查，不执行针对现有开发项目的删除。需要重做种子时应创建另一个新项目，不清空已有库。报告不包含 Key、Cookie 或私有推理正文。
+
+2026-10-12 首次结果为失败：两模式自动文件工具均开始执行，但共享适配器拒绝消息级 DeepSeek 私有续接，最终答案和第二轮测试未完成。同日修复并复测后，快速回复首轮 DOCX、续聊新增 PDF 均通过；Agent 首轮 DOCX 通过，续聊 PDF 在 Worker 请求时收到 DeepSeek `Insufficient Balance`，当次停止付费检查。用户恢复余额后，使用新会话重跑 Agent 两轮，首轮 DOCX、续聊新增 PDF 均有实际读取记录和已保存最终回答，程序退出码为 0。`quick-2.json`、`agent-2.json` 及补验 `agent-3.json` 保留于 `/tmp/nexus-deepseek-tools-results-20261012/`，原失败记录未覆盖。Agent 审核文本仍未认可已成功执行的工具证据，未在本次修复；本次仅确认读取和生成保存行为，不是浏览器或完整审核质量验收。定位、测试范围和 Run ID 见[工具主计划](../../docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。
+
+## 已授权服务器的 HTTPS 验收（独立流程）
 
 `check_release.py` 需要 API 虚拟环境中的 `httpx`、已迁移且启用认证的 HTTPS 实例、已登记模型和两个独立预置测试账号。它创建合成会话与文本文件，执行两次最多 64 输出 token、关闭思考的真实模型调用；只有获得部署／测试和 Provider 费用授权后才能执行。不读取正式用户会话。
 

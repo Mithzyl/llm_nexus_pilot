@@ -475,7 +475,7 @@ class OpenAICompatibleChatProvider:
         return headers
 
     def _validate_request(self, request: ModelRequest) -> None:
-        """Reject wrong routing, unsupported features, and unsafe tool continuation."""
+        """Validate routing/features and each tool turn's state, or the legacy request state."""
 
         if any(message.attachments for message in request.messages):
             raise ModelProviderError(
@@ -505,11 +505,18 @@ class OpenAICompatibleChatProvider:
         if self.name is ProviderName.DEEPSEEK and any(
             message.role is MessageRole.TOOL for message in request.messages
         ):
-            continuation_state = request.provider_continuation_state
-            if (
-                continuation_state is None
-                or continuation_state.kind
-                is not ProviderContinuationKind.DEEPSEEK_RAW_REASONING
+            # Match _build_payload: explicit assistant tool turns carry their own
+            # state. The legacy request-level state is used only when the payload
+            # builder must reconstruct an absent assistant tool-call message.
+            continuation_states = [
+                message._provider_continuation_state
+                for message in request.messages
+                if message.tool_calls
+            ] or [request.provider_continuation_state]
+            if any(
+                state is None
+                or state.kind is not ProviderContinuationKind.DEEPSEEK_RAW_REASONING
+                for state in continuation_states
             ):
                 raise ModelProviderError(
                     "invalid_request",

@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 from nexuspilot_models.contracts import (
     Message,
@@ -10,12 +11,15 @@ from nexuspilot_models.contracts import (
     ProviderContinuationKind,
     ProviderContinuationState,
     ProviderName,
+    StreamEventType,
     ToolCall,
 )
+from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
+from nexuspilot_models.transport import HttpTransport
 
 
 def tool_history(provider):
@@ -87,6 +91,115 @@ def test_deepseek_replays_each_turn_reasoning_without_duplicate_assistant_calls(
     assert wire[1]["reasoning_content"] == "private-round-0"
     assert wire[3]["reasoning_content"] == "private-round-1"
     assert "private-round" not in request.model_dump_json()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("rounds", [1, 2])
+async def test_deepseek_message_states_pass_public_request_validation(stream, rounds):
+    """Send one/two tool rounds through generate/stream, preserving each private state on wire."""
+    request = tool_history(ProviderName.DEEPSEEK)
+    request.messages = request.messages[: 1 + 2 * rounds]
+    for index, message in enumerate(request.messages[1::2]):
+        message._provider_continuation_state = ProviderContinuationState(
+            kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+            raw_reasoning_for_tool_continuation=f"private-round-{index}",
+        )
+    sent = []
+
+    async def handler(http_request):
+        """Inspect the actual serialized request and return a final JSON or SSE answer."""
+        payload = json.loads(http_request.content)
+        sent.append(payload)
+        messages = payload["messages"]
+        assert len(messages) == 1 + 2 * rounds
+        for index in range(rounds):
+            assistant, tool = messages[1 + 2 * index : 3 + 2 * index]
+            assert assistant["reasoning_content"] == f"private-round-{index}"
+            assert (
+                assistant["tool_calls"][0]["id"]
+                == tool["tool_call_id"]
+                == f"call-{index}"
+            )
+        if stream:
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                text=(
+                    'data: {"id":"final","choices":[{"delta":{"content":"Read complete"},'
+                    '"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "id": "final",
+                "choices": [
+                    {"message": {"content": "Read complete"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = DeepSeekChatProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://example.invalid",
+            api_key="test",
+        )
+        if stream:
+            events = [event async for event in provider.stream(request)]
+            assert events[-1].type is StreamEventType.COMPLETED
+            assert events[-1].data["response"]["text"] == "Read complete"
+        else:
+            assert (await provider.generate(request)).text == "Read complete"
+    assert len(sent) == 1
+    assert request.provider_continuation_state is None
+    assert "private-round" not in request.model_dump_json()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("invalid_round", [0, 1])
+@pytest.mark.parametrize("state_kind", ["missing", "wrong_provider"])
+async def test_deepseek_rejects_invalid_message_state_even_with_legacy_state(
+    stream,
+    invalid_round,
+    state_kind,
+):
+    """A valid top-level state cannot hide a missing/wrong state on any assistant tool round."""
+    request = tool_history(ProviderName.DEEPSEEK)
+    valid = ProviderContinuationState(
+        kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+        raw_reasoning_for_tool_continuation="private-valid",
+    )
+    request.provider_continuation_state = valid
+    for message in request.messages[1::2]:
+        message._provider_continuation_state = valid
+    request.messages[1 + invalid_round * 2]._provider_continuation_state = (
+        None
+        if state_kind == "missing"
+        else ProviderContinuationState(
+            kind=ProviderContinuationKind.OPENAI_RESPONSE_ID,
+            provider_response_id="other-provider",
+        )
+    )
+    sent = []
+
+    async def handler(http_request):
+        """Record any accidental outbound request; invalid state must fail before transport."""
+        sent.append(http_request)
+        return httpx.Response(500)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = DeepSeekChatProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://example.invalid",
+            api_key="test",
+        )
+        with pytest.raises(ModelProviderError, match="continuation"):
+            if stream:
+                _ = [event async for event in provider.stream(request)]
+            else:
+                await provider.generate(request)
+    assert sent == []
 
 
 @pytest.mark.parametrize("provider_name", [ProviderName.ANTHROPIC, ProviderName.GEMINI])

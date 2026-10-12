@@ -49,7 +49,33 @@
 
 2026-10-12 调整：上传并绑定附件即允许当前会话在授权范围内读取，快速回复和 Agent 均自动提供只读文件工具，由模型决定是否调用；不再要求用户选择“读取附件”。Agent 有当前回合附件时由服务端选择 `tool_enabled_v1`，无附件默认保持 `model_only_v1`；旧请求按原记录回放。两种 Agent 执行配置仍使用 `workflow_name=model_only`、版本 `1.0.0` 的现有流程定义，名称兼容历史记录。Controller、审核和最终汇总仍提交原有结构化输出；仅 Worker 中间轮允许返回工具调用，最终轮再校验节点 JSON。
 
-快速回复使用独立的 Responses 工具循环，不创建 Controller/Reviewer 工作流。每轮请求和工具结果分别保存，只在最终答案时发送一次 `response.completed`；第一个 Attempt 是统一 SSE 回放入口，最终 Message 关联生成答案的 Attempt。页面刷新从完整调用记录恢复合计用量，并以最终答案已保存作为允许继续对话的依据。每次响应最多 8 次模型调用、累计 32 次工具调用，整体沿用请求超时；这是防止无进展循环的执行次数限制，不是输出 token 上限。显式传入自定义 tools 的外部 API 请求仍由调用方处理工具，不由服务器执行；自动工具要求已保存的当前消息锚点。本地实现与确定性验收已完成，真实 Provider 和服务器验收未执行。
+快速回复使用独立的 Responses 工具循环，不创建 Controller/Reviewer 工作流。每轮请求和工具结果分别保存，只在最终答案时发送一次 `response.completed`；第一个 Attempt 是统一 SSE 回放入口，最终 Message 关联生成答案的 Attempt。页面刷新从完整调用记录恢复合计用量，并以最终答案已保存作为允许继续对话的依据。每次响应最多 8 次模型调用、累计 32 次工具调用，整体沿用请求超时；这是防止无进展循环的执行次数限制，不是输出 token 上限。显式传入自定义 tools 的外部 API 请求仍由调用方处理工具，不由服务器执行；自动工具要求已保存的当前消息锚点。2026-10-12 续接校验修复已完成并通过确定性检查；余额恢复后补验完成，真实 DeepSeek 快速回复和 Agent 均通过首轮 DOCX、续聊新增 PDF 的实际工具读取及最终答案保存检查。Agent 审核仍有工具证据未获认可的问题，详见下文，不属于本次校验修复已解决的内容。服务器未更新。
+
+真实联调反证（2026-10-12，代码 `cad90c4`）：使用本机独立 MySQL `13306`、MinIO `19000`、API `18000` 和 Docker 文件执行器，凭据从本地 `.env` 读取，模型为 `deepseek-v4-flash`，未提交工具定义或 execution_profile。DOCX 上传/持久解析均成功；快速回复 Run `1a1b6404-dec0-41d4-8240-9f68ed63bcc3` 自动完成 `read_file_content` 和 `list_run_files`，实际读取结果包含测试标记；Agent Run `41a4262f-5f9d-4144-a103-cb97dc32429c` 自动选择 `tool_enabled_v1` 并完成 `list_run_files`，还未读取正文。两者在下一模型轮均被本地适配器拒绝：`DeepSeek tool continuation requires backend-preserved reasoning state.` 未生成最终答案，第二轮 PDF 测试未执行。
+
+首次失败原因：两个循环按 Assistant 消息保存 `_provider_continuation_state`，序列化器也能逐消息生成 `reasoning_content`，但 `packages/models/src/nexuspilot_models/providers/openai_compatible.py::_validate_request` 当时仍只检查请求顶层 `provider_continuation_state`。两次运行的加密续接记录均存在；不访问网络的确定性诊断也复现“消息状态与序列化正确、校验仍拒绝”。原 `test_tool_history.py` 只测试 `_build_payload`，没有通过实际 `generate/stream` 校验入口；脚本 Provider 也未执行该校验。首次检查未修改业务代码；无秘密 JSON 报告位于 `/tmp/nexus-deepseek-tools-results-20261012/quick-1.json`、`agent-1.json`，临时路径不是永久审计存储。
+
+同日经用户授权修复：校验与序列化采用相同位置；有 Assistant 工具调用消息时逐条检查其私有状态，没有此类消息时才兼容旧请求顶层状态。不改变加密保存、权限或公开接口。新增 12 项参数化用例先复现失败，修复后通过；覆盖 `generate/stream`、一轮/两轮工具历史、各轮状态按原序发送、首轮或后轮缺失/错误类型状态不能被有效顶层状态掩盖，以及错误在 HTTP 请求前拒绝。相关 API、文件工具、工作流、权限、续接存储及全部模型包测试共 208 通过；命令为 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_response_file_tools.py apps/api/tests/test_responses.py apps/api/tests/test_conversation_file_context.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_resource_policy.py apps/api/tests/test_provider_continuation_store.py packages/models/tests -q`。格式整理后 `test_tool_history.py` 17 项复验通过；Ruff 与差异空白检查通过。
+
+修复后真实联调（同一独立本地服务，代码为 `cad90c4` 加本次未提交修复）：
+
+| 模式/回合 | Run ID | 实际结果 | 模型执行耗时 |
+|---|---|---|---|
+| 快速回复首轮 DOCX | `d301d9fd-532b-4b96-bc86-8cdcafdaf448` | 通过：列附件及读取正文均成功，2 次模型请求完成，最终答案保存且含正确标记 | 3.891 秒 |
+| 快速回复续聊新增 PDF | `55823301-ebc7-42c6-8acf-d5fbcd966f4c` | 通过：读取本轮新文件，2 次模型请求完成，最终答案保存且含正确标记 | 3.878 秒 |
+| Agent 首轮 DOCX | `b21d6f4f-4010-4c21-a75e-99e19c665b92` | 通过：自动 `tool_enabled_v1`，实际搜索工具目录、读取正文及列文件，8 次模型请求完成，最终答案已从会话接口读回 | 73.463 秒 |
+| Agent 续聊新增 PDF | `7c4968fd-2cd3-4ef3-9510-4733bf44afd2` | 失败：上传解析及 Controller 成功，Worker 的 Provider 请求返回 `Insufficient Balance`，未执行文件工具、未生成最终回答 | 8.933 秒（失败前） |
+
+耗时是单次合成样本的模型流程及结果核对时间，不是性能承诺，也不包括上传解析。检查脚本为 `deployments/verification/check_live_file_tools.py`；请求要求使用读取工具但未传 tools 或 execution_profile，实际 SQL 调用记录同时核对文件 ID、成功状态、读取结果标记及 Context 记录，不单凭答案含标记判定成功。JSON 记录为 `/tmp/nexus-deepseek-tools-results-20261012/quick-2.json`、`agent-2.json`。当次遇到余额不足后停止付费请求，失败记录保留，余额恢复后的补验见下文。本次使用 HTTP/SSE、MySQL/MinIO 和真实 Docker 解析器，不是浏览器验收；未部署服务器。
+
+余额恢复后补验（2026-10-12，业务代码未再次修改）：复用上述独立本地服务，新建会话 `895ad500-a98e-4306-a2a6-eed69d77017c`，执行 `--mode agent --fixtures /tmp/nexus-deepseek-tools-fixtures-20261012 --output /tmp/nexus-deepseek-tools-results-20261012/agent-3.json`，程序退出码为 0、报告状态为 `passed`。两轮均由服务端自动选择 `tool_enabled_v1`，实际按顺序执行 `list_run_files`、`read_file_content` 后继续生成；各 6 次模型请求全部完成，每次都有 Context 记录，最终答案已从会话接口读回，含标记 `FILE_RUNTIME_271828` 与对应文件名。
+
+| Agent 补验回合 | Run ID | 本轮实际读取的 file_id | 结果与耗时 |
+|---|---|---|---|
+| 首轮 DOCX | `50275290-1192-4125-962f-504c79578cfc` | `0f636b6a-966e-4bb8-a756-ea0f80c5bf42` | 读取和最终答案保存通过，60.991 秒 |
+| 同一会话续聊新增 PDF | `3beeb142-40fd-4e05-9fd8-a83c9d3d90ea` | `02eb5d94-f2b8-43a3-9224-16279e46d395` | 读取新文件和最终答案保存通过，35.366 秒 |
+
+另有回答质量待查：Agent 已存在成功读取的数据库记录，但审核/最终文本仍表达“工具日志未独立验证”的保留意见。余额恢复后的两轮补验均再次出现：最终回答称 Handoff 未附工具调用记录、确定性验证仅检查所有权和结构，因此不能确认实际读取。该表述与本次 SQL 核对的成功读取记录不一致。此次没有扩展修改审核输入或 Handoff；这不影响上述实际读取和答案已保存的事实，也不能据此宣称审核证据传递已完善，后续应检查审核节点收到的实际工具证据及验证结果。
 
 2026-10-12 验证记录（未提交工作区）：`pytest -c apps/api/pyproject.toml apps/api/tests/test_response_file_tools.py apps/api/tests/test_responses.py apps/api/tests/test_conversation_file_context.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_resource_policy.py packages/models/tests -q` 为 192 通过；之后补充私有续接与取消断言，单独运行 `test_response_file_tools.py` 为 9 通过（与前述集合有重叠，不相加）。覆盖首轮/续聊、JSON/SSE、单个最终事件与持久回放、实际工具结果、可直接回答、重复停止、非法命令拒绝、删除后阻止再次发送历史、私有续接不公开、取消后不新增模型调用。前端 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 126 通过；Playwright `e2e/web-shell.spec.ts --grep 'upload failure|manual file-tool switch|file chooser|native chooser'` 为桌面/窄屏共 10 通过，检查多轮完成后续聊、失败保留输入和两模式无开关。查看了窄屏截图 `output/playwright/test-results/web-shell-offers-files-in--462ef-t-a-manual-file-tool-switch-mobile-chromium/automatic-file-tools.png`。API 测试使用隔离 SQLite/内存对象存储/脚本 Provider，浏览器使用模拟 API；没有付费请求、远程推送或部署。
 
@@ -59,7 +85,7 @@
 - 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正，加载集合未变化时，重复同名同参数调用停止。一个模型响应最多 8 个调用，第一版顺序执行；每次读取最长 15 秒，单次结果最多 65,536 字节，过大返回错误要求缩小读取范围，不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
 - 持久记录：迁移 `20261008_0023` 在原 `llm_tool_calls` 增加四个可空字段和唯一约束，旧记录保留。重复逻辑调用拒绝再次执行，不以旧缓存绕过撤销检查。节点证据聚合全部轮次及工具状态，Handoff 的 `files_read` 来自成功读取记录。工具结果提交后发出 `agent.node.progress`，运行中和刷新后的详情均可查看调用状态；浏览器不接收原始工具结果、私有续接内容或对象存储地址。
 - 上下文：每轮保留原 Context 构建 ID，在私有 Attempt 请求记录保存包含工具消息的 `effective_messages`；模型收到原有消息加本次完整工具历史。当前 Context 抽屉仍展示基础构建快照，尚未逐条展开工具消息；工具调用详情以节点证据及内部审计记录为准。工具消息过大时明确失败，不虚构完整上下文或自动摘要替换文件。
-- Provider：本地协议测试覆盖 OpenAI、OpenAI-compatible/DeepSeek、Anthropic、Gemini 的调用/结果配对；有签名或私有推理续接时按原序保留在后端。中间工具轮不同时强制最终 JSON Schema，最终结果仍必须通过类型校验。未调用真实 Provider，也未完成真实浏览器 Provider 矩阵。
+- Provider：本地协议测试覆盖 OpenAI、OpenAI-compatible/DeepSeek、Anthropic、Gemini 的调用/结果配对；有签名或私有推理续接时按原序保留在后端。中间工具轮不同时强制最终 JSON Schema，最终结果仍必须通过类型校验。真实 DeepSeek 的本地 HTTP/SSE 文件工具验证已通过上述四个场景；其他真实 Provider 与真实浏览器 Provider 矩阵未执行。
 - 失败与恢复：当前仍由 HTTP/SSE 请求持有执行，事件回放只能恢复查看，不能保证断线或进程重启继续执行。读取成功后模型失败时保留已经提交的工具记录。没有通用命令、联网、运行时 pip、动态注册、批准后恢复或后台执行。
 
 运行前先备份并确认目标库，执行 `make api-migrate` 升级到 `20261008_0023`，再重启 API 和 Web；本次仅在隔离 SQLite 中验证迁移，未修改实际开发数据库。MinIO 沿用已有上传配置，PDF/Office 仍要求下文专用执行器；工具读取已保存解析结果，不创建另一套解析沙箱。回退应用时优先保留新增记录和列，不在有新调用数据的库上自动降级迁移。
