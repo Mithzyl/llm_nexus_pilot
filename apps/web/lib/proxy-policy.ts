@@ -13,6 +13,7 @@ type AllowedRoute = {
 const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "POST", pattern: ["files"] },
   { method: "GET", pattern: ["files"] },
+  { method: "GET", pattern: ["files", "capabilities"] },
   { method: "GET", pattern: ["files", ":id"] },
   { method: "DELETE", pattern: ["files", ":id"] },
   { method: "PUT", pattern: ["files", ":id", "content"] },

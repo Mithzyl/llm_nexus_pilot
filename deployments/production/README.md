@@ -135,6 +135,8 @@ docker compose --env-file deployments/production/runtime/.env \
 
 未验证执行器前不宣称 PDF/Office 可用；默认配置不挂该目录。先检查兼容两种协议的执行器，再更新 API；新版 PDF 不再使用 API 容器内沙箱。
 
+2026-10-11 可用性检查要求：先更新宿主执行器到支持 `file_capabilities.v1` 的版本，再更新 API/Web。旧执行器仍能接受原解析协议，但新版 API 无法确认其可用性时会拒绝新的 Office/PDF 上传；旧解析结果仍可经文件工具读取。通过登录后的 `/api/v1/files/capabilities`（浏览器为 `/api/nexus/files/capabilities`）确认 `executor_status=available`，再验收实际文件上传及 Agent“读取附件”。此接口不返回 Socket 路径、镜像 ID 或凭据，也不以探测成功代替真实解析验收。本次仅完成本地代码及测试，服务器未执行这些更新。
+
 ## 6. 发布验收、备份与更新
 
 按[首次上线清单](../../docs/implementation/initial-release-checklist.md#发布验收清单)验收，重点包括：匿名数据请求拒绝、A/B 双向隔离、所有 JSON 变体、上传与删除、模型 SSE、登录退出、服务端密钥不进入浏览器、外部看不到后台端口。Web 页面返回 200 或服务健康不等于这些检查已通过。

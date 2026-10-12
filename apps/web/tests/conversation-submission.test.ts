@@ -62,6 +62,19 @@ function savedQuickResponse() {
   return { run, workflowStatus: null, messages, workflowAbsentForRunId: "run-1" };
 }
 
+/** Only fully completed automatic tool rounds plus the saved final answer release a pending Run. */
+test("allows saved automatic file-tool responses only after every round is completed", () => {
+  const facts = savedQuickResponse();
+  const last = { ...facts.run.attempts[0], request_type: "file_tool_round" };
+  const first = { ...last, attempt_id: "first-tool-round" };
+  const run = { ...facts.run, attempts: [first, last] };
+  assert.equal(isConversationExecutionActive({ ...facts, run }), false);
+  assert.equal(isConversationExecutionActive({ ...facts, run: {
+    ...run, attempts: [{ ...first, status: "started" }, last],
+  } }), true);
+  assert.equal(isConversationExecutionActive({ ...facts, run, messages: [] }), true);
+});
+
 /** Active/unknown server facts must still block another billable submission. */
 test("keeps restored active executions blocked unless a quick response is durably complete", () => {
   const facts = savedQuickResponse();

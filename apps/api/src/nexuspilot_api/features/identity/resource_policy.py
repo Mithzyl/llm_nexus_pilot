@@ -57,6 +57,7 @@ SHARED_ROUTES = frozenset(
         ("GET", "/providers"),
         ("GET", "/model-capabilities"),
         ("GET", "/models"),
+        ("GET", "/files/capabilities"),
     }
 )
 OWNED_ROUTES = frozenset(

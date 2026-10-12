@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from test_agent_file_tools import FileToolProvider
 from test_agent_workflows import (
     ScriptedAgentProvider,
     registered_agent_test_model,
@@ -55,15 +56,23 @@ def file_executor(executor, monkeypatch):  # noqa: F811 -- imported pytest fixtu
 
 
 @pytest.mark.parametrize("extension", ["docx", "xlsx", "pptx", "pdf"])
-@pytest.mark.parametrize("mode", ["responses", "agent"])
+@pytest.mark.parametrize("mode", ["responses", "agent", "agent_tools"])
 async def test_real_file_upload_first_turn_followup_and_persisted_context(
-    resource_client, test_database_session_factory, file_executor, extension, mode, monkeypatch,
+    resource_client,
+    test_database_session_factory,
+    file_executor,
+    extension,
+    mode,
+    monkeypatch,
 ):
-    """Read real extracted text on both turns and reload exact snapshots in both modes."""
+    """Upload real Office/PDF, read through Agent tools and preserve exact context on follow-up."""
 
     client = resource_client
     directory = Path(os.environ["NEXUSPILOT_TEST_FILE_FIXTURES"])
     content = (directory / f"sample.{extension}").read_bytes()
+    capabilities = await client.get("/api/v1/files/capabilities")
+    assert capabilities.status_code == 200, capabilities.text
+    assert f".{extension}" in capabilities.json()["accepted_extensions"]
     await create_model_capability(client, context_window=65536)
     async with test_database_session_factory() as db:
         db.add(registered_agent_test_model())
@@ -76,6 +85,11 @@ async def test_real_file_upload_first_turn_followup_and_persisted_context(
     uploaded = await client.put(f"/api/v1/files/{file_id}/content", content=content)
     assert uploaded.status_code == 200, uploaded.text
     assert uploaded.json()["status"] == "ready"
+    if mode == "agent_tools":
+        provider = FileToolProvider(tool_name="read_file_content", arguments={"file_id": file_id})
+        app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+        # Saved parsing remains usable by read-only tools even if the executor later stops.
+        monkeypatch.setattr(get_settings(), "file_runtime_socket", None)
     assert (await client.get(f"/api/v1/files/{file_id}/content")).content == content
     owner = (await client.get("/api/v1/auth/me")).json()["user_id"]
     session = (await client.post("/api/v1/sessions", json={"user_id": owner})).json()
@@ -84,41 +98,87 @@ async def test_real_file_upload_first_turn_followup_and_persisted_context(
         """Uploaded fixed extraction must be reused, not recomputed by each model node."""
         raise AssertionError("Unexpected parse after successful upload")
 
-    monkeypatch.setattr("nexuspilot_api.services.parsed_artifact_service.parse_file_content",
-                        no_reparse)
+    monkeypatch.setattr(
+        "nexuspilot_api.services.parsed_artifact_service.parse_file_content", no_reparse
+    )
     for number in range(2):
         turn = await client.post(
             f"/api/v1/sessions/{session['session_id']}/turns",
-            json={"user_id": owner, "content_text": "Read the file",
-                  **({"file_ids": [file_id]} if number == 0 else {})},
+            json={
+                "user_id": owner,
+                "content_text": "Read the file",
+                **({"file_ids": [file_id]} if number == 0 else {}),
+            },
         )
         assert turn.status_code == 201, turn.text
         run_id = turn.json()["run"]["run_id"]
         before = len(provider.requests)
         if mode == "responses":
-            response = await client.post("/api/v1/responses", json={
-                "run_id": run_id, "current_user_message_id": turn.json()["message"]["message_id"],
-                "provider": "openai", "model": "test-model", "input": "Read the file",
-            })
+            response = await client.post(
+                "/api/v1/responses",
+                json={
+                    "run_id": run_id,
+                    "current_user_message_id": turn.json()["message"]["message_id"],
+                    "provider": "openai",
+                    "model": "test-model",
+                    "input": "Read the file",
+                },
+            )
             assert response.status_code == 200, response.text
         else:
-            response = await client.post(f"/api/v1/runs/{run_id}/agent-workflows",
-                                         json=workflow_payload(idempotency_key=f"file-context-{number}"))
+            response = await client.post(
+                f"/api/v1/runs/{run_id}/agent-workflows",
+                json=workflow_payload(
+                    idempotency_key=f"file-context-{number}",
+                    execution_profile="tool_enabled_v1"
+                    if mode == "agent_tools"
+                    else "model_only_v1",
+                ),
+            )
             assert response.status_code == 201, response.text
             assert response.json()["status"] == "completed", response.text
+            if mode == "agent_tools":
+                workers = [
+                    node
+                    for node in response.json()["nodes"]
+                    if node["node_key"].startswith("worker_execution.")
+                ]
+                assert workers and workers[0]["usage"]["tool_call_count"] == 1
+                assert workers[0]["output"]["tool_results"][0]["status"] == "completed"
+                tool_messages = [
+                    message.content
+                    for request in provider.requests[before:]
+                    for message in request.messages
+                    if message.role.value == "tool"
+                ]
+                assert any("FILE_RUNTIME_271828" in text for text in tool_messages)
+                from nexuspilot_api.models import LlmModelToolCall
+
+                call_id = workers[0]["output"]["tool_results"][0]["tool_call_id"]
+                async with test_database_session_factory() as db:
+                    saved_call = await db.get(LlmModelToolCall, call_id)
+                    assert saved_call.status == "completed"
+                    assert "FILE_RUNTIME_271828" in str(saved_call.output_json)
         requests = provider.requests[before:]
         assert requests
-        assert all(any("FILE_RUNTIME_271828" in message.content
-                       and "中文文件读取测试" in message.content
-                       for message in request.messages) for request in requests)
+        assert all(
+            any(
+                "FILE_RUNTIME_271828" in message.content and "中文文件读取测试" in message.content
+                for message in request.messages
+            )
+            for request in requests
+        )
         run = (await client.get(f"/api/v1/runs/{run_id}")).json()
         for attempt in run["attempts"]:
             context_id = attempt["context_build_id"]
             context = (await client.get(f"/api/v1/context-builds/{context_id}")).json()
-            assert any(source["source_id"] == file_id
-                       and source["source_type"] == "parsed_artifact"
-                       and source["content_hash"] and source["source_version"]
-                       for source in context["sources"])
+            assert any(
+                source["source_id"] == file_id
+                and source["source_type"] == "parsed_artifact"
+                and source["content_hash"]
+                and source["source_version"]
+                for source in context["sources"]
+            )
             assert file_executor in str(context)
             reloaded = await client.get(f"/api/v1/context-builds/{context_id}")
             assert_same_context(reloaded.json(), context)

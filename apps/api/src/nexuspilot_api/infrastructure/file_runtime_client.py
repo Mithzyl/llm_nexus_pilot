@@ -15,18 +15,59 @@ class FileRuntimeError(ValueError):
     """Expose safe executor failures without source text, paths or subprocess errors."""
 
 
+def file_runtime_status() -> str:
+    """Probe the fixed parser protocol without uploading data or starting a parse container.
+
+    A successful probe confirms the running service, not that every document will parse.
+    The caller must still handle executor failure during the actual upload.
+    """
+    socket_path = get_settings().file_runtime_socket
+    if not socket_path:
+        return "not_configured"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1)
+            connection.connect(socket_path)
+            connection.sendall(b'{"protocol":"file_capabilities.v1"}\n')
+            received = bytearray()
+            deadline = time.monotonic() + 1
+            while not received.endswith(b"\n") and len(received) <= 4096:
+                connection.settimeout(max(0.001, deadline - time.monotonic()))
+                chunk = connection.recv(4097 - len(received))
+                if not chunk or time.monotonic() > deadline:
+                    return "unavailable"
+                received.extend(chunk)
+        report = json.loads(received)
+        if report == {
+            "protocol": "file_capabilities.v1",
+            "formats": ["docx", "xlsx", "pptx", "pdf"],
+        }:
+            return "available"
+        if report == {"error": "file_executor_busy"}:
+            return "busy"
+    except (OSError, ValueError):
+        pass
+    return "unavailable"
+
+
 def request_file_parse(content: bytes, media_type: str, *, protocol: str) -> dict:
     """Send a bounded file request and validate response identity before format adaptation."""
 
     socket_path = get_settings().file_runtime_socket
     if not socket_path:
-        raise FileRuntimeError("File executor is not configured")
+        raise FileRuntimeError("服务器尚未启用 Office／PDF 文件解析，请联系管理员。")
     if not 0 < len(content) <= 1024 * 1024:
         raise FileRuntimeError("Unsupported file request size")
-    request = json.dumps({
-        "protocol": protocol, "media_type": media_type,
-        "content_base64": base64.b64encode(content).decode("ascii"),
-    }).encode() + b"\n"
+    request = (
+        json.dumps(
+            {
+                "protocol": protocol,
+                "media_type": media_type,
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            }
+        ).encode()
+        + b"\n"
+    )
     try:
         deadline = time.monotonic() + 125
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -56,8 +97,11 @@ def request_file_parse(content: bytes, media_type: str, *, protocol: str) -> dic
         }
         if "error" in report:
             code = report["error"]
-            raise FileRuntimeError(errors.get(code, "File executor failed")
-                                   if isinstance(code, str) else "File executor failed")
+            raise FileRuntimeError(
+                errors.get(code, "File executor failed")
+                if isinstance(code, str)
+                else "File executor failed"
+            )
         if (
             report.get("protocol") != protocol
             or report.get("media_type") != media_type
@@ -70,4 +114,4 @@ def request_file_parse(content: bytes, media_type: str, *, protocol: str) -> dic
     except (OSError, ValueError, TypeError) as exc:
         if isinstance(exc, FileRuntimeError):
             raise
-        raise FileRuntimeError("File executor unavailable or returned invalid content") from exc
+        raise FileRuntimeError("文件解析服务暂不可用，请稍后重试或联系管理员。") from exc

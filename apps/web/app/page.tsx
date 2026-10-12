@@ -48,6 +48,7 @@ import type {
   WorkspacePrincipal,
 } from "../lib/types";
 import { readStreamEvents, replayCommittedStreamEvents } from "../lib/sse";
+import { quickResponseUsageFromRun } from "../lib/response-usage";
 import {
   applyReasoningStreamEvent,
   isReasoningPresentation,
@@ -282,7 +283,6 @@ export default function Home() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("response");
   const [reviewPolicy, setReviewPolicy] = useState<ReviewPolicy>("always");
   const [maxParallelAgents, setMaxParallelAgents] = useState<AgentParallelism>(1);
-  const [fileToolsEnabled, setFileToolsEnabled] = useState(false);
   const [reasoningDisplayPolicy, setReasoningDisplayPolicy] =
     useState<ReasoningDisplayPolicy>("hidden");
   const [reasoningEffort, setReasoningEffort] =
@@ -863,17 +863,13 @@ export default function Home() {
     conversationSyncChannel.current?.postMessage({ type, sessionId, senderId });
   }
 
-  /** Restore the inspector from the newest persisted attempt rather than local defaults. */
+  /** Restore final-attempt identity and accumulated quick file-tool usage from persisted facts. */
   function restoreRunFacts(runDetail: RunDetail | null) {
     setRun(runDetail);
     const latestAttempt = runDetail?.attempts.at(-1);
     setAttemptId(latestAttempt?.attempt_id ?? null);
     if (latestAttempt) {
-      setRunUsage({
-        input: latestAttempt.input_tokens,
-        output: latestAttempt.output_tokens,
-        cost: String(latestAttempt.estimated_cost ?? runDetail?.cost_used ?? "—"),
-      });
+      setRunUsage(quickResponseUsageFromRun(runDetail!));
       setRunModelFacts({ provider: latestAttempt.provider, model: latestAttempt.model });
     } else if (runDetail) {
       setRunUsage({ input: null, output: null, cost: String(runDetail.cost_used ?? "—") });
@@ -1001,7 +997,7 @@ export default function Home() {
   }
 
   /**
-   * Execute the current Run with the explicitly selected read-tool permissions and return its
+   * Execute the current Run with backend-derived attachment permissions and return its
    * terminal snapshot without duplicating the backend-created final Message.
    */
   async function executeAgentWorkflow(
@@ -1022,7 +1018,6 @@ export default function Home() {
       {
         workflow_name: "model_only",
         workflow_version: "1.0.0",
-        execution_profile: fileToolsEnabled ? "tool_enabled_v1" : "model_only_v1",
         idempotency_key: crypto.randomUUID(),
         role_bindings: {
           controller: binding,
@@ -1524,6 +1519,7 @@ export default function Home() {
   /**
    * Submit one atomic Run/Message turn, then stream its anchored quick or Agent response.
    * Replace optimistic messages with saved records before deciding whether the turn is finished.
+   * Keep the previous execution facts until uploads and new-turn persistence succeed.
    */
   async function submitCurrentDraft() {
     const input = draft.trim();
@@ -1549,18 +1545,6 @@ export default function Home() {
 
     setIsSending(true);
     setErrorMessage(null);
-    setResponseCompleted(false);
-    setAssistantSaved(false);
-    setAssistantSaveFailed(false);
-    resetAgentWorkflowFacts();
-    latestAssistantText.current = "";
-    latestReasoningBlocks.current = [];
-    activeResponseAttemptId.current = null;
-    lastResponseSequence.current = 0;
-    if (assistantProjectionFrame.current !== null) {
-      window.cancelAnimationFrame(assistantProjectionFrame.current);
-      assistantProjectionFrame.current = null;
-    }
     const userMessage = createLocalMessage("user", input);
 
     try {
@@ -1594,6 +1578,20 @@ export default function Home() {
         content_text: input,
         ...(fileIds.length ? { file_ids: fileIds } : {}),
       });
+      // Upload failure must preserve the previous saved response and its no-workflow proof.
+      // Replace execution facts only after the server has created the new conversation turn.
+      setResponseCompleted(false);
+      setAssistantSaved(false);
+      setAssistantSaveFailed(false);
+      resetAgentWorkflowFacts();
+      latestAssistantText.current = "";
+      latestReasoningBlocks.current = [];
+      activeResponseAttemptId.current = null;
+      lastResponseSequence.current = 0;
+      if (assistantProjectionFrame.current !== null) {
+        window.cancelAnimationFrame(assistantProjectionFrame.current);
+        assistantProjectionFrame.current = null;
+      }
       setPendingUploadFiles([]);
       uploadedFileCache.current.clear();
       clearCommittedDraft();
@@ -1666,8 +1664,8 @@ export default function Home() {
         }
         if (event.type === "response.usage" && data.usage) {
           setRunUsage({
-            input: data.usage.input_tokens ?? 0,
-            output: data.usage.output_tokens ?? 0,
+            input: data.usage.input_tokens ?? null,
+            output: data.usage.output_tokens ?? null,
             cost: data.usage.estimated_cost ?? "—",
           });
         }
@@ -1682,7 +1680,7 @@ export default function Home() {
             window.cancelAnimationFrame(assistantProjectionFrame.current);
             assistantProjectionFrame.current = null;
           }
-          setAttemptId(data.attempt_id ?? responseResult?.id ?? null);
+          setAttemptId(responseResult?.id ?? data.attempt_id ?? null);
           setMessages((current) =>
             current.map((message) =>
               message.local_id === assistantMessage.local_id
@@ -1699,8 +1697,8 @@ export default function Home() {
             ),
           );
           setRunUsage({
-            input: responseResult?.usage.input_tokens ?? 0,
-            output: responseResult?.usage.output_tokens ?? 0,
+            input: responseResult?.usage.input_tokens ?? null,
+            output: responseResult?.usage.output_tokens ?? null,
             cost: responseResult?.usage.estimated_cost ?? "—",
           });
           try {
@@ -2105,19 +2103,6 @@ export default function Home() {
                       ]}
                       disabled={isSending}
                       onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
-                    />
-                  </div>
-                  <div className="agent-config-item agent-file-tools">
-                    <span>工具</span>
-                    <CompactSelect
-                      label="Agent 文件工具"
-                      value={fileToolsEnabled ? "read_files" : "disabled"}
-                      options={[
-                        { value: "disabled", label: "不使用" },
-                        { value: "read_files", label: "读取附件" },
-                      ]}
-                      disabled={isSending}
-                      onChange={(value) => setFileToolsEnabled(value === "read_files")}
                     />
                   </div>
                   <div className="agent-config-item agent-model-role">

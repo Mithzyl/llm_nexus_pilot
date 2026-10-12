@@ -64,6 +64,10 @@ async function installApiMocks(
       });
     }
     if (path === "models") return fulfillJson(route, [MODEL]);
+    if (path === "files/capabilities") return fulfillJson(route, {
+      accepted_extensions: [".txt", ".md", ".docx", ".xlsx", ".pptx", ".pdf"],
+      executor_status: "available", max_file_size_bytes: 1048576, unavailable_reason: null,
+    });
     if (path === "sessions") {
       return fulfillJson(route, {
         items: [{
@@ -138,6 +142,86 @@ async function installApiMocks(
 }
 
 test.beforeEach(async ({ page }) => installApiMocks(page));
+
+/** Saved single/multi-round replies remain usable after reload and a failed follow-up upload. */
+for (const roundCount of [1, 3]) {
+test(`upload failure does not lock a completed quick-response conversation (${roundCount} rounds)`, async ({ page }, testInfo) => {
+  await page.route("**/api/nexus/sessions/session-1/latest-run", (route) => fulfillJson(route, {
+    run_id: "run-1", session_id: "session-1", status: "pending", tasks: [],
+    tasks_has_more: false, attempts_has_more: false, cost_used: "0",
+    user_id: "nexuspilot-web", user_request: "original question", run_type: "chat",
+    artifacts: [], artifacts_has_more: false, budget_limit: null,
+    started_at: null, completed_at: null, created_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:01Z",
+    attempts: Array.from({ length: roundCount }, (_, index) => ({
+      attempt_id: index === roundCount - 1 ? "attempt-1" : `tool-round-${index}`,
+      run_id: "run-1", task_id: null, status: "completed",
+      provider: MODEL.provider, model: MODEL.model_identifier, input_tokens: 10, output_tokens: 5,
+      context_build_id: null, request_type: roundCount === 1 ? "chat" : "file_tool_round",
+      retry_count: 0, cached_tokens: null,
+      reasoning_tokens: null, reasoning_display_policy: "hidden", estimated_cost: "0",
+      latency_ms: 100, error_code: null, started_at: "2026-08-30T00:00:00Z",
+      first_visible_token_at: null, completed_at: "2026-08-30T00:00:01Z" })),
+  }));
+  let uploaded = 0;
+  let turns = 0;
+  await page.route("**/api/nexus/files", (route) => fulfillJson(route, {
+    file_id: "file-1", filename: "sample.docx", status: "reserved", size_bytes: 7,
+  }, 201));
+  await page.route("**/api/nexus/files/file-1/content", (route) => {
+    uploaded += 1;
+    return fulfillJson(route, { detail: "文件解析服务暂不可用，请稍后重试或联系管理员。" }, 503);
+  });
+  await page.route("**/api/nexus/sessions/session-1/turns", (route) => {
+    turns += 1;
+    return fulfillJson(route, { detail: "Unexpected turn creation" }, 500);
+  });
+  await page.goto("/c/session-1");
+  await expect(page.getByText("persisted answer")).toBeVisible();
+  await expect(page.getByLabel("选择文件")).toHaveAttribute("accept", /\.docx/);
+  await page.getByLabel("选择文件").setInputFiles({
+    name: "sample.docx", mimeType: "application/octet-stream", buffer: Buffer.from("fixture"),
+  });
+  await page.getByRole("textbox", { name: "消息内容" }).fill("Read this attachment");
+  const send = page.getByRole("button", { name: "发送消息", exact: true });
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect(page.getByText("文件解析服务暂不可用，请稍后重试或联系管理员。", { exact: true })).toBeVisible();
+  await expect(send).toBeEnabled();
+  await expect(page.getByText(/服务端仍在处理此会话/)).toHaveCount(0);
+  await expect(page.getByText("persisted answer")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "消息内容" })).toHaveValue("Read this attachment");
+  await send.click();
+  await expect.poll(() => uploaded).toBe(2);
+  await expect(send).toBeEnabled();
+  expect(turns).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath("upload-failure-recovered.png"), fullPage: true });
+});
+}
+
+/** Neither mode asks the user to enable file tools separately from choosing attachments. */
+test("offers files in both modes without a manual file-tool switch", async ({ page }, testInfo) => {
+  await page.goto("/");
+  await expect(page.getByLabel("选择文件")).toBeVisible();
+  await page.getByRole("button", { name: "Agent", exact: true }).click();
+  await expect(page.getByLabel("选择文件")).toBeVisible();
+  await expect(page.getByText("读取附件", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".agent-file-tools")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("automatic-file-tools.png"), fullPage: true });
+  await page.getByRole("button", { name: "快速回复", exact: true }).click();
+  await expect(page.getByLabel("选择文件")).toBeVisible();
+});
+
+/** The chooser must not promise Office parsing while the server has no executor. */
+test("file chooser reflects unavailable Office executor", async ({ page }) => {
+  await page.route("**/api/nexus/files/capabilities", (route) => fulfillJson(route, {
+    accepted_extensions: [".txt", ".md"], executor_status: "not_configured",
+    max_file_size_bytes: 1048576, unavailable_reason: "服务器尚未启用 Office／PDF 文件解析，可上传文本文件。",
+  }));
+  await page.goto("/");
+  await expect(page.getByLabel("选择文件")).toHaveAttribute("accept", ".txt,.md");
+  await expect(page.locator(".file-picker")).toHaveAttribute("title", /尚未启用/);
+});
 
 test("requires a provisioned account before mounting the conversation workspace", async ({
   page,

@@ -1,7 +1,7 @@
 # 阶段7：Agent 工具发现、执行与自主扩展主计划
 
 **文档日期：** 2026 年 10 月 9 日
-**文档状态：** 进行中；Office/PDF 统一专用执行器及首批五个附件工具循环已有本地实现和验证（SQL/对象存储/Provider 为测试替身，不代表真实部署验收）。2026-10-07 用户限定仅本地开发，服务器部署/验收暂停，线上版本未改变。动态工具、任务工作目录及受控 Python／Shell 尚未实现，Git 等其他高风险能力继续暂停。
+**文档状态：** 进行中；Office/PDF 统一解析、五个附件工具循环、内置目录发现已有本地实现。任务目录与 Python／Shell 的本地专用执行器已实现并通过本地容器测试；尚未接入 Agent、数据库归属及 Artifact 保存，不能在聊天中使用。2026-10-07 用户限定仅本地开发，服务器部署/验收暂停，线上版本未改变。动态工具、受控 SDK、Git 等能力仍未实现或暂停。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 > 2026-10-08 规划调整：本文是工具能力从发现、调用、模型循环、隔离执行到自主创建、验证、复用和产品验收的唯一主计划。代码仍放在现有模型、Agent、工具和 Web 模块，不因代码跨目录而拆成多个独立阶段待办。阶段2/3/4仅保留已有模块接口与历史记录；阶段8代码搜索、阶段9 MCP 作为本计划的后续工具来源，不另建执行流程。阶段10保留通用后台执行机制的详细设计，本文负责工具任务接入与验收。
@@ -22,7 +22,7 @@
 
 - `packages/models` 已有 Provider 无关的 `ToolDefinition`、`ToolCall` 和 Tool Message 合同；它们只表达“模型请求调用什么”，不负责执行、权限和审计。
 - `llm_tool_calls` 已有实际文件工具写入流程；本次迁移增加 Provider 调用 ID、固定工具版本、结果 JSON、错误码和 `(attempt_id, provider_tool_call_id)` 唯一约束。调用状态区分请求、执行、完成、拒绝、超时、取消与失败；通用副作用恢复和动态注册尚未实现。
-- `GET /api/v1/internal/tool-calls` 及详情接口保留脱敏只读审计。`AgentFileToolService` 使用静态 `RegisteredTool`/`ToolCatalog` 执行五个附件工具及两个目录工具；动态注册、任务 Workspace 和生成代码执行尚未实现。
+- `GET /api/v1/internal/tool-calls` 及详情接口保留脱敏只读审计。`AgentFileToolService` 使用静态 `RegisteredTool`/`ToolCatalog` 执行五个附件工具及两个目录工具；任务执行器的本地文件记录尚未写入 `llm_tool_calls`，动态注册和 Agent 命令调用仍未实现。
 - 当前有 `/responses` 与同步/POST SSE 的 `model_only_v1` 工作流；阶段10已恢复独立后台执行规划但未实施。阶段7当前同步设计不承诺请求断开或 API 重启后继续执行。
 - 当前阶段5已实现浏览器登录和 FastAPI 资源主体授权，但这不等于模型工具权限已实现。阶段7仍只服务受信内部调用和后续 Agent 进程，不提供普通用户可直接提交 `run_command` 的 HTTP 接口。
 - 当前解析部署选择：复用宿主 Unix Socket 执行器，由其创建无网络临时 Linux 容器，PDF 与 Office 统一走该路径，具体步骤见下节。通用命令执行的启用策略、镜像供应链验证及 Git worktree 时机仍需在对应工作项实施前确认；不能把解析部署决定视为通用命令授权。
@@ -35,7 +35,7 @@
 |---|---|---|---|
 | 连续使用基础工具 | 单个 Worker 多轮调用已授权读取/搜索工具，处理可恢复错误，最终回答引用实际结果；Web 显示真实调用与产物 | 现有 Gateway、Context、用户归属、工具登记/审计 | 进行中：首批五个附件只读工具已实现；本地验证，不代表真实 Provider/目标部署验收 |
 | 按需发现工具 | Agent 搜索目录、查看说明、加载固定版本后直接调用；不可见工具不泄露，缺依赖不返回假成功 | 上一项的 Registry 与调用流程 | 进行中：内置只读目录、固定版本加载及本地验收已完成；动态/外部工具依赖检查随后续来源实现 |
-| 工作目录与代码组合 | 同一任务多次 Python/Shell 调用复用文件；程序可通过受控 SDK 组合已有工具，每次子调用仍鉴权和记录 | 真实容器隔离、任务目录、结果保存、执行授权 | 未开始 |
+| 工作目录与代码组合 | 同一任务多次 Python/Shell 调用复用文件；程序可通过受控 SDK 组合已有工具，每次子调用仍鉴权和记录 | 真实容器隔离、任务目录、结果保存、执行授权 | 进行中：本地任务执行器已实现；Agent 授权/调用记录、Artifact、SDK 未实现 |
 | 创建并使用任务工具 | Agent 提交定义、代码和样本，经平台验证后在当前任务注册；下一轮可调用固定版本 | 代码组合、生成工具验证器、版本与作用域记录 | 未开始 |
 | 个人与项目工具复用 | 按授权保存、搜索、停用和升级工具，不覆盖运行中版本、不泄露其他用户代码与数据 | 任务工具；项目共享前必须有项目成员权限 | 未开始 |
 | 长任务独立执行 | 刷新/断线不取消，重启可按已提交步骤恢复；未知副作用不盲目重跑，批准后恢复同一任务 | 阶段10通用执行机制，接入要求由本文验收 | 未开始 |
@@ -47,7 +47,11 @@
 
 ### 首批附件工具实现与运行（2026-10-09）
 
-当前代码支持 `tool_enabled_v1`：在 Web 选择 Agent，再将“Agent 文件工具”从默认“不使用”切换为“读取附件”。`model_only_v1` 保持默认；快速回复不执行工具。两种执行配置仍使用 `workflow_name=model_only`、版本 `1.0.0` 的现有流程定义，名称兼容历史记录，不表示工具配置无效。Controller、审核和最终汇总仍提交原有结构化输出；仅 Worker 中间轮允许返回工具调用，最终轮再校验节点 JSON。
+2026-10-12 调整：上传并绑定附件即允许当前会话在授权范围内读取，快速回复和 Agent 均自动提供只读文件工具，由模型决定是否调用；不再要求用户选择“读取附件”。Agent 有当前回合附件时由服务端选择 `tool_enabled_v1`，无附件默认保持 `model_only_v1`；旧请求按原记录回放。两种 Agent 执行配置仍使用 `workflow_name=model_only`、版本 `1.0.0` 的现有流程定义，名称兼容历史记录。Controller、审核和最终汇总仍提交原有结构化输出；仅 Worker 中间轮允许返回工具调用，最终轮再校验节点 JSON。
+
+快速回复使用独立的 Responses 工具循环，不创建 Controller/Reviewer 工作流。每轮请求和工具结果分别保存，只在最终答案时发送一次 `response.completed`；第一个 Attempt 是统一 SSE 回放入口，最终 Message 关联生成答案的 Attempt。页面刷新从完整调用记录恢复合计用量，并以最终答案已保存作为允许继续对话的依据。每次响应最多 8 次模型调用、累计 32 次工具调用，整体沿用请求超时；这是防止无进展循环的执行次数限制，不是输出 token 上限。显式传入自定义 tools 的外部 API 请求仍由调用方处理工具，不由服务器执行；自动工具要求已保存的当前消息锚点。本地实现与确定性验收已完成，真实 Provider 和服务器验收未执行。
+
+2026-10-12 验证记录（未提交工作区）：`pytest -c apps/api/pyproject.toml apps/api/tests/test_response_file_tools.py apps/api/tests/test_responses.py apps/api/tests/test_conversation_file_context.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_resource_policy.py packages/models/tests -q` 为 192 通过；之后补充私有续接与取消断言，单独运行 `test_response_file_tools.py` 为 9 通过（与前述集合有重叠，不相加）。覆盖首轮/续聊、JSON/SSE、单个最终事件与持久回放、实际工具结果、可直接回答、重复停止、非法命令拒绝、删除后阻止再次发送历史、私有续接不公开、取消后不新增模型调用。前端 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 126 通过；Playwright `e2e/web-shell.spec.ts --grep 'upload failure|manual file-tool switch|file chooser|native chooser'` 为桌面/窄屏共 10 通过，检查多轮完成后续聊、失败保留输入和两模式无开关。查看了窄屏截图 `output/playwright/test-results/web-shell-offers-files-in--462ef-t-a-manual-file-tool-switch-mobile-chromium/automatic-file-tools.png`。API 测试使用隔离 SQLite/内存对象存储/脚本 Provider，浏览器使用模拟 API；没有付费请求、远程推送或部署。
 
 已实现的文件工具是 `list_run_files`、`get_file_outline`、`read_file_content`、`read_file_table`、`search_file_content`。输入类型同时生成模型 Schema 和服务端参数检查；当前采用下节说明的静态 `RegisteredTool`，不等同完整动态工具发布能力。列文件读取当前已保存回合允许的附件；其余工具接收 `file_id`，分段工具接受块偏移/数量，搜索额外接收字面关键词。结果复用已经持久保存的解析内容，返回来源哈希、解析版本、遗漏警告和读取数据；不重新执行上传文件内的代码，不补造 OCR、PDF 表格或目录。未来目录中设计的高级页范围、列文件游标等不能当作当前参数使用。
 
@@ -60,7 +64,7 @@
 
 运行前先备份并确认目标库，执行 `make api-migrate` 升级到 `20261008_0023`，再重启 API 和 Web；本次仅在隔离 SQLite 中验证迁移，未修改实际开发数据库。MinIO 沿用已有上传配置，PDF/Office 仍要求下文专用执行器；工具读取已保存解析结果，不创建另一套解析沙箱。回退应用时优先保留新增记录和列，不在有新调用数据的库上自动降级迁移。
 
-主要位置：`services/agent_file_tool_service.py` 负责读取和保存；`services/tool_catalog.py` 负责内置目录；`features/agent_runtime/services/agent_tool_loop.py` 负责加载及模型续接；`workflow_execution_state_service.py` 负责进度及累计用量；Web Composer 与运行证据负责开关和展示。动态工具及任务工作目录仍未实现。
+主要位置：`services/agent_file_tool_service.py` 负责读取和保存；`services/tool_catalog.py` 负责内置目录；`features/agent_runtime/services/agent_tool_loop.py` 负责 Agent 加载及模型续接；`services/response_file_tool_service.py` 负责快速回复多轮及统一 SSE；`workflow_execution_state_service.py` 负责 Agent 进度及累计用量。Web 保留文件选择和运行证据，不再提供文件工具开关。任务目录的独立本地执行器见后文；动态工具及 Agent 命令接入仍未实现。
 
 验证记录（2026-10-09，`2daefd0` 提交前的首批工具实现）：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs` 为 556 通过、13 跳过、4 项按标记未选择；13 项需显式 MySQL/MinIO 或真实 Docker 样本配置。`apps/web` 下 `npm run typecheck`、`npm run lint` 通过，`npm test` 为 123 通过。工具测试使用隔离 SQL、内存对象存储和脚本模型验证上传、真实文本解析、五类读取、错误后继续、跨用户/会话拒绝、撤销、重复、超时、事件排序及迁移；不代表 MySQL/MinIO/真实模型联调。Playwright 使用本地 Web 与模拟 API 检查桌面/窄屏工具开关及菜单，工具节点展示由前端渲染测试验证；未进行真实 Provider 浏览器流程。后台恢复及真实服务矩阵仍未执行。
 
@@ -87,7 +91,7 @@
 - 每轮 Attempt 的私有请求 metadata 保存 `loaded_tool_versions` JSON 字符串，兼容现有字符串型 metadata；目录调用与读取调用均写入 `llm_tool_calls`，使用既有预算和进度事件。Web 显示“查找可用工具”“查看工具说明”，不向前端暴露 Schema、内部实现引用或凭据。
 - `available` 仅说明当前内置实现可调用，不保证某个文件存在、归属正确或已解析；实际文件授权与状态仍在执行前检查。动态工具的缺依赖、个人/项目可见性和外部连接状态需在对应来源实现时补齐，不返回虚构的能力。
 
-本次没有新增配置或迁移，数据库仍要求 `20261008_0023`。模型原先直接使用表格/结构/搜索工具的行为改为先描述加载，其余请求和历史读取接口保持不变；Controller 已提示为发现、加载和最终回答预留模型调用次数。任务工作目录与 Python/Shell 尚未实现，目录不会返回这些未开放能力。
+目录发现没有新增配置或迁移，数据库仍要求 `20261008_0023`。模型原先直接使用表格/结构/搜索工具的行为改为先描述加载，其余请求和历史读取接口保持不变；Controller 已提示为发现、加载和最终回答预留模型调用次数。后文的本地任务执行器尚未接入目录，不会返回未开放的 Python/Shell 能力。
 
 验证（2026-10-09，本地）：新增目录测试先确认缺少实现失败，再实现过滤/版本/分页/Worker 隔离；API 流程测试验证搜索、加载、读取、同批拒绝、错误版本及描述后撤销。完整命令 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -m 'not infrastructure' -q -rs`：569 通过、13 跳过、4 按标记未选择；跳过项需要显式 MySQL/MinIO 或 Docker 样本环境。前端类型检查、lint、123 项测试通过；Playwright 用模拟运行快照检查真实 Web 详情展示，截图为本地忽略文件 `output/playwright/tool-discovery-evidence.png`。真实 Provider、真实服务联调和生产部署未执行。
 
@@ -274,7 +278,7 @@ macOS Docker Desktop/Linux ARM64 检查用于开发兼容；目标 Linux AMD64 �
 - 根目录运行 `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml packages/models/tests -q`：**56 passed**。单独运行模型包时必须带此配置以启用项目已有 asyncio 模式；首次遗漏配置的运行报异步测试未支持，修正命令后通过，未改测试标准。
 - `apps/api/.venv/bin/python -m ruff check apps/api packages/models deployments/file-runtime deployments/verification/create_file_fixtures.py` 与 `git diff --check` 通过。复现说明见[本地统一文件解析验收](../../deployments/verification/README.md#本地统一文件解析验收)。
 
-该次解析验收范围：真实 Socket、Docker、解析器、HTTP 应用、Context 构建与读取已验证；数据库为 SQLite、对象存储为内存替身，Provider 为固定测试响应。该次没有验收真实 MySQL/MinIO、浏览器、目标 AMD64、生产部署或真实模型。后续首批工具登记、读取授权和调用记录见文首 2026-10-09 实现节；任务工作目录、动态 Registry 和 Python/Shell 仍未实现，不把固定解析当作通用命令工具。
+该次解析验收范围：真实 Socket、Docker、解析器、HTTP 应用、Context 构建与读取已验证；数据库为 SQLite、对象存储为内存替身，Provider 为固定测试响应。该次没有验收真实 MySQL/MinIO、浏览器、目标 AMD64、生产部署或真实模型。后续首批工具登记、读取授权和调用记录见文首 2026-10-09 实现节；本地任务执行器见后文，固定解析协议仍不接受通用命令。
 
 ## 现有模块的实现职责
 
@@ -342,22 +346,33 @@ python3 deployments/file-runtime/manage_runtime.py check --image nexuspilot-file
 
 ### Office 执行器启动与权限
 
-执行器只接受本机 Unix Socket 上一条 `office_parse.v1`（旧 Office）或 `file_parse.v1`（PDF/Office）请求；字段仅包含固定协议、允许的 MIME 和 base64 文件字节，不允许指定路径、镜像、命令、挂载或环境变量。API 先检查当前 Run 归属、原件哈希及大小，再通过 PDF/Office 适配器和共享 `file_runtime_client.py` 发送请求，校验结果来源、结构和块身份，保存到现有 Context。各 Provider 接收相同文字/表格，不直接接收 Office 字节。
+执行器接受本机 Unix Socket 上一条 `office_parse.v1`（旧 Office）或 `file_parse.v1`（PDF/Office）解析请求，以及固定的 `file_capabilities.v1` 可用性探测。解析字段仅包含固定协议、允许的 MIME 和 base64 文件字节，不允许指定路径、镜像、命令、挂载或环境变量。上传先检查用户归属、原件哈希及大小，再通过 PDF/Office 适配器和共享 `file_runtime_client.py` 发送请求，校验结果来源、结构和块身份，保存解析对象；绑定会话后用于 Context 和文件工具。各 Provider 接收相同文字/表格，不直接接收 Office 字节。
 
-本机开发示例，在仓库根目录运行（目录已存在时先检查归属，不覆盖或删除已有 Socket）：
+本机开发先构建并通过镜像检查，再在仓库根目录的两个终端分别运行（macOS Docker Desktop 与 Linux Docker Engine 使用相同命令；目录已存在时检查归属，不覆盖或删除已有 Socket）：
 
 ```bash
-mkdir -m 700 /tmp/nexuspilot-file-runtime
-python3 deployments/file-runtime/serve_runtime.py --socket /tmp/nexuspilot-file-runtime/executor.sock --image nexuspilot-file-runtime:unified-local
+# 终端 1：已有的已验收镜像，不会拉取或安装依赖。
+make file-runtime-run FILE_RUNTIME_IMAGE=nexuspilot-file-runtime:unified-local
+# 终端 2：确认开发数据库和备份后执行；该目标包含 api-migrate。
+make api-run-with-files
 ```
 
-在 `apps/api/.env` 显式设置并重启 API：
+两个目标默认使用同一 `/tmp/nexuspilot-file-runtime-<uid>/executor.sock`，可在两个命令中设置相同 `FILE_RUNTIME_SOCKET`。普通 `make api-run` 不自动启用执行器；也可在 `apps/api/.env` 显式设置实际路径后重启 API：
 
 ```dotenv
 NEXUSPILOT_FILE_RUNTIME_SOCKET=/tmp/nexuspilot-file-runtime/executor.sock
 ```
 
 - 未配置时 PDF/Office 请求明确失败；没有自动安装、启动执行器、拉取镜像或回退宿主机解析。示例配置没有自动改写用户实际 `.env`。
+
+2026-10-11 修复与验收：
+
+- 已完成本地修复：认证后的 `GET /api/v1/files/capabilities` 返回可选扩展名和执行器状态，不返回路径、镜像标识或密钥。探测只确认服务协议响应，不保证所有文档解析成功；实际上传仍独立处理损坏、超时和限制。服务繁忙、不可达、旧版不支持探测或未配置时，新 Office/PDF 上传在预留配额之前返回 503；已有同一上传键的记录维持原幂等行为。已保存解析结果仍可离线读取。
+- 工具路径不另建一套：上传 → 固定隔离解析 → 持久化解析对象 → Run 附件授权 → `read_file_content`／`read_file_table` 等工具 → 保存工具调用和结果 → 模型下一轮。执行器不是可由模型指定命令的工具，不隐式开启 Shell、pip 或 Docker 权限。两种模式按本节前述策略自动提供当前回合的只读文件工具。
+- 读取工具的目录描述明确 Office/PDF 支持范围；按 Word、DOCX、Excel、XLSX、PowerPoint、PPTX、PDF 搜索能找到通用正文读取工具，无读取权限时仍不可见。不新增重复的 Provider 专用 Office 工具。
+- 前端先查询可用格式，发送 Office/PDF 前再次检查；上传失败保留上一轮运行事实、已保存回答、草稿和附件，不把服务配置错误误报为会话仍在执行。对应页面行为见阶段4，不另立工具阶段。
+- 本机 macOS + Docker Desktop、Linux ARM64 既有 `:unified-local` 镜像验证：112 项相关后端测试通过（无跳过），包含 DOCX/XLSX/PPTX/PDF 上传、两轮上下文、脚本模型真实文件工具循环及调用记录、执行器停用后复用解析结果、工具目录检索和资源鉴权。浏览器桌面/手机六项上传失败、格式选择及原文件按钮回归通过，124 项前端单元测试、TypeScript 与 ESLint 通过。旧状态清除顺序已用同一浏览器用例复现发送按钮禁用；修复后通过。这是本地合成文件、SQLite/内存对象存储和脚本 Provider 测试，不是服务器、MySQL/MinIO 或真实 Provider 验收。
+- 仍未修改服务器、实际 `.env`、生产数据库或发布镜像。原文件 1 MiB、解析 JSON 55000 字节限制、OCR 等未在本次取消；大文档与上传／上下文大小耦合另待处理。
 - 启动时固定本地 Linux 镜像 ID；更新镜像后需显式重启执行器，新版本不会改变已提交 Context。镜像 ID、解析器及依赖版本写入解析来源版本。
 - 2026 年 9 月 16 日增加工作表/幻灯片完整位置清单（`office-v2`），需重新构建镜像、通过 `make file-runtime-check` 后重启执行器才能启用；仅更新 API 不会升级正在使用的镜像。API 兼容旧镜像，但不会将旧结果标成目录完整。本机使用已有依赖镜像叠加新脚本，在独立 `nexuspilot-file-runtime:structure-test` 镜像完成六项检查（含空隐藏表、空白与纯图片幻灯片）；默认镜像未替换。全新基础镜像离线构建因缺少缓存且无法下载 apt 依赖失败，不将这次复用依赖验证记为全新构建通过。
 - 每请求创建独立容器，继承上述限制；标准输入传文件，标准输出传结构化结果，没有宿主目录挂载，容器日志驱动关闭。主机短暂保存的输入使用私有临时文件句柄，处理完成即释放。
@@ -398,7 +413,44 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 ## 任务工作目录与 Python／Shell 工具接入计划
 
-状态：未开始。先完成上方本地统一解析验收；服务器验收按 2026-10-07 用户指示暂停，不作为后续本地工具开发的必需条件。任务工作目录与 Python／Shell 仍需完成 Registry、授权、审计和真实隔离测试后才能启用。沿用本文件的 `RegisteredTool`、`ToolExecutionRequest`、`ToolExecutionResult`、Workspace 权限和 `llm_tool_calls`，不新增绕开它们的 Python/Shell HTTP 接口，也不将任意代码字段加入 `file_parse.v1`。通用执行尚未开放，历史“暂停 Shell”只在本小范围进入规划，Git、网络及外部副作用不因此恢复实施。
+状态：进行中。本地统一解析验收已完成；本次新增独立任务执行器，范围与使用方式见下一节。服务器验收按 2026-10-07 用户指示暂停。任务执行器仍需通过服务端身份/数据库 Task 归属、Registry、`llm_tool_calls`、Artifact 和取消流程接入后才能向 Agent 启用；本地 scope 字段检查不等于平台资源鉴权。不新增 Python/Shell HTTP 接口，也不将任意代码加入 `file_parse.v1`。Git、网络及外部副作用不因此恢复实施。
+
+### 本地执行器实现与运行（2026-10-09）
+
+新增 `deployments/task-runtime/task_runtime.py` 与独立 Dockerfile；仅供受信本地执行进程或管理员调用，没有 Socket/HTTP 监听器。API 和 Web 尚不调用它，也不获得 Docker 访问权。`WorkspaceStore` 保存目录，`TaskExecutor` 执行结构化 `run_command`；相同的名称与字段供后续 Registry 接入，不另外设计面向模型的执行接口。
+
+- 目录与权限：必须指定归当前系统用户所有的 `0700` 根目录，平台引用使用随机 UUID，记录 `user_id/run_id/task_id`，每次读写要求三者精确匹配。两项开关必须同时允许：执行器 `enabled` 与目录 `allow_execute`。这里的 scope 由受信调用方传入，**不是认证令牌**；不得直接把浏览器或模型传来的身份转交该类。真实数据库所有权检查仍待接入。
+- 输入：受信调用方提供文件字节及 SHA-256，创建时检查，每次执行前重新检查完整输入集合、文件类型和哈希；容器只读挂载该目录。工作文件不以可写宿主目录挂载，而是在 32 MiB tmpfs 中运行，最多导出 128 个普通文件、每文件 8 MiB、合计 16 MiB。拒绝路径穿越、软/硬链接、特殊文件和超限输出；空文件夹也随快照保存。
+- 连续性：每次 Python/Shell 是新 Linux 容器，使用上次成功保存的文件快照，不保留 Python 变量。相同任务通过跨进程文件锁串行；同一个执行根目录最多同时运行两个容器。相同调用 UUID 和参数只返回已保存的结果；改参数复用 UUID 拒绝。每个目录最多 32 次命令，保存的历史快照暂不自动删除；最多可能保留约 512 MiB 文件快照及调用记录，正式多用户启用前需补用户总配额与回收策略。
+- 命令：只允许 `python` 与 `shell`，参数为相对脚本路径及脚本参数，或通过有界 stdin 提供代码；`cwd` 仅允许任务目录中的相对路径。Python 使用 `-I -B -u`；Shell 使用 stdin/脚本，不开放 `-c`。宿主始终使用 argv 数组，不执行脚本。默认执行期限 30 秒，受信调用方最多 60 秒；stdout/stderr 各保留 32 KiB，UTF-8 替换后也检查字节上限，并分别返回截断标记与退出码。这些是执行资源限制，不是模型输出 token 上限。
+- 容器：本地镜像先解析为固定 ID，禁止自动拉取；非 root、只读基础文件系统、无网络、删除 Linux capabilities、禁止新权限、256 MiB 内存、1 CPU、64 进程、独立有限 `/tmp`。不传入 API `.env`、MinIO 凭据或 Docker Socket。任务镜像从已有解析镜像离线派生，保留 Office/PDF 依赖，移除 `pip`/`ensurepip`；不提供运行时安装入口。任意 Python 仍可以运行任务自身代码，不能把移除 pip 宣称为禁止所有自带 Python 模块。
+- 完成与失败：只有确认仅剩固定容器保活进程后，才用固定 tar 读取 tmpfs，并在宿主校验归档。Docker Desktop 的 `docker cp` 不适合此 tmpfs 导出，不能据其空结果宣称保存成功。有效结果及调用状态落盘后再移除本次容器；非零退出可保留已验证文件，但状态仍是失败。脚本留下后台进程时拒绝本次快照；超时/取消终止整个容器、丢弃本次未完成写入，保留上一次已保存快照。
+- 保存失败：冻结容器并保留具体容器名与 `executing/cleanup_pending` 状态，后续调用拒绝重跑。重建执行器对象也会发现该状态，但**没有自动恢复**；暂停容器的 tmpfs 仍会在 Docker/主机重启后丢失，因此此记录不等于持久 Artifact。完成快照以文件 fsync、目录 fsync 和状态原子替换保存。本地调用记录位于工作目录，不写入应用数据库；MinIO/Artifact 保存、管理员恢复及确认后精确清理仍待实现。
+
+运行前需要 Docker Desktop（macOS）或 Linux Docker，以及已构建的 `nexuspilot-file-runtime:local`。不依赖宿主 Office/PDF 库，也不读取应用 `.env`：
+
+```bash
+make task-runtime-build
+make task-runtime-test
+```
+
+`task-runtime-build` 先检查本地基础镜像，构建时 `--network=none --pull=false`，不会重建或覆盖原文件解析镜像。当前在 macOS 的 Linux ARM64 容器验证；没有把该结果算作 Linux 云主机或 AMD64 验收。
+
+管理员命令以 stdin 接受一条 JSON，必须显式指定 `--root /absolute/private/task-root`；创建与执行均需 `--enable-execution`。例如先向 `python3 deployments/task-runtime/task_runtime.py --root /absolute/private/task-root --enable-execution` 输入：
+
+```json
+{"action":"create","scope":{"user_id":"local-user","run_id":"local-run","task_id":"local-task"}}
+```
+
+使用返回的真实 `workspace_reference` 和新生成的调用 UUID，再向相同命令输入（占位值需替换，不作为已有记录）：
+
+```json
+{"action":"run_command","workspace_reference":"<创建结果中的 UUID>","scope":{"user_id":"local-user","run_id":"local-run","task_id":"local-task"},"call_id":"<新的 UUID>","command":{"executable":"python","stdin":"from pathlib import Path\nPath('result.txt').write_text('hello')\nprint('saved')"}}
+```
+
+输入文件导入目前由 `WorkspaceStore.create(inputs=..., hashes=...)` 的受信 Python 调用提供，CLI 不接受宿主文件路径。返回结果包含状态、输出/截断标记、退出码、镜像 ID 和已保存文件的相对路径/大小/哈希；不要将管理员命令包装成未经鉴权的公网接口。
+
+本批测试先确认执行器缺失失败；随后补充并复现了快照根被符号链接替换、二进制输出转 UTF-8 后超限、空文件夹丢失三项问题，再修改实现。真实 Docker 测试也发现并修正了 tmpfs 导出与直接复用含 pip 镜像的问题。验证命令为 `NEXUSPILOT_TEST_TASK_RUNTIME=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_task_runtime.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_agent_tool_discovery.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_office_runtime_executor.py -q -rs`；截至本批检查为 78 通过、2 跳过（两个既有 Office/PDF 实际 Socket 样本未开启，本次没有修改解析执行器）。任务测试包含实际 Docker Desktop Linux ARM64 容器，不使用模拟执行器代替；模型流程回归仍使用测试 Provider/数据库/对象存储。任务镜像 ID 为 `sha256:db92d5d8e63f5c70d77535267e573ca308a9199b80f07d7134156350268c4b95`；Ruff 与差异空白检查通过。当前没有数据库迁移、真实 Provider 调用或服务器部署，前端未修改，未执行浏览器检查。
 
 ### 工作目录归属与生命周期
 
@@ -430,7 +482,7 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 先补 Registry/参数/授权/重复 Tool Call 测试，再实现工作目录物化和执行。真实容器测试至少覆盖双用户双任务隔离、第二次调用读取第一次输出、输入只读、链接逃逸、环境变量/密钥不可见、网络/安装请求拒绝、stdout/stderr 并发输出、非零退出、超时和取消、结果存储失败及精确清理。Python/Shell 均按可执行任意代码的风险验证，不能仅凭固定解析器安全测试通过就开放。
 
-只读文件工具可先交付，`run_command` 需独立通过执行权限、实际容器隔离和审计检查后才启用。任务工作目录仍处于设计阶段，尚未安装新依赖、启用命令工具或实施目录表迁移；现有 `llm_tool_calls` 的必要迁移沿用下文数据模型设计。阶段10负责脱离观察连接的执行所有权与重启恢复，本工作项不另建内存后台任务冒充可靠 Worker。
+只读文件工具已可本地使用；`run_command` 的本地执行器已实施，但在接入数据库身份、调用记录、Artifact 与取消流程之前仍不向 Agent 启用。没有实施任务目录表迁移。下一步按此处现有工具定义和调用过程完成受信执行服务连接及 Agent 接入，不把管理员 CLI 变成模型直连入口。阶段10负责脱离观察连接的执行所有权与重启恢复，本工作项不另建内存后台任务冒充可靠 Worker。
 
 ## 核心合同
 

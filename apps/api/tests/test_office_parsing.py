@@ -63,5 +63,5 @@ def test_office_requires_configured_executor_without_host_fallback(monkeypatch):
         filename="document.xlsx",
         media_type=OFFICE_TYPES[1],
     )
-    with pytest.raises(FileParsingError, match="executor.*configured"):
+    with pytest.raises(FileParsingError, match="尚未启用"):
         parse_file_content(request, content)

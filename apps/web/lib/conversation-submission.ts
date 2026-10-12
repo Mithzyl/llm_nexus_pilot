@@ -35,15 +35,19 @@ export function isConversationExecutionActive({ run, workflowStatus, messages, w
   ) return true;
   if (!run || !["pending", "running", "cancel_requested"].includes(run.status)) return false;
 
-  // Only the single-call quick-response case can finish while its generic Run stays pending.
+  // A single quick call or fully completed server-owned file-tool loop can finish while pending.
   // Workflow discovery errors, partial lists and generic Task/multi-call Runs remain blocked.
   if (
     run.status !== "pending" || workflowStatus !== null ||
     workflowAbsentForRunId !== run.run_id || !run.session_id ||
     !("attempts" in run) || run.attempts_has_more || run.tasks_has_more ||
-    run.tasks.length !== 0 || run.attempts.length !== 1
+    run.tasks.length !== 0 || run.attempts.length === 0
   ) return true;
-  const attempt = run.attempts[0];
+  if (run.attempts.length > 1 && !run.attempts.every((item) =>
+    item.request_type === "file_tool_round" && item.task_id === null &&
+    item.run_id === run.run_id && item.status === "completed",
+  )) return true;
+  const attempt = run.attempts.at(-1)!;
   if (attempt.status !== "completed" || attempt.task_id !== null || attempt.run_id !== run.run_id) {
     return true;
   }

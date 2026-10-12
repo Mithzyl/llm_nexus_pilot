@@ -24,7 +24,7 @@ def test_pdf_requires_configured_executor_without_host_fallback(monkeypatch):
 
     monkeypatch.setattr(get_settings(), "file_runtime_socket", None)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
-    with pytest.raises(PdfExtractionError, match="executor.*configured"):
+    with pytest.raises(PdfExtractionError, match="尚未启用"):
         extract_pdf_pages(b"%PDF-1.7\nfixture")
 
 

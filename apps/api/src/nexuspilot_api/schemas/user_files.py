@@ -1,8 +1,19 @@
 """Browser-visible private file fields; object addresses and ownership cannot be supplied."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from nexuspilot_api.schemas.base import ApiModel
+
+
+class FileUploadCapabilities(BaseModel):
+    """Public upload availability; never include executor paths, image IDs or credentials."""
+
+    accepted_extensions: list[str]
+    executor_status: Literal["available", "not_configured", "unavailable", "busy"]
+    max_file_size_bytes: int = 1024 * 1024
+    unavailable_reason: str | None = None
 
 
 class UserFileCreate(BaseModel):

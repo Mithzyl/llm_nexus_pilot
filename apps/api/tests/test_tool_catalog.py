@@ -4,6 +4,22 @@ import pytest
 from pydantic import BaseModel
 
 
+@pytest.mark.parametrize(
+    "format_name", ["Word", "DOCX", "Excel", "XLSX", "PowerPoint", "PPTX", "PDF"]
+)
+def test_office_formats_discover_existing_authorized_read_tool(format_name):
+    """Format-specific requests discover the shared reader without granting parser commands."""
+    from nexuspilot_api.services.agent_file_tool_service import FILE_TOOL_CATALOG
+
+    found = FILE_TOOL_CATALOG.search(
+        format_name, capabilities=frozenset({"read"}), offset=0, limit=20
+    )
+    assert "read_file_content" in {entry["name"] for entry in found["items"]}
+    assert FILE_TOOL_CATALOG.search(
+        format_name, capabilities=frozenset(), offset=0, limit=20
+    )["items"] == []
+
+
 class ExampleArguments(BaseModel):
     """Provide a minimal schema for catalog rules without an execution environment."""
 

@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { messageFiles, uploadUserFile, validateUploadFiles } from "../lib/user-files";
 
+/** Reject unavailable isolated formats before creating a reservation or sending file bytes. */
+test("checks Office availability before reserving a file", async () => {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (url) => {
+    calls.push(String(url));
+    return Response.json({ accepted_extensions: [".txt"], executor_status: "not_configured",
+      unavailable_reason: "服务器尚未启用 Office／PDF 文件解析。" });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(uploadUserFile(new File(["fixture"], "report.docx"), "key-12345",
+      new AbortController().signal), /尚未启用/);
+    assert.deepEqual(calls, ["/api/nexus/files/capabilities"]);
+  } finally { globalThis.fetch = original; }
+});
+
 test("rejects empty, oversized, unsupported and excessive attachments before upload", () => {
   assert.throws(() => validateUploadFiles([new File([], "empty.txt")]));
   assert.throws(() => validateUploadFiles([new File(["x"], "photo.png")]));

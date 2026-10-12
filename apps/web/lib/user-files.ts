@@ -7,6 +7,20 @@ export type UserFile = {
 };
 
 export const FILE_ACCEPT = ".txt,.md,.py,.js,.ts,.css,.json,.csv,.tsv,.yaml,.yml,.xml,.pdf,.docx,.xlsx,.pptx";
+export const TEXT_FILE_ACCEPT = FILE_ACCEPT.split(",").filter((suffix) =>
+  ![".pdf", ".docx", ".xlsx", ".pptx"].includes(suffix)).join(",");
+
+export type FileUploadCapabilities = {
+  accepted_extensions: string[];
+  executor_status: "available" | "not_configured" | "unavailable" | "busy";
+  max_file_size_bytes: number;
+  unavailable_reason: string | null;
+};
+
+/** Read authenticated parser availability without exposing executor configuration to the browser. */
+export function getFileUploadCapabilities(signal?: AbortSignal): Promise<FileUploadCapabilities> {
+  return nexusFetch<FileUploadCapabilities>("files/capabilities", { signal });
+}
 
 /** Validate browser size and suffix early; the backend independently validates actual content. */
 export function validateUploadFiles(files: readonly File[]): void {
@@ -18,9 +32,16 @@ export function validateUploadFiles(files: readonly File[]): void {
   }
 }
 
-/** Reserve and upload immutable bytes; preserve the reservation ID when transport fails. */
+/** Check isolated-parser availability before reservation; the API independently checks it again. */
 export async function uploadUserFile(file: File, key: string, signal: AbortSignal): Promise<UserFile> {
   validateUploadFiles([file]);
+  const suffix = `.${file.name.split(".").at(-1)?.toLowerCase()}`;
+  if (!TEXT_FILE_ACCEPT.split(",").includes(suffix)) {
+    const capabilities = await getFileUploadCapabilities(signal);
+    if (!capabilities.accepted_extensions.includes(suffix)) {
+      throw new Error(capabilities.unavailable_reason ?? "服务器暂不支持此文件格式。");
+    }
+  }
   const bytes = await file.arrayBuffer();
   const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
     .map((byte) => byte.toString(16).padStart(2, "0")).join("");

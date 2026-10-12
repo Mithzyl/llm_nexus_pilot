@@ -23,12 +23,14 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
     EventSink,
     WorkflowExecutionStateService,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_policy import hash_workflow_request
 from nexuspilot_api.features.agent_runtime.services.workflow_query_service import (
     get_workflow_result,
     get_workflow_summary,
 )
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import AgentWorkflowStatus, LlmAgentWorkflowExecution
+from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 from nexuspilot_api.services.model_reasoning_policy_service import (
     resolve_registered_model_reasoning_configuration,
 )
@@ -90,8 +92,21 @@ class AgentWorkflowExecutionService:
         *,
         event_sink: EventSink | None = None,
     ) -> tuple[LlmAgentWorkflowExecution, bool]:
-        """Persist or replay a workflow before synchronous execution begins."""
+        """Offer read-only tools automatically for conversation attachments, then persist/replay."""
 
+        existing = await self.db_session.scalar(
+            select(LlmAgentWorkflowExecution).where(
+                LlmAgentWorkflowExecution.run_id == run_id,
+                LlmAgentWorkflowExecution.idempotency_key == payload.idempotency_key,
+            )
+        )
+        # Historical requests replay their original policy; newly created turns
+        # derive file permissions from their saved, owner-scoped attachments.
+        exact_replay = existing is not None and existing.request_hash == hash_workflow_request(
+            payload
+        )
+        if not exact_replay and await conversation_file_ids(self.db_session, run_id):
+            payload = payload.model_copy(update={"execution_profile": "tool_enabled_v1"})
         self.workflow_state.set_event_sink(event_sink)
         return await self.workflow_state.create_workflow(
             run_id,

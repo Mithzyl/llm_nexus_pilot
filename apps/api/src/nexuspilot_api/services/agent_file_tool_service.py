@@ -112,14 +112,17 @@ FILE_TOOLS = tuple(
         ),
         register_file_tool(
             "read_file_content",
-            "Read extracted blocks using zero-based offset and limit; follow next_offset.",
+            "Read saved text from uploaded text, Word/DOCX, Excel/XLSX, PowerPoint/PPTX or PDF. "
+            "Use zero-based offset and limit; follow next_offset. "
+            "Reads cached extraction, not images or arbitrary local paths.",
             PageArguments,
-            keywords=("正文", "文字", "读取"),
+            keywords=("正文", "文字", "读取", "Office", "文档", "电子表格", "幻灯片"),
             initially_loaded=True,
         ),
         register_file_tool(
             "read_file_table",
-            "Read extracted table rows; formulas are not executed.",
+            "Read saved table rows from Excel/XLSX, Word/DOCX, PowerPoint/PPTX or CSV/TSV; "
+            "formulas are not executed. PDF structured tables are not supported.",
             PageArguments,
             keywords=("表格", "Excel", "CSV", "行"),
         ),

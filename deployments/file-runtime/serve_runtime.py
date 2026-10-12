@@ -149,11 +149,17 @@ class ParseHandler(socketserver.StreamRequestHandler):
     timeout = 10
 
     def handle(self) -> None:
-        """Send safe parse results; file bytes and internal failures are not written to logs."""
+        """Answer a fixed availability probe or parse; never expose image IDs or host paths."""
 
         try:
             encoded = self.rfile.readline(MAX_REQUEST_BYTES + 1)
-            report = parse_in_container(encoded, self.server.image_id)
+            if encoded == b'{"protocol":"file_capabilities.v1"}\n':
+                report = {
+                    "protocol": "file_capabilities.v1",
+                    "formats": ["docx", "xlsx", "pptx", "pdf"],
+                }
+            else:
+                report = parse_in_container(encoded, self.server.image_id)
         except Exception:
             report = {"error": "file_executor_failed"}
         try:
@@ -230,11 +236,16 @@ class FileRuntimeServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
 
 
 def main() -> int:
-    """Start the local executor without reading API configuration or accepting remote addresses."""
+    """Start the executor with an explicit socket; optionally create its private local directory."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", required=True)
     parser.add_argument("--image", default=IMAGE_TAG)
+    parser.add_argument(
+        "--create-directory",
+        action="store_true",
+        help="Create the socket's parent with mode 0700; existing permissions are validated",
+    )
     arguments = parser.parse_args()
 
     def stop_executor(signum, frame):
@@ -244,6 +255,10 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop_executor)
     try:
+        if arguments.create_directory:
+            if not Path(arguments.socket).is_absolute():
+                raise ValueError("Socket must be absolute")
+            Path(arguments.socket).parent.mkdir(mode=0o700, exist_ok=True)
         with FileRuntimeServer(arguments.socket, resolve_image(arguments.image)) as server:
             print("File executor ready", flush=True)
             try:

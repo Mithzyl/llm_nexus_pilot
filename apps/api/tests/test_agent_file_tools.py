@@ -174,7 +174,7 @@ async def test_model_only_profile_still_refuses_tool_calls(client, test_database
 
 
 async def test_worker_lists_then_reads_file_before_submitting_answer(client):
-    """Three real gateway rounds retain both call/result pairs and accumulate tool usage."""
+    """Attachments automatically enable discovery/read rounds without a user tool switch."""
     from test_conversation_file_context import prepare_conversation_file
 
     _, _, file, turn = await prepare_conversation_file(client)
@@ -208,7 +208,7 @@ async def test_worker_lists_then_reads_file_before_submitting_answer(client):
     result = (
         await client.post(
             f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
-            json=workflow_payload(execution_profile="tool_enabled_v1"),
+            json=workflow_payload(),
         )
     ).json()
     assert result["status"] == "completed", result
@@ -221,6 +221,12 @@ async def test_worker_lists_then_reads_file_before_submitting_answer(client):
         "read-1",
         "read-2",
     ]
+    replay = await client.post(
+        f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
+        json=workflow_payload(),
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["workflow_execution_id"] == result["workflow_execution_id"]
 
 
 async def test_repeated_tool_request_stops_without_unbounded_calls(client):

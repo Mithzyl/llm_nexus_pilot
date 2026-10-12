@@ -362,7 +362,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .compact-select-list button:hover, .compact-select-list button.is-active { background: var(--soft); }
 .compact-select-list button i { margin-left: auto; font-style: normal; }
 /* Keep the rightmost Agent tool menu inside the narrow Composer. */
-.agent-file-tools .compact-select-list { left: auto; right: 0; }
 .reasoning-settings { position: relative; }
 .reasoning-settings-trigger { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 7px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: var(--ui-control-size); cursor: pointer; }
 .reasoning-settings-trigger:hover, .reasoning-settings-trigger[aria-expanded="true"] { background: var(--soft); color: var(--text); }
@@ -578,7 +577,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .composer-config-controls { flex-wrap: wrap; }
   .composer-actions { width: 100%; justify-content: flex-end; }
   .agent-config-shelf { align-items: flex-start; flex-wrap: wrap; gap: 7px 14px; }
-  .agent-file-tools { margin-left: auto; }
   .agent-model-role { width: 100%; margin-left: 0; }
 }
 

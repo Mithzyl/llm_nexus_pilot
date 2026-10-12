@@ -44,6 +44,36 @@ def executor(monkeypatch):
     return module
 
 
+def test_capability_probe_uses_live_socket_without_starting_container(executor, monkeypatch):
+    """Availability uses a fixed authenticated-local protocol; no document or Docker work occurs."""
+    from nexuspilot_api.infrastructure.file_runtime_client import file_runtime_status
+
+    def no_parse(*args):
+        """A metadata probe must not start the parser."""
+        raise AssertionError("Probe unexpectedly parsed a document")
+
+    monkeypatch.setattr(executor, "parse_in_container", no_parse)
+    with tempfile.TemporaryDirectory(prefix="probe-", dir="/tmp") as directory:
+        path = str(Path(directory) / "p.sock")
+        monkeypatch.setattr(get_settings(), "file_runtime_socket", path)
+        with executor.FileRuntimeServer(path, "sha256:test") as server:
+            worker = threading.Thread(target=server.serve_forever)
+            worker.start()
+            try:
+                assert file_runtime_status() == "available"
+                assert server.slots.acquire(timeout=2)
+                assert server.slots.acquire(timeout=2)
+                try:
+                    assert file_runtime_status() == "busy"
+                finally:
+                    server.slots.release()
+                    server.slots.release()
+            finally:
+                server.shutdown()
+                worker.join(timeout=3)
+        assert file_runtime_status() == "unavailable"
+
+
 def word_fixture(extra_entries=None) -> bytes:
     """Create an independent minimal OOXML fixture using only ZIP/XML, not the parser library."""
 

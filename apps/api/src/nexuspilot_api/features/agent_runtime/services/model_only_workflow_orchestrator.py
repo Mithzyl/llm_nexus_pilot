@@ -211,8 +211,9 @@ class ModelOnlyWorkflowOrchestrator:
         workflow: LlmAgentWorkflowExecution,
         payload: AgentWorkflowCreate,
     ) -> None:
-        """Run the graph, budgeting discovery and reads only for the explicit tool profile."""
+        """Run the graph using persisted effective policy, including automatic attachment reads."""
 
+        payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node: LlmAgentWorkflowNodeExecution | None = None
         try:
             run = await self._require_run(workflow.run_id)

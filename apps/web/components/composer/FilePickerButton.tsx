@@ -1,8 +1,8 @@
 "use client";
 
-import { FILE_ACCEPT } from "../../lib/user-files";
+import { getFileUploadCapabilities, TEXT_FILE_ACCEPT } from "../../lib/user-files";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 export type PendingUploadFileDescriptor = {
   name: string;
@@ -71,13 +71,39 @@ export function PendingUploadFiles({
   );
 }
 
-/** Open the native file chooser directly from the Composer toolbar. */
+/** Open the chooser directly, advertising isolated formats only after a server availability check. */
 export function FilePickerButton({
   selectedFileCount,
   disabled,
   onFilesSelected,
 }: FilePickerButtonProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const availabilityId = useId();
+  const [accept, setAccept] = useState(TEXT_FILE_ACCEPT);
+  const [availabilityMessage, setAvailabilityMessage] = useState("正在检查 Office／PDF 解析服务；文本文件可直接选择。");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    /** Refresh on window focus so starting the executor does not require a page reload. */
+    const refreshCapabilities = () => {
+      void getFileUploadCapabilities(controller.signal).then((capabilities) => {
+        if (controller.signal.aborted) return;
+        setAccept(capabilities.accepted_extensions.join(","));
+        setAvailabilityMessage(capabilities.unavailable_reason ?? "");
+      }).catch(() => {
+        if (!controller.signal.aborted) {
+          setAccept(TEXT_FILE_ACCEPT);
+          setAvailabilityMessage("暂时无法检查 Office／PDF 解析服务；文本文件仍可选择。");
+        }
+      });
+    };
+    refreshCapabilities();
+    window.addEventListener("focus", refreshCapabilities);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refreshCapabilities);
+    };
+  }, []);
 
   useEffect(() => {
     const fileInput = fileInputRef.current;
@@ -94,7 +120,7 @@ export function FilePickerButton({
   }, [onFilesSelected]);
 
   return (
-    <div className="file-picker">
+    <div className="file-picker" title={availabilityMessage || "选择文件"}>
       <label
         className="file-picker-button"
         data-disabled={disabled ? "true" : undefined}
@@ -103,15 +129,17 @@ export function FilePickerButton({
           ref={fileInputRef}
           className="file-picker-input"
           type="file"
-          accept={FILE_ACCEPT}
+          accept={accept}
           multiple
           aria-label="选择文件"
+          aria-describedby={availabilityMessage ? availabilityId : undefined}
           disabled={disabled}
         />
         <span aria-hidden="true">＋</span>
         文件
         {selectedFileCount > 0 && <i aria-hidden="true">{selectedFileCount}</i>}
       </label>
+      {availabilityMessage && <span id={availabilityId} hidden>{availabilityMessage}</span>}
     </div>
   );
 }

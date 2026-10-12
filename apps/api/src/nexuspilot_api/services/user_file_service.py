@@ -16,10 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
+from nexuspilot_api.infrastructure.file_runtime_client import file_runtime_status
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage, ObjectStorageError
 from nexuspilot_api.models import LlmRunArtifact, User, UserFile, new_id
 from nexuspilot_api.schemas.file_parsing import FileParseRequest, ParsedFileDocument
-from nexuspilot_api.schemas.user_files import UserFileCreate
+from nexuspilot_api.schemas.user_files import FileUploadCapabilities, UserFileCreate
 from nexuspilot_api.services.file_parsing_service import FileParsingError, parse_file_content
 
 FILE_TYPES = {
@@ -40,6 +41,25 @@ FILE_TYPES = {
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+
+async def file_upload_capabilities() -> FileUploadCapabilities:
+    """Report parser availability off the event loop; existing parsed files remain readable."""
+    status = await to_thread.run_sync(file_runtime_status)
+    reasons = {
+        "not_configured": "服务器尚未启用 Office／PDF 文件解析，可上传文本文件。",
+        "unavailable": "Office／PDF 解析服务暂不可用，可上传文本文件或稍后重试。",
+        "busy": "Office／PDF 解析服务繁忙，请稍后重试。",
+    }
+    return FileUploadCapabilities(
+        accepted_extensions=[
+            extension
+            for extension in FILE_TYPES
+            if status == "available" or extension not in {".docx", ".xlsx", ".pptx", ".pdf"}
+        ],
+        executor_status=status,
+        unavailable_reason=reasons.get(status),
+    )
 
 
 async def owned_file(db: AsyncSession, file_id: str, user_id: str) -> UserFile:
@@ -114,7 +134,7 @@ async def interrupt_upload(db: AsyncSession, file_id: str) -> None:
 async def reserve_file(
     db: AsyncSession, storage: ObjectStorage, user_id: str, payload: UserFileCreate
 ) -> UserFile:
-    """Serialize per-user byte/count reservations and replay only identical upload requests."""
+    """Replay identical uploads; reject unavailable parsers before reserving storage quota."""
 
     filename = payload.filename
     if (
@@ -145,6 +165,10 @@ async def reserve_file(
             raise ResourceConflictError("Upload key was used for different content")
         await db.commit()
         return previous
+    if PurePosixPath(filename).suffix.lower() in {".docx", ".xlsx", ".pptx", ".pdf"}:
+        capabilities = await file_upload_capabilities()
+        if capabilities.executor_status != "available":
+            raise HTTPException(503, capabilities.unavailable_reason)
     # Locking reads use current committed state even after authentication opened a
     # MySQL repeatable-read snapshot. Reserve parser-result space before any I/O.
     sizes = list(

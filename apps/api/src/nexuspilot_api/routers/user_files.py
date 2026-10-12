@@ -15,10 +15,11 @@ from nexuspilot_api.features.identity.services.authentication_service import (
     validate_login_session_csrf,
 )
 from nexuspilot_api.routers.common import DatabaseSessionDependency, ObjectStorageDependency
-from nexuspilot_api.schemas.user_files import UserFileCreate, UserFileRead
+from nexuspilot_api.schemas.user_files import FileUploadCapabilities, UserFileCreate, UserFileRead
 from nexuspilot_api.services.user_file_service import (
     begin_upload,
     delete_file,
+    file_upload_capabilities,
     finish_upload,
     interrupt_upload,
     list_private_files,
@@ -61,6 +62,12 @@ async def file_principal(
 
 
 Principal = Annotated[WorkspacePrincipalRead, Depends(file_principal)]
+
+
+@router.get("/capabilities", response_model=FileUploadCapabilities)
+async def get_file_capabilities(principal: Principal):
+    """Expose current format availability only to an authenticated/local workspace principal."""
+    return await file_upload_capabilities()
 
 
 @router.post("", response_model=UserFileRead, status_code=201)

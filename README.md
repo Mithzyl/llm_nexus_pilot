@@ -23,7 +23,8 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - 可配置的通用 OpenAI Chat Completions 兼容 Provider；
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
 - 文件执行环境：`deployments/file-runtime` 提供 Office/Poppler Linux 镜像，以及本机 Unix Socket 执行器。API 不直接访问 Docker；PDF/DOCX/XLSX/PPTX 在独立无网络容器中提取正文、表格及位置。构建、配置与云端验收要求见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
-- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除。Agent 可显式启用五个附件读取/搜索工具并多轮处理结果，默认关闭；本地验证范围见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。OCR、跨版本解析缓存和通用 Python/Shell 尚未实现。上传限制见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
+- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除。两种模式均自动向模型提供当前回合允许读取的附件工具，由模型决定是否调用，无需选择“读取附件”；本地验证范围见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。OCR、跨版本解析缓存和 Agent Python/Shell 接入尚未实现。上传限制见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
+- 本地任务执行器：`deployments/task-runtime` 提供隔离 Python/Shell 与同任务文件快照；使用 `make task-runtime-build`、`make task-runtime-test` 构建和检查。仅供受信本地调用，尚未接入 Agent/数据库归属/Artifact，不能直接供浏览器或模型使用。目录、资源限制与运行方式见[任务执行器说明](docs/implementation/phase-7-tool-runtime-plan.md#本地执行器实现与运行2026-10-09)；
 - `model_only_v1` Agent 工作流支持 Controller 规划、工作 Agent、Handoff、确定性验证、独立审核和最终汇总，并可返回或查询每个完整节点结果；
 - `POST /api/v1/runs/{run_id}/agent-workflows` 支持同步 JSON 和实时 SSE；Workflow、完整 Result、Node 及持久化事件回放提供独立查询接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；
@@ -32,7 +33,7 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 - Memory Retrieval 使用有界的中英文词法候选、版本化整数评分、整条内容 token 预算和持久化检索证据，不返回跨 User、范围不匹配、非有效或已过期内容。
 - L0 手动 Agent Working State、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile 和 L4 User Profile 已有实验性同步接口；这些接口不属于当前模型响应链，Memory Packet 不在阶段2创建或绑定 Model Attempt。
 
-当前 Agent 工作流只允许模型生成和确定性程序节点；无依赖工作 Agent 同组最多两个并行。工具、Implementer、文件/命令/网络副作用、请求结束后的恢复、进程重启恢复以及 OpenTelemetry 尚未实现；显式工作流取消已经可用。GET `/events` 只回放查询时已经提交的事件，运行中的实时事件由创建接口的 SSE 响应提供。
+无附件时，默认 `model_only_v1` Agent 工作流只允许模型生成和确定性程序节点；存在当前回合可访问的附件时，服务端自动使用 `tool_enabled_v1`，可读取附件和工具目录。无依赖工作 Agent 同组最多两个并行。Implementer、Agent 命令/网络副作用、请求结束后的恢复、进程重启恢复以及 OpenTelemetry 尚未实现；显式工作流取消已经可用。GET `/events` 只回放查询时已经提交的事件，运行中的实时事件由创建接口的 SSE 响应提供。
 
 当前 Memory 只作为规划与实验性准备代码保留，不继续扩展，也不接入 `/responses`。Context Preview 的稳定合同已移除 Memory/Knowledge 候选字段，只选择显式 instruction、安全 instruction 和 Session Message，并使用 Model Catalog 与不可变来源快照。Knowledge 属于后续独立知识库规划；现有 Knowledge 结构代码不是稳定能力。Conversation Context、Prompt/模型能力目录和 Evaluation/Guardrail 已通过阶段2行为与基础设施验收。默认不引入 Vector Store 或 Mem0。
 
@@ -77,6 +78,8 @@ make api-run
 新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
 
 文件上传需启动 MinIO；当前代码要求迁移到 `20261008_0023`（包含 `user_files` 和新增工具调用记录字段）。备份并确认目标库后执行 `make api-migrate`，再重启 API；本次只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
+
+本地启用 Office/PDF：先执行 `make file-runtime-build`、`make file-runtime-check`；然后在一个终端运行 `make file-runtime-run`，另一个终端用 `make api-run-with-files` 启动 API。两者共用 `/tmp/nexuspilot-file-runtime-<uid>/executor.sock`，可用相同的 `FILE_RUNTIME_SOCKET` 覆盖；不改写私有 `.env`。API 启动目标仍会先执行迁移，需先确认开发库和备份。已有检查通过的自定义镜像可用 `FILE_RUNTIME_IMAGE` 指定。前端从需身份认证的 `GET /api/v1/files/capabilities` 获取可用格式；仅填写 Socket 路径但未启动服务，不会被视为已启用。快速回复和 Agent 的文件工具均读取上传时保存的解析结果，续聊不重复解析；自动提供工具不能替代执行器部署。
 
 默认 `NEXUSPILOT_AUTHENTICATION_ENABLED=false`，本地打开 Web 即进入工作台，资源归属固定为历史本地用户 `nexuspilot-web`（不存在时由后端创建，不创建密码或登录会话）。该模式仅供个人本机使用，只监听回环地址，不能暴露到公网或不可信局域网；所有访问者会共享本地数据。生产环境拒绝关闭登录。
 

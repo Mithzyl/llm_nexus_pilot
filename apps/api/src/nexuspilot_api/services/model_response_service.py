@@ -135,6 +135,7 @@ class ModelInvocationService:
         *,
         context_source_references: RuntimeContextSourceReferences | None = None,
         tool_messages: list[Message] | None = None,
+        request_type: str | None = None,
     ) -> ResponsesResult:
         """Execute a response; append server-owned tool history after persisted base Context.
 
@@ -151,26 +152,7 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
-        if tool_messages:
-            if context_build_id:
-                context = await self.db_session.get(LlmContextBuild, context_build_id)
-                # The existing Context policy bounds model input, not model output.
-                # Count the additional native history conservatively as UTF-8 bytes.
-                history_estimate = len(
-                    json.dumps(
-                        [message.model_dump(mode="json") for message in tool_messages],
-                        ensure_ascii=False,
-                    ).encode()
-                )
-                if (
-                    context
-                    and context.input_token_estimate + history_estimate
-                    > context.token_budget - context.reserved_output_tokens
-                ):
-                    raise InvalidRequestError(
-                        "Tool history exceeds the registered model context window"
-                    )
-            request = request.model_copy(update={"messages": [*request.messages, *tool_messages]})
+        request = await self._append_tool_history(request, context_build_id, tool_messages)
         request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
             payload,
@@ -178,6 +160,7 @@ class ModelInvocationService:
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
             prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
+            request_type=request_type,
         )
         provider_dispatch_may_have_started = False
         try:
@@ -228,13 +211,45 @@ class ModelInvocationService:
             await self._fail_model_attempt(model_attempt, error)
             raise error from exc
 
+    async def _append_tool_history(
+        self,
+        request: ModelRequest,
+        context_build_id: str | None,
+        tool_messages: list[Message] | None,
+    ) -> ModelRequest:
+        """Append trusted tool history with the same context-window check in both HTTP modes."""
+        if tool_messages:
+            if context_build_id:
+                context = await self.db_session.get(LlmContextBuild, context_build_id)
+                # The existing Context policy bounds model input, not model output.
+                # Count the additional native history conservatively as UTF-8 bytes.
+                history_estimate = len(
+                    json.dumps(
+                        [message.model_dump(mode="json") for message in tool_messages],
+                        ensure_ascii=False,
+                    ).encode()
+                )
+                if (
+                    context
+                    and context.input_token_estimate + history_estimate
+                    > context.token_budget - context.reserved_output_tokens
+                ):
+                    raise InvalidRequestError(
+                        "Tool history exceeds the registered model context window"
+                    )
+            request = request.model_copy(update={"messages": [*request.messages, *tool_messages]})
+        return request
+
     async def stream(
         self,
         payload: ResponsesRequest,
         *,
         context_source_references: RuntimeContextSourceReferences | None = None,
+        tool_messages: list[Message] | None = None,
+        record_events: bool = True,
+        request_type: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream normalized events and finalize success, failure, timeout, or cancellation."""
+        """Stream one model round; a server-owned loop may persist its combined public event log."""
 
         model_attempt_id = new_id()
         request, context_build_id = await self._apply_runtime_context(
@@ -245,6 +260,7 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        request = await self._append_tool_history(request, context_build_id, tool_messages)
         request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
             payload,
@@ -252,6 +268,7 @@ class ModelInvocationService:
             attempt_id=model_attempt_id,
             context_build_id=context_build_id,
             prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
+            request_type=request_type,
         )
         sequence = 0
         active_reasoning_blocks: dict[str, dict[str, str]] = {}
@@ -343,11 +360,12 @@ class ModelInvocationService:
                     }
                 )
                 await self._record_first_visible_token(model_attempt, public_event)
-                await record_model_response_event(
-                    self.db_session,
-                    attempt_id=model_attempt.attempt_id,
-                    event=public_event,
-                )
+                if record_events:
+                    await record_model_response_event(
+                        self.db_session,
+                        attempt_id=model_attempt.attempt_id,
+                        event=public_event,
+                    )
                 yield public_event
         except asyncio.CancelledError:
             if provider_dispatch_may_have_started:
@@ -371,6 +389,7 @@ class ModelInvocationService:
                 display_policy=payload.reasoning_display_policy,
                 started_at=model_attempt_started_at,
                 first_visible_token_at=model_attempt_first_visible_token_at,
+                record_events=record_events,
             )
             for interrupted_event in interrupted_events:
                 yield interrupted_event
@@ -386,11 +405,12 @@ class ModelInvocationService:
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
-            await record_model_response_event(
-                self.db_session,
-                attempt_id=model_attempt_id,
-                event=failure_event,
-            )
+            if record_events:
+                await record_model_response_event(
+                    self.db_session,
+                    attempt_id=model_attempt_id,
+                    event=failure_event,
+                )
             yield failure_event
         except Exception:
             model_attempt_id = model_attempt.attempt_id
@@ -409,6 +429,7 @@ class ModelInvocationService:
                 display_policy=payload.reasoning_display_policy,
                 started_at=model_attempt_started_at,
                 first_visible_token_at=model_attempt_first_visible_token_at,
+                record_events=record_events,
             )
             for interrupted_event in interrupted_events:
                 yield interrupted_event
@@ -424,11 +445,12 @@ class ModelInvocationService:
                     "error": {"type": error.error_type, "message": error.message},
                 },
             )
-            await record_model_response_event(
-                self.db_session,
-                attempt_id=model_attempt_id,
-                event=failure_event,
-            )
+            if record_events:
+                await record_model_response_event(
+                    self.db_session,
+                    attempt_id=model_attempt_id,
+                    event=failure_event,
+                )
             yield failure_event
 
     async def _stream_provider_with_deadline(
@@ -459,6 +481,7 @@ class ModelInvocationService:
         attempt_id: str,
         context_build_id: str | None,
         prompt_prefix_fingerprint: str | None,
+        request_type: str | None = None,
     ) -> LlmModelAttempt:
         """Persist a started invocation with Context and effective reasoning evidence."""
 
@@ -493,7 +516,7 @@ class ModelInvocationService:
             context_build_id=context_build_id,
             provider=payload.provider.value,
             model=payload.model,
-            request_type="stream" if payload.stream else "generation",
+            request_type=request_type or ("stream" if payload.stream else "generation"),
             request_key=payload.idempotency_key,
             prompt_prefix_fingerprint=prompt_prefix_fingerprint,
             agent_role=agent_role,
@@ -1191,6 +1214,7 @@ class ModelInvocationService:
         display_policy: ReasoningDisplayPolicy,
         started_at: datetime,
         first_visible_token_at: datetime | None,
+        record_events: bool = True,
     ) -> tuple[int, list[StreamEvent]]:
         """Persist authoritative partial blocks before emitting a failed stream terminal event."""
 
@@ -1218,11 +1242,12 @@ class ModelInvocationService:
                 timestamp_ms=int(datetime.now(UTC).timestamp() * 1000),
                 data={"attempt_id": attempt_id, "block": block},
             )
-            await record_model_response_event(
-                self.db_session,
-                attempt_id=attempt_id,
-                event=interrupted_event,
-            )
+            if record_events:
+                await record_model_response_event(
+                    self.db_session,
+                    attempt_id=attempt_id,
+                    event=interrupted_event,
+                )
             self.db_session.add(
                 LlmReasoningBlock(
                     reasoning_block_id=block_id,
