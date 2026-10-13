@@ -330,10 +330,23 @@ class AgentFileToolService:
         return {
             "file_id": file.file_id,
             "source_hash": file.content_hash,
+            "parsed_hash": file.parsed_hash,
             "parser_version": document.parser_version,
             "status": document.status,
             "warnings": document.warnings,
             "data": data,
+            "read_scope": {
+                "kind": name,
+                "offset": getattr(arguments, "offset", None),
+                "limit": getattr(arguments, "limit", None),
+                "query": getattr(arguments, "query", None),
+                "has_more": data.get("has_more"),
+                "next_offset": data.get("next_offset"),
+                "total_blocks": data.get("total_blocks"),
+                "parsed_document_blocks": len(document.blocks),
+                "extraction_status": document.status,
+                "uncovered_pages": document.uncovered_pages,
+            },
         }
 
     async def validate_history(self, run_id: str, records: list[LlmModelToolCall]) -> None:
@@ -370,11 +383,22 @@ class AgentFileToolService:
                     or file.user_id != run.user_id
                     or file.status != "ready"
                     or source.get("source_hash", file.content_hash) != file.content_hash
+                    or source.get("parsed_hash", file.parsed_hash) != file.parsed_hash
                 ):
                     raise ResourceConflictError("Previously read file is no longer available")
 
     async def _finish(self, record, status, *, result=None, error=None):
-        """Publish one exact, safe result envelope before the next model invocation."""
+        """Publish the result and citable snapshot identity before model continuation."""
+        if status == "completed" and result and result.get("data", {}).get("blocks"):
+            result["evidence_ref"] = {
+                "tool_call_id": record.tool_call_id,
+                "result_id": f"tool-result:{record.tool_call_id}",
+                **{
+                    key: result[key]
+                    for key in ("file_id", "source_hash", "parsed_hash", "parser_version")
+                },
+                "block_ids": [block["block_id"] for block in result["data"]["blocks"]],
+            }
         record.status = status
         record.error_code = error
         record.permission_decision = (

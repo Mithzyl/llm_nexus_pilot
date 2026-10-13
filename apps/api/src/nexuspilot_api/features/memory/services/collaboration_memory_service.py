@@ -76,7 +76,7 @@ async def submit_handoff(
     run_id: str,
     payload: AgentHandoffCreate,
 ) -> HandoffWriteResult:
-    """Validate and persist one immutable Handoff with JSON/Markdown snapshot evidence."""
+    """Persist an immutable Handoff; v2 evidence must match an authorized completed Worker."""
 
     run = await db_session.get(LlmRun, run_id)
     if run is None:
@@ -97,6 +97,35 @@ async def submit_handoff(
             raise ResourceConflictError("Handoff Task does not belong to the Agent Run")
     else:
         task_id = agent_run.task_id
+    if payload.schema_version == "agent_handoff.v2":
+        from nexuspilot_api.models import AgentWorkflowNodeStatus, LlmAgentWorkflowNodeExecution
+        from nexuspilot_api.schemas.worker_evidence import WorkerEvidenceBundle
+        from nexuspilot_api.services.worker_evidence_service import (
+            WorkerEvidenceService,
+            allowed_evidence_tasks,
+        )
+
+        worker = await db_session.scalar(
+            select(LlmAgentWorkflowNodeExecution).where(
+                LlmAgentWorkflowNodeExecution.run_id == run_id,
+                LlmAgentWorkflowNodeExecution.agent_run_id == agent_run.agent_run_id,
+                LlmAgentWorkflowNodeExecution.task_id == task_id,
+                LlmAgentWorkflowNodeExecution.output_type == "agent_model_execution",
+                LlmAgentWorkflowNodeExecution.status == AgentWorkflowNodeStatus.COMPLETED,
+            )
+        )
+        output = (worker.output_json or {}).get("structured_output", {}) if worker else {}
+        expected = {key: output.get(key) for key in ("claims", "unresolved_items", "hypotheses")}
+        if (
+            output.get("schema_version") != "worker_evidence.v2"
+            or expected != payload.handoff_json["worker_evidence"]
+        ):
+            raise ResourceConflictError("Handoff evidence does not match the completed Worker")
+        await WorkerEvidenceService(db_session, storage).resolve_bundle(
+            run_id,
+            await allowed_evidence_tasks(db_session, worker),
+            WorkerEvidenceBundle.model_validate(expected),
+        )
     request_hash = hash_memory_request(payload.model_dump(mode="json"))
     replay = await db_session.scalar(
         select(LlmAgentHandoff).where(

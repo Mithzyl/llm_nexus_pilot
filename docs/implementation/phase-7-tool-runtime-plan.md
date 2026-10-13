@@ -1,6 +1,6 @@
 # 阶段7：Agent 工具发现、执行与自主扩展主计划
 
-**文档日期：** 2026 年 10 月 9 日
+**文档日期：** 2026 年 10 月 12 日
 **文档状态：** 进行中；Office/PDF 统一解析、五个附件工具循环、内置目录发现已有本地实现。任务目录与 Python／Shell 的本地专用执行器已实现并通过本地容器测试；尚未接入 Agent、数据库归属及 Artifact 保存，不能在聊天中使用。2026-10-07 用户限定仅本地开发，服务器部署/验收暂停，线上版本未改变。动态工具、受控 SDK、Git 等能力仍未实现或暂停。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -141,6 +141,8 @@
 
 ## Agent 持续调用与失败处理
 
+本节的循环为目标流程；当前同步附件工具循环已实现，2026-10-13 下节首批结果修正已在本地通过确定性测试；跨进程恢复、Agent 通用代码执行及逐结论证据核对尚未实现。不能把步骤中的恢复、重试表述当作已上线能力。
+
 `tool_enabled_v1` 复用现有 Controller/Worker/Handoff/Reviewer；先支持一个 Worker 内的工具循环，再扩展多 Worker。每轮流程如下：
 
 1. 从已提交状态恢复任务目标、消息、来源、已加载工具版本和执行许可，经现有 Context Builder 组装模型请求。
@@ -155,6 +157,127 @@
 停止条件为完成目标、等待用户信息/批准、显式取消、确定不可恢复、连续无进展或达到配置的运行时间/调用/资源预算。阈值需可配置并记录实际触发原因；不新增统一低输出 token 上限。相同失败参数重复、相同结果无新行动要计入无进展检测，不以无限循环代替持续工作。
 
 工作流状态只引用模型调用和 Tool Call 事实，不复制第二套用量/结果。上下文需压缩时保留工具版本、已执行动作、错误、产物引用和读取位置，缺少必要原文时通过授权工具重读，不能把摘要当全文。
+
+## 节点结果修正与结论证据传递
+
+**2026-10-12 新增工作项，2026-10-13 状态：进行中。** 本节是工具工作流中 Worker 输入输出、来源核对、审核补读与格式修正的唯一详细设计；阶段3维护节点顺序和既有输出定义，阶段4引用本节的产品验收，总路线图安排实施顺序。结构修正及 Worker → Handoff → 来源检查 → Reviewer 补读已有本地实现；真实 Provider 与实际部署组合尚未验收。按用户本轮要求，最终答案引用和前端展示暂不实施。
+
+### 本轮后端实现（2026-10-13）
+
+- 新工具工作流使用 `worker_evidence.v2`：逐条 `claims` 携带 `source_type`、`kind`、`scope` 和 `evidence_refs`，推测与未解决事项分开；旧 `confirmed_facts` 必须为空，避免绕过逐条审核。`model_only_v1` 和历史结果保持旧格式。
+- `worker_evidence_service.py` 对照现有 Tool Call、Attempt 和文件固定解析对象校验 run、允许的当前/上游 task、现时文件权限、文件状态、原件哈希、解析哈希、解析器版本及真实返回块。`result_id` 为 `tool-result:{tool_call_id}`，映射现有持久 Tool Call，不新增结果表或数据库迁移。原文直接来自哈希核对后的解析对象，不使用模型编写的引文。
+- 工具结果增加 `evidence_ref` 和 `read_scope`，记录实际块、分页、解析状态与遗漏；`parsed_document` 要求引用覆盖全部解析块，但不表示图片、页眉等原文件内容已全部提取。确定性验证只报告来源及范围有效，不认定自然语言结论正确。
+- `agent_handoff.v2` 原样保存 `worker_evidence`；提交时必须与已完成 Worker 输出一致，并重新校验来源。依赖节点每次模型调用前重新获取授权原文，撤权或对象缺失不会退回使用旧摘要。
+- Reviewer 接收逐条结论对应原文、读取范围及解析警告；在原有只读工具循环内补读。当前最多三次模型调用（最多两轮可带工具），还受剩余工作流调用数及节点时限约束；最后一轮不提供工具，要求提交审核意见，证据不足返回 `insufficient_evidence`。额外格式修正仍按上节规则单独计费/计数；取消、超时和工具错误沿用既有失败行为，不将异常伪装为审核成功。
+- Reviewer 必须对每个候选 claim 提交唯一 `claim_assessments`，值为支持、矛盾或证据不足；文件结论的支持/矛盾需真实引用。缺项、重复、编造来源或总体通过但存在不支持结论均拒绝。模型是否正确理解自然语言仍需真实模型评估，程序校验不能证明其判断正确。
+- `test_worker_evidence.py` 的最初引用测试修改前因缺少 `evidence_ref` 失败；本轮 21 项本地测试通过，包括伪造引用、跨运行/任务、文件改属/删除、快照变化、对象缺失、未读块、全文范围、遗漏/重复审核、编造审核来源和矛盾结论。脚本 Provider 的集成样例验证 Reviewer 实际收到原文并补读到 X200 型号、Handoff 引用及刷新结果保持；这不是对真实 DeepSeek 判断质量的验收。
+- 最终本地回归：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_worker_evidence.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_output_repair.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_phase2_memory_layers.py apps/api/tests/test_agent_tool_discovery.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_conversation_file_context.py apps/api/tests/test_resource_policy.py apps/api/tests/test_provider_continuation_store.py packages/models/tests -q --tb=short`：**232 通过**。另执行 `test_architecture.py test_agent_runtime_architecture.py`：**27 通过**。环境为本地 SQLite、测试对象存储、脚本 Provider；没有真实模型调用、MySQL/MinIO 组合或生产发布。本轮不修改最终答案功能或前端。
+
+### 首批本地实现与验证（2026-10-13）
+
+- `agent_model_node_service.py` 对 `tool_enabled_v1` 的 Controller、Worker、Reviewer、最终汇总增加最多一次无工具格式修正。原始输出和错误通过独立请求保存；节点警告保存 Attempt、输出类型及字段路径/错误类型，不含原文、验证输入或任意模型自造字段名。仅明确忽略 Worker 的平台状态 `status`，其他未知字段继续校验。
+- 修正使用独立幂等键 `:round:repair:1`，计入任务及工作流调用限制、费用和剩余时间；不重跑工具。未完成生成、意外工具请求及模型类型的业务一致性校验错误不走格式修正。`model_only_v1` 保留原严格失败行为；历史结果不改写。
+- `model_only_workflow_orchestrator.py` 从节点关联的全部 Attempt 汇总成功节点用量和证据，避免 Controller/Reviewer/汇总增加修正后漏记最初调用。Worker 提示词区分业务结果与平台生成的 Handoff、身份和执行状态。
+- 新测试文件 `apps/api/tests/test_agent_output_repair.py` 首批五项在修改前因目标缺陷失败；最终扩展为十三项，通过。覆盖四类节点、额外状态、一次修正仍失败、真实测试数据库记录中的工具仅执行一次、结果查询一致、任务/工作流预算、剩余时间、业务矛盾不重试、旧配置兼容及诊断脱敏。
+- 相关回归命令：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_agent_output_repair.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_conversation_file_context.py apps/api/tests/test_resource_policy.py apps/api/tests/test_provider_continuation_store.py packages/models/tests -q`，当时新测试为十一项，总计 **196 通过**。随后新增时间/脱敏两项，单独执行 `test_agent_output_repair.py` 为 **13 通过**；两组有重叠，不相加。Ruff 与 `git diff --check` 通过。
+- 上述为 SQLite、脚本 Provider 和测试对象存储下的接口/持久化及模型协议回归；未执行真实 DeepSeek、新版 MySQL/MinIO 组合、浏览器或服务器验收，没有生产部署、数据库迁移、Git 提交或推送。下一步是新增版本的 Worker 结论/原文引用、授权解析与 Handoff 保存，而非直接宣称完整文件回答已经修复。
+
+### 已确认的问题与责任范围
+
+- 服务器 Run `1611ac2b-fb96-43d2-923a-92b9b8446da7` 的提取 Worker 已返回内容，但多出的 `status` 触发 `extra_forbidden`；Run `c0ed5bf2-8294-47cf-bdbf-149fa9e47e48` 的 Controller 两个任务缺少 `title`，触发 `missing`。读取已保存响应并用当前 Pydantic 类型重验已复现，无新增模型调用。这不是文件执行器失败，也没有证据表明同一输出被两套冲突 Schema 同时要求。
+- 既有提示词从模型输出类型生成 Schema，但 prompted JSON 不保证模型遵守每个字段；服务器已部署版本遇结构错误直接结束节点，本地首批修正见上节。工具参数正确不代表最终节点结果正确。
+- 修改前 Worker 的六类字符串结果没有逐条结论引用；旧 Handoff 的 `files_read` 只能表示关联文件。本轮新版本补充逐条引用，并修改工具工作流的检查范围说明；历史结果不补造引用。
+- 摘要、`confirmed_facts` 和 `remaining_work` 都是模型陈述，不能替代原始证据。模型没发现遗漏，不等于不存在遗漏；第二个模型认可摘要不等于核对原文。保留原 Phase 3 验收事实，但不得将其解释为已经完成文件内容真实性验证。
+
+### 节点输入输出与信息来源
+
+| 对象 | 模型负责 | 平台负责 | 下游获得什么 |
+|---|---|---|---|
+| Controller 计划 | 目标拆分、任务、依赖和完成条件 | 角色/能力/预算/依赖校验，持久化身份 | 可执行任务及用户目标，不允许模型伪造工具已完成状态 |
+| Worker 阶段结果 | 结论、依据引用、推测、未解决事项及其范围 | 校验结果结构与引用；记录实际读取范围和解析限制 | 业务结果、必要原文片段、可再读取的来源引用 |
+| Handoff | 不要求模型另造一份平台记录 | 保存阶段结果和原引用，补齐身份、状态与真实工具记录；不可把引用压缩为摘要 | 上游任务结果及其可核对来源 |
+| 确定性验证 | 不调用模型判定自然语言真假 | 检查引用存在、权限、版本、调用关联、读取/截断范围；分别报告通过/失败/未知 | 可用原文及检查事实，不输出“所有结论已验证” |
+| Reviewer | 对照原文判断支持、矛盾或证据不足；必要时请求补读 | 按权限解析引用并提供原文；执行有限只读补读、保存过程 | 逐结论审核意见、来源和限制 |
+| 最终汇总 | 回答用户，区分已支持、推测、矛盾和无法确认 | 保存回答及引用映射、关联版本和证据；不按工具成功自动认可内容 | 可查看来源的回答和仍存在的限制 |
+
+Worker 输入包括用户目标、当前任务与完成条件、依赖任务结论及引用、所需原文片段、授权附件清单、解析警告和实际读取范围。无需把所有模型轮次复制给每个节点；大结果可分页读取，但不得只传摘要而失去再次读取原文的能力。先检查实际 Context 输入，避免重复注入相同原文。文件内容始终是待分析数据，不能改变系统指令、权限或工具许可。
+
+### 模型输出与平台来源记录
+
+以下仅展示业务内容和引用关系，省略了完整 Schema 的部分字段，不是可直接提交的请求。实际 `worker_evidence.v2` 引用还必须含 `file_id`、`source_hash`、`parsed_hash`、`parser_version`；调用 ID 为平台保存的 UUID，`result_id` 映射见上节，示例 ID 不是可调用资源。完整字段由 `schemas/worker_evidence.py` 和 `EvidenceWorkerModelOutput` 定义。
+
+```json
+{
+  "summary": "报告描述了设备检查和生产操作。",
+  "claims": [
+    {
+      "claim_key": "production-steps",
+      "text": "报告描述了设备检查和生产操作两个环节。",
+      "evidence_refs": [
+        {
+          "tool_call_id": "example-call-id",
+          "result_id": "example-result-reference",
+          "block_ids": ["example-block-12", "example-block-13"]
+        }
+      ]
+    }
+  ],
+  "hypotheses": [],
+  "unresolved_items": [
+    {
+      "text": "尚未确认设备型号。",
+      "reason": "当前已读范围未发现型号，不能判断全文是否包含。",
+      "evidence_refs": [
+        {
+          "tool_call_id": "example-call-id",
+          "result_id": "example-result-reference",
+          "block_ids": ["example-block-12", "example-block-13"]
+        }
+      ],
+      "requires_more_reading": true
+    }
+  ],
+  "decisions": [],
+  "risks": []
+}
+```
+
+- `claims` 是待核对的结论，不因字段名称或模型自报就获得“已确认”状态。无引用的知识解释或推测单独标注来源类别，不能伪装成附件事实。引用应来自本任务或显式允许的上游任务实际获得的结果；不可凭知道 ID 使用其他运行的数据。
+- 平台向模型提供可选择的真实引用标识，再解析到现有文件 ID、固定原件哈希、解析产物及解析器版本、工具调用/结果和块位置。逻辑文件版本历史尚未实现，先使用已保存的固定原件/解析快照，不能把文件名当版本。
+- 原文由平台从保存的结果读取，模型写出的引文不代替原文；需要展示引文时核对其与对应块一致。支持可定位的段落、页码、表格/单元格位置，不对解析器未提供的位置编造数值。
+- 读取事实由平台保存：本次返回块范围、分页位置、`has_more`、截断、工具错误、解析状态及遗漏。`requires_more_reading` 只是模型建议，不能覆盖这些事实；`has_more=false` 只表示当前解析结果分页结束，不代表整个原文件均已提取。
+- “该两段没有设备型号”不能自动扩大为“整个附件没有设备型号”。否定结论必须注明检索/读取范围；正文全读完仍不能排除图片、页眉、文本框等未提取内容。验证器检查范围是否真实，Reviewer 判断结论是否超出该范围；不能证明时输出无法确认。
+- 每次解析引用、补读及来源下载重新检查实际用户、会话/Run、文件状态和可访问范围。删除、撤权、过期或对象缺失要返回来源不可用，不能悄悄换成新版文件，也不能将受限原文发送浏览器后再隐藏。
+
+### 格式失败与证据不足分别处理
+
+1. Controller、Worker、Reviewer、最终汇总共享结构错误诊断：保存字段路径、错误类型、输出版本、节点及 Attempt 关联；不在公开错误中泄露系统提示词、隐藏推理或完整文件内容。
+2. 模型不拥有执行状态、身份或权限字段。针对已明确无业务作用的额外字段制定按类型的白名单处理，例如 Worker 自报 `status` 可忽略并记录警告，不能由它改变平台状态；不能全局关闭 `extra=forbid` 或默默删除未知业务字段。
+3. 缺失或非法必填字段先进入局部格式修正：默认最多一次额外模型调用，计入已有调用、费用和总时限；给出原结果、原 Schema 和具体错误，禁用工具，仅修正结构，不重新执行已成功的工具。安全/权限失败和未知副作用不走此修正。修正后重新执行结构、计划业务规则及引用校验，不把“格式修正”当作豁免内容变化的理由。
+4. 格式修正与重新规划、重新执行任务、Reviewer 补读是不同动作，分别记录尝试及原因。不得把缺 `title` 的修正包装成完整工作流重跑，也不得自动代填会改变任务目标、角色或权限的字段。
+5. 证据不足时 Reviewer 可提出受限文件补读请求；平台执行现有只读工具并回填实际原文、保存调用，受剩余预算和有限补读轮次约束。本地已复用现有循环，具体次数及失败行为见本轮实现。无法读取时模型应提交“证据不足”；若模型不遵守最终提交要求，节点仍明确失败，不无限循环或绕过授权。
+6. 失败时保留已提交工具结果和阶段结果，说明已完成工作及停止原因；必要时使用平台生成的失败说明，不能将未审核候选文本冒充已完成最终答案。审核请求重试/重规划仍只是意见，除非后续明确实现相应执行分支。
+
+### 兼容、实施顺序与验收
+
+实施位置复用 `agent_workflows.py`、`workflow_policy.py`、`agent_model_node_service.py`、`agent_tool_loop.py`、`model_only_workflow_orchestrator.py`、现有工具结果/文件授权与 Context 服务；Web 复用消息引用和运行详情，不另建平行工作流系统。
+
+1. 先以两次真实失败形状写回归测试，再实现具体错误记录和有限结构修正；同时统一 Worker 结果与平台 Handoff 的提示词职责。格式修正成功不等于内容核验通过。
+2. 定义新输出版本、引用解析与读取范围，打通 Worker → Handoff → 确定性验证。新执行显式选择版本，历史 v1 继续原样读取/回放；旧字符串事实标为未关联来源，不能凭空补证据。若需存储扩展，先核对已有字段，使用增量迁移，不重写旧迁移或删除原始响应。
+3. 接入 Reviewer 原文输入与有限补读，再接最终答案引用和 Web 来源展示；每步补用户隔离、不可用来源与刷新后恢复测试。生产启用新版本前通过实际数据库/对象存储验证；失败可停止新版本创建，旧执行按原版本查询，不混用 Schema。
+
+| 必需检查 | 通过条件 |
+|---|---|
+| JSON 格式 | 多余 Worker `status`、缺失任务 `title`、非法字段、修正仍失败、调用预算耗尽分别有明确结果；成功读取不重复执行，调用用量不丢失 |
+| 引用真实性 | 伪造 call/result/block ID、其他用户文件、错 Run/任务、错快照及删文件均拒绝；允许的上游交接引用可读 |
+| 原文一致性 | 平台提供保存的原文而非模型引文；引用块和表格范围可定位；对象缺失明确报错 |
+| 结论准确性 | 固定样本包含“摘要写错而原文明示设备型号”，Reviewer 实际输入包含该原文并指出矛盾；不能仅验证第二个模型认可摘要 |
+| 否定与完整性 | 分页未结束、结果截断、仅正文解析、图片内型号等样本不允许得出无范围的全文否定结论 |
+| 补读与停止 | Reviewer 可根据证据缺项发起授权只读补读；不可用、取消、轮次/时间耗尽明确无法确认，不重复外部副作用 |
+| 历史与界面 | 旧结果不伪造引用；新来源刷新后仍可核对；跨用户来源不下发；界面区分读取成功、引用有效、结论获支持和无法确认 |
+| 真实 Provider | 经授权验证 Agent 首轮 DOCX 与续聊 PDF、最终回答保存及逐结论来源；快速回复独立文件循环回归。记录模型和环境，停止无效付费重试，离线通过不替代真实验收 |
+
+整项验收尚未完成。只有首批本地格式修正检查已执行，结论证据传递业务测试、浏览器检查及新增真实 Provider 验收未执行；不得沿用历史通过记录替代上述新增验收。
 
 ## 代码组合与自主创建工具
 

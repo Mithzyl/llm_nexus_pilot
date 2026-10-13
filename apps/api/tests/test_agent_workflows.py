@@ -111,8 +111,7 @@ def test_node_activity_templates_expose_work_without_hidden_reasoning() -> None:
         "source": "deterministic_input",
     }
     assert completed.text == (
-        "Agent（planner）已提交“梳理接口边界”的阶段结果："
-        "已确认 API 与事件边界 并保留兼容入口"
+        "Agent（planner）已提交“梳理接口边界”的阶段结果：已确认 API 与事件边界 并保留兼容入口"
     )
     assert handoff.text == "已接收 Agent（planner）的阶段结果：“把已确认的接口边界交给下游节点”"
     assert "must-not-leak" not in running.text
@@ -299,11 +298,36 @@ class ScriptedAgentProvider:
         self.requests: list[ModelRequest] = []
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
-        """Return the typed fixture selected by the workflow node metadata."""
+        """Return the requested legacy or evidence-versioned fixture without inventing citations."""
 
         self.requests.append(request)
         node_key = request.metadata["agent_node_key"]
         structured_output = self._node_output(node_key, request)
+        instructions = (request.system_instruction or "") + json.dumps(request.output_schema or {})
+        if node_key == "worker_execution" and "worker_evidence.v2" in instructions:
+            structured_output.update(
+                schema_version="worker_evidence.v2",
+                claims=[],
+                confirmed_facts=[],
+                unresolved_items=[],
+                hypotheses=[],
+            )
+            for message in reversed(request.messages):
+                if message.role.value != "tool":
+                    continue
+                result = json.loads(message.content).get("result") or {}
+                if result.get("evidence_ref"):
+                    structured_output["unresolved_items"] = [
+                        {
+                            "text": "Fixture does not assert a document conclusion",
+                            "reason": "This scripted fixture tests reading, not semantic review",
+                            "evidence_refs": [result["evidence_ref"]],
+                            "requires_more_reading": False,
+                        }
+                    ]
+                    break
+        if node_key == "independent_review" and "claim_assessments" in instructions:
+            structured_output["claim_assessments"] = []
         return ModelResponse(
             text=json.dumps(structured_output),
             structured_output=structured_output,

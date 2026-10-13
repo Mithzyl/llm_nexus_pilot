@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import HandoffStatus, MemoryPacketItemType, SessionMemoryStatus
 from nexuspilot_api.schemas.base import ApiModel
+from nexuspilot_api.schemas.worker_evidence import WorkerEvidenceBundle
 
 HANDOFF_V1_KEYS = {
     "objective",
@@ -63,16 +64,21 @@ class AgentHandoffCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_handoff_contract(self) -> "AgentHandoffCreate":
-        """Require the fixed v1 contract and completed-handoff completion gates."""
+        """Validate legacy v1 or an explicitly versioned v2 evidence-preserving Handoff."""
 
-        if self.schema_version != "agent_handoff.v1":
-            raise ValueError("Only agent_handoff.v1 is supported")
-        missing_keys = HANDOFF_V1_KEYS - set(self.handoff_json)
+        if self.schema_version not in {"agent_handoff.v1", "agent_handoff.v2"}:
+            raise ValueError("Unsupported Handoff version")
+        keys = HANDOFF_V1_KEYS | (
+            {"worker_evidence"} if self.schema_version == "agent_handoff.v2" else set()
+        )
+        missing_keys = keys - set(self.handoff_json)
         if missing_keys:
             raise ValueError(f"handoff_json is missing required keys: {sorted(missing_keys)}")
-        unexpected_keys = set(self.handoff_json) - HANDOFF_V1_KEYS
+        unexpected_keys = set(self.handoff_json) - keys
         if unexpected_keys:
             raise ValueError(f"handoff_json contains unsupported keys: {sorted(unexpected_keys)}")
+        if self.schema_version == "agent_handoff.v2":
+            WorkerEvidenceBundle.model_validate(self.handoff_json["worker_evidence"])
         invalid_list_fields = sorted(
             key for key in HANDOFF_V1_LIST_KEYS if not isinstance(self.handoff_json[key], list)
         )

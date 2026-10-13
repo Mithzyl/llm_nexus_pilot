@@ -26,6 +26,8 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     ContextAssemblyOutput,
     ControllerPlanOutput,
     DeterministicVerificationOutput,
+    EvidenceReviewerModelOutput,
+    EvidenceWorkerModelOutput,
     FinalSynthesisModelOutput,
     FinalSynthesisOutput,
     IndependentReviewOutput,
@@ -142,7 +144,7 @@ def _build_complete_worker_handoff(
 ) -> dict[str, Any]:
     """Copy the complete typed Worker result into the immutable Handoff contract."""
 
-    return {
+    output = {
         "objective": task_objective,
         "status": "completed",
         "confirmed_facts": worker_output.confirmed_facts,
@@ -156,6 +158,11 @@ def _build_complete_worker_handoff(
         "unknowns": worker_output.unknowns,
         "invariants_for_next_agent": [],
     }
+    if isinstance(worker_output, EvidenceWorkerModelOutput):
+        output["worker_evidence"] = worker_output.model_dump(
+            include={"claims", "unresolved_items", "hypotheses"}, mode="json"
+        )
+    return output
 
 
 class WorkerExecutionFailure(Exception):
@@ -774,6 +781,7 @@ class ModelOnlyWorkflowOrchestrator:
             model_input={
                 "task": {"title": task.title, "objective": task.objective},
                 "run_objective": run.user_request,
+                "completion_criteria": completion_criteria,
                 "dependency_results": dependency_results,
                 **(
                     {"max_model_calls": max_model_calls}
@@ -856,9 +864,15 @@ class ModelOnlyWorkflowOrchestrator:
                 binding=prepared.binding,
                 role=prepared.agent_role,
                 purpose=(
-                    "Complete the assigned task and return an evidence-bounded handoff summary."
+                    "Complete the assigned task and return only the Worker business-result fields. "
+                    "The platform creates the Handoff record, identifiers and execution status; "
+                    "do not include those platform-owned fields in your result."
                 ),
-                model_output=AgentWorkerModelOutput,
+                model_output=(
+                    EvidenceWorkerModelOutput
+                    if workflow.execution_profile == "tool_enabled_v1"
+                    else AgentWorkerModelOutput
+                ),
                 model_input=prepared.model_input,
                 reasoning=prepared.reasoning,
                 timeout_seconds=prepared.timeout_seconds,
@@ -1227,7 +1241,19 @@ class ModelOnlyWorkflowOrchestrator:
         summary: str,
         activity_context: dict | None = None,
     ) -> None:
-        """Delegate completed-node validation and persistence to the state service."""
+        """Persist completed output with every paid round, including local format repair."""
+
+        if evidence.model_attempt_ids:
+            recorded_evidence, usage = await self.workflow_state.node_attempt_evidence_and_usage(
+                workflow, node
+            )
+            evidence = evidence.model_copy(
+                update={
+                    "model_attempt_ids": recorded_evidence.model_attempt_ids,
+                    "tool_call_ids": recorded_evidence.tool_call_ids,
+                    "tool_results": recorded_evidence.tool_results,
+                }
+            )
 
         await self.workflow_state.complete_node(
             workflow,
@@ -1273,6 +1299,23 @@ class ModelOnlyWorkflowOrchestrator:
             task_objective=task.objective,
             worker_output=worker_output,
         )
+        evidence_version = isinstance(worker_output, EvidenceWorkerModelOutput)
+        if evidence_version:
+            from nexuspilot_api.schemas.worker_evidence import WorkerEvidenceBundle
+            from nexuspilot_api.services.worker_evidence_service import (
+                WorkerEvidenceService,
+                allowed_evidence_tasks,
+            )
+
+            node = await self.db_session.get(
+                LlmAgentWorkflowNodeExecution, handoff_node_execution_id
+            )
+            await WorkerEvidenceService(self.db_session, self.storage).resolve_bundle(
+                workflow.run_id,
+                await allowed_evidence_tasks(self.db_session, node),
+                WorkerEvidenceBundle.model_validate(handoff_json["worker_evidence"]),
+            )
+        handoff_version = "agent_handoff.v2" if evidence_version else "agent_handoff.v1"
         tool_records = list(
             await self.db_session.scalars(
                 select(LlmModelToolCall)
@@ -1292,7 +1335,7 @@ class ModelOnlyWorkflowOrchestrator:
             AgentHandoffCreate(
                 agent_run_id=agent_run.agent_run_id,
                 task_id=task.task_id,
-                schema_version="agent_handoff.v1",
+                schema_version=handoff_version,
                 status=HandoffStatus.COMPLETED,
                 handoff_json=handoff_json,
                 idempotency_key=f"workflow:{handoff_node_execution_id}",
@@ -1300,7 +1343,7 @@ class ModelOnlyWorkflowOrchestrator:
         )
         return AgentHandoffOutput(
             agent_handoff_id=result.record.agent_handoff_id,
-            schema_version="agent_handoff.v1",
+            schema_version=handoff_version,
             status="completed",
             supersedes_handoff_id=None,
             **{key: value for key, value in handoff_json.items() if key != "status"},
@@ -1330,6 +1373,22 @@ class ModelOnlyWorkflowOrchestrator:
         )
         checks: list[VerificationCheck] = []
         evaluation_ids: list[str] = []
+        if workflow.execution_profile == "tool_enabled_v1":
+            from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceService
+
+            sources = await WorkerEvidenceService(self.db_session, self.storage).for_node(node)
+            checks.append(
+                VerificationCheck(
+                    check_id="claim-source-integrity",
+                    check_type="file_reference_integrity",
+                    status="pass",
+                    expected="Authorized pinned reads and blocks; not semantic truth",
+                    actual=(
+                        f"Resolved {sum(len(item['claims']) for item in sources)} claim source sets"
+                    ),
+                    evidence_refs=[record.handoff.agent_handoff_id for record in worker_records],
+                )
+            )
         for index, record in enumerate(worker_records):
             handoff_record = await self.db_session.get(
                 LlmAgentHandoff,
@@ -1412,9 +1471,15 @@ class ModelOnlyWorkflowOrchestrator:
             non_blocking_findings=[],
             verified_claims=["Each Agent output has a persisted Handoff and Model Attempt"],
             unverified_claims=[
-                "No file, command, test, network, or external evidence was verified"
+                "Natural-language claims still require comparison with original sources"
+                if workflow.execution_profile == "tool_enabled_v1"
+                else "No file, command, test, network, or external evidence was verified"
             ],
-            coverage_summary="Validated model-only Handoff structure and durable references",
+            coverage_summary=(
+                "Validated source ownership, snapshots and read ranges; not semantic truth"
+                if workflow.execution_profile == "tool_enabled_v1"
+                else "Validated model-only Handoff structure and durable references"
+            ),
             requires_independent_review=requires_independent_review,
         )
         await self._complete_node(
@@ -1515,11 +1580,24 @@ class ModelOnlyWorkflowOrchestrator:
             binding=binding,
             role="reviewer",
             purpose="Independently review candidate handoffs and deterministic verification.",
-            model_output=ReviewerModelOutput,
+            model_output=(
+                EvidenceReviewerModelOutput
+                if workflow.execution_profile == "tool_enabled_v1"
+                else ReviewerModelOutput
+            ),
             model_input={
                 "objective": run.user_request,
                 "worker_results": [self._worker_record_input(record) for record in worker_records],
                 "verification": verification.model_dump(mode="json"),
+                **(
+                    {
+                        "max_model_calls": max(
+                            1, min(3, workflow.max_model_calls - workflow.model_call_count - 1)
+                        )
+                    }
+                    if workflow.execution_profile == "tool_enabled_v1"
+                    else {}
+                ),
             },
             reasoning=payload.reasoning,
             timeout_seconds=task.timeout_seconds,

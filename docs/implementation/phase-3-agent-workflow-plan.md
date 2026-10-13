@@ -1,6 +1,6 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 10 月 8 日
+**文档日期：** 2026 年 10 月 12 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -26,6 +26,8 @@
 
 ## 后续工具能力的统一归属
 
+2026-10-12 新增工作项，2026-10-13 进行中：节点 JSON 局部修正、Worker 逐条 `claims` 关联原文、Handoff 保留引用、固定文件快照和读取范围检查、Reviewer 原文输入与有限补读均已有本地实现及确定性测试。真实模型及部署组合验收未执行；按用户要求，最终答案引用及前端暂不实施。唯一详细设计和验收维护在[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。新工具工作流采用 `worker_evidence.v2` / `agent_handoff.v2`，历史 v1 不补造引用；旧字符串型 `confirmed_facts` 不代表已核对原文。来源校验通过不等于结论正确，Reviewer 的语义判断仍需真实模型评估。
+
 2026-10-08 起，工具循环、按需发现、代码组合、能力缺项判断、自主创建工具、批准交互和工具任务验收统一维护在[工具主计划](phase-7-tool-runtime-plan.md)。代码继续复用本模块的 Agent、节点、Handoff 和持久活动，不另建 Agent Runtime；本文的原 `model_only_v1` 完成记录保持不变，不复制新的工具待办。
 
 通用后台 Worker/租约机制见阶段10；工具循环如何保存与恢复由工具主计划验收。Controller/Worker 是执行职责，不要求每类工具配一个新 Agent。本文目标态中关于工具的预留字段是兼容背景，不是已实现功能。
@@ -46,7 +48,7 @@
 - `llm_runs`、`llm_tasks`、`llm_attempts`、`llm_evaluations` 和 `llm_artifacts` 已保存主要业务事实。
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
-- 阶段10 RabbitMQ 已因独立后台执行需求恢复规划但尚未实施。阶段7现为进行中：已提供预装文件环境和 Office 专用解析执行器，通用工具注册、授权与模型工具循环尚未实现，高风险 Shell/Git 仍暂停。这不改变阶段3 `model_only_v1` 仅使用模型调用和确定性程序节点的范围；模型仍不能自行读取文件或调用 Shell、Git、MCP 及外部工具。
+- 阶段10 独立后台执行尚未实施。阶段7已实现附件只读工具、内置目录发现和 Worker 多轮工具调用；任务目录与 Python/Shell 专用执行器仅有本地实现，尚未接入聊天 Agent。`model_only_v1` 仍不执行工具；`tool_enabled_v1` 可执行授权的附件工具，不表示已开放 Shell、Git、MCP 或外部写入。
 - 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成。历史记录包含单个 Provider 的真实流程验证，完整真实 Provider 浏览器矩阵仍后置；工具视图等待阶段7稳定合同。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
@@ -81,7 +83,7 @@
 
 ## 后续附件驱动工作流（2026 年 9 月 5 日，未开始）
 
-保留标题供旧链接定位；2026-10-08 将该工作项并入[工具主计划](phase-7-tool-runtime-plan.md#agent-持续调用与失败处理)，不再作为阶段3独立待办。当前正式上传、固定文字/表格及同会话后续输入已经实现；自动模式路由、模型文件工具与专用分析角色尚未实现。
+保留标题供旧链接定位；2026-10-08 将该工作项并入[工具主计划](phase-7-tool-runtime-plan.md#agent-持续调用与失败处理)，不再作为阶段3独立待办。2026-10-12 已实现附件只读工具和 Agent 执行配置自动选择；快速回复仍保留独立循环，不强制切换为 Agent。未新增专用 File Agent；2026-10-13 逐结论证据传递和审核补读已有本地实现，验收范围见上文。
 
 工具启用仍使用既有规划的 `tool_enabled_v1`，保持 `model_only_v1` 无工具语义。文件是工具输入的一类，不增加必经 File Agent；Handoff 继续使用真实阶段结果、来源与覆盖，公开活动只显示已提交事实。具体循环、错误处理、代码组合、生成工具和前端验收只维护在主计划。
 
@@ -169,7 +171,7 @@ Run
 
 ### 当前实现
 
-- `workflow_name`、`workflow_version` 和 `execution_profile` 由请求 Schema 限定为 `model_only`、`1.0.0` 和 `model_only_v1`。
+- 当前 `workflow_name=model_only`、`workflow_version=1.0.0`；执行配置包括 `model_only_v1` 和 `tool_enabled_v1`，保留名称以兼容历史记录。两者复用固定外层节点，只有工具配置的 Worker 进入附件工具循环。
 - 协调器使用普通异步 Python 的 `if`/`for` 和明确函数调用按顺序执行，不使用 LangGraph Graph API。
 - 节点输出由 `NODE_OUTPUT_MODELS` 按 `output_type` 映射到唯一 Pydantic 类型，写入前和读取后都会重新校验。
 - `workflow_definition_registry.py` 已登记 `model_only/1.0.0/model_only_v1` 的固定节点和按任务生成的节点，应用导入该模块时会检查重复定义、未知输出类型和未知后续节点。
@@ -177,6 +179,8 @@ Run
 - `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核，以及审核意见如何约束最终汇总。审核不是回答投递开关；只有无可信类型化审核结果、确定性验证失败或其他执行错误才会按对应错误合同终止。
 
 ### 后续目标
+
+当前交互顺序为请求归一化 → Context → Controller 计划 → 程序计划校验 → 任务分派 → 按依赖执行 Worker/Handoff → 程序确定性验证 → 可选 Reviewer → Controller 最终汇总 → 完成。Worker 为动态任务，外层流程并非由模型任意生成；Handoff 由程序生成，不要求模型返回平台身份或执行状态。Reviewer 的 `requires_replan`/`requires_retry` 当前是交给最终汇总的审核意见，不会自动返回前序节点执行。新增引用核对、审核补读和局部格式修正按工具主计划实施，不与这些旧字段混为已实现的循环。
 
 工作流定义使用代码注册表和普通 Python 控制流：
 

@@ -51,7 +51,7 @@
 | Agent 首次 DOCX | `1611ac2b-fb96-43d2-923a-92b9b8446da7` | 失败：`worker_execution.read-sample-docx` 与 Handoff 完成，随后 `worker_execution.extract-marker` 返回 `node_output_invalid`，未生成最终回答 |
 | Agent 相同条件复测 DOCX | `c0ed5bf2-8294-47cf-bdbf-149fa9e47e48` | 失败：`controller_planning` 返回 `node_output_invalid`，尚未开始文件工具；停止继续付费重试 |
 
-Agent 的第二轮 PDF 在两次首轮失败后均未执行。未修改生产业务代码、关闭审核或结构校验，也没有更换模型以制造通过。已定位到上述节点，尚未确定具体不符合要求的输出字段；需另行检查模型返回与节点 Schema。所有本次 `release-*` 验收账号已停用（数据库确认 active 数量为 0），已登录会话已退出。
+Agent 的第二轮 PDF 在两次首轮失败后均未执行。未修改生产业务代码、关闭审核或结构校验，也没有更换模型以制造通过。同日只读诊断读取 MinIO 保存的响应，并在当前 API 容器调用对应 Pydantic 类型复验：首次 Worker 多出 `status`，错误为 `extra_forbidden`；复测 Controller 缺少 `tasks[0].title` 和 `tasks[1].title`，错误为 `missing`。两次响应均以 `stop` 结束，能够解析为 JSON 对象；诊断未新增付费模型调用。格式恢复与来源核对尚未实现，后续设计见[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。所有本次 `release-*` 验收账号已停用（数据库确认 active 数量为 0），已登录会话已退出。
 
 服务器沿用已登记的 `deepseek-flash`，没有擅自更换模型名称、模型能力、密钥或推理策略。检查脚本通过实际 HTTPS/SSE 上传及提问，再核对本次 Run 的数据库工具记录、文件 ID、提取标记、Context 和最终消息。没有手工提交 tools 或 execution_profile。
 

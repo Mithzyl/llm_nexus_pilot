@@ -13,7 +13,7 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 
 
 async def run_file_tool_loop(service, workflow, node, options):
-    """Execute only this round's loaded versions; descriptions affect the next model request."""
+    """Run bounded Worker/reviewer reads; the reviewer's last round must submit an assessment."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -33,6 +33,11 @@ async def run_file_tool_loop(service, workflow, node, options):
         if remaining < 1:
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
         definitions = tools.definitions()
+        if (
+            node.node_key == "independent_review"
+            and round_index == options["model_input"]["max_model_calls"]
+        ):
+            definitions = []
         offered_versions = {
             definition.name: tools.loaded_versions[definition.name] for definition in definitions
         }

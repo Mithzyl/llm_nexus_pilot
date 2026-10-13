@@ -12,6 +12,7 @@ from nexuspilot_models.contracts import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import AgentWorkflowNodeStatus, AgentWorkflowStatus
+from nexuspilot_api.schemas.worker_evidence import ClaimAssessment, WorkerEvidenceBundle
 
 
 class StrictContract(BaseModel):
@@ -351,6 +352,13 @@ class AgentWorkerModelOutput(StrictContract):
     unknowns: list[str] = Field(default_factory=list, max_length=50)
 
 
+class EvidenceWorkerModelOutput(AgentWorkerModelOutput, WorkerEvidenceBundle):
+    """Require claims for tool results; legacy confirmed_facts cannot bypass review."""
+
+    schema_version: Literal["worker_evidence.v2"]
+    confirmed_facts: list[str] = Field(default_factory=list, max_length=0)
+
+
 class AgentModelExecutionOutput(StrictContract):
     """Return one Agent Turn and normalized model invocation result."""
 
@@ -361,7 +369,7 @@ class AgentModelExecutionOutput(StrictContract):
     response_kind: Literal["structured"] = "structured"
     text_preview: str | None = Field(default=None, max_length=1_000)
     text_artifact_id: str | None = None
-    structured_output: AgentWorkerModelOutput
+    structured_output: EvidenceWorkerModelOutput | AgentWorkerModelOutput
     requested_tool_calls: list[dict] = Field(default_factory=list, max_length=0)
     tool_results: list[dict] = Field(default_factory=list)
     finish_reason: str
@@ -376,10 +384,10 @@ class AgentModelExecutionOutput(StrictContract):
 
 
 class AgentHandoffOutput(StrictContract):
-    """Expose the existing immutable agent_handoff.v1 resource and its typed content."""
+    """Expose legacy handoffs and v2 records with preserved claim references."""
 
     agent_handoff_id: str
-    schema_version: Literal["agent_handoff.v1"]
+    schema_version: Literal["agent_handoff.v1", "agent_handoff.v2"]
     status: Literal["completed", "partial"]
     objective: str
     confirmed_facts: list[str]
@@ -393,6 +401,14 @@ class AgentHandoffOutput(StrictContract):
     unknowns: list[str]
     invariants_for_next_agent: list[str]
     supersedes_handoff_id: str | None = None
+    worker_evidence: WorkerEvidenceBundle | None = None
+
+    @model_validator(mode="after")
+    def validate_evidence_version(self):
+        """Keep legacy absence explicit and require the evidence bundle for v2 records."""
+        if (self.schema_version == "agent_handoff.v2") != (self.worker_evidence is not None):
+            raise ValueError("Handoff evidence must match its schema version")
+        return self
 
 
 class VerificationCheck(StrictContract):
@@ -460,6 +476,13 @@ class IndependentReviewOutput(ReviewerModelOutput):
     reviewer_task_id: str
     reviewer_agent_run_id: str
     reviewer_model_attempt_id: str
+    claim_assessments: list[ClaimAssessment] = Field(default_factory=list, max_length=400)
+
+
+class EvidenceReviewerModelOutput(ReviewerModelOutput):
+    """Review every identified claim using source excerpts or authorized supplementary reads."""
+
+    claim_assessments: list[ClaimAssessment] = Field(max_length=400)
 
 
 class FinalSynthesisModelOutput(StrictContract):
