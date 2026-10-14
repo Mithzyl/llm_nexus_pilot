@@ -33,6 +33,37 @@ def test_default_model_only_definition_accepts_fixed_and_task_scoped_nodes() -> 
     )
 
 
+@pytest.mark.parametrize("profile", ["model_only_v1", "tool_enabled_v1"])
+@pytest.mark.parametrize("version", ["1.0.0", "1.1.0"])
+def test_plan_repair_transition_is_version_scoped(profile: str, version: str) -> None:
+    """Allow plan repair only in 1.1 while preserving dispatch and review transitions."""
+    definition = create_default_workflow_definition_registry().require_definition(
+        "model_only", version, profile
+    )
+    transition = {
+        "node_key": "plan_validation",
+        "next_node_keys": ["controller_planning"],
+        "skipped_node_keys": [],
+    }
+    if version == "1.0.0":
+        with pytest.raises(ValueError, match="transition"):
+            definition.validate_transition(**transition)
+    else:
+        definition.validate_transition(**transition)
+        definition.validate_transition(
+            node_key="independent_review",
+            next_node_keys=["controller_planning"],
+            skipped_node_keys=[],
+        )
+    definition.validate_transition(
+        node_key="plan_validation", next_node_keys=["agent_dispatch"], skipped_node_keys=[]
+    )
+    with pytest.raises(ValueError, match="transition"):
+        definition.validate_transition(
+            node_key="plan_validation", next_node_keys=["final_synthesis"], skipped_node_keys=[]
+        )
+
+
 def test_registry_rejects_duplicate_workflow_identity() -> None:
     """Verify one workflow name, version, and execution profile cannot be registered twice."""
 

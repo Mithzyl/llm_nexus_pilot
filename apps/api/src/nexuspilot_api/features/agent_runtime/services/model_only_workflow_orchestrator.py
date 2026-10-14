@@ -45,6 +45,9 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
 from nexuspilot_api.features.agent_runtime.services.agent_model_node_service import (
     AgentModelNodeService,
 )
+from nexuspilot_api.features.agent_runtime.services.controller_plan_repair_policy import (
+    can_repair_controller_plan,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry import (
     DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
     WorkflowDefinitionRegistry,
@@ -533,7 +536,7 @@ class ModelOnlyWorkflowOrchestrator:
             await self._fail_workflow(workflow, error=error)
 
     async def _execute_round(self, workflow, payload, run, previous_node_id, refinement):
-        """Execute one unchanged role sequence, retaining prior rounds as input facts."""
+        """Execute one role sequence with optional single repair attempt."""
 
         self.refinement_input = refinement
         controller_binding = payload.role_bindings["controller"]
@@ -603,16 +606,34 @@ class ModelOnlyWorkflowOrchestrator:
             status_label="Plan created",
             summary="Controller created a typed task plan",
         )
+        original_controller_id = current_node.node_execution_id
         current_node = None
 
         validation = validate_controller_plan(
             plan,
             payload,
             used_model_calls=workflow.model_call_count,
-            used_nodes=current_node.node_sequence
-            if current_node
-            else await self._node_count(workflow),
+            used_nodes=await self._node_count(workflow),
         )
+
+        failed_ids = {check.check_id for check in validation.checks if check.status == "fail"}
+        remaining_calls = workflow.max_model_calls - workflow.model_call_count
+        min_completion_calls = 2 + self._review_call_allowance(workflow)
+        remaining_nodes = workflow.max_nodes - await self._node_count(workflow) - 1
+        min_completion_nodes = 6 + (1 if payload.review_policy != "never" else 0)
+        remaining_time = self._remaining_wall_time_ms(workflow)
+
+        eligible = can_repair_controller_plan(
+            workflow_version=payload.workflow_version,
+            failed_check_ids=failed_ids,
+            repair_attempts_this_round=0,
+            remaining_model_calls=remaining_calls,
+            minimum_completion_model_calls=min_completion_calls,
+            remaining_nodes=remaining_nodes,
+            minimum_completion_nodes=min_completion_nodes,
+            remaining_wall_time_ms=remaining_time,
+        )
+
         validation_node = await self._run_deterministic_node(
             workflow,
             node_key="plan_validation",
@@ -620,26 +641,155 @@ class ModelOnlyWorkflowOrchestrator:
             output_type="plan_validation",
             output=validation,
             input_values=plan.model_dump(mode="json"),
-            source_node_ids=[
-                await self._node_id_by_key(workflow.workflow_execution_id, "controller_planning")
-            ],
+            source_node_ids=[original_controller_id],
             transition=NodeTransitionRead(
-                selected_transition="dispatch" if validation.is_valid else "fail",
-                next_node_keys=["agent_dispatch"] if validation.is_valid else [],
-                skipped_node_keys=([] if validation.is_valid else ["agent_dispatch"]),
+                selected_transition="dispatch"
+                if validation.is_valid
+                else ("repair_plan" if eligible else "fail"),
+                next_node_keys=["agent_dispatch"]
+                if validation.is_valid
+                else (["controller_planning"] if eligible else []),
+                skipped_node_keys=[] if validation.is_valid or eligible else ["agent_dispatch"],
                 condition_summary=(
                     "Plan passed deterministic validation"
                     if validation.is_valid
-                    else "Plan requested unavailable or invalid work"
+                    else (
+                        "Repair eligible"
+                        if eligible
+                        else "Plan requested unavailable or invalid work"
+                    )
                 ),
             ),
-            status_label="Plan validated" if validation.is_valid else "Plan rejected",
+            status_label="Plan validated"
+            if validation.is_valid
+            else ("Repair eligible" if eligible else "Plan rejected"),
             summary=(
                 "The Controller plan passed deterministic checks"
                 if validation.is_valid
-                else "The Controller plan cannot run under model_only_v1"
+                else (
+                    "Repair attempt permitted"
+                    if eligible
+                    else "The Controller plan cannot run under model_only_v1"
+                )
             ),
         )
+
+        if not validation.is_valid and eligible:
+            await self._ensure_workflow_running(workflow)
+
+            repair_input = {
+                "plan_repair": {
+                    "original_plan": plan.model_dump(mode="json"),
+                    "validation": validation.model_dump(mode="json"),
+                },
+                "remaining_model_calls": workflow.max_model_calls - workflow.model_call_count,
+                "remaining_nodes": workflow.max_nodes - await self._node_count(workflow),
+                "remaining_wall_time_ms": self._remaining_wall_time_ms(workflow),
+                "objective": run.user_request,
+                "allowed_roles": sorted(
+                    {"planner", "researcher"}.intersection(payload.role_bindings)
+                ),
+                "allowed_capabilities": ["model_generation", "text_analysis"]
+                + (["read", "tool"] if workflow.execution_profile == "tool_enabled_v1" else []),
+                "review_policy": payload.review_policy,
+                "refinement": refinement,
+                "workflow_round": self.workflow_round,
+                "maximum_tasks": 8,
+                "minimum_completion_model_calls": min_completion_calls,
+                "minimum_completion_nodes": min_completion_nodes,
+                "repair_model_calls": 1,
+                "repair_nodes": 2,
+            }
+            if workflow.execution_profile == "tool_enabled_v1":
+                repair_input["tool_guidance"] = (
+                    "Workers may list/read/search attached files. Allocate enough "
+                    "max_model_calls for discovery, describe/load, file tool requests "
+                    "and a final JSON answer. Only list_run_files/read_file_content "
+                    "are preloaded; outline/table/search require describe_tools first, "
+                    "within the workflow budget."
+                )
+                repair_input["available_worker_model_calls"] = max(
+                    0,
+                    workflow.max_model_calls
+                    - workflow.model_call_count
+                    - self._review_call_allowance(workflow)
+                    - 2,
+                )
+
+            repair_node = await self._start_node(
+                workflow,
+                node_key="controller_planning",
+                node_type="model",
+                output_type="controller_plan",
+                input_values=repair_input,
+                source_node_ids=[original_controller_id, validation_node.node_execution_id],
+                agent_role="controller",
+                status_label="Controller repair",
+                summary="Controller is repairing the rejected plan",
+            )
+            try:
+                repair_plan, repair_response = await self._call_typed_model(
+                    workflow,
+                    repair_node,
+                    binding=controller_binding,
+                    role="controller",
+                    purpose=(
+                        "Correct the rejected plan using feedback and allowed capabilities. "
+                        "Fit actual remaining resources after reserving this repair and completion."
+                    ),
+                    model_output=ControllerPlanOutput,
+                    model_input=repair_input,
+                    reasoning=payload.reasoning,
+                )
+            except Exception as exc:
+                raise WorkerExecutionFailure(repair_node.node_execution_id, exc) from exc
+            await self._complete_node(
+                workflow,
+                repair_node,
+                output=repair_plan,
+                transition=NodeTransitionRead(
+                    selected_transition="validate_plan",
+                    next_node_keys=["plan_validation"],
+                    condition_summary="Controller returned a repaired plan",
+                ),
+                evidence=self._model_evidence(repair_response),
+                usage=self._model_usage(repair_response),
+                status_label="Plan repaired",
+                summary="Controller created a repaired task plan",
+            )
+            plan = repair_plan
+            validation = validate_controller_plan(
+                plan,
+                payload,
+                used_model_calls=workflow.model_call_count,
+                used_nodes=await self._node_count(workflow),
+            )
+            validation_node = await self._run_deterministic_node(
+                workflow,
+                node_key="plan_validation",
+                node_type="deterministic",
+                output_type="plan_validation",
+                output=validation,
+                input_values=plan.model_dump(mode="json"),
+                source_node_ids=[repair_node.node_execution_id],
+                transition=NodeTransitionRead(
+                    selected_transition="dispatch" if validation.is_valid else "fail",
+                    next_node_keys=["agent_dispatch"] if validation.is_valid else [],
+                    skipped_node_keys=([] if validation.is_valid else ["agent_dispatch"]),
+                    condition_summary=(
+                        "Repaired plan passed deterministic validation"
+                        if validation.is_valid
+                        else "Repaired plan requested unavailable or invalid work"
+                    ),
+                ),
+                status_label="Plan validated" if validation.is_valid else "Plan rejected",
+                summary=(
+                    "The repaired Controller plan passed deterministic checks"
+                    if validation.is_valid
+                    else "The repaired Controller plan cannot run under model_only_v1"
+                ),
+            )
+
         if not validation.is_valid:
             error_code = next(
                 (

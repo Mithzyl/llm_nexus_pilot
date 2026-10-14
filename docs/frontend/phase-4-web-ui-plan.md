@@ -1,6 +1,6 @@
 # 阶段4：NexusPilot Web 前端规划
 
-2026-10-14 工作流兼容：新 Agent 请求使用 `workflow_version=1.1.0`、`max_workflow_rounds=2`（含首轮）。事件解析器接受节点修正及返回 Controller 的请求/完成/未执行事件，按既有事件序号保存，不当成终态；历史 1.0.0 类型和记录继续可读。结果类型增加可选 `loop_statistics` 与节点轮次，不新增统计面板。两轮节点仍按 node ID 和 Task ID 关联，不能按重复的节点键覆盖旧节点。详细规则及本次验证维护在[工具主计划](../implementation/phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。
+2026-10-14 工作流兼容：新 Agent 请求使用 `workflow_version=1.1.0`、`max_workflow_rounds=2`（含首轮）。事件解析器接受节点修正及返回 Controller 的请求/完成/未执行事件，按既有事件序号保存，不当成终态；历史 1.0.0 类型和记录继续可读。结果类型增加可选 `loop_statistics` 与节点轮次，不新增统计面板。两轮节点仍按 node ID 和 Task ID 关联，不能按重复的节点键覆盖旧节点。详细规则维护在[阶段3](../implementation/phase-3-agent-workflow-plan.md#当前节点职责版本与修正规则)，历史验证记录见工具主计划。
 
 2026-10-13 前端修复（已完成本地限定验证）：最新轮失败/取消且没有保存 Assistant 时，按所属会话的服务端 Run 恢复可见状态，不写入伪造回答；历史 Agent 答案按消息 `metadata_json.source` 恢复来源入口。Composer 增加最小化/展开，保留草稿、附件和运行中停止动作，展开恢复输入焦点；完整高度仍由 ResizeObserver 驱动底部留白。仅聚焦消息输入框的普通 Enter 发送，Shift+Enter 换行；输入法组合、229 兼容键码、长按及其他修饰键不触发发送。来源结论保留原始换行，长标识可折行，审核状态/展开动作另起一行。前端 135 项测试、类型检查、ESLint、构建通过；本地浏览器验证真实历史失败恢复、草稿/附件保留、快捷键提交前校验和 390px 来源布局。详细记录见根目录 `design-qa.md`。未修改后端引用修正机制、未追加付费工作流、未部署；先前真实续聊失败结论仍有效。
 
@@ -278,11 +278,11 @@ Context Build和Model Catalog已有允许公开的证据展示；完整Evaluatio
 - Agent Workflow 请求本身不包含用户目标；后端从所属 Run 的 `user_request` 读取目标。因此 Agent 提交模式必须先得到包含当前显式输入的 `run_id`，不能把 Composer 文本临时附加到 Workflow 请求或复用目标不一致的旧 Run。
 - 当前 Message/Run 轮次创建与 Workflow POST 不是一个端到端幂等事务。轮次创建可用同key重放原Run/Message；当前Web仅在同一次`createConversationTurn`调用内有限重试一次。浏览器拿到确定`run_id`后，才可依赖Workflow自身的`idempotency_key`查询或回放；轮次重放不代表Workflow已经启动，也不恢复丢失的模型请求身份。
 - Run 带有 `session_id` 时，阶段3后端会把最终 Assistant Message 与 `final_synthesis` 节点完成事实放在同一事务提交。Agent 模式不得沿用普通 `/responses` 流程再次保存 Assistant Message；前端在完成后读取 Result 和 Session Message 事实。
-- `workflow_name`、`workflow_version` 和 `execution_profile` 固定为 `model_only`、`1.0.0` 和 `model_only_v1`，在内部高级设置中只读展示，不允许任意文本输入。
+- 新 Agent 请求使用 `model_only`／`1.1.0`，`max_workflow_rounds=2` 包含首轮；执行配置按服务端附件授权规则选择，历史 `1.0.0` 仍可读取。版本、节点职责和修正条件只引用[阶段3当前规则](../implementation/phase-3-agent-workflow-plan.md#当前节点职责版本与修正规则)，不允许任意工作流名称或版本文本输入。
 - 每次用户明确提交生成一个 `8`～`128` 字符的 `idempotency_key`，并在该提交恢复完成前持久保存在当前页面状态中。请求超时或断线后先发现原 Workflow；不能生成新 key 自动重试模型调用。
 - `role_bindings` 只允许 `controller`、`planner`、`researcher`、`reviewer`、`verifier`。必须包含 Controller 和至少一个 Planner/Researcher；`review_policy` 不是 `never` 时必须包含 Reviewer。Verifier 当前不会创建模型节点，应隐藏在默认表单，只在开发者合同测试中保留类型支持。
 - 每个角色绑定展示 Provider、Model、结构化输出模式、超时和最大输出 token。Provider/Model 只能来自阶段2已经验证的能力事实；不支持的结构化输出模式必须在提交前禁用并说明原因。
-- `review_policy` 支持 `always`、`on_verification_failure`、`never`。`max_nodes` 按审核策略最小为 `10` 或 `11`、最大 `32`；`max_model_calls` 最小为 `3` 或 `4`、最大 `16`；`wall_time_limit_ms` 范围为 `1,000`～`600,000`；`max_parallel_agents` 范围为 `1`～`2`，默认 `1`。
+- `review_policy` 支持 `always`、`on_verification_failure`、`never`。`max_nodes` 按审核策略最小 10 或 11、最大 32；模型调用额度按阶段3的版本／配置规则校验（最小 3、4 或 6，最大 16），前端不能以旧单轮额度保证两轮成功；总时限 1,000～600,000 毫秒，并行 Agent 数 1～2、默认 1。
 - 表单使用与后端相同的范围和角色依赖校验提供即时提示，但服务端 `422` 仍是权威结果；校验失败保留用户目标、角色绑定和高级设置。
 
 #### 状态、事件与恢复模型
@@ -328,7 +328,7 @@ Context Build和Model Catalog已有允许公开的证据展示；完整Evaluatio
 - `WorkflowErrorRead` 的 `public_message` 是用户可见错误，`error_code` 用于稳定映射，`details_reference_id` 只作为受控诊断引用。页面不得显示 Provider 原始响应或内部异常正文。
 - 当前稳定错误按用户动作分组：计划/合同类包括 `node_output_invalid`、`agent_capability_unavailable`、`agent_plan_invalid`、`agent_review_policy_mismatch`、`agent_dependency_cycle`；限制类包括 `agent_budget_exhausted`、`agent_budget_price_unavailable`、`agent_node_limit_exceeded`、`agent_model_call_limit_exceeded`、`agent_workflow_timeout`；质量门禁类包括 `agent_verification_failed`；终止/系统类包括 `agent_workflow_cancelled`、`agent_provider_outcome_unknown`、`agent_workflow_internal_error`。Reviewer 的 `fail`、错误级发现、重试或重新规划要求是最终合成的证据约束和 Evaluation 事实，不再映射为 `agent_review_rejected` 工作流终止错误。未知 Provider 错误代码使用通用安全文案，并继续服从 `is_retryable` 和 `outcome_is_known`，不能因前端未登记就改成可重试。
 - `outcome_unknown` 表示 Provider 结果是否发生无法确认。当前相应错误会强制 `is_retryable=false`；前端只提供“重新读取证据”，不提供一键重新运行。
-- `agent_budget_exhausted`、节点/模型调用上限、验证失败和审核拒绝分别显示其事实原因。当前 Reviewer 拒绝不会进入返工轮次，不能展示“正在修改”。
+- 额度耗尽、验证失败、审核意见和执行失败分别显示真实原因。只有服务端已保存修正／返工事件才显示相应进度，不能仅凭 Reviewer 的 `needs_revision` 推断正在修改；未执行返工显示服务端原因，旧单轮记录不补造返工活动。
 - 当前只允许显式取消；取消按钮在 Workflow 为 `running` 时出现，重复提交按幂等结果处理。恢复、批准、用户输入、返工、重排 Task、提高上限或绕过能力拒绝仍不提供。
 
 #### BFF 与授权边界
@@ -414,7 +414,7 @@ Context Build和Model Catalog已有允许公开的证据展示；完整Evaluatio
 - 增加登录、退出、当前用户、登录会话列表、单会话撤销、全部会话撤销和密码管理入口。
 - 增加 NexusPilot 个人 API Key 列表、创建、一次展示和撤销；密钥原文只在创建成功页出现一次，离开后不可恢复。
 - 增加供应商凭据创建、命名、验证、默认项、轮换和撤销；列表始终掩码，验证可能产生费用时必须在提交前说明并确认。
-- 固定开发用户已经移除；下一步将所有资源 owner 从 BFF 过渡校验迁移为 FastAPI 当前主体直接派生，并在完成后移除最终用户请求对部署级 API Key 的依赖。
+- 当前用户由后端选择，BFF 与 FastAPI 已检查资源归属；部署级服务 Key 仍保留但不替代用户主体，未来移除服务 Key 是独立迁移，不是新增资源可省略授权的理由。具体规则和目标环境验证范围以阶段5为准。
 
 **失败与恢复：**
 
@@ -691,11 +691,11 @@ apps/web/
 | 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据、Composer合并入口、模型切换归一化以及快速回复/Agent Workflow透传已实现 | 真实Provider浏览器矩阵仍待后续执行 | 进行中 |
 | Markdown 与代码块 | 实时和历史Assistant共用安全GitHub Flavored Markdown；本轮新增语言工具栏、独立复制、成功/失败提示、13px代码和按钮、长行独立横滚；模拟BFF下桌面1200px及移动390px Chromium检查通过，继续禁用原始HTML、危险链接和自动远程图片 | 不代表真实BFF、Provider或完整跨浏览器验收；可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 320px 后内部滚动、空白输入拒绝、显式发送及最小化按钮；仅聚焦输入框时 Enter 发送、Shift+Enter 换行，输入法组合不发送；完整 Composer 高度驱动消息底部留白 | 输入区仍需持续进行跨浏览器验证 | 已完成 |
-| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留、快照恢复、审核意见不吞掉最终回答、活动运行恢复后的重复提交保护，以及职责明确的公开活动摘要和可折叠生命周期瀑布流 | 脱离HTTP连接独立执行、跨进程恢复、失败节点恢复、等待用户输入、工具调用与批准不属于当前执行配置；独立后台执行已进入阶段10规划 | 进行中 |
-| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 正式文件产品绑定未实现；System Prompt由后端决定，不增前台配置；Memory、Knowledge继续暂停，模型文件工具及附件专用编排后置 | 进行中 |
+| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留、快照恢复、审核意见不吞掉最终回答、活动运行恢复后的重复提交保护，以及职责明确的公开活动摘要和可折叠生命周期瀑布流 | 新版工具配置和两轮流程已有本地实现，验收范围见文首；脱离 HTTP 独立执行、跨进程恢复、通用等待／批准仍未实现，不能把事件回放当作后台恢复 | 进行中 |
+| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 上传附件绑定与只读工具已有实现；基础 Context 不包含全部工具历史，最终有效请求保存缺口见阶段2；System Prompt 不增前台配置，Memory／Knowledge 继续暂停 | 进行中 |
 | 运行证据 | Workflow摘要、11类节点、Attempt Reasoning、用量、费用、并行组、安全错误和脱敏Context证据；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断执行；Context已过滤System Prompt存在性及元数据 | 完整Task/Attempt/Retry/Artifact视图、允许动作、Artifact详情页及完整Evaluation开发视图尚未实现；普通产品不增加Prompt视图 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定BFF路由、资源归属、请求大小限制、环境与构建目录隔离、Next.js页面边界；BFF按实际Host与请求协议严格比较Origin，两个本地入口同源POST通过、跨别名Origin返回403；117项测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF浏览器测试通过 | 真实Provider浏览器端到端、完整可访问性、跨浏览器、敏感字段和MinIO检查未完整执行；转发头可信代理及HTTPS真实部署未验收，不将本地同源修复作为公网安全通过 | 进行中 |
-| 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属可用于多用户前端联调 | FastAPI全资源主体授权、个人API Key和用户Provider凭据继续由阶段5完成；OpenTelemetry、工具、代码搜索、MCP、RabbitMQ Worker分别等待阶段6至阶段10 | 进行中 |
+| 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属可用于多用户前端联调 | FastAPI 资源主体授权已实现，目标环境完整矩阵待验收；个人 API Key 未实现、用户 Provider 凭据暂停；工具基础循环已有实现，其他后续能力按各自主计划实施 | 进行中 |
 
 ### 当前故障定位索引
 
@@ -985,7 +985,7 @@ GET /api/v1/models
 
 ## 新增项目导航与附件发送工作项（2026 年 9 月 5 日，未开始）
 
-2026 年 9 月 12 日实施顺序：先补齐阶段2—4基础功能。正式上传已实现，下述项目文件页面仍未实现；“附件使用工作流处理”的自动模式切换与附件专用Agent编排后置，保留未来设计，不作为本轮已开通功能。当前本地选择显示待上传，发送时上传并解析；不新增文件工作流入口。
+2026 年 9 月 12 日实施顺序：先补齐阶段2—4基础功能。正式上传已实现，下述项目文件页面仍未实现；旧的“附件必切 Agent”方案已被两种模式均可读附件的需求替代，不再作为未来默认实施要求，也不新增附件专用 Agent。当前本地选择显示待上传，发送时上传并解析；不新增文件工作流入口。
 
 跨阶段数据、存储和权限合同以[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)为准。项目与附件专用编排仍是设计，基础上传按文首当前实现运行；不恢复会话归档。
 
@@ -993,7 +993,7 @@ GET /api/v1/models
 - 点击项目进入 `/p/[projectId]` 项目工作台，包含项目会话、文件、运行产物三个视图；项目内新对话固定该 `project_id`，普通新对话不强制创建项目。已有 `/c/[sessionId]` 仍是对话稳定地址，从服务端 Session 恢复项目范围，不能靠左侧选中项重写历史归属。
 - 项目文件页区分“上传资料”（MinIO 原件）、“工作目录”（本地主机文件）和“运行产物”，不能用一个无状态列表冒充自动同步。文件行使用类型图标、名称、大小/版本/状态和独立操作菜单；行距、细分隔线、键盘焦点及移动布局复用现有控件，不使用未设计的原生弹出列表或粗边框。
 - Composer 单击文件选择后展示逐文件上传进度/失败重试/移除；服务端版本可用后才允许发送。文件已上传但未发送可以从后端列表恢复；只存在浏览器内的待上传 File 在刷新后需要重新选择，不能仅恢复文件名就称作已上传。
-- 有本轮附件时显示实际 Agent 模式及简短说明“附件使用工作流处理”，发送由服务端再次判定。上传不自动发送；移除全部本轮附件恢复原模式。附件/解析失败保留文本草稿，阻止不完整提交；用户明确移除失败项后才发送剩余项。
+- 本轮附件不改变用户选择的快速回复／Agent 模式，两种模式都可使用服务端授权的只读工具；Agent 内部执行配置与产品模式分开。上传不自动发送，移除附件不改变模式。附件／解析失败保留草稿并阻止不完整提交，用户明确移除失败项后才发送剩余项；不恢复“有附件必须切 Agent”的旧设计。
 - 项目切换不取消活动 Run，不改动证据检查器目标。草稿键扩展为 owner/project/session，并保留上传版本引用；跨用户/项目引用在服务端拒绝。项目内运行仅选取显式文件，不自动注入整个目录或其他会话历史。
 - 文件详情显示版本、解析覆盖范围及页码/行号来源；工作目录离线、文件变化、删除或失权均显示对应状态。首次登录不出现他人或旧本地 owner 的项目；暂不提供共享、归档或任意绝对路径输入。
 - 验收：桌面/移动导航、分页与空状态、首个带附件回复、部分失败、刷新恢复、有效模式与请求一致、跨项目切换、长文件名与列表样式、撤销/删除后的明确错误；模拟测试与真实 MinIO 浏览器验证分别记录。

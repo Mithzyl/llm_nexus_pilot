@@ -1,6 +1,6 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-**文档日期：** 2026 年 10 月 12 日
+**文档日期：** 2026 年 10 月 14 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -26,13 +26,168 @@
 
 ## 后续工具能力的统一归属
 
-2026-10-14 新增兼容工作流版本 `1.1.0`：保留原节点职责，新增有限输出修正和 Reviewer 返回 Controller 的第二轮规划；首次和第二轮节点、任务、交接及审核分别保存，统计区分工具轮、节点修正和工作流 refine。旧 `1.0.0` 继续单轮执行，本文原单轮完成记录不变。唯一详细规则及本次验收见[工作流整体修正与两轮 refinement](phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。本地实现与确定性回归已完成，真实 Provider 两轮验收未执行，不代表新版本真实 Provider 两轮已通过。
+2026-10-14 新增兼容工作流版本 `1.1.0`：保留原节点职责，新增有限输出修正和 Reviewer 返回 Controller 的第二轮规划。当前规则统一维护在下节；工具输入、原文引用与工具循环由阶段7维护，不重复定义外层节点流转。旧 `1.0.0` 继续单轮执行，原完成记录不变。新版本本地实现与确定性回归已完成，真实 Provider 两轮验收未执行；历史命令与结果见[验收记录](phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。
 
 2026-10-12 新增工作项，2026-10-13 进行中：节点 JSON 局部修正、Worker 逐条 `claims` 关联原文、Handoff 保留引用、固定文件快照和读取范围检查、Reviewer 原文输入与有限补读均已有本地实现及确定性测试。随后本地真实 DeepSeek + MySQL/MinIO 的两段 TXT 样例通过：Worker 首段引用保存，Reviewer 实际补读最终记录并区分初步/最终型号；服务器未更新，不以单样例代替全部模型质量评估。用户随后确认前端设计，已新增结论与来源面板及只读授权原文接口；最终答案逐句引用仍后置。唯一详细设计和验收维护在[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。新工具工作流采用 `worker_evidence.v2` / `agent_handoff.v2`，历史 v1 不补造引用；来源校验通过不等于结论正确。
 
 2026-10-08 起，工具循环、按需发现、代码组合、能力缺项判断、自主创建工具、批准交互和工具任务验收统一维护在[工具主计划](phase-7-tool-runtime-plan.md)。代码继续复用本模块的 Agent、节点、Handoff 和持久活动，不另建 Agent Runtime；本文的原 `model_only_v1` 完成记录保持不变，不复制新的工具待办。
 
 通用后台 Worker/租约机制见阶段10；工具循环如何保存与恢复由工具主计划验收。Controller/Worker 是执行职责，不要求每类工具配一个新 Agent。本文目标态中关于工具的预留字段是兼容背景，不是已实现功能。
+
+## 当前节点职责、版本与修正规则
+
+### 本地实施与委派评估（2026-10-14）
+
+状态：进行中（真实流式小任务已通过，继续分批实现）。开发分支 `codex/workflow-contract-repair`；不部署服务器，不改写既有未提交资料。Qwen 只修改每批明确授权的代码及测试文件；规划文档由主代理维护。主代理检查实际差异、执行测试，将必须修复的问题返回 Qwen；同一任务连续三次提交仍有必须修复的问题时，按项目规则核查根因并接管。服务超时或输出截断没有产生代码提交，不属于代码返修失败。
+
+实施顺序：
+
+1. 请求审计：先复现未提供工具定义时丢失 `effective_messages`，再修复并检查私有续接不泄漏。
+2. Controller 计划业务修正：先定义重复任务、依赖、审核策略、额度与不可修正错误的用例，再实现一次修正及独立持久记录。
+3. 统计和事件：区分计划修正、输出修正、业务返工；业务轮次不能按 Controller 节点数量计算，前端接收新增事件但不增加无用途展示。
+4. 组合验收：计划修正加两轮业务返工、刷新／幂等读取、用量汇总和失败状态；真实 Provider 验证与确定性测试分别报告。
+
+评估以实际返回的一批修改为单位：首次审核和必需检查均通过的批数／已完成首次验收的批数为首次通过率；至少一次因代码缺陷要求返修的批数／已完成首次验收的批数为返工率。测试先行的预期失败、计划内的测试到实现两次委派、环境缺失不计返工；另记每批返修次数及具体缺陷。小样本不推断模型整体准确率。Qwen Token 使用仅采用服务返回的 usage；未返回则记“未知”，不把字符数作为 Token 数。主代理没有本轮精确 Token 计量时同样记“未知”，不以账号共享额度差推算本任务消耗。
+
+本次调用记录（时长按服务返回的 `updated-created`，包含排队和请求处理，不能解释为纯模型推理时间）：
+
+| 任务 ID | 内容 | 时长 | 结果 |
+|---|---|---|---|
+| `b6e8e6fff3434c89aa89f5c21ab9b1b1` | 请求审计回归测试 | 124.6 秒 | 输出截断；无生成结果、无项目写入 |
+| `8ba1665ae66f47c0bb3b1b6b39e0ecd1` | 计划业务修正回归测试 | 127.6 秒 | HTTP 524；无项目写入 |
+| `ddb09a46252b406586221aa0de6ffde4` | 缩小为单个请求审计用例 | 126.2 秒 | HTTP 524；无项目写入 |
+
+调用交付成功率为 0/3；完成代码审核的批数为 0，代码准确性、首次通过率和代码返工率均无法评估，不写成 0% 准确率或 0% 返工率。针对交付失败缩小范围重试 1 次。服务没有返回 usage，三次调用的 Qwen Token、主代理本轮精确 Token 和费用均未知；失败不代表未计费。当次委派未修改服务配置，未继续付费重试。
+
+后续按用户授权修改本地共享 Qwen 工具（项目仓库外）：`max_output_tokens=null` 不再发送客户端 Token 上限，`request_timeout_seconds=null` 关闭本地 HTTP 超时与响应体读取期限；文件权限、大小和冲突检查保留。38 项离线工具测试通过，尚未真实重试；模型服务默认额度及代理 524 仍不受本地配置控制，因此不能据此将委派交付状态改为通过。关闭超时可能使不响应的请求长期占用 worker，逻辑取消不保证远端停止计费。
+
+随后按用户要求将该共享工具改为 `stream=true`：增量读取 SSE 文本，成功结束且完整 JSON 校验后才交付代码，断流及截断不应用、不自动重试。工具回归扩展为 44 项通过，包含分片中文、心跳、私有推理隔离、缺失结束标记及响应大小限制；尚未发起真实模型请求，不能据此确认代理 524 已消除。详细配置和使用限制由工具安装目录 README 维护，项目工作流代码不因此改变。
+
+真实流式复测：新增 provider usage 白名单计量与 `invocation-metrics.json`（共享工具 45 项离线测试通过）后，调用记录如下。Token 均来自 Provider 的 usage，不由字符推算；输出是否包含内部推理按服务端计数，不能等同于生成代码的 Token。
+
+| 任务 ID | 内容 | 输入／输出／总 Token | 耗时 | 审核与测试 |
+|---|---|---|---|---|
+| `d165cbd31bac4396b8bf930eef498cdb` | JSON 序列化小任务 | 3219／3657／6876 | 51.099 秒 | SSE 应用成功；根目录 2 项通过，但 apps/api 目录导入失败，要求返修 |
+| `249e677bab0a400d9091e5df65067e9a` | 修正包导入路径 | 1002／2355／3357 | 30.507 秒 | 仅改一行；apps/api 下 2 项通过，Ruff 通过 |
+
+小任务累计 10233 Token，交付成功 2/2，首次验收通过 0/1，需返修批次 1/1，返修 1 次；样本不足以推断整体准确性。此后正式请求审计测试任务 `1e0a601485d4421da714a4cba49165e7`、Controller 计划业务修正测试任务 `27d6189f36b94cf9b725bb2d69049cdd` 已委派，等待实际交付及主代理审核；未将测试先行的目标失败计入返工。
+
+正式批次进展：
+
+| 任务 ID | 内容 | 输入／输出／总 Token | 结果 |
+|---|---|---|---|
+| `1e0a601485d4421da714a4cba49165e7` | 请求审计测试首发 | 未返回 | 本地 2 MB SSE 传输阈值截断；无写入，非代码返修 |
+| `27d6189f36b94cf9b725bb2d69049cdd` | 计划测试首发 | 未返回 | 同一 SSE 阈值失败；无写入 |
+| `6863f9f7d8b1446db2b4194fb9591161` | 请求审计测试重发 | 11015／8021／19036 | 不存在的模块、错误 Mock 和导入；首次审核失败 |
+| `f5e181b871384fd2ac6a4682ade7e5cc` | 请求审计第一次返修 | 16160／7930／24090 | 已复现目标 KeyError，但普通消息样例仍重复且静态检查失败 |
+| `00d82dfe536444fb8f33b5b31d8bfb7a` | 请求审计第二次返修及实现补丁 | 1769／10056／11825 | 用例修正，补丁格式和上下文错误、静态检查仍失败；主代理按连续三次规则接管 |
+| `2179890174584afeb5c1f98b097d41ce` | 计划测试重发 | 6088／9564／15652 | persistent 样例误变合法、修正次数错误；首次审核失败 |
+| `e314311663734df9a8d963e46717f41e` | 计划测试第一次返修 | 4506／9945／14451 | 修复样例，但引用了不存在的单数 source 字段；要求再次修正 |
+
+SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，单事件及生成正文仍最多 2 MB，原文件写入限制不变，46 项离线测试通过。此前服务不返回 usage 的失败费用未知，不计为零。以上已知累计 Token 为 95237，不包括之后尚未完成的任务。
+
+请求审计最终实现由主代理移除 `request.tools` 条件、更新函数说明，并格式化 Qwen 测试；移除了本次生成且无法应用的临时补丁（原稿仍保存在工具任务目录）。修复前 2 个目标用例失败、1 个通过；修复后请求审计／快速回复工具／Responses／私有续接测试共 38 项通过（9.92 秒），Ruff 通过。不是 Qwen 独立完成，应单列为主代理接管批次。Controller 实现补丁任务 `a3586bd692f24035a56ef34fb5ad8e64` 和限制／两轮组合测试 `a41127d24162476c927004d2785ceb9b` 已按用户要求取消；旧 worker 一直阻塞，核实进程后终止本地进程，两项状态均为 `cancelled`，`project_modified=false`。没有应用这两个任务的代码。远端停止生成与计费未确认，最终 usage 未取得，不能计为零。
+
+共享 Qwen 工具新增独立 `progress.py`：每两秒保存无正文的流进度，区分等待响应、流连接、推理输出和正文输出；记录字节数、事件数及时间。120 秒无事件、300 秒仅推理、固定窗口重复仅提示疑似异常，不自动取消或重试。52 项离线测试通过（含解析器与状态接口集成）；真实 Provider 进度尚未验证。旧 MCP 服务需重新加载才能返回新增 progress 字段，新 worker 可直接写入进度文件；具体限制由工具 README 维护。
+
+后续委派改为串行小修改，每批完成差异审核与对应测试后才提交下一批，不同时排队大任务：
+
+| 独立修改 | 修改范围与验收 |
+|---|---|
+| 1. 计划修正资格规则 | 单独纯函数和单元测试：仅允许列出的业务校验错误、最多一次、额度不足与能力越权不得修正；先失败测试再实现 |
+| 2. 节点转换允许关系 | 仅 registry 与对应测试：1.1.0 允许 plan_validation 返回 controller_planning，1.0 不变 |
+| 3. Controller 单次修正执行 | 仅执行流程相关函数及聚焦测试：保留原节点，同轮新增节点，二次验证通过才 dispatch；只携带必要函数和直接依赖，不返回整份 orchestrator |
+| 4. 修正事件 | 事件产生位置和测试：requested、completed、skipped 的节点关联及成功时机真实，不将模型返回合法 JSON 等同于业务验证通过 |
+| 5. 后端统计 | schema、统计函数和测试：按实际 attempt 计数，按不同 workflow_round 计轮数；失败、未知与未执行区分 |
+| 6. 前端类型与事件消费 | 仅事件白名单、类型和对应测试，保持现有展示，不新增无用途页面内容 |
+| 7. 组合验收 | 前六项通过后再编写并执行计划修正加两次 workflow round 的固定样本测试，不提前让模型猜测尚未实现的接口 |
+
+这些是现有工作项内的实施批次，不新增 Phase。第 1～3 批已完成本地确定性测试与回归验证：资格判断、节点转换和单次 Controller 业务计划修正已接入。第 4～7 批专用事件、统计、前端消费及组合验收仍待完成；未经过真实业务 Provider 验收。后续若工具仍仅支持完整文件返回，大文件局部修改应使用准确匹配的独立补丁并先检查，不把整份文件作为默认交付。
+
+真实小任务进度验证（2026-10-14）：三次均观察到 progress.json 从 reasoning_only 到 generating_content，正常结束，无重复窗口警告，未触发 300 秒仅推理提醒。未保存或人工阅读推理原文；只能说明此次固定窗口检测未报警，不能证明没有语义重复。当前长驻 MCP 服务未重新加载，状态接口不返回新增字段，核查直接读取进度文件。
+
+| 任务 | Provider 输入／输出／总 Token | 耗时／首正文等待 | 审核与修正 |
+|---|---|---|---|
+| `8736f20e5c304196895f4f9d6eb44870` 资格规则测试 | 537／14576／15113 | 210.865 秒／188.799 秒 | 初始导入缺失为预期测试先行失败；遗漏负数预留覆盖、长行是必须返修项 |
+| `82771fc2b9804e1181d510565cd7a3bb` 规则实现及测试修正 | 2121／9616／11737 | 143.635 秒／121.916 秒 | 18 项通过，但两处 Ruff 长行且遗漏部分覆盖；再次委派被审批拒绝，主代理补全并格式化，24 项通过 |
+| `49cd8fec4ad94eec8553b008ac5074a7` 节点转换 | 2933／9109／12042 | 129.536 秒／95.541 秒 | 主代理先写测试，修复前 2 失败／6 通过；Qwen 业务修改正确但说明超长，主代理缩短说明；联合规则与原有返工回归 40 项通过 |
+
+本次三次真实调用合计 38892 Token。另一次返修委派在工具审批阶段被拒绝，没有新任务或 Provider 调用，不计为 Qwen 交付或用量。资格规则作为独立纯函数已验收，但尚无生产调用方；节点转换仅增加 1.1.0 的合法关系，不自行发起模型调用。规则测试首次不通过审核，第二次仍需修正；节点转换首次行为通过但静态检查失败。主代理接管情况分别记录，不将其算成 Qwen 独立完成，也不将测试先行的预期失败计作返工。
+
+验证命令：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_refinement.py -q`，本地脚本化 Provider／SQLite 条件，40 项通过。新规则、registry 和对应测试的 Ruff 通过；未进行 DeepSeek 业务联调、浏览器检查或部署。下一批应把资格判断接入实际 Controller 执行流程并验证真实剩余资源、节点持久化及事件时机。
+
+委派评估以主 Codex 从任务拆解、审核到测试返工的消耗为重点；Qwen usage 单独列示，不作为 Codex 节省量。当前没有同等任务直接实现的实测对照，也没有精确的本次主代理消耗统计，因此不得声称节省百分比。长时间无交付和反复返工是实际额外成本；小任务首遍通过率、主代理接管次数与审核范围需继续记录。
+
+第三批执行接入已完成本地确定性验收：主代理修正旧测试草稿的单数来源字段，暂不断言尚未实现的专用修正统计字段（该验收保留到第五批），先执行得到 5 失败／4 通过，复现业务修正缺失；另加精确资源边界、免审核和修正超时测试。Qwen 仅接收必要代码摘录并生成待审核补丁，不直接改写大文件。
+
+| 第三批请求 | 用量与进度 | 结果 |
+|---|---|---|
+| `7936011a38b34258a633a9ed85fab09a` | 约 217 秒仍无正文；最终 usage 未取得 | 用户要求取消，已确认 cancelled；未交付代码，不计返工；远端计费停止未确认 |
+| `52109a13ac6c4d739187203ef325a276` | 输入 4084／输出 16035／合计 20119 Token；237.276 秒，约 207 秒首正文 | 首份补丁审核不通过：导入及版本字段错误、剩余资源计算错误、修正证据没有传给实际模型请求、补丁格式错误；未应用 |
+| `88ee8b3be21c41ccab4bd7bd1f9aad47` | 输入 6247／输出 15176／合计 21423 Token；222.706 秒，约 192 秒首正文 | 第二次交付仍失败：补丁格式损坏、遗漏转换及完整输入保存；未应用 |
+| `0f8a9ed7a3ac4c0587bdeaf1adcfe8e2` | 输入 4078／输出 15954／合计 20032 Token；227.556 秒，约 197.5 秒首正文 | 第三次交付有可用结构，但存在未赋值节点引用、额度字段覆盖和行宽问题；主代理按约定接管 |
+
+以上进度未出现固定窗口重复警告，不代表没有语义重复。三次完成调用合计 61574 Token，另有取消请求的未知用量；连续三次代码交付仍有必须修复问题，返修请求两次，最终由主代理接管。当前不能证明委派节省主代理消耗；主代理承担测试编写、代码摘录、补丁逐项审核、最终修正与验证成本，不能把本批算作 Qwen 独立完成。
+
+最终实现保留 Qwen 第三份代码的单次修正结构，由主代理修正导入、真实剩余额度与可分配给 Worker 的额度分离、节点创建异常处理、转换记录、函数说明及格式。修正前后模型输入、Controller 和校验节点独立保存；二次校验失败不再重试；超时保留 outcome_unknown。现有 workflow_round_count/refinement_count 改按不同 workflow_round 计数，避免同轮修正被误算成业务返工；专用计划修正计数尚未新增。
+
+验证：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，112 项通过（17.85 秒）；其中本批修正执行测试 12 项。相关修改 Ruff、`git diff --check` 通过。环境为本地 SQLite／测试对象存储／脚本化 Provider；没有运行真实 DeepSeek 业务请求、浏览器验收、服务器部署或 Git 提交。
+
+历史修改前回归：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_workflow_refinement.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_provider_continuation_store.py -q`，20 项通过（4.71 秒），仅说明修改前行为。当前 Controller 执行接入及其回归已完成，见上方第三批记录；专用修正事件、统计及多轮组合验收仍待完成，不再恢复已取消的大任务。
+
+2026-10-14 验收核查：当前相关后端测试合并运行 152 项通过（27.31 秒），共享 Qwen 工具 52 项、前端 Composer 定向测试 5 项通过；相关 Ruff 与差异格式检查通过。无运行中或排队的委派。历史 ready 候选未应用，不等同业务实现。真实 DeepSeek／MySQL／MinIO 下的本批修正联调尚未执行。真实 Qwen 进度文件已验证，长驻 MCP 状态接口的新字段尚未验证。
+
+本节是外层工作流的当前规则定义。下文带日期的验证及旧 JSON 示例保留历史含义，不覆盖本节；尚未实现的行为在本节明确标注。文档更新本身不改变运行代码或部署版本。
+
+### 节点职责
+
+| 节点 | 输入与职责 | 输出及后续处理 |
+|---|---|---|
+| 请求归一化／来源清单 | 程序固定用户目标、消息锚点、允许来源和执行配置；`context_assembly` 的 `assembly_scope=run_source_inventory`，不是每个角色的完整模型请求 | 保存来源清单；早于最近 100 条候选的消息明确记录排除及截断，各模型调用再构建实际输入 |
+| Controller 规划 | 模型读取目标、可用能力、实际剩余额度；返工时读取上轮结论、审核及授权原文 | 提交类型化任务计划，不自行赋予工具权限或写执行状态 |
+| 计划校验／分派 | 程序检查任务键、依赖、角色、能力、审核策略和剩余资源 | 通过后创建 Task／Agent Run；不替模型编写业务计划 |
+| Worker | 模型按任务分析；工具配置下可以连续读取授权附件 | 提交业务结果；文件结论携带逐条 claims 与来源，推测和未解决事项单列 |
+| Handoff | 程序从已提交 Worker 输出生成不可变交接 | 保留完整结构化结果、引用、任务与调用关联；不让模型重新生成平台事实，不压掉原文引用 |
+| 确定性验证 | 程序检查字段、记录归属、文件快照、实际读取块及范围 | 只能证明结构和来源有效，不能证明自然语言结论正确 |
+| Reviewer | 模型对照结论与授权原文独立审核，工具配置下可有限补读 | 提交既有审核 JSON／逐条 assessment；不覆盖 Worker，不把多个工具结果的 ID 直接拼接成新引用 |
+| Controller 最终汇总／完成 | 模型依据候选、审核和未执行返工原因生成回答；程序保存最终消息与完成事实 | 明确结论限制，不将审核拒绝等同于不回答；真实执行失败仍保存失败状态，不伪造成功回答 |
+
+### 版本与输出结构
+
+| 维度 | 当前支持与兼容规则 |
+|---|---|
+| 工作流名称／版本 | 名称保留 `model_only`；新请求默认 `1.1.0`，显式 `1.0.0` 仍可调用和读取，保留其请求哈希和单轮规则 |
+| 执行配置 | `model_only_v1` 不执行工具；`tool_enabled_v1` 允许授权的 Worker 与 Reviewer 附件只读循环。快速回复保留独立 Responses 循环，不因有附件自动变为 Agent |
+| 节点信封 | 继续使用 `agent_workflow_node_result.v1`，与业务输出结构版本分开；工作流版本不等于所有节点 Schema 的版本 |
+| Worker／Handoff | 纯模型配置保留旧结构；当前新工具执行采用 `worker_evidence.v2`／`agent_handoff.v2`。历史已保存 v1 只读兼容，不补造 claims。不能仅按工作流版本猜输出结构，应读取已保存的 Schema 标识 |
+| Reviewer | 工具执行要求逐条 `claim_assessments`，支持／矛盾结论需真实来源；纯模型及历史结果按其原结构读取。保留 Reviewer 原职责，不新增替 Worker 改写的角色 |
+| 工具轮／输出修正／工作流轮次 | 是三种行为：同一节点工具轮追加 Attempt 与 Tool Call；`1.1.0` 节点输出最多修正一次；工作流 `max_workflow_rounds` 为 1～2，默认 2，包含首轮。`1.0.0` 工具配置保留旧的有限 JSON／字段修正，但不修正引用语义及 `value_error`，纯模型配置不修正，两个配置均不进入第二轮 |
+
+`1.1.0` 只有有效 Reviewer 结果明确设置 `requires_replan` 或 `requires_retry`，且剩余资源允许时，才返回 Controller；`needs_revision` 单独出现不触发第二轮。新轮创建新的节点、Task、Agent Run、Handoff 和 Evaluation，不覆盖首轮。第二轮 Reviewer 按第二轮 Task 逐条审核，不能仅凭相同 `claim_key` 混合两轮；可以读取授权的上游证据。
+
+轮次耗尽或资源不够时保存 `refinement.skipped` 和具体原因，进入带限制的最终汇总。已授权原文在每次使用前重新检查访问权限。模型调用、节点、总时间和费用不因修正／返工重置；计划校验扣除已消耗调用，并预留最终汇总及审核调用。工具 Reviewer 最多三次模型调用（最多两轮带工具，最后一轮提交 JSON），额外输出修正仍单独记账。
+
+### 错误处理与尚未实现的修正
+
+| 条件 | 当前行为 | 规划及限制 |
+|---|---|---|
+| JSON／字段错误；已授权来源的错误块范围、重复块或审核缺项 | `1.1.0` 原节点有限修正一次，保留工具历史与私有续接；修正不再次执行工具，之后重新完整校验 | 已实现本地确定性回归；持续错误仍失败，不用程序替模型编造合法业务输出 |
+| JSON 合法但计划依赖、重复任务、策略或额度分配不合法 | 1.1.0 在资格及资源检查通过后，返回 Controller 修正一次并重新校验；1.0.0 仍直接失败 | 执行已通过本地确定性验收。原计划、校验错误、允许能力与真实剩余额度传入 Controller；创建独立节点，不覆盖被拒绝计划，计入总预算。能力越权、额度不足或修正仍非法时失败；专用事件和统计待后续批次 |
+| 有效审核要求重新规划／重试 | `1.1.0` 按上文条件最多进入第二轮；`1.0.0` 交给最终汇总说明限制 | 业务返工不是格式修正；Reviewer 不负责执行新任务 |
+| 跨用户／跨任务非法引用、访问撤销、错误文件快照或对象损坏 | 终止相应执行，不作为格式错误重试 | 不通过修改引用或扩大权限绕过；权限类错误不能进入计划修正 |
+| Provider 是否已执行或结果是否已保存无法确认 | `outcome_unknown`，不自动重复调用 | 不将未知结果当作可修正 JSON；后台恢复规则由阶段10定义 |
+| 取消、资源耗尽、保存失败 | 保存真实节点及工作流结果；仅在符合现有分支时进入有限制的最终汇总 | 不保证任何失败都能生成模型答案；阶段4从已保存状态恢复失败呈现，不能伪造 Assistant 成功消息 |
+
+计划业务修正已用专门测试验证：重复任务、自依赖、策略不符、超额计划被纠正；持续非法、无剩余额度、能力越权不继续重试；计划校验及实际调用分别保存，精确资源边界、免审核、修正超时和结果重新读取通过。不能把这些确定性结果当作真实模型完成率；专用修正统计与多轮组合验收仍待完成。
+
+### 流转统计与验收
+
+- 当前 `result.loop_statistics` 从既有 Node、Event、Attempt 恢复：区分修正请求、实际调用、成功／失败／未结束／未知结果以及未执行返工原因。刷新、幂等重放不增加统计。
+- `agent.node.output_repair.requested/completed` 关联原 Attempt、错误字段和修正 Attempt；`agent.workflow.refinement.requested/skipped` 关联来源审核、Evaluation、前后轮次及停止原因。重复节点键使用递增 `node_attempt`，`input.workflow_round` 单独记录业务轮次；模型消息不能自行声明这些平台统计事实。
+- 工具轮、节点修正、工作流返工分别计数。实际工作流轮次数按已创建 Controller 节点统计，包含已开始但未完成的轮次，不等于成功轮数。
+- 修正用量按对应 Attempt 小计；refinement 用量是第二轮规划到审核的小计，不包含最终汇总。第二轮的修正会同时属于这两个小计，不能相加当总量；总量按全部 Attempt 只汇总一次。
+- 后续计划业务修正需单独记录原因、原计划、校验节点及修正 Attempt，并更新上述统计读取和测试；不能计为新业务轮次，也不能把未调用的修正申请计为费用。
+- 新版本地确定性回归已完成；真实 DeepSeek／MySQL／MinIO 两轮及浏览器成功续聊验收未执行。真实验收必须核对返回 Controller、两轮记录独立保存、引用有效、修正／返工计数、最终答案和刷新恢复；单轮历史成功不能代替。跨进程重启恢复属于阶段10，当前不承诺。
 
 ## 目标
 
@@ -51,10 +206,12 @@
 - Memory 实验性代码已有 `llm_agent_runs`、`llm_agent_turns`、L0 Working State、L2 Handoff 和 Run Snapshot。阶段3已新增实际 Agent 执行协调器、工作流/节点/事件持久化表和统一节点结果合同；Memory Packet 与 Knowledge 仍不参与工作流上下文组装。
 - `AgentRun` 表示一个角色对一个 Task 的完整执行；`AgentTurn` 只表示其中一次模型或工具循环。Controller 规划、计划校验、任务分派、验证、审核和汇总不能全部冒充 Agent Turn。
 - 阶段10 独立后台执行尚未实施。阶段7已实现附件只读工具、内置目录发现和 Worker 多轮工具调用；任务目录与 Python/Shell 专用执行器仅有本地实现，尚未接入聊天 Agent。`model_only_v1` 仍不执行工具；`tool_enabled_v1` 可执行授权的附件工具，不表示已开放 Shell、Git、MCP 或外部写入。
-- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成。历史记录包含单个 Provider 的真实流程验证，完整真实 Provider 浏览器矩阵仍后置；工具视图等待阶段7稳定合同。
+- 阶段4已实现第一版 `model_only_v1` 接入：前端消费 Workflow 创建/发现/结果、Node 和事件有限回放接口，按事件序号恢复并通过节点查询显示完整结果；显式取消、并行组和费用预留字段的前端适配已经完成。历史记录包含单个 Provider 的真实流程验证，完整真实 Provider 浏览器矩阵仍后置；工具结论／来源及调用视图已有本地实现；新版两轮真实浏览器验收仍待执行，详见阶段4及工具验证记录。
 - 阶段6 OpenTelemetry 尚未实施，但优先级已提高。阶段3必须提前固定 trace/span 关联字段，用户可见运行事实仍保存在 MySQL，不能由遥测数据反推业务状态。
 
-## 当前实施结果（核对至 2026 年 9 月 12 日）
+## 历史实施结果（核对至 2026 年 9 月 12 日）
+
+下表是原同步纯模型范围的验收记录，不代表新增工具、引用修正或两轮流程均已真实验收；当前行为见文首版本表。
 
 | 能力 | 当前状态 | 已验证行为与边界 |
 |---|---|---|
@@ -173,16 +330,16 @@ Run
 
 ### 当前实现
 
-- 当前 `workflow_name=model_only`、`workflow_version=1.0.0`；执行配置包括 `model_only_v1` 和 `tool_enabled_v1`，保留名称以兼容历史记录。两者复用固定外层节点，只有工具配置的 Worker 进入附件工具循环。
+- 当前版本、执行配置及节点输出以[当前规则](#当前节点职责版本与修正规则)为准；两种配置复用原节点分工，工具配置允许 Worker 执行与 Reviewer 补读。
 - 协调器使用普通异步 Python 的 `if`/`for` 和明确函数调用按顺序执行，不使用 LangGraph Graph API。
 - 节点输出由 `NODE_OUTPUT_MODELS` 按 `output_type` 映射到唯一 Pydantic 类型，写入前和读取后都会重新校验。
-- `workflow_definition_registry.py` 已登记 `model_only/1.0.0/model_only_v1` 的固定节点和按任务生成的节点，应用导入该模块时会检查重复定义、未知输出类型和未知后续节点。
+- `workflow_definition_registry.py` 登记支持的版本／执行配置、固定节点和按任务生成的节点，应用导入时检查重复定义、未知输出类型和未知后续节点；新旧版本不共用含义不明的返工开关。
 - 创建工作流时必须找到完全匹配的名称、版本和执行配置；节点开始前校验 `node_key`、`node_type` 和 `output_type`，节点完成前校验实际后续节点及跳过节点是否属于允许连接。
 - `model_only_workflow_orchestrator.py` 使用普通异步 Python 的 `if`、`for` 和明确函数调用决定节点顺序、计划拒绝、是否审核，以及审核意见如何约束最终汇总。审核不是回答投递开关；只有无可信类型化审核结果、确定性验证失败或其他执行错误才会按对应错误合同终止。
 
-### 后续目标
+### 当前执行顺序与后续扩展
 
-基础顺序为请求归一化 → Context → Controller 计划 → 程序计划校验 → 任务分派 → 按依赖执行 Worker/Handoff → 程序确定性验证 → 可选 Reviewer → Controller 最终汇总 → 完成。Worker 为动态任务，外层流程并非由模型任意生成；Handoff 由程序生成，不要求模型返回平台身份或执行状态。`1.0.0` 中 Reviewer 的 `requires_replan`/`requires_retry` 只交给最终汇总；`1.1.0` 可以在预算与轮次允许时返回 Controller，最多首轮加一次 refine。Reviewer 保持独立审核、不修改 Worker 的职责；具体执行、停止和统计规则维护在工具主计划。
+基础顺序为请求归一化 → 来源清单 → Controller 计划 → 程序计划校验 → 任务分派 → 按依赖执行 Worker/Handoff → 程序确定性验证 → 可选 Reviewer → Controller 最终汇总 → 完成。各模型调用构建各自输入。Worker 为动态任务，外层流程并非由模型任意生成；具体返工、停止和统计规则见本文当前规则，以下接口草图为后续扩展设计，不表示已存在通用 Graph API。
 
 工作流定义使用代码注册表和普通 Python 控制流：
 
@@ -390,6 +547,8 @@ class AgentWorkflowNode(Protocol):
 
 ## 各节点完整输出参数
 
+以下列出纯模型配置的基础字段与历史兼容结构，不是工具证据输出的另一份定义。当前工具 Worker／Handoff／Reviewer 扩展分别见对应小节说明，完整类型以 Schema 为依据，原文引用字段及规则统一维护在阶段7。
+
 ### 1. `request_intake` → `RequestIntakeOutput`
 
 ```text
@@ -416,6 +575,7 @@ language
 当前 Schema 字段：
 
 ```text
+assembly_scope = run_source_inventory
 included_run_id
 included_message_ids[]
 included_artifact_ids[]
@@ -427,7 +587,7 @@ memory_packet_id
 ```
 
 - 当前实现已用Run关联的当前User Message锚定Session文本历史；Controller、Worker、Reviewer和Final synthesis分别按自己的Provider/Model创建Context Build，Model Attempt与Node Input保存`context_build_id`和实际Message ID。
-- `context_assembly`已登记锚点之前的有界Message ID；Context Builder已支持明确绑定的Prompt Release、受限文本Artifact，并把已提交Handoff、确定性验证、独立审核和Evaluation作为下游模型节点的类型化来源。Memory、Knowledge、Tool和对象Message仍未启用，`memory_packet_id`保持`null`。
+- `context_assembly` 只登记锚点之前的有界候选 Message ID；节点键没有改名，`assembly_scope` 标明清单用途。Context Builder 读取已启用的业务来源；附件工具历史由 Gateway 按阶段2规则追加，并非清单已保存的来源。Memory、Knowledge 和对象 Message 产品读取仍未启用，`memory_packet_id` 保持 `null`。
 - 对象型Message的受控读取合同归入阶段2统一上下文来源补充，并在阶段4产品链路验收；阶段3只消费Context Builder返回的类型化来源，不自行读取`content_uri`，也不把该合同列为阶段3原完成条件。
 - 目标态中单个结构化来源不能从中间截断；排除或裁剪必须返回证据。
 - 2026年8月26日确认的统一上下文接入以[阶段2统一模型上下文设计](phase-2-llm-core-capabilities.md#统一模型上下文构建与阶段3阶段4运行时集成设计)为准：工作流按Run关联的当前User Message建立并发锚点；Controller、Worker、Reviewer和Final synthesis都向Context Builder声明本节点需要的来源类型，由它统一组装Session、Prompt、Memory、Knowledge、Artifact、Agent/Handoff、验证/Evaluation及未来Tool结果。不同角色模型使用各自Context Build，不能重复追加当前目标，也不能在工作流内部另写历史或节点结果裁剪逻辑。
@@ -516,8 +676,8 @@ transport_attempt_count
 capability_warnings[]
 ```
 
-- `response_kind` 当前固定为 `structured`；`structured_output` 包含 `summary`、`confirmed_facts[]`、`decisions[]`、`remaining_work[]`、`risks[]` 和 `unknowns[]`。
-- `requested_tool_calls` 的 Schema 当前限制为空列表；模型仍请求工具时返回 `agent_capability_unavailable`，不能把 Tool Call 当成已经执行。`text_artifact_id` 已预留但 model-only 当前不生成文本 Artifact。
+- 最终节点结果的 `response_kind` 为 `structured`。纯模型 `structured_output` 包含 `summary`、`confirmed_facts[]`、`decisions[]`、`remaining_work[]`、`risks[]` 和 `unknowns[]`；新工具执行使用 `worker_evidence.v2`，逐条 claims 引用及推测／未解决事项见阶段7，不能只提交旧的 confirmed_facts 替代引用。
+- 中间工具轮不作为最终节点结果提交，真实 Tool Call 及结果分别保存；最终输出不能把未执行的工具请求当成事实。`model_only_v1` 不执行工具，`text_artifact_id` 仍为预留，不表示已自动生成大文本 Artifact。
 - 原始供应商响应继续由 Attempt 的对象引用保存，节点结果只返回标准化字段和引用。
 
 ### 7. `handoff_submission` → `AgentHandoffOutput`
@@ -540,7 +700,7 @@ invariants_for_next_agent[]
 supersedes_handoff_id
 ```
 
-- 复用已有 `agent_handoff.v1`，不创建另一套交接 JSON。
+- 纯模型和历史记录复用 `agent_handoff.v1`；当前工具执行使用 `agent_handoff.v2` 原样保存 Worker evidence。二者仍是同一 Handoff 实体，不创建第二套表；不丢弃引用，不给历史结果补造来源。
 - `agent_handoff.v1`不再设置独立字节或Token上限。工作流把Worker的完整类型化`confirmed_facts`、`decisions`、`remaining_work`、`risks`和`unknowns`原样写入Handoff，不再生成限长投影。Worker模型节点本身仍受64 KiB类型化输出上限约束，因此工作流路径不会产生无限内联结果；内部独立Handoff接口继续执行固定字段、状态、归属和禁止隐藏推理校验。
 - 首版没有工具时 `files_read`、`files_changed` 和真实测试证据通常为空；模型不能仅凭描述填入不存在的文件或测试。
 
@@ -592,8 +752,9 @@ reviewer_model_attempt_id
 ```
 
 - Reviewer 只读取用户目标、任务要求、候选结果、确定性检查和明确证据，不读取实现模型隐藏消息或 Working State。
+- 工具配置的 Reviewer 还提交 `claim_assessments`，逐条核对当前候选 Task 的 claim，允许读取授权原文及有限补读；完整引用 Schema 与覆盖要求见阶段7。程序检查字段／归属／范围，模型判断原文是否支持结论，两个职责不能互相替代。
 - 当前为每个候选 Worker Attempt 创建一条 Evaluation，因此返回 `evaluation_ids[]`，不是单个 `evaluation_id`。
-- Reviewer 输出不能覆盖候选结果。有效审核输出无论为 `pass`、`needs_revision` 还是 `fail`，都会作为类型化证据约束交给 Final synthesis；错误级发现、`requires_replan=true` 或 `requires_retry=true` 会使对应 Evaluation 失败，但最终回答必须改为说明被拒绝主张、证据限制、缺失输入、未完成工作和安全下一步，不能假装执行成功，也不能直接丢弃回答。当前不创建新的返工 Task、Attempt 或 Node Execution。
+- Reviewer 输出不能覆盖候选结果。有效审核结果约束后续执行与最终汇总；错误级发现、`requires_replan=true` 或 `requires_retry=true` 会使对应 Evaluation 失败。`1.1.0` 在本文当前规则允许时创建第二轮 Task、Attempt 与 Node；`1.0.0` 或不满足返工条件时进入有限制的最终汇总，说明被拒绝主张、缺失输入、未完成工作及安全下一步。有效拒绝本身不能吞掉回答，真正的执行错误则按错误规则终止。
 
 ### 10. `final_synthesis` → `FinalSynthesisOutput`
 
@@ -818,7 +979,7 @@ trace_id
 
 ### 现有实体调整
 
-- `llm_agent_runs` 已增加 `workflow_execution_id`，并继续使用现有 provider/model 和生命周期字段；角色配置版本、独立预算和错误摘要尚未增加。现有 `(task_id, agent_role)` 唯一约束仍不支持同一 Task 创建第二个同角色 Agent Run，因此当前没有 Agent 返工轮次。
+- `llm_agent_runs` 已增加 `workflow_execution_id`，并继续使用现有 provider/model 和生命周期字段；角色配置版本、独立预算和错误摘要尚未增加。`(task_id, agent_role)` 唯一约束保留；`1.1.0` 返工创建新的 Task 与 Agent Run，不在同一 Task 下违反唯一约束追加同角色 Run。
 - `llm_agent_turns` 已增加 `node_execution_id`，仍只记录模型/工具 Turn；输入/输出引用继续由 Node 与 Model Attempt 保存，Turn 当前没有独立的 `cancelled` 或 `outcome_unknown` 状态。
 - `llm_attempts`、`llm_tool_calls`、`llm_evaluations` 和 `llm_artifacts` 通过 node evidence 引用，不复制原始结果。
 - 迁移复用现有 Agent 表，不创建 `agent_runs_v2`、`workflow_tasks` 或第二套 Handoff。
@@ -865,7 +1026,7 @@ wall_time_limit_ms
 stream
 ```
 
-其中只有 `idempotency_key` 和 `role_bindings` 没有默认值；`reasoning`省略时不表示供应商默认，而由每个角色的登记模型解析为版本化默认。工作流名称、版本与执行配置当前固定为 `model_only`、`1.0.0` 和 `model_only_v1`。`review_policy` 默认为 `always`；`reviewer` 在策略不是 `never` 时必填，`verifier` 可以绑定但当前执行路径不会创建该模型节点。`max_nodes` 默认和最大值均为 `32`，按审核策略最小为 `10` 或 `11`；`max_model_calls` 默认和最大值均为 `16`，按审核策略最小为 `3` 或 `4`；`wall_time_limit_ms` 允许 `1,000`～`600,000`，默认 `600,000`。当前没有 `expected_run_version` 或通用 `budget_overrides` 字段，Run 级唯一约束阻止同一 Run 创建第二个工作流。
+其中只有 `idempotency_key` 和 `role_bindings` 没有默认值；`reasoning` 省略时由每个角色的登记模型解析版本化默认。名称保留 `model_only`，版本默认 `1.1.0` 且接受显式 `1.0.0`；执行配置支持 `model_only_v1`／`tool_enabled_v1`，附件授权选择规则见阶段7。`max_workflow_rounds` 为 1～2，默认 2，旧版本仍单轮。`review_policy` 默认 `always`；策略非 `never` 时 `reviewer` 必填，`verifier` 可以绑定但不创建模型验证节点。`max_nodes` 默认／最大 32，按审核策略最小 10 或 11；`max_model_calls` 默认／最大 16，不审核最小 3，普通审核最小 4，`1.1.0` 工具审核最小 6。`wall_time_limit_ms` 允许 1,000～600,000，默认 600,000。最小值只保证入口请求有效，不保证每个计划都能执行两轮。没有 `expected_run_version` 或通用 `budget_overrides`；Run 唯一约束阻止同一 Run 创建第二个 Workflow。
 
 - `idempotency_key` 长度必须为 `8`～`128`；`stream` 默认 `false`。
 - `role_bindings` 只接受 `controller`、`planner`、`researcher`、`reviewer` 和 `verifier` 键。每个绑定包含 `provider`、`model`、`structured_output_mode`、`timeout_seconds` 和可选的 `max_output_tokens`；结构化输出模式默认为 `native_schema`，超时默认 `60` 秒且范围为 `1`～`600`。平台不提供默认业务输出上限，字段缺省时不主动缩短输出；显式 `max_output_tokens` 的统一允许范围为 `1`～`65536`。具有费用预算的 Run 为了在 Provider 调用前完成保守费用预留，仍必须显式提供 `max_output_tokens` 和模型价格；无预算 Run 可以保持缺省。
@@ -878,7 +1039,7 @@ stream
 - 新建 Workflow 的 POST 返回 HTTP `201`，即使业务结果是 `failed` 或 `outcome_unknown`；完全相同的幂等回放返回 `200`，请求校验、资源不存在和冲突分别沿用 `422`、`404` 和 `409`。
 - `stream` 是传输选择，不参与请求 hash；相同幂等 key 可以在 JSON 与 SSE 表现之间回放同一个持久化 Workflow，不会再次调用模型。
 - 创建请求超时后不能无条件自动创建新请求；调用方应使用原 idempotency key 重试或通过 Run 发现接口查询原 Workflow。
-- 阶段5已实现可选浏览器登录和 Web BFF 的用户归属检查，但 FastAPI 业务 Router 仍使用部署级 `X-API-Key`，Run 查询尚未从 principal 校验 owner。当前工作流后端仍只供受信服务调用；全资源主体授权属于阶段5后续任务，不能把已有登录等同于这些接口已具备多用户授权。
+- 当前 BFF 与 FastAPI 均检查访问主体及 Run／Workflow／Node 归属，服务 Key 不替代最终用户身份；认证开关、CSRF、免登录限制及目标环境验证范围统一见阶段5。新增节点来源与未来恢复接口必须继续校验用户和文件权限，不能恢复旧的“仅靠部署 Key”规则。
 
 ### 事件枚举
 
@@ -895,6 +1056,11 @@ agent.node.completed
 agent.node.failed
 agent.node.cancelled
 agent.node.outcome_unknown
+agent.node.progress
+agent.node.output_repair.requested
+agent.node.output_repair.completed
+agent.workflow.refinement.requested
+agent.workflow.refinement.skipped
 ```
 
 目标态已经预留但当前不会产生：
@@ -937,7 +1103,7 @@ trace_id
 
 ## 预算与循环限制
 
-第一版当前硬上限与后续目标：
+当前资源限制；旧版本差异见本文版本表：
 
 | 限制 | 当前值 | 作用与剩余要求 |
 |---|---:|---|
@@ -945,16 +1111,16 @@ trace_id
 | Controller 生成 Task 数 | 8 | 防止任务爆炸 |
 | 最大依赖深度 | 6 | 防止递归编排 |
 | 并行 Agent 数 | 1～2 | 只并行无依赖的模型工作节点，每个调用使用独立数据库会话 |
-| 每 Agent 实际 Model Turn | 1 | 当前没有工具循环或 Agent 内重试；Controller 计划合同也只接受字面值 `1`，不会接受无法执行的多轮预算 |
-| 单工作流模型调用 | 默认/最大 16；最小 3 或 4 | 不审核时最小 3，其他审核策略最小 4；控制费用 |
-| Reviewer 返工轮次 | 0 | 所有有效审核结果均约束最终汇总；`fail`、错误级发现、重试或重新规划要求使 Evaluation 失败，但不阻止回答投递。当前不创建新的 Worker 返工轮次；未来最多 1 次返工的规划仍后置，未实现 |
+| 每 Worker 计划调用额度 | 纯模型计划为 1；工具计划接受 1～16，受工作流剩余额度约束 | 工具轮与有限输出修正都记实际调用；可执行额度按当前剩余资源及审核／汇总预留检查，不承诺每节点均可用满 16 次 |
+| 单工作流模型调用 | 默认／最大 16；最小 3、4 或 6 | 不审核最小 3，普通审核最小 4，`1.1.0` 工具审核最小 6；格式修正和返工不重置总额度 |
+| 工作流业务轮次 | `1.1.0` 默认／最大 2，包含首轮；`1.0.0` 为 1 | 只有 Reviewer 明确请求且资源允许才返工；拒绝或资源不足时交最终汇总说明限制 |
 | 同步总时长 | 默认/最大 600 秒；最小 1 秒 | 匹配当前无 Worker 边界 |
 | 单节点 `output` JSON | 64 KiB | 类型化输出超限明确失败；公共合同不自动切换为 Artifact |
 | 单事件 public payload | 固定小型投影 | 事件只包含节点 ID、类型、状态、错误摘要和权威查询路径，不内联节点完整输出或供应商响应 |
 
 - Run 存在 `budget_limit` 时，每次调用按 UTF-8 输入字节上界、结构化输出 Schema、消息框架余量和最大输出 token 计算保守费用；模型没有显式价格配置时在进入 Provider 前拒绝。
 - 并行节点通过数据库条件更新原子增加 `model_call_count` 和 `reserved_estimated_cost`。只有当前实际费用加全部在途预留仍不超过 Run 上限时才能调用；完成或失败后释放临时预留，`cost_used` 只保留已确认实际估算费用。
-- 达到任一硬上限时工作流以稳定边界结果结束，不能让模型自行申请绕过。
+- 返回 Controller 前资源不足时保存未执行原因并进入有限制的汇总；其他资源耗尽按对应错误终止，不能让模型自行申请绕过，也不保证任何失败都可再调用汇总模型。
 
 ## 错误合同
 
@@ -984,7 +1150,7 @@ agent_workflow_internal_error
 - Handoff 的确定性检查项可以使用 `agent_handoff_invalid`，但当前工作流终态错误代码是 `agent_verification_failed`，不能把前者描述为工作流对外终态错误。
 - Run 预算无法覆盖保守费用预留时会在 Provider 调用前返回 `agent_budget_exhausted`；预算 Run 没有显式 `max_output_tokens`、因而无法计算最大费用时返回 `agent_budget_output_limit_required`；模型缺少显式价格时返回 `agent_budget_price_unavailable`。三种情况都不会进入 Provider 调用。
 - 请求字面值、必填角色、范围和未知字段由 Pydantic 返回 HTTP `422`；资源不存在和幂等/Run 状态冲突沿用平台现有 HTTP `404`/`409` 错误合同，不转换为节点错误。
-- 节点输出不符合 Schema 时保留已经保存的 Attempt，并以 `node_output_invalid` 失败；不会把自由文本强制塞入结构化字段。
+- 节点输出不符合 Schema 时按本文版本和错误表判断能否有限修正；持续非法或不允许修正时保留 Attempt 并失败。计划业务校验当前仍直接终止，其有限修正是未开始工作项；不会把自由文本强制塞入结构化字段。
 
 ### 目标态补充
 
@@ -1179,7 +1345,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 ### 验证、审核和汇总
 
 - 程序验证失败不能被 Reviewer 改成通过；无证据声明进入 unverified。
-- Reviewer 只读明确输入，不读取 Worker Working State；所有有效审核结果保留 Evaluation。`1.0.0` 直接交给 Final synthesis，不自动返工；`1.1.0` 的返回 Controller 和有限节点修正按工具主计划验收，不能跳过字段、权限和来源检查。
+- Reviewer 只读明确输入，不读取 Worker Working State；所有有效审核结果保留 Evaluation。`1.0.0` 直接交给 Final synthesis，不自动返工；`1.1.0` 的返回 Controller 和有限节点修正按本文当前规则验收，不能跳过字段、权限和来源检查。
 - Final synthesis 引用正确 Handoff/Evaluation/Artifact；Message 保存失败不再次调用模型。
 - 汇总 totals 与 Attempt 明细不一致时明确失败，不使用默认零值。
 
@@ -1188,7 +1354,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 - 同步返回所有完整节点；节点 sequence 稳定；结果快照版本一致。
 - SSE 乱序、重复、断开、事件过大降级为查询引用、最终事件缺失和 after-sequence 恢复。
 - 浏览器刷新后从 MySQL 事件和 result 恢复，不从计时器猜测进度。
-- 当前工作流测试验证 Workflow、Node、Task 与 Handoff 的引用归属关系。可选用户登录已实现，但 FastAPI 工作流资源尚未接入 principal 归属过滤；其跨用户查询、创建和取消拒绝测试由阶段5主体授权任务补齐，不能用现有引用检查代替。
+- 当前工作流及阶段5测试分别检查内部引用关系与访问主体归属；新增两轮节点、原文查询和未来恢复接口继续要求跨用户查询、创建、取消拒绝测试。已实现 FastAPI 主体授权，目标部署完整矩阵仍待验证，不能用本地引用检查替代。
 
 ### 可观测性
 

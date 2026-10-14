@@ -483,7 +483,7 @@ class ModelInvocationService:
         prompt_prefix_fingerprint: str | None,
         request_type: str | None = None,
     ) -> LlmModelAttempt:
-        """Persist a started invocation with Context and effective reasoning evidence."""
+        """Persist actual messages for every attempt without serializing private continuation."""
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -551,10 +551,9 @@ class ModelInvocationService:
         await self.db_session.commit()
         try:
             raw_request = payload.model_dump(mode="json", exclude={"idempotency_key"})
-            if request.tools:
-                raw_request["effective_messages"] = [
-                    message.model_dump(mode="json") for message in request.messages
-                ]
+            raw_request["effective_messages"] = [
+                message.model_dump(mode="json") for message in request.messages
+            ]
             stored_raw_request = await self.storage.put_bytes(
                 f"{payload.run_id}/{model_attempt.attempt_id}/raw-request.json",
                 json.dumps(raw_request, ensure_ascii=False).encode(),

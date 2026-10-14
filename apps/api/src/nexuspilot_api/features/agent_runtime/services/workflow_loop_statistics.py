@@ -12,7 +12,7 @@ from nexuspilot_api.models import LlmAgentWorkflowEvent, LlmModelAttempt
 
 
 async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
-    """Count actual attempts separately from requested corrections; retain failures on refresh."""
+    """Count attempts and distinct business rounds; same-round plan repairs are not refinement."""
     events = list(
         await db.scalars(
             select(LlmAgentWorkflowEvent)
@@ -58,9 +58,10 @@ async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
     ]
     refined_usages = [NodeUsageRead.model_validate(n.usage_json or {}) for n in refined]
     plans = [n for n in nodes if n.node_key == "controller_planning"]
+    plan_rounds = {(n.input_json or {}).get("workflow_round", 1) for n in plans}
     return WorkflowLoopStatistics(
-        workflow_round_count=len(plans),
-        refinement_count=max(0, len(plans) - 1),
+        workflow_round_count=len(plan_rounds),
+        refinement_count=max(0, len(plan_rounds) - 1),
         refinement_skipped_count=sum(
             e.event_type == "agent.workflow.refinement.skipped" for e in events
         ),

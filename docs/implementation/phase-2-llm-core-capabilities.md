@@ -20,7 +20,7 @@
 - 会话自动携带文件最多 10 个；累计超过上限或必要文件内容超过模型输入预算时明确拒绝，需新建会话并只上传需要的文件。当前没有历史附件的逐轮选择／移除控件，也没有大文件分段选择；不承诺无限附件或无损压缩。
 - `GET /files`、`GET /files/{id}`、`GET /files/{id}/content` 和 `DELETE /files/{id}` 均校验当前用户；身份不取自上传请求。启用登录时写入还校验 Origin 和会话 CSRF。下载强制 attachment、nosniff、no-store，不向浏览器暴露对象地址。删除撤销后续读取，但不会删除已保存回答和 Context 摘录。
 - 上传前先记录两个确定的对象键；对象存储或数据库失败可按记录补偿，不扫描整桶。运维从 `apps/api` 显式执行 `PYTHONPATH=src .venv/bin/python -m nexuspilot_api.services.user_file_cleanup --limit 100`，重试失败删除及过期预留。命令会再次原子检查状态，不删除已变为 ready 的文件；**没有自动定时任务**，需运维配置调度。请求进程崩溃不自动恢复解析。
-- 固定解析对象复用于同一上传，避免每个模型节点重复解析；不是按文件哈希跨用户共享缓存，也不是逻辑文件版本历史。附件专用 Agent、自动模式切换、工具循环与后台恢复继续后置。
+- 固定解析对象复用于同一上传，避免每个模型节点重复解析；不是按文件哈希跨用户共享缓存，也不是逻辑文件版本历史。不新增附件专用 Agent 或强制模式切换；两种模式附件工具循环已由阶段7实现，后台恢复仍未实现。
 
 验证：独立 MySQL 8.4 和 MinIO 的并发幂等预留、额度、真实上传下载删除已通过；SQLite 测试覆盖归属、CSRF、失败补偿、清理竞争、删除撤销和两种模式的内容传递。浏览器使用真实 BFF/API/MinIO 与 FakeProvider 验证上传发送和刷新附件，不代表真实 Provider 或公网部署验收。Office 范围与时间见[执行环境评估](phase-7-tool-runtime-plan.md#office-提取范围与执行时间2026-年-9-月-16-日)。
 
@@ -32,10 +32,10 @@
 
 ## 目标
 
-- 提供可独立调用的Model Gateway、统一Context Builder、System Prompt/模型能力目录和Evaluation/Guardrail。Context Builder是所有模型可见上下文的唯一组装入口，不只负责Session消息。
+- 提供可独立调用的 Model Gateway、Context Builder、System Prompt／模型能力目录和 Evaluation。Context Builder 统一选择与保存业务来源；Gateway 在基础构建上追加受控工具历史，形成最终有效请求。两者责任及未完成保存项见下节，不把基础快照等同于全部模型消息。
 - Memory按L0 Agent Working、L1 Session、L2 Collaboration/Run、L3 Project和L4 User分层记录；Memory Service负责事实、权限、版本和检索，正式启用的结果必须作为类型化来源进入Context Builder，不能由`/responses`或Agent直接读取。
 - Knowledge是独立知识库能力；Knowledge Service负责文档、版本、检索和权限，正式启用的检索片段必须由Context Builder统一选择、预算和记录来源。
-- Agent只组合已经完成验收的稳定单元，不在工作流节点中临时实现Session历史、Prompt、Memory、Knowledge、Artifact、Handoff或工具结果的拼接与裁剪。
+- Agent 不自行检索或裁剪 Session 历史、Prompt、Memory、Knowledge、Artifact 和 Handoff；通过来源接口获取这些内容。工具循环可维护同节点按序消息，由 Gateway 校验及追加，不能把任意自由文本冒充授权工具结果。
 - 业务调用方通过同一请求、响应和流式事件协议调用 OpenAI、DeepSeek、Anthropic、Gemini 和 OpenAI-compatible 服务。
 - 每次模型调用、Context Build、Prompt渲染和Evaluation都具有可查询输入来源、结果、耗时或错误。尚未通过启用门禁的来源不会进入模型，但其未来接入点统一保留在Context Builder来源合同中。
 - 明确不处理：RabbitMQ Worker、任务自动领取、总控与工作模型、工具执行循环、MCP、代码搜索、LangGraph、OpenTelemetry 和前端页面。
@@ -53,7 +53,7 @@
 - 已验证：Memory 事实账本与确定性检索基线包含正式归属、来源、不可变内容版本、状态、逻辑删除、持久化幂等、并发冲突、词法排序、检索证据和 mutation 审计查询。
 - 当前实现：平台已提供可选登录和 Cookie 会话，Web BFF 与 FastAPI 均校验资源主体归属；公共和内部服务 Key 不替代生产用户身份。现有资源授权已通过本地双向检查，目标服务器仅完成部分资源冒烟；不将这些结果解释为已暂停 Memory 能力可以正式启用。验证范围见[阶段5](phase-5-platform-identity-credentials.md)。
 - 当前实现：L0 手动检查点、L1 Session State/Summary、L2 Handoff/Run Snapshot、L3 Project/Profile、L4 User Profile 及对应内部接口已经存在，并通过 SQLite/伪对象存储契约测试。这些代码只作为 Memory 规划验证和实验性准备保留；Memory Packet 没有创建流程或 Model Attempt 绑定，本阶段不补该链路。
-- 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时引用的System Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。System Prompt引用只允许由后端策略或受信内部调用生成，普通浏览器不能选择、提交或查看。Memory、Knowledge和Tool来源仍未通过正式启用门禁。
+- 已验证：Context Builder当前稳定请求接受平台安全指令、显式instruction、指定数量的Session Message，以及运行时引用的System Prompt Release、文本Artifact、Agent Handoff、已完成工作流节点和Evaluation；tokenizer/context window来自启用的Model Catalog，历史读取使用不可变内容快照。System Prompt引用只允许由后端策略或受信内部调用生成，普通浏览器不能选择、提交或查看。Memory、Knowledge 仍未正式启用；附件 Tool 结果由阶段7循环和 Gateway 追加，并非已登记为基础 Context 的通用 Tool 来源，详见下文。
 - 已验证：Prompt Registry 强制 placeholder 与变量 Schema 一致、严格标量类型、不可变单调版本、显式启停和 MySQL 并发版本锁；Model Catalog 按创建证据选择最新启用快照，禁用后回退到前一个启用版本。
 - 已验证：Evaluation/Guardrail 拒绝未知或非法规则，同一幂等键只允许相同输入重放，候选 Attempt 必须属于指定 Task，历史非法规则安全失败。
 - 当前结论：阶段2稳定范围已满足完成条件。Memory 仍是规划和实验性准备代码，Knowledge 仍等待独立知识库规划；两者均不因阶段2完成而成为运行时能力。
@@ -65,7 +65,7 @@
 
 ### 身份与资源归属
 
-- 当前公共接口使用平台级 API Key，只能视为受信调用方管理接口；阶段2不把请求中的 `owner_id` 解释为已经验证的最终用户身份。
+- 当前公共业务接口同时检查访问主体和资源归属；平台级 API Key 仅为服务认证，不把请求中的 `owner_id` 当作身份。当前认证、免登录及 CSRF 规则统一见阶段5，原“仅受信调用方”的历史范围不适用于已开放的用户资源。
 - 阶段2所有资源必须在 Service 和数据库查询中校验 User、Project、Session、Run、Task、Agent Run 的关系，防止受信调用方误把一个用户或项目的资源关联到另一个 scope。
 - 直接面向最终用户的身份认证和授权不在阶段2实现范围。现有实验性 Memory/Knowledge 接口不得被前端视为最终用户能力；正式开放前必须先确定认证主体、权限声明和越权响应。
 - 内部评估、规则管理和模型目录写入接口继续要求公共 API Key 与内部 API Key，不能仅依赖公共密钥。
@@ -126,14 +126,14 @@
 | 工作项 | 当前事实 | 后续设计 |
 |---|---|---|
 | 统一模型网关 | 已实现统一请求/响应、生成/SSE、Provider codec、重试和调用证据 | 保留，接收解析后的文字/表格，不把解析职责放到 Provider |
-| 统一 Context Builder | 已实现消息锚点、预算、固定来源及历史回放；支持 System Prompt、文本 Artifact、Handoff、节点和 Evaluation 来源 | 新增正式文件版本/解析结果/内容范围来源；当前文本 Artifact 读取不等于完整解析服务 |
+| 统一 Context Builder | 已实现消息锚点、预算、固定来源及历史回放；支持 System Prompt、文本 Artifact、上传文件解析来源、Handoff、节点和 Evaluation | 逻辑文件版本历史尚未实现；基础快照与最终有效请求分开记录，保存缺口见下文 |
 | System Prompt 与模型目录 | 已实现版本、启停、渲染、模型能力和思考配置 | 保留 System Prompt 后端边界，工具循环依据逐模型工具能力，不依据原生附件能力 |
 | Evaluation/Guardrail | 已实现规则校验、幂等和结果查询 | 复用错误与证据机制；解析质量和引用完整性需新样本验收 |
-| 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达 | 按工具主计划统一交付登记、权限、读取循环与模型适配；当前尚不能直接调用文件工具 |
+| 模型工具协议 | 已实现 `ToolDefinition`、`ToolCall` 和工具消息表达，两种模式已有附件只读循环 | 工具登记、权限、读取及模型适配由阶段7维护；通用代码工具尚未接入聊天 |
 | 原生文件直传基线 | 新建 native Context 返回 409 并指向 `parsed_artifacts`；历史 Context 可只读回放，禁止用于新生成；低层 codec/合同保留兼容 | 不再作为产品输入路径，保留旧证据，不把原生测试计作解析验收 |
 | 文件解析器及统一结果 | 已实现 UTF-8/CSV/TSV/JSON、隔离 PDF 正文、独立容器 DOCX/XLSX/PPTX 提取与统一结果转换；新版 Office 结果包含完整工作表/幻灯片位置清单 | OCR、结构化 PDF 表格、Word/PDF 完整章节目录和 Office 复杂视觉内容尚未实现 |
-| 正式文件上下文 | 已实现当前 Run Artifact 解析、块分页、PDF 页、Word 表格、Excel 工作表/单元格和 PPT 幻灯片范围选择、结果哈希和 Context 固定快照；正式用户文件版本尚未实现 | 阶段5落实版本/权限存储，阶段3/7后续接通模型读取工具 |
-| 解析复用及失败事实 | 已实现覆盖/遗漏、安全失败、原件变更复核和 macOS PDF 隔离；未实现跨 Context 解析缓存、MinIO 独立结果版本、后台恢复 | Context 幂等回放不是持久解析缓存，隔离运行时扩展归阶段7，后台恢复归阶段10 |
+| 正式文件上下文 | 已实现上传、固定解析结果、范围读取、哈希及 Context 快照；两种模式工具可读取授权附件 | 逻辑版本历史及项目文件产品仍未实现，不把已上传的固定快照称为完整版本管理 |
+| 解析复用及失败事实 | 已实现覆盖／遗漏、安全失败、原件变更复核和 PDF／Office 隔离；同一上传复用 MinIO 固定解析对象 | 跨文件缓存、独立解析版本管理和后台恢复未实现；不能把固定对象复用称为跨文件缓存 |
 
 以上已按本轮代码与测试更新。Memory Packet、后台形成、跨存储 Memory 补偿、Memory 孤儿清理及 Knowledge 仍不属于原阶段2完成条件；上传/解析专用补偿不得因此省略。
 
@@ -308,6 +308,17 @@ exclusion_reason, content_hash, message_role, content_text
 
 Provider私有continuation不属于业务上下文来源，只用于同一Run、Task、Provider和Model下的加密推理或工具续接。
 
+#### 基础上下文与最终有效请求
+
+状态：基础构建及工具历史追加已有实现；2026-10-14 已修复无工具定义时的有效消息保存，相关本地回归 38 项通过。真实 Provider 多轮审计验收未执行。
+
+- **基础 Context Build：** Context Builder 负责来源授权、版本／哈希、选择和排除、基础消息及预算快照。`context_build_id` 标识这个不可变构建，不代表之后每一条工具消息也已登记为 Context 来源。
+- **工具历史：** 循环保存 Assistant 工具调用、Tool 结果及消息级 Provider 私有续接，Gateway 按原顺序追加；现有追加代码检查基础估算与历史估算的总预算，超限明确失败，不自动压缩原文或破坏调用／结果配对。
+- **最终有效请求：** 是基础消息加实际追加历史及本轮 Schema／工具定义等配置。它应关联 Attempt、基础构建、来源和实际工具结果；由后端私有审计保存，不能直接把内部指令和私有续接公开给浏览器。Context 抽屉目前只展示基础构建，不宣称展示了全部有效消息。
+- **已修复缺陷：** `ModelInvocationService._start_model_attempt` 现在始终保存实际 `request.messages` 的公开序列化到 `effective_messages`，不再依赖 `request.tools`。普通消息和携带工具历史但不再提供工具定义的请求均保存消息；消息级私有续接不进入明文审计。修复前已复现无工具定义的两个用例缺少该字段，修复后通过；不重复执行工具，不改变公共响应。
+- **待实现修复：** 请求审计应根据实际生效请求保存消息及关联信息，而非以是否提供工具定义决定；明确与加密续接存储的引用关系，不能新增明文私有状态或浏览器泄露。基础 Context ID 可复用，但必须能定位每次 Attempt 的实际输入；不为修复审计而重复执行工具。
+- **验收：** 覆盖无工具、连续工具轮、最后一轮不提供工具、带历史的输出修正及幂等重放；比较实际发给 Provider 的业务消息与私有审计，检查顺序、来源、预算、私有字段保护和刷新后可追溯性。引用有效不等于内容正确，模型质量另行评估。
+
 #### Context Builder职责边界
 
 - 解析调用场景和目标模型，向已登记的来源Provider请求候选，不允许调用方把任意数据库ID或自由文本伪装成受信来源。
@@ -315,7 +326,7 @@ Provider私有continuation不属于业务上下文来源，只用于同一Run、
 - 为每个候选记录来源类型、来源ID、版本、内容哈希、信任级别、选择优先级、token估算、选中状态和排除原因。
 - 根据Model Catalog的上下文窗口和Context策略版本执行总预算及分来源预算；完整消息轮次、Memory事实、Knowledge片段、Artifact片段、Handoff和Tool结果不能从结构中间截断。
 - 输出一个Provider中立Context Build：系统指令、按时间排序的消息、类型化资料区块、Agent节点输入和引用证据。Provider适配器只负责编码，不能再次选择或删除业务来源。
-- 在模型调用前持久化Context Build和来源快照；Model Attempt与Agent Node必须引用实际使用的`context_build_id`。预览和运行时构建调用同一引擎，仅执行动作不同。
+- 在模型调用前持久化基础 Context Build 和来源快照；Model Attempt 与 Agent Node 引用实际使用的 `context_build_id`，追加工具历史及最终有效请求按上节记录。预览复用基础构建引擎，不提前伪造尚未执行的工具结果。
 - Context Builder不生成Session摘要、不批准Memory候选、不执行Knowledge排序算法、不修改Artifact/Handoff/Tool结果，也不决定模型业务答案。
 
 #### 对话轮次与并发锚点
@@ -331,7 +342,7 @@ Provider私有continuation不属于业务上下文来源，只用于同一Run、
 2. 旧消息按完整对话轮次分组，从最新轮次向更早轮次选择；一个轮次中的 User、Assistant 及其关联 Tool Message 必须整体纳入或整体排除，不能产生孤立 Assistant/Tool Message。
 3. 选择完成后按原始消息序号恢复时间顺序，再生成 Provider 请求。稳定前缀保持“系统指令、较旧历史、较新历史、当前输入”的顺序，为支持前缀缓存的 Provider 提供可重复输入，但缓存命中不参与正确性判断。
 4. `content_uri` 不能转换为空文本。允许的对象内容必须通过 ObjectStorage 受限读取、大小和哈希校验后成为一个完整来源；暂不支持的内容类型记录明确排除原因。当前 User Message 若不是可读取文本则直接拒绝生成。
-5. Context Builder的预算覆盖所有来源，不只覆盖Session历史；预算预留只决定可以纳入多少上下文，不向Provider设置`max_output_tokens`，也不构成用户可见的生成长度限制。预算值和协议开销来自启用的Model Catalog或服务端策略版本，不能由Web写死。
+5. 基础构建预算覆盖所选业务来源，不只覆盖 Session 历史；工具历史追加还须检查最终消息的总预算，不能只校验基础快照。预算预留不向 Provider 设置 `max_output_tokens`，不构成用户可见的生成长度限制。预算值和协议开销来自启用的 Model Catalog 或服务端策略版本，不能由 Web 写死；完整请求保存的缺口不等于当前没有工具历史预算检查。
 6. 同一 Agent Workflow 如果角色绑定到不同 Provider 或模型，复用相同的消息锚点和候选来源，为每个不同的 `(provider, model, catalog_version)` 生成独立预算投影。节点必须记录实际使用的 `context_build_id`，不能用Controller模型的窗口假设替代Worker模型能力。
 
 #### 接口和执行证据

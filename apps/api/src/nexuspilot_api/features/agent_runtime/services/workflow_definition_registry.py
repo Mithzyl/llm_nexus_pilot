@@ -176,7 +176,7 @@ class WorkflowDefinitionRegistry:
 
 
 def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
-    """Keep v1.0 graphs immutable and register v1.1 review-to-Controller refinement edges."""
+    """Preserve v1.0 graphs; allow v1.1 Controller returns from review and plan validation."""
 
     registry = WorkflowDefinitionRegistry()
     registry.register(
@@ -274,6 +274,10 @@ def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
                         node, allowed_next_node_patterns=("final_synthesis", "controller_planning")
                     )
                     if node.node_key_pattern == "independent_review"
+                    else replace(
+                        node, allowed_next_node_patterns=("agent_dispatch", "controller_planning")
+                    )
+                    if node.node_key_pattern == "plan_validation"
                     else node
                     for node in model_only.node_definitions
                 ),

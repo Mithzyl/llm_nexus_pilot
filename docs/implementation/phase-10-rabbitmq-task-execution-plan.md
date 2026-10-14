@@ -1,325 +1,171 @@
 # 阶段10：RabbitMQ 任务执行需求讨论与功能规划
 
-**文档日期：** 2026 年 10 月 8 日
-**文档状态：** 未开始（规划已形成，RabbitMQ、Publisher、Worker、领取租约和恢复运行代码尚未实现）
-**总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
+**文档日期：** 2026 年 10 月 14 日
+**文档状态：** 未开始（本次统一规划；RabbitMQ、Publisher、Worker、领取租约和恢复代码尚未实现）
+**总体规划：** [开发总计划](../architecture/platform-roadmap.md)
 
-> 阶段2稳定能力已完成。根据 2026 年 8 月 7 日优先级决定，当时的异步任务规划（现阶段10）曾暂停保留；2026 年 9 月 2 日因 Agent Workflow 需要脱离浏览器和 HTTP/SSE 观察连接继续执行，规划恢复。阶段7仍可在不依赖 RabbitMQ 的前提下规划同步工具运行能力。
-
-> 2026 年 8 月 19 日路线图重排：本能力由原阶段3调整为阶段10，明确改为真实可靠后台执行需求触发，而不是阶段4～9的默认前置。
+> 历史编号：2026 年 8 月 19 日本能力由原阶段3调整为阶段10。2026 年 9 月 2 日因 Workflow 需要脱离浏览器连接继续执行而恢复规划；阶段编号不是其他能力的开发前置顺序。本次不启动 Broker、不迁移数据库、不部署服务器。
 
 ## 与统一开发计划的关系
 
-2026-10-08 起，本文只维护共用后台执行机制，不再把工具的持续调用、发现/创建和产品界面拆成独立的阶段10待办。工具长任务的接入、检查点内容、未知副作用处理及浏览器验收统一见[工具主计划](phase-7-tool-runtime-plan.md#产品展示与独立执行验收)。原编号只是技术索引，不表示工具开发必须等阶段1～9全部完成。
+本文只定义共用后台执行和恢复。Controller、Worker、程序 Handoff、确定性验证、Reviewer、最终汇总的业务职责及两轮规则统一见[阶段3当前规则](phase-3-agent-workflow-plan.md#当前节点职责版本与修正规则)；工具权限、检查点内容和工具任务验收见[工具主计划](phase-7-tool-runtime-plan.md#产品展示与独立执行验收)。
 
-基础工具循环可先在明确同步限制下验收；承诺离开页面继续、自主长时间运行或重启续跑前，必须完成本文相应机制和工具任务联合验证。计划归并不等于实现了后台运行，也不授权部署 Broker 或服务器。
+基础工具循环可以同步、有界执行；承诺刷新／断线后继续、API 重启续跑或长时间自主执行前，必须完成本文及工具联合验收。普通快速回复异步化、独立文件解析任务、上传补偿和临时对象清理为后续执行类型，不随首版自动启用；Memory 后台形成及通用孤儿对象扫描仍暂停。
 
-## 规划恢复原因与当前边界
+## 当前事实与首版范围
 
-- 2026 年 9 月 2 日已确认真实需求：Agent Workflow 运行期间，用户查看其他运行证据、切换页面、刷新或网络断开时，执行不应依赖原浏览器请求继续存活；用户返回会话后必须从数据库事实重新观察同一个 Workflow，而不是再次提交相同问题。
-- 阶段4已先把“查看历史运行证据”与当前工作台状态解耦，并在恢复到活动 Run 时阻止前端重复提交。这只修复浏览器状态耦合，不代表执行已经脱离 HTTP/SSE 生命周期。
-- 不使用 FastAPI `BackgroundTasks` 代替可靠队列；在本阶段实现前，系统仍不承诺 API 重启后恢复、请求断开后继续或跨进程调度。
-- `llm_outbox_events` 和本规划继续保留，但不启动 Publisher、不连接 Broker、不写入假消息，也不把预留表描述为异步能力。
-- 阶段7工具运行采用同步内部 Service、严格超时和资源上限；阶段3 Agent 若在阶段10恢复前实施，也必须保持同步、有界和不可恢复的明确限制。
+- 当前 Workflow 仍在 HTTP／POST SSE 请求中执行；查看历史证据的前端状态已分开，事件提交也不依赖观察者，但没有跨进程领取和恢复。
+- 现有 Workflow、Node、Task、Attempt、Tool Call、Event、Message 保存业务事实；Task／Outbox 的预留字段不是可运行队列。
+- 不用 FastAPI BackgroundTasks 或进程内任务集合代替可靠执行。
+- 首版由后台执行进程领取**整个 Workflow**。Controller 创建的内部 Task 仅由该 Workflow 协调器分派，不写独立 `task.ready` 消息，也不由另一个通用 Task Worker 领取。
+- 后续若增加独立 Task handler，须单独定义所属类型、状态、执行规格和验收，不改变首版内部 Task 的执行所有权，不把“依赖完成”直接等同于“自动入队”。
+- 计划已统一，运行实现未开始。实际代码中的“工作 Agent”和本阶段的“后台 Worker 进程”是不同概念，不能互相替代。
 
-阶段10的规划触发条件已经满足，但尚未获得实施授权。首要交付范围是 Agent Workflow 的独立后台执行和可恢复观察；多 Worker 扩容、普通快速回复异步化、削峰和持久延迟重试仍按后续实际负载启用，不能因规划恢复就同时扩大实现范围。
+## 目标与执行决定
 
-## 目标
-
-- 要实现的结果：API 在一个 MySQL 事务中创建任务和 outbox 事件，发布进程可靠地把事件交给 RabbitMQ，Worker 至少一次消费并以幂等方式更新任务结果。
-- 要实现的结果：进程崩溃、连接中断、发布确认丢失、消息重复、临时失败和永久失败都有确定处理方式与可查询证据。
-- 要实现的结果：Agent Workflow 的执行所有权属于后台 Worker；HTTP JSON/SSE 只负责创建或观察。浏览器、BFF 或 SSE 断开只移除观察者，不取消 Workflow，只有显式取消接口可以请求停止后续节点。
-- 明确不处理：多 Agent 编排、工具循环、代码修改、MCP、OpenTelemetry 和前端页面。
-- 明确不处理：用 RabbitMQ 消息正文保存完整提示词、文件、模型回答、凭据或任务唯一状态。
-
-## 当前事实
-
-2026 年 9 月 5 日新增文件处理恢复工作项（未开始）：依照[文件上传与个人项目工作区设计](../architecture/platform-roadmap.md#文件上传与个人项目工作区设计)，长文件解析、上传确认补偿、临时对象清理及附件工作流复用本阶段同一可靠执行机制，不再新增第二套内存后台调度器。队列仅传持久任务 ID；任务从数据库解析 owner、版本、主机与权限。重复领取按版本/解析器/幂等键复用结果，取消与删除在下一读取边界生效；主机离线、租约失效、数据库提交失败和重复事件必须可恢复。正式输入/Artifact 不得被当作过期临时对象删除。本项不恢复 Memory 后台形成或通用孤儿对象扫描。
-
-- `llm_tasks` 已有任务状态、最大尝试次数、当前尝试和超时字段，但没有明确的执行输入、领取租约、最后错误和结果位置。
-- `llm_outbox_events` 已有事件、聚合对象、载荷、发布次数和下次重试时间，但没有并发发布锁、最后发布错误和发布确认编号。
-- 当前 API 创建任务时不会写 outbox，也没有 RabbitMQ 依赖、发布器或 Worker。
-- 当前 `ModelInvocationService` 可以执行统一模型调用，`model_only_v1` 协调器也能从 Run、Workflow、角色绑定和持久化节点事实执行完整流程；但 `llm_tasks` 尚未定义足以让 Worker 重建模型请求的稳定执行载荷，Workflow 也没有后台领取租约。
-- 当前 Workflow POST 的 SSE 生成器在请求内创建执行任务，浏览器/BFF 断开会取消请求级任务；事件观察者虽然已经与数据库提交隔离，但执行所有权仍未与传输连接隔离。这是本阶段必须消除的核心耦合。
-- 阶段2的 Model Gateway、Context、Prompt/Model Catalog 和 Evaluation 已完成快速测试、真实 MySQL/MinIO、迁移循环和静态检查，可作为 Worker handler 的已验证依赖。
-- 当前仍没有 RabbitMQ 依赖、拓扑声明、发布循环、消费去重表或 Worker 进程，不能声称阶段10已经实施。
-- 阶段10测试不依赖最终用户登录、个人 API Key 或用户供应商凭据接口。测试 User/Run/Task 由 fixture 或受控 seed 创建，可靠性测试使用假 Provider；真实供应商冒烟仍只读取服务端环境凭据。
-
-## 可靠性结论
-
-- 交付语义采用**至少一次**，不承诺 RabbitMQ 或分布式系统无法直接保证的“恰好一次”。
-- 发布方使用 publisher confirms，并对不可路由消息启用 `mandatory` 失败处理。
-- 消费方使用 manual acknowledgement；只有业务事务提交成功后才能 ack。
-- 消费者必须幂等。发布确认可能在网络中丢失，发布方重发会产生重复消息；Worker 提交结果后、ack 前崩溃也会产生重复投递。
-- RabbitMQ 幂等不能保证外部模型请求“恰好执行一次”。模型供应商已接收请求、但 Worker 尚未保存响应时崩溃，恢复器只能标记结果未知；除非该 Provider 支持经过验证的幂等请求键，否则不得自动重发并声称不会重复计费。
-- 临时失败使用有限次数的延迟重试；不得使用立即 `nack(requeue=True)` 形成热循环。
-- 永久失败和超过上限的任务进入死信队列，同时在 MySQL 中记录最终失败事实。
-- 关键长期队列优先评估 quorum queue；是否在本地开发环境使用单节点 classic queue，不改变应用层幂等要求。
-
-以上结论依据 RabbitMQ 官方对 publisher confirms、consumer acknowledgements、重复投递和 dead lettering 的说明，以及 aio-pika 的 robust connection/channel 能力。
-
-## 待确认的业务契约
-
-阶段10编码前必须确认以下四项。推荐值作为评审默认值，但尚不视为已授权业务规则。
-
-| 决策 | 推荐值 | 原因与影响 |
+| 对象 | 首版规划 | 完成条件 |
 |---|---|---|
-| 哪类任务首先可执行 | 首先开放 `agent_workflow`，普通 `model_response` 留作同一执行规格的后续 handler | 已出现的真实需求是长时间 Agent Workflow；不把快速回复异步化混入首个交付 |
-| Worker 如何重建请求 | `agent_workflow` 消息只定位 `workflow_execution_id`；Worker 从 MySQL 重读 Run、Workflow、版本化角色绑定和执行配置。通用 Task 后续仍使用版本化 `execution_spec_json` | 队列消息不能携带提示词、密钥或可变业务状态；现有 Workflow 已有比 `objective` 更完整的持久合同 |
-| 创建任务是否自动入队 | 对可执行且无未完成依赖的任务，在同一事务写 `task.ready` outbox | 避免数据库已创建任务但消息丢失 |
-| 取消语义 | `cancel_requested` 阻止新领取；运行中调用采用协作式取消，不能承诺强制终止外部模型计费 | 与当前状态枚举一致，避免虚假即时取消 |
+| 执行单位 | 一个版本固定的 Agent Workflow | 消息定位 Workflow，内部节点复用现有协调器 |
+| 创建 | 同一 MySQL 事务保存 Workflow、初始 Event、`agent_workflow.ready` Outbox | 任一写入失败整体回滚；提交成功后才能返回接受结果 |
+| 执行所有者 | 带租约和递增领取版本的单个后台 Worker | 陈旧执行者不能继续提交状态或调度新模型调用 |
+| 观察 | HTTP／SSE／GET Result 只创建或读取事实 | 断开、刷新、关闭证据面板不取消执行 |
+| 取消 | 显式请求持久化取消事实，执行者在安全点停止后续步骤 | 不声称已经撤销外部 Provider 费用 |
+| 重复投递 | 至少一次投递，按消息及 Workflow 状态去重 | 已确认步骤不重复执行，终态结果可重读 |
+| 模型未知结果 | 保存 `outcome_unknown`，停止自动重发 | 不因租约过期推断 Provider 没有执行 |
+| 凭据 | 读取部署配置引用，使用真实 Run owner 检查授权 | 消息／执行配置不存 secret；不依赖暂停中的用户 Provider 凭据 |
 
-如果不接受 `execution_spec_json`，必须先提供另一种能够版本化、校验并重建执行请求的数据契约；否则停止 Worker 实现。
+## Agent Workflow 独立执行合同
 
-## 规划结论与编码前决定
+- 创建前校验真实用户、Run、消息锚点、角色绑定、版本和来源权限；幂等重复返回同一 Workflow，不新建第二个 Outbox 执行意图。
+- Publisher 只传定位字段；Worker 从数据库读取执行配置、预算、取消事实和 Workflow → Run → User 关系。服务身份只允许领取任务，不授予对任意用户文件的访问。
+- 领取时使用数据库条件更新；每次成功领取增加执行所有权版本。续租、检查点写入、节点推进及发起新外部调用前都检查当前所有者与版本。失去租约的进程停止推进，不允许用迟到响应覆盖新所有者事实。
+- 一次领取可以包含多个业务轮次；Controller refinement 不重新投递整个 Workflow，也不重置次数、总时间或费用预算。队列投递次数不计为模型调用，后台领取次数也不计为业务轮次。
+- 同一 Session 的活动 Run 防重在服务端事务中处理，不能只依赖浏览器锁。默认拒绝另一活动轮次；未来显式并行需独立定义。
+- 已完成节点及最终 Message 不重新生成；恢复前核对版本化配置、节点、Attempt、Tool Call、Handoff、Evaluation 和事件，不能仅凭最后一条文案判断进度。
+- 未知外部结果保持可查询，不把消息重投当作用户授权重新计费。人工处理接口若尚未实现，未知状态保持停止，不假造批准或自动恢复。
 
-本轮把阶段10边界收敛为一个可独立交付能力，不拆成额外阶段。编码前需要确认以下决定；未确认时只允许继续文档和测试设计：
+## 状态机合同
 
-| 决定 | 当前建议 | 通过条件 |
-|---|---|---|
-| 首个 handler | `agent_workflow` | 能从 `workflow_execution_id` 和持久化配置重新装配 `model_only_v1`，复用现有协调器与 `ModelInvocationService`，不依赖原 HTTP Request 或 SSE 回调 |
-| 执行规格 | `execution_spec_json` 使用带 `schema_version` 的判别联合 | 未知版本、未知任务类型和超限输入在写 outbox 前拒绝 |
-| 自动入队 | 只为状态可进入 `ready` 且依赖已完成的可执行任务，在同一事务写 `task.ready` | task 写入失败或 outbox 写入失败时整个事务回滚 |
-| 取消 | 协作式取消 | 未领取任务不执行；运行中任务只在安全点停止，不承诺撤销已产生的模型费用 |
-| 交付语义 | 至少一次 | 已提交终态的消息重投不再执行；外部模型调用结果未知时停止自动重试并留下可查询事实，不承诺跨供应商“恰好一次” |
-
-### Agent Workflow 独立执行合同
-
-- 创建接口在同一事务写入 `AgentWorkflowExecution`、初始业务事件和 `agent_workflow.ready` outbox；事务提交后即可返回 `202 Accepted` 或开始观察事件，不能在 SSE 生成器内部才创建执行任务。
-- Publisher 只发送 `message_id`、`workflow_execution_id`、`run_id`、合同版本和关联 ID。Worker 必须从 MySQL 重新读取所属用户、Run、Workflow 定义、角色绑定、思考配置、预算与取消状态。
-- Worker 使用状态条件更新和领取租约保证同一 Workflow 同时只有一个执行者。重复投递、SSE 重连、浏览器刷新和 GET Result 都不能产生第二次模型调用。
-- POST SSE 与后续观察接口是可丢失的实时投影；观察者断开只注销观察者。持久 Workflow/Node/Event/Attempt/Message 继续是恢复事实，前端按最后事件序号有限回放并读取 Summary/Result。
-- 同一 Session 存在活动 Run/Workflow 时，创建新一轮的服务端事务必须按明确业务规则拒绝或要求显式并行；不能只依赖单标签页 React 状态、Web Lock 或 BroadcastChannel 防重。
-- 显式取消把 Workflow 写为 `cancel_requested` 或现有可表达的取消事实，并由 Worker 在安全点停止后续节点。HTTP 断开、关闭证据抽屉、切换会话和页面卸载都不是取消信号。
-- API 或 Worker 重启后，恢复器只领取租约过期且非终态的 Workflow。若外部 Provider 调用已发送但结果未确认，进入 `outcome_unknown` 并等待人工判断，不自动重发造成重复费用。
-
-### 状态机合同
-
-任务状态继续使用已有 `TaskStatus`，阶段10只增加受控转换，不创建第二套 Worker 状态：
+复用现有 `AgentWorkflowStatus`：
 
 ```text
-pending / waiting_for_dependency
-  → ready
-  → running
-  → completed | failed | cancelled
-
-failed（可重试且未超限）
-  → retry_scheduled
-  → ready
-
-pending | ready | retry_scheduled
-  → cancel_requested
-  → cancelled
+pending → running → completed | failed | cancelled | outcome_unknown
 ```
 
-约束：
+领取、续租及消息投递是执行所有权事实，不新增一套替代业务结果的 Worker 状态。`waiting_for_input` 继续保留现有枚举，但首版不因此启用通用人工恢复；新增恢复动作须定义身份、版本校验、幂等及未知结果处理。
 
-- `completed`、`cancelled` 和达到尝试上限的 `failed` 是终态，重复消息只记录 delivery 结果并 ack，不重新执行。
-- `ready → running` 必须使用带版本或状态条件的原子更新；影响行数为 0 表示任务已被其他 Worker 领取或状态已变化。
-- `running` 租约过期不直接代表失败。恢复器必须先确认没有有效领取者，再增加执行尝试并重新排队。
-- `cancel_requested` 与模型请求可能并发；数据库只记录已确认的最终事实，不把收到取消请求等同于外部调用已停止。
+- 显式取消使用持久取消事实；不把不存在于当前 Workflow 枚举的 `cancel_requested` 写成已实现状态。具体字段由实施时迁移定义，并由现有取消语义兼容。
+- 租约过期不直接把 Workflow 改为失败，也不重跑全部节点。先停止陈旧执行者推进，再按下表判断是否可继续。
+- 当前外层节点业务状态及 Reviewer 拒绝处理仍由阶段3决定，队列不将审核意见改成基础设施重试。
 
-Outbox 状态建议固定为：
+### 检查点与恢复决定
 
-```text
-pending → publishing → published
-                 └──→ pending（临时失败并设置 next_retry_at）
-                 └──→ failed（永久失败或超过发布上限）
-```
+| 已保存事实／故障窗口 | 恢复行为 |
+|---|---|
+| Workflow 与 Outbox 已提交，未发布 | 发布原事件，不创建第二个 Workflow |
+| Broker 收到消息但 confirm 丢失 | 可重发同一消息，消费端重新检查执行所有权及终态 |
+| 尚未准备外部调用，节点未执行 | 可领取并从该未执行步骤继续，保留历史调用及总预算 |
+| 已保存外部调用派发意图，响应未确认 | 保守进入 `outcome_unknown`，即使进程可能尚未真正发出请求也不盲目重发 |
+| Provider 响应和 Attempt 已确认，Node 尚未提交 | 从保存的响应继续校验／持久化；不得重新调用模型。材料不足或损坏时明确停止 |
+| 工具结果已提交，模型尚未续接 | 检查权限、固定文件版本和完整工具历史后续接；不重做已完成读取。副作用工具须有自己的恢复证明 |
+| Handoff／Evaluation／Node 已完成 | 复用原记录，从后继步骤继续；不能覆盖首轮结果或重计修正费用 |
+| 最终 Message 与完成事实已提交，ack 丢失 | 读取终态后确认消息，不生成第二条回答 |
+| 租约过期但外部调用可能仍在运行 | 停止自动调用；租约／领取版本不能取消已发送的外部请求，不能据此承诺恰好一次计费 |
+| 文件撤权、删除、用户停用、快照损坏 | 拒绝下一次读取／模型调用并保存原因，不使用旧摘要绕过 |
+| 总时限或预算已耗尽 | 按阶段3规则结束，不因 Worker 重启获得新额度或新时间 |
 
-`publishing` 必须带发布租约。进程崩溃后只有租约过期事件可回到 `pending`；publisher confirm 成功后才进入 `published`。
+发布失败与业务调用失败分开：Broker 连接、发布确认可有限重试；模型或写工具只有确认未产生外部作用、或有经过验证的幂等协议时才允许自动重试。未知结果不会因为被称为“网络错误”就自动重发。
 
 ## 消息契约
 
-消息只包含定位和去重所需的小型字段：
+首版只接受 `agent_workflow.ready`：
 
 ```json
 {
   "schema_version": 1,
   "message_id": "outbox event UUID",
-  "event_type": "task.ready",
-  "task_id": "task UUID",
+  "event_type": "agent_workflow.ready",
+  "workflow_execution_id": "workflow UUID",
   "run_id": "run UUID",
-  "attempt": 1,
   "created_at": "RFC 3339 timestamp"
 }
 ```
 
-约束：
-
-- `message_id` 全局唯一，并写入消费幂等记录。
-- Worker 必须从 MySQL 重新读取任务及执行规格，不信任消息中的业务状态。
-- 未知 `schema_version`、未知事件类型、缺失 ID 和非法 attempt 属于永久失败，不能无限重试。
-- 消息不得携带 API Key、完整用户文件、完整模型结果或任意可执行命令。
-- 版本化执行规格只允许保存不含 secret 的 `credential_reference`。阶段10第一版使用 `source=deployment_config`；后续阶段5启用用户供应商凭据后才允许 `source=user_provider_credential` 与 `credential_id`。Worker 必须从 Task → Run → User 重新校验归属，不能只相信执行规格中的 ID。
+- `message_id` 唯一；业务状态、领取次数和所有权版本从数据库读取，不信任消息中自报的执行尝试。
+- 未知版本、事件或缺失 ID 视为非法消息，有限记录失败后进入死信，不执行模型。
+- 消息不含完整提示词、文件、模型结果、凭据引用、环境变量名或命令。重读 Run 与 Workflow 关系，拒绝不一致 ID。
+- 执行配置只保留不含 secret 的 `credential_reference`，首版使用 `source=deployment_config`。用户凭据暂停期间不实现解密依赖；后续启用时再增加来源类型及归属检查，规则见阶段5。
+- `task.ready` 与通用 `execution_spec_json` 留作后续独立 Task 类型的设计，不是首版创建 Workflow 的前置。
 
 ## 拟议数据调整
 
-### `llm_tasks`
+以下均为待实施设计，不表示迁移或字段已经存在。
 
-拟增加：
+| 对象 | 首版拟增加／复用的内容 | 约束 |
+|---|---|---|
+| 现有 Workflow 执行记录 | 领取者、租约到期时间、递增领取版本、持久取消事实；复用固定请求配置和起始时间 | 迁移时核对现有字段，避免重复；所有推进写入带所有权条件 |
+| Node／Attempt／Tool Call | 复用已保存输入输出，补足派发意图、结果确认与可恢复检查点 | 业务修正不覆盖历史；未知外部作用不得猜测成功或重发 |
+| `llm_outbox_events` | 发布锁、锁到期、最后错误、确认时间；复用 Workflow 聚合对象关联 | 发布 confirm 后才标记成功，过期发布锁可以重新领取 |
+| 拟新增 `llm_message_deliveries` | message_id 唯一、workflow_execution_id、worker_id、投递计数、处理状态、首收／完成时间、最后错误 | 首版关联 Workflow，不要求存在外层 task_id；仅记录投递，不能代替 Workflow 业务结果 |
+| `llm_tasks` | 保留内部任务用途，首版不为这些任务增加独立自动领取行为 | 后续独立 Task handler 再规划执行规格及其租约迁移 |
 
-```text
-execution_spec_json
-result_artifact_id
-last_error_code
-last_error_message
-claimed_by
-claim_expires_at
-version
-```
-
-- `execution_spec_json` 必须由 Pydantic 的版本化 schema 校验。
-- `version` 或等价条件更新用于状态 compare-and-set，防止两个 Worker 同时领取。
-- 租约只处理 Worker 崩溃后的重新领取，不替代 RabbitMQ ack。
-
-### `llm_outbox_events`
-
-拟增加：
-
-```text
-locked_by
-locked_at
-last_error
-confirmed_at
-```
-
-- 多发布器通过 MySQL 8 的行锁与 `SKIP LOCKED` 分批领取。
-- 只有 broker confirm 成功后设置 `published_at/confirmed_at`。
-- confirm 超时保留事件供重发；由消费幂等处理可能的重复消息。
-
-### `llm_message_deliveries`
-
-拟新增消费去重表：
-
-```text
-message_id primary key
-task_id
-worker_id
-status
-delivery_count
-first_received_at
-completed_at
-last_error
-```
-
-该表记录消息处理事实；业务结果仍由 `llm_tasks`、`llm_attempts` 和 `llm_artifacts` 表达。
+新增唯一约束、回填和迁移回退须有独立 MySQL 测试。外部模型调用不包在数据库事务中；最终消息与完成事实沿用既有原子提交。无法确认外部结果时保留 Attempt，不删除记录来“回滚调用”。
 
 ## 队列拓扑提案
 
 ```text
-nexuspilot.tasks exchange (direct, durable)
-  └── task.ready
-        └── nexuspilot.tasks.execute
-              ├── 临时失败 → 分级延迟重试队列
-              └── 永久失败/超限 → nexuspilot.tasks.dead
+nexuspilot.tasks exchange
+  └── agent_workflow.ready
+        └── nexuspilot.workflows.execute
+              ├── 已确认可安全重试 → 有限延迟队列
+              └── 非法消息／永久失败 → nexuspilot.workflows.dead
 ```
 
-建议：
+采用持久消息、publisher confirms、mandatory return 和 manual ack；关键队列评估 quorum queue。队列名、虚拟主机、延迟和 prefetch 来自配置，部署时确认，不在本次启动。Outbox 发布状态仍是 pending → publishing → published；临时失败记录 next_retry_at，永久或超限失败保存错误。
 
-- 生产关键队列使用 durable quorum queue、持久化消息、publisher confirms 和 manual ack。
-- retry 使用有限的固定档位，例如短、中、长三个延迟，不允许调用方提供无限 TTL。
-- DLX 优先通过 RabbitMQ policy 配置，不把环境策略硬编码到应用声明参数。
-- consumer prefetch 从小值开始，以单个任务的模型调用时长和数据库连接占用实测调整。
+重复消息遇到有效领取者时不能创建第二个执行者；须有可靠恢复器负责过期租约重新检查与调度，不能依赖原消息一定仍未 ack。最终结果／已安排的恢复事实提交前不能确认消费成功。恢复调度必须与 Workflow 所有权版本关联，旧消息不重置预算。
 
-队列名称、虚拟主机、重试延迟和 prefetch 均通过环境配置提供；代码不得假设生产拓扑与本地完全相同。
+## 实施步骤与验收
 
-## 处理流程
-
-```text
-API 创建可执行任务
-  ↓ 同一数据库事务
-写 llm_tasks + llm_outbox_events
-  ↓ commit
-Outbox publisher 领取事件
-  ↓ persistent + mandatory + publisher confirm
-RabbitMQ 接受并路由
-  ↓
-标记 outbox confirmed
-  ↓ manual ack consumer
-Worker 读取任务并原子领取
-  ↓
-执行已注册 handler
-  ↓ 同一数据库事务
-写 attempt/result + task terminal state + delivery completed
-  ↓ commit 成功
-ack RabbitMQ delivery
-```
-
-## 故障窗口与预期行为
-
-| 故障窗口 | 必须发生的行为 |
+| 步骤 | 修改及验收 |
 |---|---|
-| task 已提交、publisher 未运行 | outbox 保持 pending，恢复后发布 |
-| broker 已接收、confirm 丢失 | publisher 可重发；同一 `message_id` 不重复产生业务副作用 |
-| 消息不可路由 | mandatory return 视为发布失败，outbox 不标记成功 |
-| Worker 收到消息后崩溃 | 未 ack 消息重新投递；过期任务租约允许重新领取 |
-| Provider 已接收请求、Worker 保存响应前崩溃 | Attempt 标记为结果未知，不自动重新调用不支持幂等键的 Provider；显式重试必须提示可能重复计费 |
-| 业务事务已提交、ack 丢失 | 重投时读取 delivery/任务终态并安全 ack，不再次执行模型 |
-| 临时网络或供应商故障 | 写失败证据并进入有限延迟重试 |
-| 参数错误或不支持的任务类型 | 不重试，写最终失败并进入死信 |
-| 超过最大尝试次数 | 任务标记 failed，消息进入死信，不再执行 |
-| 收到取消请求 | 未领取任务不执行；运行中任务在安全点终止并记录 cancelled/failed 事实 |
+| 1 | 先定义消息、Workflow 领取、取消与恢复测试；核对持久执行配置能够重建实际请求，尤其工具最终轮和修正轮的消息。阶段2有效请求保存缺口修复前，不能宣称工具节点可完整恢复 |
+| 2 | 在现有业务模块和必要 Worker 入口实现领取、续租、派发意图、所有权版本与迁移；真实 MySQL 并发测试证明旧执行者不能推进。确有共用消费者时再提取包，不预建第二套任务编排 |
+| 3 | Workflow／Event／Outbox 原子创建与幂等测试，确认内部 Task 不产生 task.ready |
+| 4 | Publisher 与 RabbitMQ 集成：confirm 丢失、不可路由、连接重建、发布锁恢复 |
+| 5 | 后台 Workflow handler 复用阶段3控制流及统计；从检查点恢复，不从头重放已计费调用 |
+| 6 | 消费去重、安全重试、死信和恢复器；未知 Provider 结果停止，不自动换模型或重新计费 |
+| 7 | Web 重连和刷新只观察原 Workflow；成功／失败／未知结果均可恢复，查看历史证据不改变当前执行 |
+| 8 | 真实 MySQL／MinIO／RabbitMQ 故障注入、迁移及进程关闭验证；Provider 可用受控替身保证分支重复性，真实模型样例另记范围 |
 
-## 实施范围
+必要故障测试包括：派发意图前后终止进程、响应已存但节点未提交、ack 丢失、过期租约与迟到结果、第二轮中断、输出修正中断、取消竞争、权限撤销以及工具历史续接。所有测试检查实际调用数、消息数、两轮节点／Task 关联和统计未重复。
 
-- 新增 `packages/messaging`：消息 schema、拓扑声明、可靠 publisher/consumer 抽象，不依赖 FastAPI Router。
-- 新增 `packages/tasks`：任务状态转换、领取、幂等和 handler 协议。
-- 新增 `apps/worker`：进程生命周期、配置、消费循环和健康检查。
-- 修改 FastAPI task service：可执行任务与 outbox 在同一事务写入。
-- 修改 ORM 与 Alembic：增加执行规格、发布锁、消费去重与错误证据字段。
-- 修改 Compose：加入 RabbitMQ 和 Worker；生产凭据不写入仓库。
-- 保留现有同步 `POST /api/v1/responses`，阶段10首个交付不强制所有模型调用异步化。
-
-## 实施步骤
-
-| 步骤 | 修改对象 | 预期结果 | 验证方式 |
-|---|---|---|---|
-| 1 | 版本化任务、消息和凭据引用 schema | 非法或未知版本在边界拒绝；只接受已登记凭据来源和 ID 组合，任何 secret/环境变量名不进入 Task 或消息 | Pydantic 参数化测试、序列化扫描和日志脱敏测试 |
-| 2 | 状态机和数据库迁移 | 只允许合法转换；并发领取只有一个成功 | 状态表测试、并发数据库测试、`alembic check` |
-| 3 | task + outbox 原子创建 | 任意事务失败都不会只留下其中一方 | 事务故障注入测试 |
-| 4 | outbox publisher | confirm 后才标记成功；不可路由和超时可恢复 | fake channel 单元测试、RabbitMQ 集成测试 |
-| 5 | Worker 幂等消费 | 重复 `message_id` 和终态任务不重复执行 | 重复投递与崩溃窗口测试 |
-| 6 | 有限重试与死信 | 临时/永久错误分类明确，无热循环 | retry/DLQ 集成测试 |
-| 7 | 首个真实 handler | `agent_workflow` 从持久化 Workflow 重建协调器执行并记录完整节点、Attempt、事件和最终Message | fake Provider 端到端测试、断开观察者后继续执行测试 |
-| 8 | 生命周期和运维入口 | SIGTERM 停止领取、等待在途任务、关闭连接 | 进程生命周期测试 |
-| 9 | 文档与真实基础设施验证 | 本地运行可复现，限制与未执行项明确 | Compose 冒烟和故障注入 |
-
-## 测试策略
-
-- 单元测试：消息 schema、错误分类、状态转换、退避、幂等判断、publisher/consumer adapter。
-- 数据库集成：outbox 原子性、并发领取、租约过期、唯一 message ID、终态保护。
-- RabbitMQ 集成：publisher confirm、mandatory return、manual ack、重投、retry、DLQ、断线重连。
-- 端到端：API 创建 Agent Workflow 后立即断开 SSE，Worker 仍使用 fake Provider 完成同一个 Workflow；最终 Message、Result 和事件可按 `run_id` / `workflow_execution_id` 查询，重新观察和重复投递不增加模型调用。
-- 身份与凭据：fixture 创建唯一测试 User；公共/内部测试 key 每次运行生成且不同；任务、outbox、RabbitMQ delivery、日志和错误中扫描不到完整测试 key 或供应商 secret。
-- 故障注入：在 publish 前后、业务 commit 前后和 ack 前主动终止进程，验证恢复结果。
-- 真实供应商模型不作为 RabbitMQ 可靠性测试前提，避免测试费用和外部波动掩盖消息问题。
-
-## 官方依据
-
-- [RabbitMQ Reliability Guide](https://www.rabbitmq.com/docs/reliability)：确认至少一次投递、重复投递和消费者幂等责任。
-- [Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)：区分 publisher confirm 与 consumer ack，并说明 nack/requeue 行为。
-- [RabbitMQ Publishers](https://www.rabbitmq.com/docs/publishers)：确认 mandatory return、不可路由消息和连接恢复边界。
-- [RabbitMQ Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)：确认死信触发条件、策略配置和 dead-letter 安全限制。
-- [RabbitMQ Quorum Queues](https://www.rabbitmq.com/docs/quorum-queues)：确认关键队列的数据安全、confirm 和 manual ack 建议。
-- [aio-pika API Reference](https://docs.aio-pika.com/apidoc.html)：确认 robust connection/channel、publisher confirms 和 topology recovery 能力。
+初次测试使用专用 User／Run 和独立服务测试 Key，不增加登录后门。目标生产启用另需明确授权及相应版本验收，不把本地容器结果当作线上已通过。
 
 ## 风险与停止条件
 
-- 任务执行规格未确认时，不实现会把 `objective` 猜测为模型提示词的 Worker。
-- 无法在同一 MySQL 事务写 task/outbox 时，不发布任务消息。
-- 消费幂等表或等价唯一约束未实现时，不启用自动重投。
-- 没有真实 RabbitMQ 集成测试环境时，可以完成单元实现，但阶段状态仍为“进行中”。
-- 发现业务任务包含不可安全重试的外部副作用时，必须为该 handler 单独设计幂等键与补偿方式。
-- 执行规格或 RabbitMQ 消息需要携带供应商 secret、部署环境变量名或可跨用户复用的凭据时，停止实现并改为凭据引用；详细边界见 [`phase-5-platform-identity-credentials.md`](phase-5-platform-identity-credentials.md)。
+- 无法原子保存 Workflow／Outbox，或缺少领取去重与所有权检查时，不启用消费。
+- 不能区分派发意图与已确认响应时，按未知结果停止，不凭异常名称选择重试。
+- 缺失工具历史、私有续接或版本化请求时，不冒充可恢复；先补存储和校验。
+- 运行记录或队列需要携带 secret、环境变量名、任意服务器路径时，停止并改为受控引用。
+- 缺少真实 RabbitMQ／MySQL 故障测试时可以完成局部实现，但阶段保持进行中，不报告后台可靠执行完成。
 
 ## 完成标准
 
-- task 与 outbox 原子创建，RabbitMQ 暂时不可用不会丢任务。
-- publisher confirm 丢失导致的重复消息不会产生重复模型调用或重复结果。
-- Worker 只在业务事务提交后 ack；崩溃重启后任务可恢复。
-- 临时失败有限重试，永久失败和超限任务进入死信并留下 MySQL 事实。
-- 同一任务不能被两个 Worker 同时执行；过期租约可恢复。
-- API、Worker 和发布器均能优雅关闭，不新领任务且不会把在途任务误报完成。
-- 单元、数据库集成、RabbitMQ 集成、故障注入、迁移和静态检查全部通过。
-- 当前文档与运行配置一致，真实 RabbitMQ 验证结果明确记录。
+- Workflow 创建原子且幂等，内部 Task 不被另一执行器重复领取。
+- 断线、刷新、查看旧证据不影响后台任务；同一 Workflow 的已确认模型调用和最终消息不重复生成。
+- 重启按检查点恢复；派发后未知结果明确停止，陈旧执行者不能继续推进。
+- 取消、权限撤销、预算、总时限及统计在恢复后仍成立；业务返工不是消息重试。
+- 单元、真实数据库、Broker、对象存储、迁移、故障注入和浏览器观察测试按上述范围通过，未执行项单列。
+- 当前规则、运行配置和版本化验证记录一致；没有以历史单轮成功代替新版两轮／恢复验收。
+
+## 官方依据
+
+以下保留原规划参考资料，本次未重新进行外部产品资料核验；实施时按项目锁定版本核对。
+
+- [RabbitMQ Reliability Guide](https://www.rabbitmq.com/docs/reliability)
+- [Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
+- [RabbitMQ Publishers](https://www.rabbitmq.com/docs/publishers)
+- [RabbitMQ Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
+- [RabbitMQ Quorum Queues](https://www.rabbitmq.com/docs/quorum-queues)
+- [aio-pika API Reference](https://docs.aio-pika.com/apidoc.html)
