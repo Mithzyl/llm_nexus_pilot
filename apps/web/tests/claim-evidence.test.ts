@@ -1,0 +1,71 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
+import { claimVerdictLabel, selectClaimEntries, sourceBlockLocation } from "../lib/claim-evidence";
+import { isAllowedProxyRoute } from "../lib/proxy-policy";
+import type { AgentWorkflowNodeResult, ClaimSources } from "../lib/types";
+
+/** Create minimal persisted node fixtures for source-selection rules. */
+function nodes(): AgentWorkflowNodeResult[] {
+  return [
+    { node_execution_id: "worker", task_id: "a", node_sequence: 1, status: "completed", output_type: "agent_model_execution", output: { structured_output: { schema_version: "worker_evidence.v2", claims: [{ claim_key: "same", text: "First", source_type: "file" }] } } },
+    { node_execution_id: "other", task_id: "b", node_sequence: 2, status: "completed", output_type: "agent_model_execution", output: { structured_output: { schema_version: "worker_evidence.v2", claims: [{ claim_key: "same", text: "Second", source_type: "file" }] } } },
+    { node_sequence: 3, status: "completed", output_type: "independent_review", output: { claim_assessments: [{ task_id: "b", claim_key: "same", verdict: "supported" }] } },
+  ] as unknown as AgentWorkflowNodeResult[];
+}
+
+/** Match claim keys within their task, not globally across workers. */
+test("review matches the task and claim pair, never another worker with the same key", () => {
+  const entries = selectClaimEntries(nodes());
+  assert.equal(claimVerdictLabel(entries[0]), "尚未审核");
+  assert.equal(claimVerdictLabel(entries[1]), "原文支持");
+});
+
+/** Ignore unsuccessful reviewer output without manufacturing an assessment. */
+test("failed review output and historical absent fields do not invent support", () => {
+  const records = nodes();
+  records[2].status = "failed";
+  assert.equal(claimVerdictLabel(selectClaimEntries(records)[1]), "尚未审核");
+  assert.deepEqual(selectClaimEntries([]), []);
+});
+
+/** Only describe locations supplied by a parser. */
+test("block labels use real locations and preserve unknown page information", () => {
+  const block = { text: "Original", line_start: 2, line_end: 4 } as ClaimSources["sources"][number]["blocks"][number];
+  assert.equal(sourceBlockLocation(block), "第 2–4 行");
+  assert.equal(sourceBlockLocation({ text: "Original" } as typeof block), "引用片段");
+});
+
+/** Keep the source projection read-only in the browser proxy. */
+test("claim source proxy only permits the specific read-only route", () => {
+  const route = ["agent-workflows", "workflow", "nodes", "node", "claim-sources"];
+  assert.equal(isAllowedProxyRoute("GET", route), true);
+  assert.equal(isAllowedProxyRoute("POST", route), false);
+});
+
+/** Render initial claims without downloading excerpts or treating references as validation. */
+test("initial panel escapes model text and does not assert source validity before expansion", () => {
+  const records = nodes();
+  const worker = records[0];
+  if (worker.output_type !== "agent_model_execution" || !worker.output) throw new Error("fixture");
+  worker.output.structured_output.claims![0].text = "<script>untrusted</script>";
+  const html = renderToStaticMarkup(createElement(ClaimEvidencePanel, {workflowId: "workflow", nodes: records, running: false}));
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>|引用有效/);
+  assert.match(html, /aria-expanded="false"/);
+});
+
+/** Preserve an explicit historical empty state and distinguish pending work. */
+test("legacy records and running empty results have distinct honest explanations", () => {
+  const html = renderToStaticMarkup(createElement(ClaimEvidencePanel, {workflowId: "workflow", nodes: [], running: false}));
+  assert.match(html, /此记录未保存逐条来源/);
+  const pending = renderToStaticMarkup(createElement(ClaimEvidencePanel, {workflowId: "workflow", nodes: [], running: true}));
+  assert.match(pending, /工作流运行中/);
+  const records = nodes();
+  const worker = records[0];
+  if (worker.output_type !== "agent_model_execution" || !worker.output) throw new Error("fixture");
+  delete worker.output.structured_output.schema_version;
+  assert.equal(selectClaimEntries(records).length, 1);
+});

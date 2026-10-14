@@ -160,7 +160,75 @@
 
 ## 节点结果修正与结论证据传递
 
-**2026-10-12 新增工作项，2026-10-13 状态：进行中。** 本节是工具工作流中 Worker 输入输出、来源核对、审核补读与格式修正的唯一详细设计；阶段3维护节点顺序和既有输出定义，阶段4引用本节的产品验收，总路线图安排实施顺序。结构修正及 Worker → Handoff → 来源检查 → Reviewer 补读已有本地实现；真实 Provider 与实际部署组合尚未验收。按用户本轮要求，最终答案引用和前端展示暂不实施。
+**2026-10-12 新增工作项，2026-10-13 状态：进行中。** 本节是工具工作流中 Worker 输入输出、来源核对、审核补读与格式修正的唯一详细设计；阶段3维护节点顺序和既有输出定义，阶段4引用本节的产品验收，总路线图安排实施顺序。结构修正及 Worker → Handoff → 来源检查 → Reviewer 补读已有本地实现；首次本地 DeepSeek + MySQL/MinIO 的分段文本样例通过，后续浏览器续聊发现引用修正和失败呈现缺口，详见下节。用户已确认前端来源界面并实施；最终答案逐句引用仍后置，服务器未更新。
+
+### 本地真实 DeepSeek／MySQL／MinIO 联调（2026-10-13）
+
+> 本节保留原版本的真实验证记录。2026-10-14 新增工作流版本与回归范围见下文“工作流整体修正与两轮 refinement”，不将原记录视为新版本的真实模型验收。
+
+- 先提交后执行，业务代码提交为 `6f9ced1`。使用原独立测试容器 `nexus-deepseek-tools-20261012-mysql-1` / `minio-1`，地址仅 `127.0.0.1:13306` / `19000`；本轮 API 临时绑定 `18000`。模型为 `deepseek-v4-flash`，数据库登记地址核对为 `https://api.deepseek.com`，Key 从本地 API `.env` 加载，未复制到报告。
+- 命令：`apps/api/.venv/bin/python deployments/verification/check_live_worker_evidence.py --output /tmp/nexus-worker-evidence-20261013/live-1.json`。Run `eff0a8a8-680f-43a8-a0ae-a5dab3edb9ef`，工作流 `completed`，报告 `passed`。只执行一次付费工作流：6 个 Model Attempt 均完成，合计输入 30,202 token、输出 5,869 token；4 次工具调用均成功，不根据未核对的价格估算费用。
+- 合成 TXT 两个块分别记录初步型号 X100、最终签字型号 X200。用户任务明确要求 Worker 仅读第一块并注明初步范围，Reviewer 补读第二块。Worker 实际调用 `read_file_content(offset=0, limit=1)`，提交两条带 `line:1` 引用的 claims，并记录 `has_more=true`。这验证明确分工下的补读，不声称模型在所有开放任务中都会自主发现遗漏。
+- MySQL 中 `agent_handoff.v2` 的 claims 与 Worker 输出逐项一致；用实际 MinIO 解析对象重新解析引用并核对哈希。Reviewer 的持久请求确含 `authorized_claim_sources` 和原文 X100，不只是模型摘要。
+- Reviewer 实际补读 `offset=1, limit=1`，还额外调用 `offset=0, limit=2` 重读全文；逐条判定 Worker 的“初步记录为 X100”及引文受到支持，并指出最终签字型号为 X200，不能将 X100 当作最终型号。它没有错误地把准确限定范围的初步结论判为矛盾。
+- 成功后增加更严格的读取范围断言，并对同一 Run 做只读复验：Handoff 相等、Worker 引用仅首块且保留未读范围、Reviewer 真正读取第二块、MinIO 哈希及请求原文检查均通过；没有再次调用模型。联调脚本修正数据库连接池退出时未释放的问题，后续只读复验无该退出警告。
+- 限制：本轮样本是纯文本，不重新验收 Office/PDF 解析、扫描件或多用户撤权；最终答案引用和前端未扩展，服务器未部署。API 日志另有历史过期续接对象清理延后警告，本次新的解析对象/模型请求/工具记录检查通过；不将本次通过扩展为旧对象清理已修复。测试 API 已退出，独立容器停止但保留测试卷及报告供复查。
+
+### 结论与来源 Web 展示（2026-10-13）
+
+用户确认 UI 后新增，原后端实施时“前端暂不实施”的限制不再适用于此工作项；最终答案逐句引用映射仍后置。
+
+- Agent 回复新增“查看结论与来源”，右侧分为结论与来源/运行过程。只展示已提交的 `worker_evidence.v2` claims，按 task/claim 关联审核意见；旧结果明确没有逐条来源，不伪造历史证据。草稿和当前执行状态不随只读历史查询切换。
+- 新增 `GET /api/v1/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources?claim_key=...`。客户端不能提交任意引用，只能请求已保存结论。沿用全资源身份/归属检查，再校验节点所属工作流、Tool Call/Attempt/任务依赖、文件当前权限、状态、固定哈希及实际读取块。响应仅含文件名、原文、实际解析位置、分页与解析限制，不返回对象地址、续接数据或内部哈希，响应禁用缓存。
+- 前端展开时读取原文，关闭/切换时取消自己的读取；过期响应不能覆盖当前结论，重新进入或恢复浏览器焦点重新校验。新增 Reviewer 引用时重新读取。Reviewer 复用 Worker 引用不算补读；只有其自己任务实际执行的读取标为 Reviewer 补读。来源有效仅说明记录一致，模型审核意见单独展示。
+- 后端验证：`apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_claim_sources.py apps/api/tests/test_worker_evidence.py apps/api/tests/test_resource_policy.py apps/api/tests/test_agent_runtime_architecture.py -q --tb=short`，51 通过。新接口首个成功用例实现前为 404，之后通过；覆盖匿名/跨用户、错工作流、文件删除、错快照、安全投影和补读归属。环境为 SQLite、脚本 Provider 和测试存储，不作为真实模型质量验证。
+- 前端 `npm --prefix apps/web test` 132 通过；TypeScript、ESLint 通过。浏览器访问本地真实 BFF/API、MySQL/MinIO 中此前保存的 DeepSeek 两段 TXT 记录，验证结论、Worker/Reviewer 两段原文、视图切换、草稿保留、刷新恢复、390px 窄屏与暗色显示、Escape 关闭；控制台未发现 error。视觉记录见根目录 `design-qa.md`。不新增模型调用、不迁移数据库、不部署服务器；执行中切换历史来源、多用户撤权后的浏览器交互矩阵未重跑（接口拒绝已有自动测试）。
+
+### 新前端完整工作流浏览器验证（2026-10-13）
+
+状态：验证已执行，完整两轮场景失败，未部署。最新工作区前端在 `127.0.0.1:3100`、API 在 `127.0.0.1:18000`，连接上述独立 MySQL/MinIO。浏览器实际选择 TXT、发送 Agent 请求，不使用固定模型响应。只执行两次付费工作流，失败后未重复付费重试。
+
+- 会话 `7e4288f3-9dc0-4eef-a975-838daace51a7`。首轮 Run `c0aebe9b-d2c3-450e-8da0-a3422bb02709` 通过：11 节点、6 次模型调用、4 次工具调用；最终答案 X200 无需刷新可见，5 条 claims 可展开。只读复验 Handoff claims 与 Worker 一致、MinIO 解析对象哈希正确、Reviewer 请求包含原文且实际补读第二段，均通过。
+- 续聊 Run `fdc8fde2-28b2-49de-9f57-1bd214091314` 失败。新文件 `eb260fc0-87e0-4918-8bd5-3251bd236052` 已上传、读取；Worker claims、Handoff、确定性验证完成，Reviewer 也实际读取了该新文件第二段。不是旧附件替换或 Office 执行器未配置。
+- 具体错误：Worker 调用 `bc982dae-f207-4d2f-ae4c-0b40bb0028e0` 只返回 `line:1`；Reviewer 调用 `0f2d6ab9-b4d9-4ef1-b404-88af75a7a660` 只返回 `line:2`。Reviewer 第一条 assessment 却在后一个调用的 `block_ids` 填入 `["line:1", "line:2"]`。文件 ID/哈希匹配，但读取范围不匹配；`WorkerEvidenceService.resolve` 正确拒绝，错误为 `Evidence block was not read or differs from the snapshot`。
+- 当前缺口：`AgentModelNodeService.call_typed_model` 的结构修正处理之外才调用 `_validate_evidence_output`，此类引用语义校验错误不进入有限修正，直接使审核节点失败。待修复要求是返回具体错误引用与允许块，允许有次数/时间预算的修正，并重新执行完整权限及范围检查；不能取消检查、自动扩大读取范围或将错误引用标为有效。
+- 页面在第二轮运行中成功切换第一轮来源并读取原文；服务端继续执行到了 Reviewer，排除这次失败由切换证据直接取消执行导致。但自动化浏览器标签随后不可用、且第二轮本身失败，**生成期间查看历史来源后仍实时收到成功最终答案**没有完成验证，不能计为通过。
+- 重新进入会话后，第一轮答案及历史证据仍可读取；第二轮右栏显示失败及已提交但“尚未审核”的 Worker 结论，不伪造审核通过。数据库只有两条用户消息与首轮一条 Assistant 消息，第二轮未生成 Assistant；消息区刷新后没有第二轮失败占位，仍需补充可持久恢复的失败呈现。历史已完成消息的独立来源入口/执行摘要在当前新一轮失败后刷新也需核对恢复，现可通过“查看运行证据”打开旧结果。
+- 本轮确定性检查：后端相关 51 项、前端 132 项、TypeScript 均通过。前端测试首次因沙箱禁止本地 IPC 未启动，获准运行后通过。新浏览器标签控制台 error 为空。这些结果不抵消上述真实续聊失败。
+- 截图：`output/playwright/claim-evidence/live-history-during-run.jpg`；最终页面和说明见 `design-qa.md`。纯 TXT 验证，不扩展为 Office/PDF、多用户撤权、所有模型或服务器验收。
+
+后续前端修复（2026-10-13）：已按最新 Run 的真实失败/取消状态恢复当前缺失回复的页面占位，历史已保存 Agent 消息恢复来源按钮，本地浏览器使用上述失败会话刷新核验通过。来源长文本换行、Composer 最小化及聚焦限定快捷键也已实现，详见 Phase 4。没有更改数据库记录或后端引用处理；Reviewer 引用有限修正、成功续聊的真实模型复验仍未完成，旧历史轮的全部活动摘要也不以此次来源按钮修复代替验收。
+
+### 工作流整体修正与两轮 refinement（2026-10-14）
+
+状态：已完成本地实现及确定性回归；真实 Provider 两轮验收未执行。保留 Controller 规划、Worker 分析、程序 Handoff、程序确定性验证、独立 Reviewer、Controller 最终汇总的原职责。Reviewer 不覆盖 Worker 结果，不新增“修正版 Worker”角色或输出字段。
+
+- 新请求默认 `workflow_version=1.1.0`；`1.0.0` 仍可读取和显式调用，保留单轮规则与原请求哈希。`max_workflow_rounds` 可为 1 或 2，默认 2，含首轮，不表示额外两次重试。前端新请求显式选择 1.1.0。
+- 工具多轮、节点输出修正、工作流返回 Controller 是三类行为。工具多轮继续沿同一 Task/Node 保存每次 Model Attempt 与 Tool Call；节点修正最多追加一次模型调用；工作流 refine 创建新节点、新 Task/Agent Run、新 Evaluation，不覆盖第一轮。重复节点键的 `node_attempt` 递增，`input.workflow_round` 单独标识业务轮次。
+- Reviewer 仍提交既有 JSON。只有有效结果明确给出 `requires_replan` 或 `requires_retry`，且轮次、模型调用数、节点数与剩余时间允许，才选择 `independent_review → controller_planning`。`needs_revision` 本身不强制多花一次工作流；没有返回标志时按原规则交给最终汇总。
+- 第二轮 Controller 收到原目标、上轮 Worker/Handoff、审核意见及授权原文；新 Worker 同时收到 refine 输入。第二轮 Reviewer 只逐条审核第二轮候选 Task，仍可引用被授权的上游读取。第一轮结论、审核与原文查询保留，按 Task ID 而不是相同 `claim_key` 混合两轮。
+- 最多两轮；再次要求返工或额度不足时保存 `refinement.skipped` 与 `round_limit`、`model_call_budget`、`node_budget` 或 `time_budget`，进入带限制的最终汇总。最终 Controller 收到停止原因，不得声称未执行的返工已经完成。实际模型/工具失败、权限失效或未知结果仍按错误终止，不伪造成功答案。
+- 计划校验计入已经消耗的 Controller/修正调用，并预留最终汇总 1 次、模型审核 1 次或工具 Reviewer 最多 3 次（含其最终 JSON）。模型请求的原子额度检查保留后续调用，局部工具/修正不能耗尽全部调用次数。进入第二轮后重新使用实际剩余额度验证新计划；不提高输出 token 上限、不重置总时间或总费用预算。
+- 输出校验分开处理字段结构、引用真实性、内容审核。Worker 与 Reviewer 共享引用填写规则；每个引用只可选择对应工具返回的块。已授权结果的块范围/重复块、逐条审核遗漏及一致性错误可由原节点模型修正。错误文件快照、跨任务/跨用户引用、访问撤销、对象损坏不按格式问题重试。修正携带此前工具消息和 Provider 私有续接状态，重新校验历史文件访问；不重新执行已经完成的读取，不允许格式修正调用工具。
+- 上下文前置节点明确为 `run_source_inventory`；有早于 100 条候选消息的记录时返回排除原因及 `is_truncated=true`。实际模型输入仍以每个 Attempt/Node 关联的 Context Build 与请求记录为准，不把候选清单声明成各角色的完整输入。
+
+统计使用既有 Node、Event、Attempt，不新增数据库表或迁移：
+
+| 对象 | 保存与读取规则 |
+|---|---|
+| 节点修正 | `agent.node.output_repair.requested/completed` 保存原 Attempt、校验字段和修正 Attempt；失败/取消/未知结果结合节点终态恢复，不把请求次数当作实际调用次数 |
+| 返回 Controller | `agent.workflow.refinement.requested/skipped` 保存来源审核节点、原因、前后轮次及 Evaluation 引用；实际轮次数以已经创建的 Controller 节点计数 |
+| `result.loop_statistics` | 返回修正请求数、实际调用数、成功/失败/未结束/未知数、Attempt ID、返工次数、未执行原因、修正和第二轮用量；刷新与幂等重放不增加统计 |
+| 用量 | 修正用量是对应 Attempt 的小计；refinement 用量是第二轮规划到审核的小计，不含最终汇总。修正若发生在第二轮，两种小计重叠，不能相加当总量；总量继续按全部 Attempt 一次汇总 |
+
+本地验收用例维护于 `test_workflow_refinement.py`、`test_evidence_output_repair.py`：两轮 Controller/Worker/Reviewer、持续返工最多两轮、预算/节点/轮次停止、修正用量、补读引用错配恢复、持续错配失败、错误快照禁止修正、两轮附件引用归属、第二轮响应未知、刷新及幂等重放。这些是隔离 SQLite、内存对象存储与受控 Provider 的执行测试，不代替真实 DeepSeek/MySQL/MinIO 两轮验收；本次不部署。
+
+2026-10-14 提交前检查（本地 macOS）：
+
+- `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests -q --tb=short`：607 通过、32 跳过；跳过项要求显式 MySQL/MinIO/Docker 环境，不计作通过。初次沙箱运行的 Unix socket 权限失败在获准的本地执行环境下复验通过；另同步来源查询路由清单和已中文化的解析错误断言。
+- `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml packages/models/tests -q --tb=short`：73 通过。
+- `npm --prefix apps/web test`：136 通过；`npm --prefix apps/web run typecheck`、`npm --prefix apps/web run lint`、`npm --prefix apps/web run build` 均通过。
+- 修改范围的 Ruff 和 `git diff --check` 通过。新版本未执行真实 DeepSeek 两轮、浏览器两轮、MySQL/MinIO 联合验收或服务器发布；此前单轮真实样例不能代替这些验证。
 
 ### 本轮后端实现（2026-10-13）
 
@@ -277,7 +345,7 @@ Worker 输入包括用户目标、当前任务与完成条件、依赖任务结�
 | 历史与界面 | 旧结果不伪造引用；新来源刷新后仍可核对；跨用户来源不下发；界面区分读取成功、引用有效、结论获支持和无法确认 |
 | 真实 Provider | 经授权验证 Agent 首轮 DOCX 与续聊 PDF、最终回答保存及逐结论来源；快速回复独立文件循环回归。记录模型和环境，停止无效付费重试，离线通过不替代真实验收 |
 
-整项验收尚未完成。只有首批本地格式修正检查已执行，结论证据传递业务测试、浏览器检查及新增真实 Provider 验收未执行；不得沿用历史通过记录替代上述新增验收。
+整项验收尚未完成：本地格式修正、结论证据传递确定性测试、真实 DeepSeek/MySQL/MinIO 两段 TXT 样例及只读来源浏览器检查已执行，详见上述各自记录。最终答案逐句引用、Agent 首轮 DOCX 与续聊 PDF 的新版真实 Provider 矩阵及服务器部署验收仍未完成，不将单样例通过扩展为全部文件和模型验收。
 
 ## 代码组合与自主创建工具
 

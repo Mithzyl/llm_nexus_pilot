@@ -22,6 +22,10 @@ const WORKFLOW_EVENT_TYPES = new Set([
   "agent.node.failed",
   "agent.node.cancelled",
   "agent.node.outcome_unknown",
+  "agent.node.output_repair.requested",
+  "agent.node.output_repair.completed",
+  "agent.workflow.refinement.requested",
+  "agent.workflow.refinement.skipped",
 ]);
 const WORKFLOW_STATUSES = new Set([
   "pending",

@@ -388,6 +388,17 @@ async def test_handoff_retains_claims_and_reviewer_uses_originals(
     )
     assert review["usage"]["tool_call_count"] == (0 if refuse_more else 1)
     assert review["usage"]["model_call_count"] == (1 if refuse_more else 2)
+    sources_response = await client.get(
+        f"/api/v1/agent-workflows/{result['workflow_execution_id']}/nodes/"
+        f"{worker['node_execution_id']}/claim-sources",
+        params={"claim_key": "equipment-model"},
+    )
+    assert sources_response.status_code == 200, sources_response.text
+    sources = sources_response.json()["sources"]
+    assert sources[0]["read_by"] == "worker"
+    if not refuse_more:
+        assert sources[1]["read_by"] == "reviewer"
+        assert sources[1]["blocks"][0]["text"] == "Device model X200"
     async with test_database_session_factory() as db:
         handoff = await db.scalar(
             select(LlmAgentHandoff).where(LlmAgentHandoff.run_id == turn["run"]["run_id"])

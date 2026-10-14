@@ -9,7 +9,20 @@ import {
   composerConversationClearance,
   composerTextareaHeight,
   nextComposerOptionIndex,
+  shouldSendComposerKey,
 } from "../lib/composer-layout";
+
+/** Send only focused, unmodified Enter; preserve newline, IME selection and repeat safety. */
+test("composer Enter only submits a focused eligible draft outside IME composition", () => {
+  const key = { key: "Enter", shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+    isComposing: false, keyCode: 13, repeat: false, focused: true, canSend: true };
+  assert.equal(shouldSendComposerKey(key), true);
+  for (const override of [{ shiftKey: true }, { altKey: true }, { ctrlKey: true }, { metaKey: true },
+    { isComposing: true }, { keyCode: 229 }, { repeat: true }, { focused: false },
+    { canSend: false }, { key: "a" }]) {
+    assert.equal(shouldSendComposerKey({ ...key, ...override }), false);
+  }
+});
 
 test("expands the composer for long drafts while keeping a bounded internal scroll area", () => {
   assert.equal(composerTextareaHeight(18), 44);

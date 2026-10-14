@@ -360,7 +360,11 @@ export type AgentWorkflowEventType =
   | "agent.node.progress"
   | "agent.node.failed"
   | "agent.node.cancelled"
-  | "agent.node.outcome_unknown";
+  | "agent.node.outcome_unknown"
+  | "agent.node.output_repair.requested"
+  | "agent.node.output_repair.completed"
+  | "agent.workflow.refinement.requested"
+  | "agent.workflow.refinement.skipped";
 
 export type AgentModelBinding = {
   provider: ProviderName;
@@ -372,7 +376,7 @@ export type AgentModelBinding = {
 
 export type AgentWorkflowCreate = {
   workflow_name: "model_only";
-  workflow_version: "1.0.0";
+  workflow_version: "1.0.0" | "1.1.0";
   // The server automatically enables scoped read tools when the turn has attachments.
   execution_profile?: "model_only_v1" | "tool_enabled_v1";
   idempotency_key: string;
@@ -384,6 +388,7 @@ export type AgentWorkflowCreate = {
   max_nodes: number;
   max_model_calls: number;
   max_parallel_agents: 1 | 2;
+  max_workflow_rounds?: 1 | 2;
   wall_time_limit_ms: number;
   stream: boolean;
 };
@@ -537,6 +542,9 @@ export type AgentWorkflowNodeOutputMap = {
     text_preview: string | null;
     text_artifact_id: string | null;
     structured_output: {
+      schema_version?: "worker_evidence.v2";
+      claims?: WorkerClaim[];
+      unresolved_items?: Array<{ text: string; reason: string; requires_more_reading: boolean }>;
       summary: string;
       confirmed_facts: string[];
       decisions: string[];
@@ -565,7 +573,8 @@ export type AgentWorkflowNodeOutputMap = {
   };
   agent_handoff: {
     agent_handoff_id: string;
-    schema_version: "agent_handoff.v1";
+    schema_version: "agent_handoff.v1" | "agent_handoff.v2";
+    worker_evidence?: { claims: WorkerClaim[] } | null;
     status: "completed" | "partial";
     objective: string;
     confirmed_facts: string[];
@@ -599,6 +608,7 @@ export type AgentWorkflowNodeOutputMap = {
     requires_independent_review: boolean;
   };
   independent_review: {
+    claim_assessments?: ClaimAssessment[];
     verdict: "pass" | "fail" | "needs_revision";
     score: string | number;
     findings: Array<{
@@ -684,6 +694,8 @@ type AgentWorkflowNodeBase = {
   status: AgentWorkflowNodeStatus;
   input: {
     schema_version: string;
+    workflow_round?: number;
+    candidate_task_ids?: string[];
     input_hash: string;
     source_node_execution_ids: string[];
     message_ids: string[];
@@ -731,6 +743,58 @@ type AgentWorkflowNodeBase = {
   created_at: string;
 };
 
+export type FileEvidenceReference = {
+  tool_call_id: string;
+  result_id: string;
+  file_id: string;
+  block_ids: string[];
+  source_hash: string;
+  parsed_hash: string;
+  parser_version: string;
+};
+
+export type WorkerClaim = {
+  claim_key: string;
+  text: string;
+  source_type: "file" | "general_knowledge" | "inference";
+  kind: "assertion" | "absence";
+  scope: "read_blocks" | "parsed_document";
+  evidence_refs: FileEvidenceReference[];
+};
+
+export type ClaimAssessment = {
+  task_id: string;
+  claim_key: string;
+  verdict: "supported" | "contradicted" | "insufficient_evidence";
+  explanation: string;
+  evidence_refs: FileEvidenceReference[];
+};
+
+export type ClaimSources = {
+  sources: Array<{
+    filename: string;
+    read_by: "worker" | "reviewer";
+    source_valid: true;
+    has_more: boolean | null;
+    total_blocks: number;
+    extraction_status: string;
+    warnings: string[];
+    blocks: Array<{
+      text: string;
+      cells: string[] | null;
+      line_start: number | null;
+      line_end: number | null;
+      paragraph_number: number | null;
+      page_number: number | null;
+      table_number: number | null;
+      row_number: number | null;
+      sheet_name: string | null;
+      cell_range: string | null;
+      slide_number: number | null;
+    }>;
+  }>;
+};
+
 export type AgentWorkflowNodeResult = {
   [OutputType in AgentWorkflowNodeOutputType]: AgentWorkflowNodeBase & {
     output_type: OutputType;
@@ -744,6 +808,21 @@ export type AgentWorkflowResult = AgentWorkflowSummary & {
   final_output: AgentWorkflowNodeOutputMap["final_synthesis"] | null;
   completion: AgentWorkflowNodeOutputMap["workflow_completion"] | null;
   aggregate_usage: AgentWorkflowUsage;
+  loop_statistics?: {
+    workflow_round_count: number;
+    refinement_count: number;
+    refinement_skipped_count: number;
+    output_repair_requested_count: number;
+    output_repair_count: number;
+    output_repair_succeeded_count: number;
+    output_repair_failed_count: number;
+    output_repair_pending_count: number;
+    output_repair_unknown_count: number;
+    repair_attempt_ids: string[];
+    repair_usage: AgentWorkflowUsage;
+    refinement_usage: AgentWorkflowUsage;
+    events: Record<string, unknown>[];
+  };
   warnings: string[];
   trace_id: string | null;
 };

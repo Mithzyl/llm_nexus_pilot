@@ -212,6 +212,7 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                     "/agent-workflows/{workflow_execution_id}/result",
                 "/agent-workflows/{workflow_execution_id}/nodes",
                 "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}",
+                "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources",
                 "/agent-workflows/{workflow_execution_id}/events",
             },
         ),

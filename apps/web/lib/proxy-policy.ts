@@ -11,6 +11,7 @@ type AllowedRoute = {
  * the platform API key cannot become a general-purpose browser proxy.
  */
 const ALLOWED_ROUTES: readonly AllowedRoute[] = [
+  { method: "GET", pattern: ["agent-workflows", ":id", "nodes", ":id", "claim-sources"] },
   { method: "POST", pattern: ["files"] },
   { method: "GET", pattern: ["files"] },
   { method: "GET", pattern: ["files", "capabilities"] },

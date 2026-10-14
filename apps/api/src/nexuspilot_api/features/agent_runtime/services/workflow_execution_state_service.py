@@ -243,8 +243,9 @@ class WorkflowExecutionStateService:
         agent_turn_id: str | None = None,
         agent_role: str | None = None,
         activity_context: dict | None = None,
+        workflow_round: int = 1,
     ) -> LlmAgentWorkflowNodeExecution:
-        """Persist a running node and public activity before any model side effect."""
+        """Persist a new round-specific node; never overwrite an earlier completed result."""
 
         await self.ensure_workflow_running(workflow)
         definition = self._require_workflow_definition(workflow)
@@ -268,6 +269,8 @@ class WorkflowExecutionStateService:
         source_ids = source_node_ids or []
         input_payload = {
             "schema_version": f"{output_type}_input.v1",
+            "workflow_round": workflow_round,
+            "candidate_task_ids": input_values.get("candidate_task_ids", []),
             "source_node_execution_ids": source_ids,
             "message_ids": [],
             "artifact_ids": [],
@@ -289,7 +292,19 @@ class WorkflowExecutionStateService:
             node_type=node_type,
             node_version="1.0.0",
             node_sequence=node_sequence,
-            node_attempt=1,
+            node_attempt=1
+            + int(
+                await self.db_session.scalar(
+                    select(func.count())
+                    .select_from(LlmAgentWorkflowNodeExecution)
+                    .where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id
+                        == workflow.workflow_execution_id,
+                        LlmAgentWorkflowNodeExecution.node_key == node_key,
+                    )
+                )
+                or 0
+            ),
             parent_node_execution_id=source_ids[-1] if source_ids else None,
             task_id=task_id,
             agent_run_id=agent_run_id,
@@ -1012,13 +1027,16 @@ class WorkflowExecutionStateService:
         return message.message_id
 
     async def node_id_by_key(self, workflow_execution_id: str, node_key: str) -> str:
-        """Return a previously committed node identity by its unique first-pass key."""
+        """Return the latest occurrence without discarding the earlier round's node."""
 
         node_id = await self.db_session.scalar(
-            select(LlmAgentWorkflowNodeExecution.node_execution_id).where(
+            select(LlmAgentWorkflowNodeExecution.node_execution_id)
+            .where(
                 LlmAgentWorkflowNodeExecution.workflow_execution_id == workflow_execution_id,
                 LlmAgentWorkflowNodeExecution.node_key == node_key,
             )
+            .order_by(LlmAgentWorkflowNodeExecution.node_sequence.desc())
+            .limit(1)
         )
         if node_id is None:
             raise RuntimeError(f"Required workflow node {node_key} is missing")
@@ -1123,6 +1141,7 @@ class WorkflowExecutionStateService:
         *,
         reserved_estimated_cost: Decimal | None,
         has_explicit_output_token_bound: bool = True,
+        reserved_downstream_calls: int = 0,
     ) -> None:
         """Reserve one call and distinguish a missing output bound from missing pricing."""
 
@@ -1146,7 +1165,7 @@ class WorkflowExecutionStateService:
                 LlmAgentWorkflowExecution.workflow_execution_id == workflow.workflow_execution_id,
                 LlmAgentWorkflowExecution.status == AgentWorkflowStatus.RUNNING,
                 LlmAgentWorkflowExecution.model_call_count
-                < LlmAgentWorkflowExecution.max_model_calls,
+                < LlmAgentWorkflowExecution.max_model_calls - reserved_downstream_calls,
                 priced_budget_condition.exists(),
             )
             .values(
@@ -1167,8 +1186,10 @@ class WorkflowExecutionStateService:
         await self.db_session.refresh(workflow)
         if workflow.status != AgentWorkflowStatus.RUNNING:
             raise WorkflowExecutionStopped
-        if workflow.model_call_count >= workflow.max_model_calls:
-            raise InvalidRequestError("Agent workflow reached its model-call limit")
+        if workflow.model_call_count >= workflow.max_model_calls - reserved_downstream_calls:
+            raise InvalidRequestError(
+                "Agent workflow reached its model-call limit; downstream calls are reserved"
+            )
         run = await self.require_run(workflow.run_id)
         if run.budget_limit is not None and reserved_estimated_cost is None:
             if not has_explicit_output_token_bound:

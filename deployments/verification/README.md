@@ -85,6 +85,17 @@ apps/api/.venv/bin/python deployments/verification/check_storage_image.py \
 
 2026-10-12 首次结果为失败：两模式自动文件工具均开始执行，但共享适配器拒绝消息级 DeepSeek 私有续接，最终答案和第二轮测试未完成。同日修复并复测后，快速回复首轮 DOCX、续聊新增 PDF 均通过；Agent 首轮 DOCX 通过，续聊 PDF 在 Worker 请求时收到 DeepSeek `Insufficient Balance`，当次停止付费检查。用户恢复余额后，使用新会话重跑 Agent 两轮，首轮 DOCX、续聊新增 PDF 均有实际读取记录和已保存最终回答，程序退出码为 0。`quick-2.json`、`agent-2.json` 及补验 `agent-3.json` 保留于 `/tmp/nexus-deepseek-tools-results-20261012/`，原失败记录未覆盖。Agent 审核文本仍未认可已成功执行的工具证据，未在本次修复；本次仅确认读取和生成保存行为，不是浏览器或完整审核质量验收。定位、测试范围和 Run ID 见[工具主计划](../../docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。
 
+## 本地 Worker 引用与 Reviewer 补读检查
+
+`check_live_worker_evidence.py` 需要明确费用授权，复用上述独立测试 MySQL/MinIO 及已登记 DeepSeek 模型，自行启动并停止 `127.0.0.1:18000` API。不得同时运行其他占用该端口的 API。脚本创建合成两段 TXT，验证 Worker 首段引用、Handoff 保存、MinIO 解析哈希、持久 Reviewer 请求的原文及实际补读第二段。它不迁移/清空数据库、不启动远程服务，失败不自动重跑付费工作流。
+
+```bash
+apps/api/.venv/bin/python deployments/verification/check_live_worker_evidence.py \
+  --output /absolute/private-new-directory/live-evidence.json
+```
+
+输出路径必须不存在。报告仅保存合成任务业务内容及关联 ID，不保存 Key 或私有推理；目录按私有目录创建。实际 2026-10-13 结果及范围见[工具主计划](../../docs/implementation/phase-7-tool-runtime-plan.md#本地真实-deepseekmysqlminio-联调2026-10-13)。测试后停止自己启动的独立容器，保留卷供只读调查。
+
 ## 已授权服务器的 HTTPS 验收（独立流程）
 
 `check_release.py` 需要 API 虚拟环境中的 `httpx`、已迁移且启用认证的 HTTPS 实例、已登记模型和两个独立预置测试账号。它创建合成会话与文本文件，执行两次最多 64 输出 token、关闭思考的真实模型调用；只有获得部署／测试和 Provider 费用授权后才能执行。不读取正式用户会话。

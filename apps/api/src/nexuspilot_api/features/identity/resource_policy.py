@@ -139,6 +139,7 @@ OWNED_ROUTES = frozenset(
         ("GET", "/agent-workflows/{workflow_execution_id}/result"),
         ("GET", "/agent-workflows/{workflow_execution_id}/nodes"),
         ("GET", "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}"),
+        ("GET", "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources"),
         ("GET", "/agent-workflows/{workflow_execution_id}/events"),
     }
 )

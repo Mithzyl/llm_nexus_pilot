@@ -1,6 +1,6 @@
 """Register versioned Agent workflows, nodes, outputs, and allowed connections."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import NODE_OUTPUT_MODELS
 
@@ -176,7 +176,7 @@ class WorkflowDefinitionRegistry:
 
 
 def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
-    """Register compatible node graphs with separate model-only and read-tool permissions."""
+    """Keep v1.0 graphs immutable and register v1.1 review-to-Controller refinement edges."""
 
     registry = WorkflowDefinitionRegistry()
     registry.register(
@@ -263,6 +263,22 @@ def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
             node_definitions=model_only.node_definitions,
         )
     )
+    for profile in ("model_only_v1", "tool_enabled_v1"):
+        registry.register(
+            AgentWorkflowDefinition(
+                workflow_name="model_only",
+                workflow_version="1.1.0",
+                execution_profile=profile,
+                node_definitions=tuple(
+                    replace(
+                        node, allowed_next_node_patterns=("final_synthesis", "controller_planning")
+                    )
+                    if node.node_key_pattern == "independent_review"
+                    else node
+                    for node in model_only.node_definitions
+                ),
+            )
+        )
     return registry
 
 

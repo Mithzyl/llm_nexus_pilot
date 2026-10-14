@@ -34,9 +34,11 @@ def serialize_agent_generated_json(value: Any) -> str:
 
 
 def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
-    """Hash logical creation input while excluding its transport-only stream choice."""
+    """Hash logical input while preserving v1.0 hashes without the new refinement setting."""
 
     canonical_payload = payload.model_dump(mode="json", exclude={"stream"})
+    if payload.workflow_version == "1.0.0":
+        canonical_payload.pop("max_workflow_rounds", None)
     serialized = serialize_agent_generated_json(canonical_payload)
     return hashlib.sha256(serialized.encode()).hexdigest()
 
@@ -99,8 +101,11 @@ def structured_model_instructions(
 def validate_controller_plan(
     plan: ControllerPlanOutput,
     payload: AgentWorkflowCreate,
+    *,
+    used_model_calls: int = 1,
+    used_nodes: int = 3,
 ) -> PlanValidationOutput:
-    """Validate roles, capabilities, relationships, limits, and acyclic task ordering."""
+    """Validate task graphs against remaining capacity, reserving review and final synthesis."""
 
     checks: list[PlanValidationCheck] = []
     capability_gaps: list[dict[str, str]] = []
@@ -241,6 +246,16 @@ def validate_controller_plan(
     required_node_count = 8 + (2 * len(plan.tasks))
     if payload.review_policy != "never":
         required_node_count += 1
+    if payload.workflow_version != "1.0.0":
+        review_calls = (
+            0
+            if payload.review_policy == "never"
+            else (3 if payload.execution_profile == "tool_enabled_v1" else 1)
+        )
+        total_model_calls = (
+            used_model_calls + sum(t.max_model_calls for t in plan.tasks) + review_calls + 1
+        )
+        required_node_count += used_nodes - 3
     within_node_limit = required_node_count <= payload.max_nodes
     within_model_call_limit = total_model_calls <= payload.max_model_calls
     within_limits = len(plan.tasks) <= 8 and within_model_call_limit and within_node_limit

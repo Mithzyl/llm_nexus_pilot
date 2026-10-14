@@ -18,6 +18,10 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowResultRead,
     AgentWorkflowSummaryRead,
 )
+from nexuspilot_api.features.agent_runtime.services.claim_source_service import (
+    ClaimSourcesRead,
+    read_claim_sources,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_query_service import (
     get_run_workflow_summary,
     get_workflow_node,
@@ -26,10 +30,36 @@ from nexuspilot_api.features.agent_runtime.services.workflow_query_service impor
     list_workflow_events,
     list_workflow_nodes,
 )
-from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
+from nexuspilot_api.routers.common import (
+    CursorCodecDependency,
+    DatabaseSessionDependency,
+    ObjectStorageDependency,
+)
 from nexuspilot_api.schemas.pagination import CursorPage
 
 router = APIRouter(tags=["agent-workflows"])
+
+
+@router.get(
+    "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources",
+    response_model=ClaimSourcesRead,
+)
+async def get_claim_sources(
+    workflow_execution_id: str,
+    node_execution_id: str,
+    response: Response,
+    db_session: DatabaseSessionDependency,
+    storage: ObjectStorageDependency,
+    claim_key: Annotated[
+        str, Query(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]*$")
+    ],
+) -> ClaimSourcesRead:
+    """Read a saved claim's authorized original excerpts without accepting arbitrary source IDs."""
+    response.headers["Cache-Control"] = "no-store"
+    return await read_claim_sources(
+        db_session, storage, workflow_execution_id, node_execution_id, claim_key
+    )
+
 
 WORKFLOW_RESULT_CONTENT = {
     "application/json": {"schema": {"$ref": "#/components/schemas/AgentWorkflowResultRead"}},

@@ -2,18 +2,29 @@
 
 import asyncio
 import json
+from dataclasses import dataclass
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
 from sqlalchemy import select
 
 from nexuspilot_api.core.errors import InvalidRequestError
-from nexuspilot_api.models import LlmProviderContinuationState, LlmTask
+from nexuspilot_api.models import LlmModelToolCall, LlmProviderContinuationState, LlmTask
+from nexuspilot_api.schemas.responses import ResponsesResult
 from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 
 
+@dataclass
+class ToolLoopResult:
+    """Retain the authorized tool dialogue for local output repair, not just the last response."""
+
+    response: ResponsesResult
+    messages: list[Message]
+    records: list[LlmModelToolCall]
+
+
 async def run_file_tool_loop(service, workflow, node, options):
-    """Run bounded Worker/reviewer reads; the reviewer's last round must submit an assessment."""
+    """Run bounded reads and return their dialogue; the last v1.1 round must submit JSON."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -34,9 +45,8 @@ async def run_file_tool_loop(service, workflow, node, options):
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
         definitions = tools.definitions()
         if (
-            node.node_key == "independent_review"
-            and round_index == options["model_input"]["max_model_calls"]
-        ):
+            node.node_key == "independent_review" or workflow.workflow_version != "1.0.0"
+        ) and round_index == options["model_input"]["max_model_calls"]:
             definitions = []
         offered_versions = {
             definition.name: tools.loaded_versions[definition.name] for definition in definitions
@@ -56,7 +66,7 @@ async def run_file_tool_loop(service, workflow, node, options):
             tool_versions=offered_versions,
         )
         if not response.tool_calls:
-            return response
+            return ToolLoopResult(response, history, records)
         if response.finish_reason not in {"tool_calls", "stop"}:
             raise InvalidRequestError("Incomplete model tool call response")
         if len(response.tool_calls) > 8 or len({call.id for call in response.tool_calls}) != len(

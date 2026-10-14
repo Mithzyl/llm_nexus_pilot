@@ -39,7 +39,7 @@ class AgentWorkflowCreate(StrictContract):
     """Validate synchronous workflows with explicit model-only or file-read permissions."""
 
     workflow_name: Literal["model_only"] = "model_only"
-    workflow_version: Literal["1.0.0"] = "1.0.0"
+    workflow_version: Literal["1.0.0", "1.1.0"] = "1.1.0"
     execution_profile: Literal["model_only_v1", "tool_enabled_v1"] = "model_only_v1"
     idempotency_key: str = Field(min_length=8, max_length=128)
     role_bindings: dict[
@@ -51,6 +51,7 @@ class AgentWorkflowCreate(StrictContract):
     max_nodes: int = Field(default=32, ge=10, le=32)
     max_model_calls: int = Field(default=16, ge=3, le=16)
     max_parallel_agents: int = Field(default=1, ge=1, le=2)
+    max_workflow_rounds: int = Field(default=2, ge=1, le=2)
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
     stream: bool = False
 
@@ -67,6 +68,12 @@ class AgentWorkflowCreate(StrictContract):
         if missing_roles:
             raise ValueError(f"role_bindings is missing required roles: {missing_roles}")
         minimum_model_call_count = 3 if self.review_policy == "never" else 4
+        if (
+            self.workflow_version != "1.0.0"
+            and self.execution_profile == "tool_enabled_v1"
+            and self.review_policy != "never"
+        ):
+            minimum_model_call_count = 6
         if self.max_model_calls < minimum_model_call_count:
             raise ValueError(
                 "max_model_calls is too small for Controller, Worker, final synthesis, "
@@ -95,6 +102,8 @@ class NodeInputRead(StrictContract):
     """Identify exact persisted inputs without copying prompts or private contents."""
 
     schema_version: str
+    workflow_round: int = Field(default=1, ge=1, le=2)
+    candidate_task_ids: list[str] = Field(default_factory=list)
     input_hash: str
     source_node_execution_ids: list[str] = Field(default_factory=list)
     message_ids: list[str] = Field(default_factory=list)
@@ -208,8 +217,9 @@ class ExcludedContextSource(StrictContract):
 
 
 class ContextAssemblyOutput(StrictContract):
-    """Return the exact bounded sources assembled for Controller planning."""
+    """Inventory bounded Run history; actual per-model inputs are recorded by Context Builds."""
 
+    assembly_scope: Literal["run_source_inventory"] = "run_source_inventory"
     included_run_id: str
     included_message_ids: list[str] = Field(default_factory=list)
     included_artifact_ids: list[str] = Field(default_factory=list)
@@ -656,6 +666,24 @@ class AgentWorkflowSummaryRead(StrictContract):
     error: WorkflowErrorRead | None
 
 
+class WorkflowLoopStatistics(StrictContract):
+    """Reconstruct repair/refinement counts and paid usage from persisted events and Attempts."""
+
+    workflow_round_count: int = 0
+    refinement_count: int = 0
+    refinement_skipped_count: int = 0
+    output_repair_count: int = 0
+    output_repair_requested_count: int = 0
+    output_repair_succeeded_count: int = 0
+    output_repair_failed_count: int = 0
+    output_repair_pending_count: int = 0
+    output_repair_unknown_count: int = 0
+    repair_usage: NodeUsageRead = Field(default_factory=NodeUsageRead)
+    refinement_usage: NodeUsageRead = Field(default_factory=NodeUsageRead)
+    repair_attempt_ids: list[str] = Field(default_factory=list)
+    events: list[dict] = Field(default_factory=list)
+
+
 class AgentWorkflowResultRead(AgentWorkflowSummaryRead):
     """Return one snapshot containing all bounded node parameters in sequence order."""
 
@@ -663,6 +691,7 @@ class AgentWorkflowResultRead(AgentWorkflowSummaryRead):
     final_output: FinalSynthesisOutput | None
     completion: WorkflowCompletionOutput | None
     aggregate_usage: NodeUsageRead
+    loop_statistics: WorkflowLoopStatistics = Field(default_factory=WorkflowLoopStatistics)
     warnings: list[str]
     trace_id: str | None
 

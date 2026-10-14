@@ -26,7 +26,9 @@
 
 ## 后续工具能力的统一归属
 
-2026-10-12 新增工作项，2026-10-13 进行中：节点 JSON 局部修正、Worker 逐条 `claims` 关联原文、Handoff 保留引用、固定文件快照和读取范围检查、Reviewer 原文输入与有限补读均已有本地实现及确定性测试。真实模型及部署组合验收未执行；按用户要求，最终答案引用及前端暂不实施。唯一详细设计和验收维护在[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。新工具工作流采用 `worker_evidence.v2` / `agent_handoff.v2`，历史 v1 不补造引用；旧字符串型 `confirmed_facts` 不代表已核对原文。来源校验通过不等于结论正确，Reviewer 的语义判断仍需真实模型评估。
+2026-10-14 新增兼容工作流版本 `1.1.0`：保留原节点职责，新增有限输出修正和 Reviewer 返回 Controller 的第二轮规划；首次和第二轮节点、任务、交接及审核分别保存，统计区分工具轮、节点修正和工作流 refine。旧 `1.0.0` 继续单轮执行，本文原单轮完成记录不变。唯一详细规则及本次验收见[工作流整体修正与两轮 refinement](phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。本地实现与确定性回归已完成，真实 Provider 两轮验收未执行，不代表新版本真实 Provider 两轮已通过。
+
+2026-10-12 新增工作项，2026-10-13 进行中：节点 JSON 局部修正、Worker 逐条 `claims` 关联原文、Handoff 保留引用、固定文件快照和读取范围检查、Reviewer 原文输入与有限补读均已有本地实现及确定性测试。随后本地真实 DeepSeek + MySQL/MinIO 的两段 TXT 样例通过：Worker 首段引用保存，Reviewer 实际补读最终记录并区分初步/最终型号；服务器未更新，不以单样例代替全部模型质量评估。用户随后确认前端设计，已新增结论与来源面板及只读授权原文接口；最终答案逐句引用仍后置。唯一详细设计和验收维护在[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。新工具工作流采用 `worker_evidence.v2` / `agent_handoff.v2`，历史 v1 不补造引用；来源校验通过不等于结论正确。
 
 2026-10-08 起，工具循环、按需发现、代码组合、能力缺项判断、自主创建工具、批准交互和工具任务验收统一维护在[工具主计划](phase-7-tool-runtime-plan.md)。代码继续复用本模块的 Agent、节点、Handoff 和持久活动，不另建 Agent Runtime；本文的原 `model_only_v1` 完成记录保持不变，不复制新的工具待办。
 
@@ -180,7 +182,7 @@ Run
 
 ### 后续目标
 
-当前交互顺序为请求归一化 → Context → Controller 计划 → 程序计划校验 → 任务分派 → 按依赖执行 Worker/Handoff → 程序确定性验证 → 可选 Reviewer → Controller 最终汇总 → 完成。Worker 为动态任务，外层流程并非由模型任意生成；Handoff 由程序生成，不要求模型返回平台身份或执行状态。Reviewer 的 `requires_replan`/`requires_retry` 当前是交给最终汇总的审核意见，不会自动返回前序节点执行。新增引用核对、审核补读和局部格式修正按工具主计划实施，不与这些旧字段混为已实现的循环。
+基础顺序为请求归一化 → Context → Controller 计划 → 程序计划校验 → 任务分派 → 按依赖执行 Worker/Handoff → 程序确定性验证 → 可选 Reviewer → Controller 最终汇总 → 完成。Worker 为动态任务，外层流程并非由模型任意生成；Handoff 由程序生成，不要求模型返回平台身份或执行状态。`1.0.0` 中 Reviewer 的 `requires_replan`/`requires_retry` 只交给最终汇总；`1.1.0` 可以在预算与轮次允许时返回 Controller，最多首轮加一次 refine。Reviewer 保持独立审核、不修改 Worker 的职责；具体执行、停止和统计规则维护在工具主计划。
 
 工作流定义使用代码注册表和普通 Python 控制流：
 
@@ -1177,7 +1179,7 @@ model_only_workflow_orchestrator.py       # 使用普通 Python 决定节点执�
 ### 验证、审核和汇总
 
 - 程序验证失败不能被 Reviewer 改成通过；无证据声明进入 unverified。
-- Reviewer 只读明确输入，不读取 Worker Working State；所有有效审核输出交给 Final synthesis，失败或返工要求约束最终回答并保留失败的 Evaluation。非法审核输出仍按输出校验错误终止；当前没有 Worker 自动返工轮次。
+- Reviewer 只读明确输入，不读取 Worker Working State；所有有效审核结果保留 Evaluation。`1.0.0` 直接交给 Final synthesis，不自动返工；`1.1.0` 的返回 Controller 和有限节点修正按工具主计划验收，不能跳过字段、权限和来源检查。
 - Final synthesis 引用正确 Handoff/Evaluation/Artifact；Message 保存失败不再次调用模型。
 - 汇总 totals 与 Attempt 明细不一致时明确失败，不使用默认零值。
 

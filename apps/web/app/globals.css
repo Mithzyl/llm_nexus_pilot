@@ -1,4 +1,39 @@
 .file-library { position: relative; }
+/* Claims are separate from execution state; originals keep a readable, bounded column. */
+.evidence-tabs { display: flex; border-bottom: 1px solid var(--line); gap: 24px; margin: 8px 0 20px; }
+.evidence-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 4px; color: var(--muted); cursor: pointer; font-size: 15px; }
+.evidence-tabs button[aria-pressed="true"] { color: var(--text); border-color: var(--text); font-weight: 600; }
+.claim-panel { font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; }
+.claim-panel-intro, .claim-source-note { font-size: 14px; color: var(--muted); line-height: 1.6; margin: 10px 0; }
+.claim-item { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-strong); margin-top: 12px; }
+.claim-toggle { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 18px; background: none; border: 0; text-align: left; cursor: pointer; line-height: 1.65; }
+.claim-toggle .claim-text { display: block; min-width: 0; max-width: 100%; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.claim-verdict { flex-shrink: 0; font-size: 14px; color: var(--muted); }
+.claim-toggle-meta { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.claim-toggle-hint { font-size: 13px; color: var(--muted); font-weight: 400; }
+.claim-review-details { margin: 16px 0; }
+.claim-review-details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+.claim-review-details summary:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.claim-verdict[data-verdict="supported"] { color: #367646; }
+.claim-verdict[data-verdict="contradicted"] { color: #af3434; }
+.claim-verdict[data-verdict="insufficient_evidence"] { color: #946421; }
+.claim-body { padding: 0 18px 18px; }
+.claim-body > .claim-source-note { margin-top: 0; }
+.claim-explanation { white-space: pre-wrap; margin: 16px 0; }
+.claim-originals { border-top: 1px solid var(--line); padding-top: 18px; }
+.claim-originals h4 { margin: 0 0 16px; font-size: 15px; font-weight: 600; }
+.claim-source + .claim-source { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.claim-source-file { display: block; font-size: 14px; font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+.claim-source, .claim-body, .claim-originals { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.claim-originals blockquote { border-left: 2px solid #aaa; padding-left: 14px; margin: 8px 0; white-space: pre-wrap; color: var(--text); }
+.claim-source-warning, .claim-source-error { font-size: 14px; line-height: 1.65; }
+.claim-source-error button, .claim-technical-button { border: 0; background: none; padding: 10px 0; cursor: pointer; font-size: 14px; }
+.claim-technical-button { border-top: 1px solid var(--line); text-align: left; width: 100%; margin-top: 28px; padding: 18px 0; }
+.claim-table-scroll { overflow-x: auto; max-width: 100%; }
+.claim-table-scroll table { border-collapse: collapse; font-size: 14px; }
+.claim-table-scroll td { padding: 8px; border: 1px solid var(--line); min-width: 90px; white-space: pre-wrap; }
+.message-source-button { display: flex; align-items: center; justify-content: space-between; gap: 16px; width: 100%; padding: 16px 18px; margin: 20px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 15px; cursor: pointer; text-align: left; }
+.message-source-button > span:last-child:not(:first-child) { color: var(--muted); font-size: 14px; }
 .composer-quiet-button { background: transparent; border: 0; color: var(--muted); padding: 8px; font-size: 14px; cursor: pointer; }
 .file-library-panel { position: absolute; bottom: calc(100% + 12px); left: 0; width: min(440px, 80vw); max-height: 55vh; overflow: auto; background: var(--panel-strong); color: var(--text); border: 1px solid var(--line); border-radius: 16px; padding: 16px; box-shadow: 0 8px 32px var(--shadow); z-index: 50; }
 .file-library-panel header, .file-library-panel li { display: flex; align-items: center; gap: 12px; }
@@ -320,6 +355,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .composer:focus-within { box-shadow: inset 0 0 0 .5px color-mix(in srgb, var(--text) 58%, transparent), 0 18px 48px color-mix(in srgb, var(--text) 11%, transparent), 0 2px 8px var(--shadow); }
 .composer textarea { display: block; width: 100%; min-height: 44px; max-height: 320px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; }
 .composer textarea::placeholder { color: var(--muted); }
+.composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.composer-heading > span { color: var(--muted); font-size: 13px; }
+.composer-heading .composer-quiet-button { flex-shrink: 0; }
+.composer.is-minimized { padding: 8px 16px; }
+.composer-minimized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.composer-restore { min-width: 0; min-height: 40px; flex: 1; border: 0; background: none; color: var(--text); text-align: left; font-size: 14px; cursor: pointer; overflow-wrap: anywhere; }
 .composer-sync-note { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
 .composer-file-notice { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
 .file-picker { position: relative; flex: 0 0 auto; }
@@ -664,4 +705,26 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
   .model-directory-heading { align-items: stretch; flex-direction: column; gap: 12px; }
   .model-directory-heading > span { align-self: flex-start; }
   .model-directory-item dl { grid-template-columns: 1fr 1fr; }
+}
+
+/* Give originals room on desktop; use one independent overlay before columns get cramped. */
+@media (min-width: 1251px) {
+  .app-shell:has(.evidence-tabs) { grid-template-columns: 224px minmax(480px, 1fr) minmax(420px, 32vw); }
+  .app-shell:has(.evidence-tabs):has(.inspector:not(.is-open)) { grid-template-columns: 224px minmax(480px, 1fr) 0; }
+}
+@media (max-width: 1250px) {
+  .app-shell:has(.evidence-tabs) { grid-template-columns: 224px minmax(0, 1fr) 0; }
+  .inspector:has(.evidence-tabs) { position: fixed; inset: 0 0 0 auto; z-index: 40; width: min(520px, 96vw); box-shadow: -16px 0 40px var(--shadow); transform: translateX(0); transition: transform 220ms ease; }
+  .inspector:not(.is-open):has(.evidence-tabs) { margin-right: 0; opacity: 0; transform: translateX(105%); }
+}
+.inspector:has(.evidence-tabs) { background: var(--panel-strong); }
+.inspector:has(.evidence-tabs) .inspector-header h2 { font-size: 20px; }
+.inspector:has(.evidence-tabs) .inspector-header .eyebrow { font-size: 14px; }
+.theme-dark .claim-verdict[data-verdict="supported"] { color: #9dc9a6; }
+.theme-dark .claim-verdict[data-verdict="contradicted"] { color: #f0a0a0; }
+.theme-dark .claim-verdict[data-verdict="insufficient_evidence"] { color: #dec28e; }
+@media (max-width: 500px) {
+  .claim-toggle { flex-direction: column; gap: 6px; }
+  .claim-toggle-meta { flex-direction: row; justify-content: space-between; width: 100%; margin-top: 4px; }
+  .claim-body, .claim-toggle { padding-left: 14px; padding-right: 14px; }
 }

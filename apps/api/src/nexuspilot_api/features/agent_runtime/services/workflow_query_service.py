@@ -25,6 +25,9 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     WorkflowCompletionOutput,
     WorkflowErrorRead,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_loop_statistics import (
+    read_loop_statistics,
+)
 from nexuspilot_api.models import (
     LlmAgentWorkflowEvent,
     LlmAgentWorkflowExecution,
@@ -79,7 +82,7 @@ async def get_workflow_result(
     db_session: AsyncSession,
     workflow_execution_id: str,
 ) -> AgentWorkflowResultRead:
-    """Return one bounded snapshot containing every committed node in sequence order."""
+    """Return all committed rounds and reconstruct correction accounting from durable facts."""
 
     workflow = await require_workflow(db_session, workflow_execution_id)
     nodes = list(
@@ -128,6 +131,7 @@ async def get_workflow_result(
         final_output=final_output,
         completion=completion,
         aggregate_usage=aggregate_usage,
+        loop_statistics=await read_loop_statistics(db_session, workflow, nodes),
         warnings=[warning for node in node_results for warning in node.warnings],
         trace_id=workflow.trace_id,
     )

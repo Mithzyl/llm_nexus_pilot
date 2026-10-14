@@ -346,8 +346,8 @@ test("opens the native chooser directly from the file button", async ({
     mimeType: "text/plain",
     buffer: Buffer.from("local pending file"),
   });
-  await expect(page.locator(".composer > .pending-file-list")).toContainText("notes.txt");
-  await expect(page.locator(".composer > .pending-file-list")).toContainText("待上传");
+  await expect(page.locator("#composer-editor .pending-file-list")).toContainText("notes.txt");
+  await expect(page.locator("#composer-editor .pending-file-list")).toContainText("待上传");
   await expect(page.getByRole("button", { name: "发送消息" })).toBeDisabled();
   expect(requestedPaths.some((path) => path.endsWith("/prompt-templates"))).toBe(false);
 

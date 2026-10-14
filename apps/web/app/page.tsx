@@ -1,6 +1,8 @@
 "use client";
 
 import { FileLibrary } from "../components/composer/FileLibrary";
+import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
+import { selectClaimEntries } from "../lib/claim-evidence";
 import { messageFiles, uploadUserFile, validateUploadFiles, type UserFile } from "../lib/user-files";
 
 import {
@@ -65,7 +67,8 @@ import {
 } from "../lib/agent-workflow-view";
 import {
   hasSavedAssistantForLatestTurn,
-  pendingAssistantRunIdForLatestTurn,
+  assistantProjectionForLatestTurn,
+  isPersistedAgentMessage,
 } from "../lib/history";
 import {
   AgentWorkflowActivityFeed,
@@ -88,6 +91,7 @@ import Link from "next/link";
 import {
   composerConversationClearance,
   composerTextareaHeight,
+  shouldSendComposerKey,
 } from "../lib/composer-layout";
 import {
   createReasoningConfiguration,
@@ -128,7 +132,7 @@ import { repeatableUserPrompt } from "../lib/message-actions";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 
 const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
   providers: [],
@@ -210,6 +214,7 @@ function messageFromMessage(message: Message): LocalMessage {
     local_id: message.message_id,
     content_preview: message.content_text?.slice(0, 160) ?? null,
     content: message.content_text ?? "内容已保存为外部产物，请从运行详情查看。",
+    agentWorkflow: isPersistedAgentMessage(message),
     truncated: isPersistedResponseOutputTruncated(message.metadata_json),
     reasoningBlocks: (message.reasoning_blocks ?? []).filter((block) =>
       isReasoningPresentation(block),
@@ -311,6 +316,7 @@ export default function Home() {
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState(true);
+  const [evidenceTab, setEvidenceTab] = useState<"sources" | "process">("sources");
   const [inspectedRunEvidence, setInspectedRunEvidence] =
     useState<RunEvidenceSnapshot | null>(null);
   const [inspectedRunEvidenceState, setInspectedRunEvidenceState] =
@@ -334,6 +340,7 @@ export default function Home() {
     () => new Set(),
   );
   const [composerClearancePx, setComposerClearancePx] = useState(180);
+  const [isComposerMinimized, setIsComposerMinimized] = useState(false);
   const latestAssistantText = useRef("");
   const latestReasoningBlocks = useRef<ReasoningPresentation[]>([]);
   const assistantProjectionFrame = useRef<number | null>(null);
@@ -601,7 +608,7 @@ export default function Home() {
     const nextHeight = composerTextareaHeight(textarea.scrollHeight);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
-  }, [draft, authenticationState]);
+  }, [draft, authenticationState, isComposerMinimized]);
 
   useEffect(() => {
     const composerElement = composerWrap.current;
@@ -997,8 +1004,8 @@ export default function Home() {
   }
 
   /**
-   * Execute the current Run with backend-derived attachment permissions and return its
-   * terminal snapshot without duplicating the backend-created final Message.
+   * Execute up to two reviewed rounds with backend-derived attachment permissions;
+   * consume the terminal snapshot without duplicating the backend-created final Message.
    */
   async function executeAgentWorkflow(
     createdRun: Run,
@@ -1017,7 +1024,7 @@ export default function Home() {
       createdRun.run_id,
       {
         workflow_name: "model_only",
-        workflow_version: "1.0.0",
+        workflow_version: "1.1.0",
         idempotency_key: crypto.randomUUID(),
         role_bindings: {
           controller: binding,
@@ -1029,6 +1036,7 @@ export default function Home() {
         max_nodes: 32,
         max_model_calls: 16,
         max_parallel_agents: maxParallelAgents,
+        max_workflow_rounds: 2,
         wall_time_limit_ms: 600_000,
         stream: true,
       },
@@ -1123,9 +1131,10 @@ export default function Home() {
       ]);
       if (sessionRestoreRequestId.current !== requestId) return;
       const restoredMessages = page.items.map(messageFromMessage);
-      const pendingRunId = pendingAssistantRunIdForLatestTurn(page.items, latestRun);
-      const pendingAssistant = pendingRunId
-        ? { ...createLocalMessage("assistant", "", pendingRunId), pending: true }
+      const projection = assistantProjectionForLatestTurn(page.items, latestRun);
+      const pendingAssistant = projection
+        ? { ...createLocalMessage("assistant", projection.content, projection.runId),
+            pending: projection.pending, failed: projection.failed, cancelled: projection.cancelled }
         : null;
       setMessages(pendingAssistant ? [...restoredMessages, pendingAssistant] : restoredMessages);
       setMessageCursor(page.next_cursor);
@@ -1371,8 +1380,9 @@ export default function Home() {
   }
 
   /** Open evidence for the clicked Assistant response without changing the workspace route. */
-  async function handleOpenRunEvidence(message: LocalMessage) {
+  async function handleOpenRunEvidence(message: LocalMessage, tab: "sources" | "process" = "process") {
     const targetRunId = runEvidenceTargetForMessage(message);
+    setEvidenceTab(tab);
     setIsInspectorOpen(true);
     if (!targetRunId) {
       setInspectedRunEvidenceError("这条回复没有关联可读取的运行证据。");
@@ -1416,7 +1426,32 @@ export default function Home() {
       return;
     }
     updateDraft(prompt);
-    composerTextarea.current?.focus();
+    expandComposer();
+  }
+
+  /** Reveal the preserved draft and focus it after the hidden input becomes visible. */
+  function expandComposer() {
+    setIsComposerMinimized(false);
+    window.requestAnimationFrame(() => composerTextarea.current?.focus());
+  }
+
+  /** Hide editor controls without clearing state and keep keyboard focus on the restore action. */
+  function minimizeComposer() {
+    setIsComposerMinimized(true);
+    window.requestAnimationFrame(() =>
+      composerWrap.current?.querySelector<HTMLButtonElement>(".composer-restore")?.focus(),
+    );
+  }
+
+  /** Scope Enter submission to the input itself, leaving IME and Shift+Enter untouched. */
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (!shouldSendComposerKey({ ...event, isComposing: event.nativeEvent.isComposing,
+      keyCode: event.nativeEvent.keyCode, focused: document.activeElement === event.currentTarget,
+      canSend: !isSending && !submissionInProgress.current && !isConversationSubmissionBlocked &&
+        Boolean(draft.trim()) && isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel),
+    })) return;
+    event.preventDefault();
+    void handleSend();
   }
 
   /** Open the active conversation title as an explicit bounded rename form. */
@@ -2029,14 +2064,20 @@ export default function Home() {
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
                       {message.truncated && !message.pending && <p className="stream-note error-note">模型达到输出 Token 上限，以上是已保存的部分回复；可以要求模型继续，或重新生成更短的回答。</p>}
                       {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
-                      {(message.failed || message.cancelled) && <p className="stream-note error-note">已保留收到的部分文本，请从运行详情查看服务端状态。</p>}
+                      {(message.failed || message.cancelled) && <p className="stream-note error-note">此状态不代表已生成最终答案；可查看运行详情或再次提问。</p>}
                     </div>
                     {!message.pending && !message.saving && (
+                      <>
+                      {message.agentWorkflow && <button className="message-source-button" onClick={() => void handleOpenRunEvidence(message, "sources")}>
+                        <span>查看结论与来源</span>
+                        {message.run_id === run?.run_id && selectClaimEntries(agentWorkflowNodes).length > 0 && <span>{selectClaimEntries(agentWorkflowNodes).length} 条结论</span>}
+                      </button>}
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => handleRepeatQuestion(message)}>再次提问</button>
                         <button onClick={() => void handleOpenRunEvidence(message)}>查看运行证据 ↗</button>
                       </div>
+                      </>
                     )}
                   </>
                 )}
@@ -2047,11 +2088,24 @@ export default function Home() {
           </div>
 
           <div className="composer-wrap" ref={composerWrap}>
-            <div className="composer">
+            <div className={`composer ${isComposerMinimized ? "is-minimized" : ""}`}>
+              {isComposerMinimized && <div className="composer-minimized-row">
+                <button type="button" className="composer-restore" aria-expanded={false} aria-controls="composer-editor" onClick={expandComposer}>
+                  展开输入框{draft.trim() ? " · 有草稿" : ""}{pendingUploadFiles.length ? ` · ${pendingUploadFiles.length} 个文件` : ""}
+                </button>
+                {isSending && <button type="button" className="composer-quiet-button" disabled={isCancellingWorkflow} onClick={handleStop}>{executionMode === "agent" ? "取消工作流" : "停止生成"}</button>}
+              </div>}
+              <div id="composer-editor" hidden={isComposerMinimized}>
+              <div className="composer-heading">
+                <span id="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
+                <button type="button" className="composer-quiet-button" aria-label="最小化输入框" aria-expanded={true} aria-controls="composer-editor" onClick={minimizeComposer}>最小化 −</button>
+              </div>
               <textarea
                 ref={composerTextarea}
                 value={draft}
                 onChange={(event) => updateDraft(event.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                aria-describedby="composer-keyboard-hint"
                 placeholder="继续对话…"
                 aria-label="消息内容"
                 rows={1}
@@ -2182,16 +2236,24 @@ export default function Home() {
                   <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
               </div>
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      <aside className={`inspector ${isInspectorOpen ? "is-open" : ""}`} aria-label="运行详情">
+      <aside className={`inspector ${isInspectorOpen ? "is-open" : ""}`} aria-label="运行详情" inert={!isInspectorOpen}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setIsInspectorOpen(false);
+            document.querySelector<HTMLButtonElement>(".detail-toggle")?.focus();
+          }
+        }}>
         <div className="inspector-header">
           <div>
-            <p className="eyebrow">{isInspectingHistoricalRun ? "消息运行详情" : "当前运行详情"}</p>
-            <h2>执行证据</h2>
+            <h2>运行详情</h2>
+            <p className="eyebrow">{isInspectingHistoricalRun && evidenceRun?.run_id !== run?.run_id ? "历史回复" : "当前回复"}</p>
             {isInspectingHistoricalRun && (
               <button className="evidence-current-button" onClick={showCurrentRunEvidence}>
                 返回当前运行
@@ -2211,6 +2273,19 @@ export default function Home() {
           </div>
         )}
 
+        {evidenceWorkflow && <>
+          <div className="evidence-tabs" aria-label="运行详情视图">
+            <button type="button" aria-pressed={evidenceTab === "sources"} onClick={() => setEvidenceTab("sources")}>结论与来源</button>
+            <button type="button" aria-pressed={evidenceTab === "process"} onClick={() => setEvidenceTab("process")}>运行过程</button>
+          </div>
+          {isInspectorOpen && evidenceTab === "sources" && <>
+            {["failed", "cancelled", "outcome_unknown"].includes(evidenceWorkflow.status) && <p className="claim-source-warning" role="status">本次执行未正常完成。以下仅展示已提交的阶段结论，详情请查看运行过程。</p>}
+            <ClaimEvidencePanel key={evidenceWorkflow.workflow_execution_id} workflowId={evidenceWorkflow.workflow_execution_id}
+              nodes={evidenceWorkflowNodes} running={["pending", "running"].includes(evidenceWorkflow.status)} />
+            <button type="button" className="claim-technical-button" onClick={() => setEvidenceTab("process")}>运行过程与技术记录</button>
+          </>}
+        </>}
+        {(!evidenceWorkflow || evidenceTab === "process") && <>
         <div className="run-state">
           <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
           <div>
@@ -2276,12 +2351,10 @@ export default function Home() {
           </ol>
         </section>
 
-        <div className="future-note"><p><strong>Agent Workflow</strong>发送后可查看执行过程；文件工具可在 Agent 设置中启用。</p></div>
           </>
         )}
+        </>}
         {!isInspectingHistoricalRun && errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
-        {isInspectingHistoricalRun && evidenceRun && <p className="inspector-footnote">当前查看：所选回复关联的只读运行 {evidenceRun.run_id}</p>}
-        {!isInspectingHistoricalRun && lastAssistantMessage && !lastAssistantMessage.pending && !lastAssistantMessage.saving && <p className="inspector-footnote">当前查看：{lastAssistantMessage.content.length} 个字符的 Assistant 响应</p>}
       </aside>
     </main>
   );

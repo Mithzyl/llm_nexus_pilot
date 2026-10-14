@@ -15,6 +15,15 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 from nexuspilot_api.services.user_file_service import read_parsed_file
 
 
+class EvidenceOutputError(InvalidRequestError):
+    """Describe correctable model fields only after resource authorization has succeeded."""
+
+    def __init__(self, message: str, *, details: dict | None = None):
+        """Carry safe field feedback without weakening ownership or snapshot checks."""
+        super().__init__(message)
+        self.validation_details = details or {}
+
+
 async def allowed_evidence_tasks(db, node) -> set[str]:
     """Grant only this task and committed ancestors in the same persisted workflow graph."""
     tasks = {node.task_id} if node.task_id else set()
@@ -76,14 +85,19 @@ class WorkerEvidenceService:
         returned = {block["block_id"]: block for block in result.get("data", {}).get("blocks", [])}
         originals = {block.block_id: block.model_dump(mode="json") for block in document.blocks}
         if len(set(reference.block_ids)) != len(reference.block_ids):
-            raise InvalidRequestError("Evidence contains duplicate block identifiers")
+            raise EvidenceOutputError("Evidence contains duplicate block identifiers")
         blocks = []
         for identity in reference.block_ids:
-            if (
-                identity not in returned
-                or identity not in originals
-                or returned[identity] != originals[identity]
-            ):
+            if identity not in returned:
+                raise EvidenceOutputError(
+                    "Evidence block was not read or differs from the snapshot",
+                    details={
+                        "tool_call_id": reference.tool_call_id,
+                        "allowed_block_ids": list(returned),
+                        "field": "block_ids",
+                    },
+                )
+            if identity not in originals or returned[identity] != originals[identity]:
                 raise InvalidRequestError(
                     "Evidence block was not read or differs from the snapshot"
                 )
@@ -107,12 +121,12 @@ class WorkerEvidenceService:
             if claim.scope == "parsed_document":
                 files = {source["reference"]["file_id"] for source in sources}
                 if not files:
-                    raise InvalidRequestError("Document-wide claims require read evidence")
+                    raise EvidenceOutputError("Document-wide claims require read evidence")
                 for file_id in files:
                     selected = [s for s in sources if s["reference"]["file_id"] == file_id]
                     read_ids = {b["block_id"] for s in selected for b in s["blocks"]}
                     if read_ids != set(selected[0]["all_parsed_block_ids"]):
-                        raise InvalidRequestError(
+                        raise EvidenceOutputError(
                             "Document-wide claim exceeds the cited read range"
                         )
             claims.append({**claim.model_dump(mode="json"), "sources": sources})
@@ -125,12 +139,17 @@ class WorkerEvidenceService:
     async def for_node(self, node) -> list[dict]:
         """Reauthorize ancestor excerpts before every model round, including repairs."""
         tasks = await allowed_evidence_tasks(self.db, node)
+        candidate_tasks = (node.input_json or {}).get("candidate_task_ids")
         sources = list(
             await self.db.scalars(
                 select(LlmAgentWorkflowNodeExecution).where(
                     LlmAgentWorkflowNodeExecution.workflow_execution_id
                     == node.workflow_execution_id,
-                    LlmAgentWorkflowNodeExecution.task_id.in_(tasks - {node.task_id}),
+                    LlmAgentWorkflowNodeExecution.task_id.in_(
+                        (tasks - {node.task_id}) & set(candidate_tasks)
+                        if candidate_tasks
+                        else tasks - {node.task_id}
+                    ),
                     LlmAgentWorkflowNodeExecution.output_type == "agent_model_execution",
                     LlmAgentWorkflowNodeExecution.status == AgentWorkflowNodeStatus.COMPLETED,
                 )

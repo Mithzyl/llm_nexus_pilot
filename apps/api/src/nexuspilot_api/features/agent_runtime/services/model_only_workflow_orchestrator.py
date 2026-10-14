@@ -11,8 +11,8 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.registry import ProviderRegistry
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy import inspect as inspect_orm
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from nexuspilot_api.core.errors import InvalidRequestError
@@ -192,6 +192,9 @@ class ModelOnlyWorkflowOrchestrator:
         """Bind dependencies used while executing one model-only workflow."""
 
         self.db_session = db_session
+        self.workflow_round = 1
+        self.refinement_input = None
+        self.refinement_stop_reason = None
         self.db_session_factory = db_session_factory
         self.storage = storage
         selected_workflow_definitions = workflow_definitions or DEFAULT_WORKFLOW_DEFINITION_REGISTRY
@@ -263,17 +266,36 @@ class ModelOnlyWorkflowOrchestrator:
             )
 
             context_messages = await self._load_anchored_context_messages(run)
+            older_message_exists = bool(context_messages) and bool(
+                await self.db_session.scalar(
+                    select(LlmMessage.message_id)
+                    .where(
+                        LlmMessage.session_id == run.session_id,
+                        LlmMessage.sequence < context_messages[0].sequence,
+                    )
+                    .limit(1)
+                )
+            )
             context = ContextAssemblyOutput(
                 included_run_id=run.run_id,
                 included_message_ids=[message.message_id for message in context_messages],
                 included_artifact_ids=[],
                 included_handoff_ids=[],
-                excluded_sources=[],
+                excluded_sources=(
+                    [
+                        {
+                            "source_type": "session_history",
+                            "reason": "Earlier messages exceed the 100-message inventory",
+                        }
+                    ]
+                    if older_message_exists
+                    else []
+                ),
                 input_character_count=sum(
                     len(message.content_text or "") for message in context_messages
                 )
                 or len(run.user_request),
-                is_truncated=False,
+                is_truncated=older_message_exists,
                 memory_packet_id=None,
             )
             context_node = await self._run_deterministic_node(
@@ -293,182 +315,62 @@ class ModelOnlyWorkflowOrchestrator:
                 summary="Prepared explicit Run content without Memory injection",
             )
 
-            controller_binding = payload.role_bindings["controller"]
-            current_node = await self._start_node(
-                workflow,
-                node_key="controller_planning",
-                node_type="model",
-                output_type="controller_plan",
-                input_values={"objective": run.user_request, "profile": payload.execution_profile},
-                source_node_ids=[context_node.node_execution_id],
-                agent_role="controller",
-                status_label="Controller planning",
-                summary="Controller is creating a bounded Agent task plan",
-            )
-            plan, plan_response = await self._call_typed_model(
-                workflow,
-                current_node,
-                binding=controller_binding,
-                role="controller",
-                purpose="Create a small task plan for the supplied objective.",
-                model_output=ControllerPlanOutput,
-                model_input={
-                    "objective": run.user_request,
-                    "allowed_roles": sorted(
-                        {"planner", "researcher"}.intersection(payload.role_bindings)
-                    ),
-                    "allowed_capabilities": ["model_generation", "text_analysis"]
-                    + (["read", "tool"] if workflow.execution_profile == "tool_enabled_v1" else []),
-                    **(
-                        {
-                            "tool_guidance": (
-                                "Workers may list/read/search attached files. Allocate enough "
-                                "max_model_calls for discovery, describe/load, file tool requests "
-                                "and a final JSON answer. Only list_run_files/read_file_content "
-                                "are preloaded; outline/table/search require describe_tools first, "
-                                "within the workflow budget."
-                            ),
-                            "remaining_model_calls": max(0, workflow.max_model_calls - 3),
-                        }
-                        if workflow.execution_profile == "tool_enabled_v1"
-                        else {}
-                    ),
-                    "maximum_tasks": 8,
-                    "review_policy": payload.review_policy,
-                },
-                reasoning=payload.reasoning,
-            )
-            await self._complete_node(
-                workflow,
-                current_node,
-                output=plan,
-                transition=NodeTransitionRead(
-                    selected_transition="validate_plan",
-                    next_node_keys=["plan_validation"],
-                    condition_summary="Controller returned a schema-valid plan",
-                ),
-                evidence=self._model_evidence(plan_response),
-                usage=self._model_usage(plan_response),
-                status_label="Plan created",
-                summary="Controller created a typed task plan",
-            )
-            current_node = None
-
-            validation = validate_controller_plan(plan, payload)
-            validation_node = await self._run_deterministic_node(
-                workflow,
-                node_key="plan_validation",
-                node_type="deterministic",
-                output_type="plan_validation",
-                output=validation,
-                input_values=plan.model_dump(mode="json"),
-                source_node_ids=[
-                    await self._node_id_by_key(
-                        workflow.workflow_execution_id, "controller_planning"
-                    )
-                ],
-                transition=NodeTransitionRead(
-                    selected_transition="dispatch" if validation.is_valid else "fail",
-                    next_node_keys=["agent_dispatch"] if validation.is_valid else [],
-                    skipped_node_keys=([] if validation.is_valid else ["agent_dispatch"]),
-                    condition_summary=(
-                        "Plan passed deterministic validation"
-                        if validation.is_valid
-                        else "Plan requested unavailable or invalid work"
-                    ),
-                ),
-                status_label="Plan validated" if validation.is_valid else "Plan rejected",
-                summary=(
-                    "The Controller plan passed deterministic checks"
-                    if validation.is_valid
-                    else "The Controller plan cannot run under model_only_v1"
-                ),
-            )
-            if not validation.is_valid:
-                error_code = next(
-                    (
-                        check.error_code
-                        for check in validation.checks
-                        if check.status == "fail" and check.error_code is not None
-                    ),
-                    "agent_plan_invalid",
-                )
-                await self._fail_workflow(
-                    workflow,
-                    error=self._workflow_error(
-                        error_code,
-                        validation.rejected_plan_reason or "Controller plan is invalid.",
-                    ),
-                )
-                raise WorkflowExecutionStopped
-
-            dispatch, task_by_key, agent_run_by_task_key = await self._dispatch_plan(
-                workflow,
-                payload,
-                plan,
-                validation,
-                parent_node_id=validation_node.node_execution_id,
-            )
-            dependency_keys_by_task_key: dict[str, list[str]] = {
-                task_key: [] for task_key in validation.topological_task_order
-            }
-            for dependency in plan.dependencies:
-                dependency_keys_by_task_key[dependency.task_key].append(
-                    dependency.depends_on_task_key
-                )
-            worker_records_by_task_key = await self._execute_worker_task_groups(
-                workflow,
-                payload,
-                plan,
-                run,
-                dispatch_node_execution_id=dispatch.node_execution_id,
-                task_by_key=task_by_key,
-                agent_run_by_task_key=agent_run_by_task_key,
-                dependency_keys_by_task_key=dependency_keys_by_task_key,
-                topological_task_order=validation.topological_task_order,
-            )
-
-            worker_records = [
-                worker_records_by_task_key[task_key]
-                for task_key in validation.topological_task_order
-            ]
-
-            (
-                verification,
-                evaluation_ids,
-                verification_node_execution_id,
-            ) = await self._verify_handoffs(
-                workflow,
-                worker_records,
-                source_node_ids=[record.handoff_node_execution_id for record in worker_records],
-            )
-            review_output: IndependentReviewOutput | None = None
-            review_node_execution_id: str | None = None
-            should_review = payload.review_policy == "always" or (
-                payload.review_policy == "on_verification_failure"
-                and verification.verdict != "pass"
-            )
-            if should_review:
-                review_output, review_node_execution_id = await self._run_reviewer(
-                    workflow,
-                    payload,
-                    run,
+            self.workflow_round = 1
+            all_worker_records = []
+            all_reviews = []
+            all_evaluation_ids = []
+            previous_node_id = context_node.node_execution_id
+            refinement = None
+            while True:
+                (
                     worker_records,
                     verification,
                     evaluation_ids,
-                    verification_node_execution_id=verification_node_execution_id,
-                )
-                evaluation_ids.extend(review_output.evaluation_ids)
-
-            if verification.verdict != "pass":
-                await self._fail_workflow(
+                    verification_node_execution_id,
+                    review_output,
+                    review_node_execution_id,
+                ) = await self._execute_round(
                     workflow,
-                    error=self._workflow_error(
-                        "agent_verification_failed",
-                        "Deterministic verification did not pass.",
-                    ),
+                    payload,
+                    run,
+                    previous_node_id,
+                    refinement,
                 )
-                raise WorkflowExecutionStopped
+                all_worker_records.extend(worker_records)
+                all_evaluation_ids.extend(evaluation_ids)
+                if review_output:
+                    all_reviews.append(review_output)
+                review_node = (
+                    await self.db_session.get(
+                        LlmAgentWorkflowNodeExecution, review_node_execution_id
+                    )
+                    if review_node_execution_id
+                    else None
+                )
+                if (
+                    review_node is None
+                    or review_node.transition_json.get("selected_transition") != "refine"
+                ):
+                    break
+                previous_node_id = review_node_execution_id
+                refinement = {
+                    "previous_round": self.workflow_round,
+                    "review": review_output.model_dump(mode="json"),
+                    "worker_results": [self._worker_record_input(r) for r in worker_records],
+                    "instruction": (
+                        "Refine the plan from review findings; keep the original user objective."
+                    ),
+                }
+                self.workflow_round += 1
+            evaluation_ids = all_evaluation_ids
+            controller_binding = payload.role_bindings["controller"]
+            refinement_status = {
+                "rounds_executed": self.workflow_round,
+                "stop_reason": self.refinement_stop_reason,
+                "instruction": (
+                    "State remaining limitations; do not claim further refinement was executed."
+                ),
+            }
             worker_result_inputs = [self._worker_record_input(record) for record in worker_records]
             handoff_outputs = [record.handoff for record in worker_records]
             worker_agent_run_ids = [record.agent_run_id for record in worker_records]
@@ -484,6 +386,11 @@ class ModelOnlyWorkflowOrchestrator:
                     "handoffs": [item.model_dump(mode="json") for item in handoff_outputs],
                     "verification": verification.model_dump(mode="json"),
                     "review": review_output.model_dump(mode="json") if review_output else None,
+                    **(
+                        {"refinement_status": refinement_status}
+                        if workflow.workflow_version != "1.0.0"
+                        else {}
+                    ),
                 },
                 source_node_ids=[
                     *[record.handoff_node_execution_id for record in worker_records],
@@ -515,6 +422,11 @@ class ModelOnlyWorkflowOrchestrator:
                     "handoffs": [item.model_dump(mode="json") for item in handoff_outputs],
                     "verification": verification.model_dump(mode="json"),
                     "review": review_output.model_dump(mode="json") if review_output else None,
+                    **(
+                        {"refinement_status": refinement_status}
+                        if workflow.workflow_version != "1.0.0"
+                        else {}
+                    ),
                 },
                 reasoning=payload.reasoning,
             )
@@ -551,11 +463,11 @@ class ModelOnlyWorkflowOrchestrator:
                 workflow,
                 run,
                 final_node_id=final_node_id,
-                task_ids=[task.task_id for task in task_by_key.values()]
-                + ([review_output.reviewer_task_id] if review_output else []),
-                agent_run_ids=worker_agent_run_ids
-                + ([review_output.reviewer_agent_run_id] if review_output else []),
-                handoff_ids=[item.agent_handoff_id for item in handoff_outputs],
+                task_ids=[r.task_id for r in all_worker_records]
+                + [r.reviewer_task_id for r in all_reviews],
+                agent_run_ids=[r.agent_run_id for r in all_worker_records]
+                + [r.reviewer_agent_run_id for r in all_reviews],
+                handoff_ids=[r.handoff.agent_handoff_id for r in all_worker_records],
                 evaluation_ids=evaluation_ids,
             )
         except WorkflowExecutionStopped:
@@ -619,6 +531,204 @@ class ModelOnlyWorkflowOrchestrator:
             if current_node is not None:
                 await self._fail_node(workflow, current_node, error)
             await self._fail_workflow(workflow, error=error)
+
+    async def _execute_round(self, workflow, payload, run, previous_node_id, refinement):
+        """Execute one unchanged role sequence, retaining prior rounds as input facts."""
+
+        self.refinement_input = refinement
+        controller_binding = payload.role_bindings["controller"]
+        current_node = await self._start_node(
+            workflow,
+            node_key="controller_planning",
+            node_type="model",
+            output_type="controller_plan",
+            input_values={"objective": run.user_request, "profile": payload.execution_profile},
+            source_node_ids=[previous_node_id],
+            agent_role="controller",
+            status_label="Controller planning",
+            summary="Controller is creating a bounded Agent task plan",
+        )
+        plan, plan_response = await self._call_typed_model(
+            workflow,
+            current_node,
+            binding=controller_binding,
+            role="controller",
+            purpose="Create a small task plan for the supplied objective.",
+            model_output=ControllerPlanOutput,
+            model_input={
+                "objective": run.user_request,
+                "allowed_roles": sorted(
+                    {"planner", "researcher"}.intersection(payload.role_bindings)
+                ),
+                "allowed_capabilities": ["model_generation", "text_analysis"]
+                + (["read", "tool"] if workflow.execution_profile == "tool_enabled_v1" else []),
+                **(
+                    {
+                        "tool_guidance": (
+                            "Workers may list/read/search attached files. Allocate enough "
+                            "max_model_calls for discovery, describe/load, file tool requests "
+                            "and a final JSON answer. Only list_run_files/read_file_content "
+                            "are preloaded; outline/table/search require describe_tools first, "
+                            "within the workflow budget."
+                        ),
+                        "remaining_model_calls": max(
+                            0,
+                            workflow.max_model_calls
+                            - workflow.model_call_count
+                            - self._review_call_allowance(workflow)
+                            - 2,
+                        ),
+                    }
+                    if workflow.execution_profile == "tool_enabled_v1"
+                    else {}
+                ),
+                "maximum_tasks": 8,
+                "review_policy": payload.review_policy,
+                "refinement": refinement,
+                "workflow_round": self.workflow_round,
+            },
+            reasoning=payload.reasoning,
+        )
+        await self._complete_node(
+            workflow,
+            current_node,
+            output=plan,
+            transition=NodeTransitionRead(
+                selected_transition="validate_plan",
+                next_node_keys=["plan_validation"],
+                condition_summary="Controller returned a schema-valid plan",
+            ),
+            evidence=self._model_evidence(plan_response),
+            usage=self._model_usage(plan_response),
+            status_label="Plan created",
+            summary="Controller created a typed task plan",
+        )
+        current_node = None
+
+        validation = validate_controller_plan(
+            plan,
+            payload,
+            used_model_calls=workflow.model_call_count,
+            used_nodes=current_node.node_sequence
+            if current_node
+            else await self._node_count(workflow),
+        )
+        validation_node = await self._run_deterministic_node(
+            workflow,
+            node_key="plan_validation",
+            node_type="deterministic",
+            output_type="plan_validation",
+            output=validation,
+            input_values=plan.model_dump(mode="json"),
+            source_node_ids=[
+                await self._node_id_by_key(workflow.workflow_execution_id, "controller_planning")
+            ],
+            transition=NodeTransitionRead(
+                selected_transition="dispatch" if validation.is_valid else "fail",
+                next_node_keys=["agent_dispatch"] if validation.is_valid else [],
+                skipped_node_keys=([] if validation.is_valid else ["agent_dispatch"]),
+                condition_summary=(
+                    "Plan passed deterministic validation"
+                    if validation.is_valid
+                    else "Plan requested unavailable or invalid work"
+                ),
+            ),
+            status_label="Plan validated" if validation.is_valid else "Plan rejected",
+            summary=(
+                "The Controller plan passed deterministic checks"
+                if validation.is_valid
+                else "The Controller plan cannot run under model_only_v1"
+            ),
+        )
+        if not validation.is_valid:
+            error_code = next(
+                (
+                    check.error_code
+                    for check in validation.checks
+                    if check.status == "fail" and check.error_code is not None
+                ),
+                "agent_plan_invalid",
+            )
+            await self._fail_workflow(
+                workflow,
+                error=self._workflow_error(
+                    error_code,
+                    validation.rejected_plan_reason or "Controller plan is invalid.",
+                ),
+            )
+            raise WorkflowExecutionStopped
+
+        dispatch, task_by_key, agent_run_by_task_key = await self._dispatch_plan(
+            workflow,
+            payload,
+            plan,
+            validation,
+            parent_node_id=validation_node.node_execution_id,
+        )
+        dependency_keys_by_task_key: dict[str, list[str]] = {
+            task_key: [] for task_key in validation.topological_task_order
+        }
+        for dependency in plan.dependencies:
+            dependency_keys_by_task_key[dependency.task_key].append(dependency.depends_on_task_key)
+        worker_records_by_task_key = await self._execute_worker_task_groups(
+            workflow,
+            payload,
+            plan,
+            run,
+            dispatch_node_execution_id=dispatch.node_execution_id,
+            task_by_key=task_by_key,
+            agent_run_by_task_key=agent_run_by_task_key,
+            dependency_keys_by_task_key=dependency_keys_by_task_key,
+            topological_task_order=validation.topological_task_order,
+        )
+
+        worker_records = [
+            worker_records_by_task_key[task_key] for task_key in validation.topological_task_order
+        ]
+
+        (
+            verification,
+            evaluation_ids,
+            verification_node_execution_id,
+        ) = await self._verify_handoffs(
+            workflow,
+            worker_records,
+            source_node_ids=[record.handoff_node_execution_id for record in worker_records],
+        )
+        review_output: IndependentReviewOutput | None = None
+        review_node_execution_id: str | None = None
+        should_review = payload.review_policy == "always" or (
+            payload.review_policy == "on_verification_failure" and verification.verdict != "pass"
+        )
+        if should_review:
+            review_output, review_node_execution_id = await self._run_reviewer(
+                workflow,
+                payload,
+                run,
+                worker_records,
+                verification,
+                evaluation_ids,
+                verification_node_execution_id=verification_node_execution_id,
+            )
+            evaluation_ids.extend(review_output.evaluation_ids)
+
+        if verification.verdict != "pass":
+            await self._fail_workflow(
+                workflow,
+                error=self._workflow_error(
+                    "agent_verification_failed",
+                    "Deterministic verification did not pass.",
+                ),
+            )
+            raise WorkflowExecutionStopped
+        return (
+            worker_records,
+            verification,
+            evaluation_ids,
+            verification_node_execution_id,
+            review_output,
+            review_node_execution_id,
+        )
 
     async def _run_deterministic_node(
         self,
@@ -783,6 +893,7 @@ class ModelOnlyWorkflowOrchestrator:
                 "run_objective": run.user_request,
                 "completion_criteria": completion_criteria,
                 "dependency_results": dependency_results,
+                **({"refinement": self.refinement_input} if self.refinement_input else {}),
                 **(
                     {"max_model_calls": max_model_calls}
                     if workflow.execution_profile == "tool_enabled_v1"
@@ -1226,6 +1337,7 @@ class ModelOnlyWorkflowOrchestrator:
             agent_turn_id=agent_turn_id,
             agent_role=agent_role,
             activity_context=activity_context,
+            workflow_round=self.workflow_round,
         )
 
     async def _complete_node(
@@ -1446,7 +1558,7 @@ class ModelOnlyWorkflowOrchestrator:
                 task_id=record.task_id,
                 candidate_attempt_id=record.model_attempt_id,
                 evaluation_type="agent_deterministic_verification",
-                idempotency_key=f"workflow:{workflow.workflow_execution_id}:verify:{index}",
+                idempotency_key=f"workflow:{node.node_execution_id}:verify:{index}",
                 status=EvaluationStatus.COMPLETED,
                 verdict=(EvaluationVerdict.PASS if passed else EvaluationVerdict.FAIL),
                 findings_json={
@@ -1561,6 +1673,7 @@ class ModelOnlyWorkflowOrchestrator:
                 "objective": run.user_request,
                 "worker_results": [self._worker_record_input(record) for record in worker_records],
                 "verification": verification.model_dump(mode="json"),
+                "candidate_task_ids": [record.task_id for record in worker_records],
             },
             source_node_ids=[
                 *[record.handoff_node_execution_id for record in worker_records],
@@ -1613,7 +1726,7 @@ class ModelOnlyWorkflowOrchestrator:
                 candidate_attempt_id=record.model_attempt_id,
                 evaluator_attempt_id=response.id,
                 evaluation_type="agent_independent_review",
-                idempotency_key=(f"workflow:{workflow.workflow_execution_id}:review:{index}"),
+                idempotency_key=(f"workflow:{node.node_execution_id}:review:{index}"),
                 status=EvaluationStatus.COMPLETED,
                 verdict=(
                     EvaluationVerdict.PASS
@@ -1640,13 +1753,16 @@ class ModelOnlyWorkflowOrchestrator:
             reviewer_agent_run_id=agent_run.agent_run_id,
             reviewer_model_attempt_id=response.id,
         )
+        refine = await self._record_refinement_decision(
+            workflow, payload, node, output, verification_passed=verification.verdict == "pass"
+        )
         await self._complete_node(
             workflow,
             node,
             output=output,
             transition=NodeTransitionRead(
-                selected_transition="synthesize",
-                next_node_keys=["final_synthesis"],
+                selected_transition="refine" if refine else "synthesize",
+                next_node_keys=["controller_planning" if refine else "final_synthesis"],
                 condition_summary=(
                     "Independent Reviewer returned typed evidence constraints for final synthesis"
                 ),
@@ -1662,6 +1778,71 @@ class ModelOnlyWorkflowOrchestrator:
         )
         await self._complete_task_and_agent(task, agent_run)
         return output, node.node_execution_id
+
+    @staticmethod
+    def _review_call_allowance(workflow) -> int:
+        """Reserve review reads plus its final JSON submission, or no calls when disabled."""
+        if workflow.review_policy == "never":
+            return 0
+        return 3 if workflow.execution_profile == "tool_enabled_v1" else 1
+
+    async def _node_count(self, workflow) -> int:
+        """Count all persisted nodes, including earlier rounds, for remaining capacity."""
+        return int(
+            await self.db_session.scalar(
+                select(func.count())
+                .select_from(LlmAgentWorkflowNodeExecution)
+                .where(
+                    LlmAgentWorkflowNodeExecution.workflow_execution_id
+                    == workflow.workflow_execution_id
+                )
+            )
+            or 0
+        )
+
+    async def _record_refinement_decision(
+        self, workflow, payload, node, review, *, verification_passed: bool
+    ) -> bool:
+        """Record bounded business refinement separately from output-format correction."""
+        if workflow.workflow_version == "1.0.0" or not (
+            review.requires_replan or review.requires_retry
+        ):
+            return False
+        await self.db_session.refresh(workflow)
+        reason = "review_requires_replan" if review.requires_replan else "review_requires_retry"
+        stop_reason = None
+        if not verification_passed:
+            stop_reason = "deterministic_verification_failed"
+        elif self.workflow_round >= payload.max_workflow_rounds:
+            stop_reason = "round_limit"
+        elif workflow.max_model_calls - workflow.model_call_count < 3 + self._review_call_allowance(
+            workflow
+        ):
+            stop_reason = "model_call_budget"
+        elif workflow.max_nodes - await self._node_count(workflow) < 9:
+            stop_reason = "node_budget"
+        elif self._remaining_wall_time_ms(workflow) < 2000:
+            stop_reason = "time_budget"
+        self.refinement_stop_reason = stop_reason
+        await self.workflow_state.append_event(
+            workflow,
+            event_type="agent.workflow.refinement.skipped"
+            if stop_reason
+            else "agent.workflow.refinement.requested",
+            public_summary="未进入下一轮，审核建议和停止原因已记录"
+            if stop_reason
+            else "正在返回 Controller 细化任务",
+            public_payload={
+                "workflow_round": self.workflow_round,
+                "next_round": None if stop_reason else self.workflow_round + 1,
+                "reason": reason,
+                "stop_reason": stop_reason,
+                "source_node_execution_id": node.node_execution_id,
+                "evaluation_ids": review.evaluation_ids,
+            },
+            node=node,
+        )
+        return stop_reason is None
 
     async def _complete_workflow(
         self,

@@ -30,6 +30,20 @@ function workflowEvent(
   };
 }
 
+/** Keep repair and refinement events in sequence without treating them as workflow termination. */
+test("accepts repair and refinement events without losing the event cursor", () => {
+  const types = [
+    "agent.node.output_repair.requested", "agent.node.output_repair.completed",
+    "agent.workflow.refinement.requested", "agent.workflow.refinement.skipped",
+  ] as AgentWorkflowEvent["event_type"][];
+  for (const type of types) {
+    const event = workflowEvent(7, type);
+    assert.deepEqual(parseAgentWorkflowSseBlock(
+      `id: 7\nevent: ${type}\ndata: ${JSON.stringify(event)}`,
+    ), event);
+  }
+});
+
 test("parses the persisted workflow event rather than the Responses SSE shape", () => {
   const event = workflowEvent(4, "agent.node.completed");
   const parsed = parseAgentWorkflowSseBlock(

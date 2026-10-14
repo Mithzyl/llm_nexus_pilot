@@ -36,6 +36,7 @@ from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.schemas.context_builds import RuntimeContextSourceReferences
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult
 from nexuspilot_api.services.model_response_service import ModelInvocationService
+from nexuspilot_api.services.worker_evidence_service import EvidenceOutputError
 
 
 class AgentModelNodeStatePort(Protocol):
@@ -56,6 +57,7 @@ class AgentModelNodeStatePort(Protocol):
         *,
         reserved_estimated_cost: Decimal | None,
         has_explicit_output_token_bound: bool = True,
+        reserved_downstream_calls: int = 0,
     ) -> None:
         """Persist one call and its cost bound, retaining why no bound is available."""
 
@@ -69,6 +71,9 @@ class AgentModelNodeStatePort(Protocol):
 
     async def record_tool_progress(self, workflow, node) -> None:
         """Persist and publish completed tool facts without completing the Worker node."""
+
+    async def append_event(self, workflow, **kwargs):
+        """Persist repair reasons and outcome references independently of request observers."""
 
 
 class AgentModelNodeService:
@@ -98,7 +103,7 @@ class AgentModelNodeService:
         reasoning: ReasoningConfiguration | None = None,
         timeout_seconds: int | None = None,
     ) -> tuple[Any, ResponsesResult]:
-        """Validate results and allow one tool-free format repair for tool-enabled workflows."""
+        """Validate full node results; repair once using authorized original tool dialogue."""
 
         options = dict(
             binding=binding,
@@ -109,6 +114,8 @@ class AgentModelNodeService:
             reasoning=reasoning,
             timeout_seconds=timeout_seconds,
         )
+        tool_history = None
+        tool_records = []
         if workflow.execution_profile == "tool_enabled_v1" and (
             node.node_key.startswith("worker_execution.") or node.node_key == "independent_review"
         ):
@@ -116,10 +123,13 @@ class AgentModelNodeService:
                 run_file_tool_loop,
             )
 
-            response = await run_file_tool_loop(self, workflow, node, options)
+            loop = await run_file_tool_loop(self, workflow, node, options)
+            response, tool_history, tool_records = loop.response, loop.messages, loop.records
         else:
             response = await self._call_model_round(workflow, node, **options)
-        can_repair = workflow.execution_profile == "tool_enabled_v1"
+        can_repair = (
+            workflow.execution_profile == "tool_enabled_v1" or workflow.workflow_version != "1.0.0"
+        )
         for repair_index in range(2 if can_repair else 1):
             self._require_complete_response(response)
             raw_output = response.structured_output
@@ -145,13 +155,33 @@ class AgentModelNodeService:
                     )
             try:
                 parsed = model_output.model_validate(raw_output)
-            except ValidationError as exc:
-                errors = self._safe_validation_errors(model_output, exc)
+                await self._validate_evidence_output(workflow, node, parsed)
+            except (ValidationError, EvidenceOutputError) as exc:
+                errors = (
+                    self._safe_validation_errors(model_output, exc)
+                    if isinstance(exc, ValidationError)
+                    else [
+                        {
+                            "loc": ["evidence_refs"],
+                            "type": "evidence_reference_invalid",
+                            "message": str(exc),
+                            **exc.validation_details,
+                        }
+                    ]
+                )
+                # Keep persisted feedback bounded even for a model returning many invalid entries.
+                errors = errors[:20]
                 await self._record_output_diagnostic(node, response.id, model_output, errors)
                 if (
                     not can_repair
                     or repair_index == 1
-                    or any(item["type"] == "value_error" for item in errors)
+                    or (
+                        workflow.workflow_version == "1.0.0"
+                        and (
+                            isinstance(exc, EvidenceOutputError)
+                            or any(item["type"] == "value_error" for item in errors)
+                        )
+                    )
                 ):
                     raise InvalidRequestError(
                         "Agent model node output failed its typed contract"
@@ -179,6 +209,25 @@ class AgentModelNodeService:
                         raise InvalidRequestError(
                             "Agent task model-call budget is exhausted"
                         ) from exc
+                if tool_records:
+                    from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
+
+                    await AgentFileToolService(
+                        self.model_invocation_service.db_session,
+                        self.model_invocation_service.storage,
+                    ).validate_history(workflow.run_id, tool_records)
+                await self.workflow_state.append_event(
+                    workflow,
+                    event_type="agent.node.output_repair.requested",
+                    public_summary="节点输出未通过校验，正在修正",
+                    public_payload={
+                        "workflow_round": (node.input_json or {}).get("workflow_round", 1),
+                        "repair_index": 1,
+                        "source_attempt_id": response.id,
+                        "validation_errors": errors,
+                    },
+                    node=node,
+                )
                 response = await self._call_model_round(
                     workflow,
                     node,
@@ -195,9 +244,17 @@ class AgentModelNodeService:
                         },
                     },
                     output_repair=True,
+                    tool_messages=tool_history,
                 )
                 continue
-            await self._validate_evidence_output(workflow, node, parsed)
+            if repair_index:
+                await self.workflow_state.append_event(
+                    workflow,
+                    event_type="agent.node.output_repair.completed",
+                    public_summary="节点输出修正已通过校验",
+                    public_payload={"repair_index": repair_index, "model_attempt_id": response.id},
+                    node=node,
+                )
             return parsed, response
         raise AssertionError("Bounded output validation must return or raise")
 
@@ -252,7 +309,7 @@ class AgentModelNodeService:
             for assessment in parsed.claim_assessments:
                 identity = (assessment.task_id, assessment.claim_key)
                 if identity not in claims or identity in seen:
-                    raise InvalidRequestError(
+                    raise EvidenceOutputError(
                         "Review assessment does not identify a unique candidate claim"
                     )
                 seen.add(identity)
@@ -266,7 +323,7 @@ class AgentModelNodeService:
                     and assessment.verdict != "insufficient_evidence"
                     and not sources
                 ):
-                    raise InvalidRequestError("File claim assessments require original evidence")
+                    raise EvidenceOutputError("File claim assessments require original evidence")
                 if assessment.verdict == "supported" and claim["kind"] == "absence":
                     await resolver.resolve_bundle(
                         workflow.run_id,
@@ -278,11 +335,11 @@ class AgentModelNodeService:
                         ),
                     )
             if seen != set(claims):
-                raise InvalidRequestError("Reviewer omitted candidate claim assessments")
+                raise EvidenceOutputError("Reviewer omitted candidate claim assessments")
             if parsed.verdict == "pass" and any(
                 assessment.verdict != "supported" for assessment in parsed.claim_assessments
             ):
-                raise InvalidRequestError(
+                raise EvidenceOutputError(
                     "Passing review conflicts with unsupported candidate claims"
                 )
 
@@ -356,6 +413,9 @@ class AgentModelNodeService:
         )
         if tool_round:
             instructions += (
+                " For ALL file citations copy exact returned evidence_ref identities, selecting "
+                "only a subset of THAT result's block_ids. Never combine blocks from separate "
+                "tool calls into one reference. Use separate references for separate results. "
                 " During work you may instead issue native tool calls. Tool rounds do not need "
                 "the final JSON object. Use only the listed read-only file tools; start with "
                 "list_run_files when attachments are needed. For other read capabilities use "
@@ -404,7 +464,9 @@ class AgentModelNodeService:
             context_source_references=context_source_references,
         )
         if workflow.execution_profile == "tool_enabled_v1" and (
-            node.node_key.startswith("worker_execution.") or node.node_key == "independent_review"
+            node.node_key.startswith("worker_execution.")
+            or node.node_key == "independent_review"
+            or (node.node_key == "controller_planning" and node.node_attempt > 1)
         ):
             from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceService
 
@@ -448,6 +510,7 @@ class AgentModelNodeService:
             workflow,
             reserved_estimated_cost=reserved_estimated_cost,
             has_explicit_output_token_bound=binding.max_output_tokens is not None,
+            reserved_downstream_calls=self._reserved_downstream_calls(workflow, node),
         )
         effective_timeout_seconds = min(
             float(binding.timeout_seconds),
@@ -478,6 +541,7 @@ class AgentModelNodeService:
                         "agent_node_key": node.node_key.split(".", maxsplit=1)[0],
                         "agent_node_execution_key": node.node_key,
                         "agent_role": role,
+                        "workflow_round": str((node.input_json or {}).get("workflow_round", 1)),
                         **({"node_output_repair": "1"} if output_repair else {}),
                         **(
                             {
@@ -497,7 +561,7 @@ class AgentModelNodeService:
                     stream=False,
                 ),
                 context_source_references=context_source_references,
-                **({"tool_messages": tool_messages} if tool_round else {}),
+                **({"tool_messages": tool_messages} if tool_messages is not None else {}),
             )
             await self._bind_context_evidence(node, response.id, provider_model_input)
             await self.workflow_state.ensure_workflow_running(workflow)
@@ -507,6 +571,20 @@ class AgentModelNodeService:
                 workflow,
                 reserved_estimated_cost=reserved_estimated_cost,
             )
+
+    @staticmethod
+    def _reserved_downstream_calls(workflow, node) -> int:
+        """Protect review/final-answer capacity atomically from tool and correction calls."""
+        if workflow.workflow_version == "1.0.0" or node.node_key == "final_synthesis":
+            return 0
+        if node.node_key == "independent_review":
+            return 1
+        review_calls = (
+            0
+            if workflow.review_policy == "never"
+            else (3 if workflow.execution_profile == "tool_enabled_v1" else 1)
+        )
+        return 1 + review_calls + int(node.node_key == "controller_planning")
 
     async def _find_current_user_message_id(self, run_id: str) -> str | None:
         """Return the immutable User Message anchoring a Session-owned workflow Run."""

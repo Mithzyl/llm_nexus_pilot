@@ -141,7 +141,7 @@ def test_pdf_executor_unavailable_does_not_run_unrestricted(monkeypatch):
         "nexuspilot_api.infrastructure.file_runtime_client.get_settings",
         lambda: type("Settings", (), {"file_runtime_socket": None})(),
     )
-    with pytest.raises(FileParsingError, match="configured"):
+    with pytest.raises(FileParsingError, match="尚未启用 Office／PDF 文件解析"):
         parse_fixture(b"%PDF-1.7\nfixture", "application/pdf")
 
 
