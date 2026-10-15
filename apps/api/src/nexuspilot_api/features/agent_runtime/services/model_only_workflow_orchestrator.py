@@ -46,7 +46,7 @@ from nexuspilot_api.features.agent_runtime.services.agent_model_node_service imp
     AgentModelNodeService,
 )
 from nexuspilot_api.features.agent_runtime.services.controller_plan_repair_policy import (
-    can_repair_controller_plan,
+    controller_plan_repair_skip_reason,
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry import (
     DEFAULT_WORKFLOW_DEFINITION_REGISTRY,
@@ -536,7 +536,7 @@ class ModelOnlyWorkflowOrchestrator:
             await self._fail_workflow(workflow, error=error)
 
     async def _execute_round(self, workflow, payload, run, previous_node_id, refinement):
-        """Execute one role sequence with optional single repair attempt."""
+        """Execute roles with one bounded plan repair and committed decision/result events."""
 
         self.refinement_input = refinement
         controller_binding = payload.role_bindings["controller"]
@@ -623,7 +623,7 @@ class ModelOnlyWorkflowOrchestrator:
         min_completion_nodes = 6 + (1 if payload.review_policy != "never" else 0)
         remaining_time = self._remaining_wall_time_ms(workflow)
 
-        eligible = can_repair_controller_plan(
+        repair_stop_reason = controller_plan_repair_skip_reason(
             workflow_version=payload.workflow_version,
             failed_check_ids=failed_ids,
             repair_attempts_this_round=0,
@@ -633,6 +633,7 @@ class ModelOnlyWorkflowOrchestrator:
             minimum_completion_nodes=min_completion_nodes,
             remaining_wall_time_ms=remaining_time,
         )
+        eligible = repair_stop_reason is None
 
         validation_node = await self._run_deterministic_node(
             workflow,
@@ -673,6 +674,22 @@ class ModelOnlyWorkflowOrchestrator:
                 )
             ),
         )
+
+        repair_event_facts = {
+            "workflow_round": self.workflow_round,
+            "source_controller_node_execution_id": original_controller_id,
+            "source_validation_node_execution_id": validation_node.node_execution_id,
+            "failed_check_ids": sorted(failed_ids),
+            "repair_node_execution_id": None,
+        }
+        if not validation.is_valid and not eligible and payload.workflow_version == "1.1.0":
+            await self._append_event(
+                workflow,
+                event_type="agent.controller.plan_repair.skipped",
+                public_summary="未执行计划修正，原因已记录",
+                public_payload={**repair_event_facts, "stop_reason": repair_stop_reason},
+                node=validation_node,
+            )
 
         if not validation.is_valid and eligible:
             await self._ensure_workflow_running(workflow)
@@ -726,6 +743,14 @@ class ModelOnlyWorkflowOrchestrator:
                 agent_role="controller",
                 status_label="Controller repair",
                 summary="Controller is repairing the rejected plan",
+            )
+            repair_event_facts["repair_node_execution_id"] = repair_node.node_execution_id
+            await self._append_event(
+                workflow,
+                event_type="agent.controller.plan_repair.requested",
+                public_summary="正在请求修正计划",
+                public_payload=repair_event_facts,
+                node=repair_node,
             )
             try:
                 repair_plan, repair_response = await self._call_typed_model(
@@ -788,6 +813,36 @@ class ModelOnlyWorkflowOrchestrator:
                     if validation.is_valid
                     else "The repaired Controller plan cannot run under model_only_v1"
                 ),
+            )
+
+            await self._append_event(
+                workflow,
+                event_type="agent.controller.plan_repair.completed"
+                if validation.is_valid
+                else "agent.controller.plan_repair.skipped",
+                public_summary="修正计划已通过校验"
+                if validation.is_valid
+                else "修正计划仍未通过校验，不再追加修正",
+                public_payload={
+                    **repair_event_facts,
+                    "validation_node_execution_id": validation_node.node_execution_id,
+                    "model_attempt_ids": (repair_node.evidence_json or {}).get(
+                        "model_attempt_ids", []
+                    ),
+                    **(
+                        {}
+                        if validation.is_valid
+                        else {
+                            "stop_reason": "repair_limit",
+                            "failed_check_ids": sorted(
+                                check.check_id
+                                for check in validation.checks
+                                if check.status == "fail"
+                            ),
+                        }
+                    ),
+                },
+                node=repair_node if validation.is_valid else validation_node,
             )
 
         if not validation.is_valid:

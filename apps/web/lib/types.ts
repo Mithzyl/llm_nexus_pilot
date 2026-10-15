@@ -364,7 +364,10 @@ export type AgentWorkflowEventType =
   | "agent.node.output_repair.requested"
   | "agent.node.output_repair.completed"
   | "agent.workflow.refinement.requested"
-  | "agent.workflow.refinement.skipped";
+  | "agent.workflow.refinement.skipped"
+  | "agent.controller.plan_repair.requested"
+  | "agent.controller.plan_repair.completed"
+  | "agent.controller.plan_repair.skipped";
 
 export type AgentModelBinding = {
   provider: ProviderName;

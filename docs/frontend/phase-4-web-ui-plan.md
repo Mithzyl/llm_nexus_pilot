@@ -1,5 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
+2026-10-14 计划修正事件：解析白名单及 TypeScript 类型增加 `agent.controller.plan_repair.requested/completed/skipped`，保持现有事件保存方式，不新增页面或统计面板。定向 `agent-workflow.test.ts` 7 项及 TypeScript 检查通过；本批没有浏览器验收。事件字段和成功时机见阶段3当前规则；专用计划修正统计尚未实现。
+
 2026-10-14 工作流兼容：新 Agent 请求使用 `workflow_version=1.1.0`、`max_workflow_rounds=2`（含首轮）。事件解析器接受节点修正及返回 Controller 的请求/完成/未执行事件，按既有事件序号保存，不当成终态；历史 1.0.0 类型和记录继续可读。结果类型增加可选 `loop_statistics` 与节点轮次，不新增统计面板。两轮节点仍按 node ID 和 Task ID 关联，不能按重复的节点键覆盖旧节点。详细规则维护在[阶段3](../implementation/phase-3-agent-workflow-plan.md#当前节点职责版本与修正规则)，历史验证记录见工具主计划。
 
 2026-10-13 前端修复（已完成本地限定验证）：最新轮失败/取消且没有保存 Assistant 时，按所属会话的服务端 Run 恢复可见状态，不写入伪造回答；历史 Agent 答案按消息 `metadata_json.source` 恢复来源入口。Composer 增加最小化/展开，保留草稿、附件和运行中停止动作，展开恢复输入焦点；完整高度仍由 ResizeObserver 驱动底部留白。仅聚焦消息输入框的普通 Enter 发送，Shift+Enter 换行；输入法组合、229 兼容键码、长按及其他修饰键不触发发送。来源结论保留原始换行，长标识可折行，审核状态/展开动作另起一行。前端 135 项测试、类型检查、ESLint、构建通过；本地浏览器验证真实历史失败恢复、草稿/附件保留、快捷键提交前校验和 390px 来源布局。详细记录见根目录 `design-qa.md`。未修改后端引用修正机制、未追加付费工作流、未部署；先前真实续聊失败结论仍有效。
