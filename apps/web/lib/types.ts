@@ -821,6 +821,17 @@ export type AgentWorkflowResult = AgentWorkflowSummary & {
     output_repair_failed_count: number;
     output_repair_pending_count: number;
     output_repair_unknown_count: number;
+    // Optional when reading results from servers predating plan-repair accounting.
+    plan_repair_requested_count?: number;
+    plan_repair_count?: number;
+    plan_repair_succeeded_count?: number;
+    plan_repair_failed_count?: number;
+    plan_repair_cancelled_count?: number;
+    plan_repair_pending_count?: number;
+    plan_repair_unknown_count?: number;
+    plan_repair_skipped_count?: number;
+    plan_repair_attempt_ids?: string[];
+    plan_repair_usage?: AgentWorkflowUsage;
     repair_attempt_ids: string[];
     repair_usage: AgentWorkflowUsage;
     refinement_usage: AgentWorkflowUsage;

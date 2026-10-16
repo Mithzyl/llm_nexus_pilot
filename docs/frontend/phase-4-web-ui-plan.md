@@ -1,6 +1,6 @@
 # 阶段4：NexusPilot Web 前端规划
 
-2026-10-14 计划修正事件：解析白名单及 TypeScript 类型增加 `agent.controller.plan_repair.requested/completed/skipped`，保持现有事件保存方式，不新增页面或统计面板。定向 `agent-workflow.test.ts` 7 项及 TypeScript 检查通过；本批没有浏览器验收。事件字段和成功时机见阶段3当前规则；专用计划修正统计尚未实现。
+2026-10-14 计划修正事件：解析白名单及 TypeScript 类型增加 `agent.controller.plan_repair.requested/completed/skipped`，保持现有事件保存方式，不新增页面或统计面板。定向 `agent-workflow.test.ts` 7 项及 TypeScript 检查通过；本批没有浏览器验收。2026-10-15 后端专用计划修正统计已实现，前端结果类型同步为可选字段以兼容旧 API，TypeScript 检查通过；未新增统计展示。字段含义和成功时机只维护在阶段3当前规则。
 
 2026-10-14 工作流兼容：新 Agent 请求使用 `workflow_version=1.1.0`、`max_workflow_rounds=2`（含首轮）。事件解析器接受节点修正及返回 Controller 的请求/完成/未执行事件，按既有事件序号保存，不当成终态；历史 1.0.0 类型和记录继续可读。结果类型增加可选 `loop_statistics` 与节点轮次，不新增统计面板。两轮节点仍按 node ID 和 Task ID 关联，不能按重复的节点键覆盖旧节点。详细规则维护在[阶段3](../implementation/phase-3-agent-workflow-plan.md#当前节点职责版本与修正规则)，历史验证记录见工具主计划。
 

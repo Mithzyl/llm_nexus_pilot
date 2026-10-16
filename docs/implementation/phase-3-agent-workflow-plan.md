@@ -102,7 +102,7 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 | 6. 前端类型与事件消费 | 仅事件白名单、类型和对应测试，保持现有展示，不新增无用途页面内容 |
 | 7. 组合验收 | 前六项通过后再编写并执行计划修正加两次 workflow round 的固定样本测试，不提前让模型猜测尚未实现的接口 |
 
-这些是现有工作项内的实施批次，不新增 Phase。第 1～4 批及第 6 批已完成本地确定性测试：资格判断、节点转换、单次 Controller 业务计划修正、专用事件及前端解析兼容已接入。第 5 批专用统计与第 7 批组合验收仍待完成；未经过真实业务 Provider 验收。后续若工具仍仅支持完整文件返回，大文件局部修改应使用准确匹配的独立补丁并先检查，不把整份文件作为默认交付。
+这些是现有工作项内的实施批次，不新增 Phase。第 1～7 批已完成本地确定性测试：资格判断、节点转换、单次 Controller 业务计划修正、专用事件、统计、前端类型兼容及两轮组合测试已接入。真实业务 Provider 验收尚未执行。后续若工具仍仅支持完整文件返回，大文件局部修改应使用准确匹配的独立补丁并先检查，不把整份文件作为默认交付。
 
 真实小任务进度验证（2026-10-14）：三次均观察到 progress.json 从 reasoning_only 到 generating_content，正常结束，无重复窗口警告，未触发 300 秒仅推理提醒。未保存或人工阅读推理原文；只能说明此次固定窗口检测未报警，不能证明没有语义重复。当前长驻 MCP 服务未重新加载，状态接口不返回新增字段，核查直接读取进度文件。
 
@@ -129,21 +129,27 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 
 以上进度未出现固定窗口重复警告，不代表没有语义重复。三次完成调用合计 61574 Token，另有取消请求的未知用量；连续三次代码交付仍有必须修复问题，返修请求两次，最终由主代理接管。当前不能证明委派节省主代理消耗；主代理承担测试编写、代码摘录、补丁逐项审核、最终修正与验证成本，不能把本批算作 Qwen 独立完成。
 
-最终实现保留 Qwen 第三份代码的单次修正结构，由主代理修正导入、真实剩余额度与可分配给 Worker 的额度分离、节点创建异常处理、转换记录、函数说明及格式。修正前后模型输入、Controller 和校验节点独立保存；二次校验失败不再重试；超时保留 outcome_unknown。现有 workflow_round_count/refinement_count 改按不同 workflow_round 计数，避免同轮修正被误算成业务返工；专用计划修正计数尚未新增。
+第三批最终实现保留 Qwen 第三份代码的单次修正结构，由主代理修正导入、真实剩余额度与可分配给 Worker 的额度分离、节点创建异常处理、转换记录、函数说明及格式。修正前后模型输入、Controller 和校验节点独立保存；二次校验失败不再重试；超时保留 outcome_unknown。workflow_round_count/refinement_count 改按不同 workflow_round 计数，避免同轮修正被误算成业务返工；当时未新增的专用计划修正计数已在下方第五批完成。
 
 验证：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，112 项通过（17.85 秒）；其中本批修正执行测试 12 项。相关修改 Ruff、`git diff --check` 通过。环境为本地 SQLite／测试对象存储／脚本化 Provider；没有运行真实 DeepSeek 业务请求、浏览器验收、服务器部署或 Git 提交。
 
-历史修改前回归：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_workflow_refinement.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_provider_continuation_store.py -q`，20 项通过（4.71 秒），仅说明修改前行为。当前 Controller 执行接入及专用事件已完成本地回归；专用统计及多轮组合验收仍待完成，不再恢复已取消的大任务。
+历史修改前回归：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_workflow_refinement.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_provider_continuation_store.py -q`，20 项通过（4.71 秒），仅说明修改前行为。当前 Controller 执行、事件、统计及多轮组合测试已完成本地回归，不再恢复已取消的大任务。
 
 2026-10-14 验收核查：当前相关后端测试合并运行 152 项通过（27.31 秒），共享 Qwen 工具 52 项、前端 Composer 定向测试 5 项通过；相关 Ruff 与差异格式检查通过。无运行中或排队的委派。历史 ready 候选未应用，不等同业务实现。真实 DeepSeek／MySQL／MinIO 下的本批修正联调尚未执行。真实 Qwen 进度文件已验证，长驻 MCP 状态接口的新字段尚未验证。
 
 本节是外层工作流的当前规则定义。下文带日期的验证及旧 JSON 示例保留历史含义，不覆盖本节；尚未实现的行为在本节明确标注。文档更新本身不改变运行代码或部署版本。
 
-2026-10-14 第四批事件验收：先修正文档状态并以 `e6487d4` 提交此前实现，再由主代理直接实现事件，没有新增 Qwen 请求。本批事件修改尚未提交。新增 `test_controller_plan_repair_events.py`：修改前 6 项失败／2 项通过；实现后另加流式与回放对比，共 9 项通过。测试覆盖成功时机、持续非法、能力越权、调用额度／节点额度不足、无须修正、1.0.0 兼容、超时未知结果，以及重复提交和游标回放不新增事件。
+2026-10-14 第四批事件验收：先修正文档状态并以 `e6487d4` 提交此前实现，再由主代理直接实现事件，没有新增 Qwen 请求。事件修改已于后续以 `ea3bec1` 提交。新增 `test_controller_plan_repair_events.py`：修改前 6 项失败／2 项通过；实现后另加流式与回放对比，共 9 项通过。测试覆盖成功时机、持续非法、能力越权、调用额度／节点额度不足、无须修正、1.0.0 兼容、超时未知结果，以及重复提交和游标回放不新增事件。
 
 本批验证命令：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_controller_plan_repair_events.py apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，121 项通过（21.37 秒）。相关 Ruff 检查、格式检查及 `git diff --check` 通过；前端 `tsx --test tests/agent-workflow.test.ts` 7 项、`npm run typecheck` 通过。环境为 SQLite／测试存储／脚本化 Provider，不是 DeepSeek／MySQL／MinIO 或浏览器验收，没有部署。
 
 新增流式测试最初误将创建接口的 HTTP 201 写为 200，按既有路由定义修正；随后确认 SQLite 读回 `occurred_at` 缺少实时事件的 UTC `Z` 后缀，测试明确比较 UTC 时间值及其余全部字段。事件时间戳的实时／回放格式仍有此既有差异，本批未更改公共时间序列化。不得将当前通过结果表述为所有响应字节完全一致。
+
+2026-10-15 第五批统计及第七批组合测试（已完成本地确定性验证）：先提交此前改动 `ea3bec1`，再直接实现统计，无新增 Qwen 请求、付费模型请求、迁移或部署。本批新增 `test_plan_repair_statistics.py`：初始 11 项因缺少统计字段失败；实现后补充中间状态和第二轮失败，共 18 项通过。中间状态／取消统计使用合成节点状态与真实保存的事件、Attempt 验证，不代表已执行真实取消传播测试。测试草稿曾误读取未公开的原始输入，已按公开来源节点 ID 识别修正节点，未扩大结果接口暴露内容。
+
+组合用例涵盖首轮修正、第二轮修正、两轮均修正、修正内再发生 JSON 格式修正、第二轮持续非法及第二轮超时。核对两轮节点独立保存、同轮修正不增加业务轮数、实际 Attempt 与 Token／费用汇总、重新读取和重复提交不增加调用；第二轮失败保留首轮成功记录，不伪造最终回答。
+
+验证：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_plan_repair_statistics.py apps/api/tests/test_controller_plan_repair_events.py apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，139 项通过（26.42 秒）；前端 `npm run typecheck` 通过。环境为 SQLite／测试存储／脚本化 Provider；真实 DeepSeek／MySQL／MinIO、浏览器和服务器验收未执行。本批统计与组合测试改动尚未提交。
 
 ### 节点职责
 
@@ -178,13 +184,13 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 | 条件 | 当前行为 | 规划及限制 |
 |---|---|---|
 | JSON／字段错误；已授权来源的错误块范围、重复块或审核缺项 | `1.1.0` 原节点有限修正一次，保留工具历史与私有续接；修正不再次执行工具，之后重新完整校验 | 已实现本地确定性回归；持续错误仍失败，不用程序替模型编造合法业务输出 |
-| JSON 合法但计划依赖、重复任务、策略或额度分配不合法 | 1.1.0 在资格及资源检查通过后，返回 Controller 修正一次并重新校验；1.0.0 仍直接失败 | 执行已通过本地确定性验收。原计划、校验错误、允许能力与真实剩余额度传入 Controller；创建独立节点，不覆盖被拒绝计划，计入总预算。能力越权、额度不足或修正仍非法时失败；专用事件已实现，专用统计待后续批次 |
+| JSON 合法但计划依赖、重复任务、策略或额度分配不合法 | 1.1.0 在资格及资源检查通过后，返回 Controller 修正一次并重新校验；1.0.0 仍直接失败 | 执行已通过本地确定性验收。原计划、校验错误、允许能力与真实剩余额度传入 Controller；创建独立节点，不覆盖被拒绝计划，计入总预算。能力越权、额度不足或修正仍非法时失败；专用事件及统计已实现 |
 | 有效审核要求重新规划／重试 | `1.1.0` 按上文条件最多进入第二轮；`1.0.0` 交给最终汇总说明限制 | 业务返工不是格式修正；Reviewer 不负责执行新任务 |
 | 跨用户／跨任务非法引用、访问撤销、错误文件快照或对象损坏 | 终止相应执行，不作为格式错误重试 | 不通过修改引用或扩大权限绕过；权限类错误不能进入计划修正 |
 | Provider 是否已执行或结果是否已保存无法确认 | `outcome_unknown`，不自动重复调用 | 不将未知结果当作可修正 JSON；后台恢复规则由阶段10定义 |
 | 取消、资源耗尽、保存失败 | 保存真实节点及工作流结果；仅在符合现有分支时进入有限制的最终汇总 | 不保证任何失败都能生成模型答案；阶段4从已保存状态恢复失败呈现，不能伪造 Assistant 成功消息 |
 
-计划业务修正已用专门测试验证：重复任务、自依赖、策略不符、超额计划被纠正；持续非法、无剩余额度、能力越权不继续重试；计划校验及实际调用分别保存，精确资源边界、免审核、修正超时和结果重新读取通过。不能把这些确定性结果当作真实模型完成率；专用修正统计与多轮组合验收仍待完成。
+计划业务修正已用专门测试验证：重复任务、自依赖、策略不符、超额计划被纠正；持续非法、无剩余额度、能力越权不继续重试；计划校验及实际调用分别保存，精确资源边界、免审核、修正超时和结果重新读取通过。专用统计与两轮组合测试已通过，不能把这些确定性结果当作真实模型完成率。
 
 ### 流转统计与验收
 
@@ -194,7 +200,10 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 - 修正用量按对应 Attempt 小计；refinement 用量是第二轮规划到审核的小计，不包含最终汇总。第二轮的修正会同时属于这两个小计，不能相加当总量；总量按全部 Attempt 只汇总一次。
 - 计划业务修正已保存原计划、校验节点、修正输入和 Attempt。`agent.controller.plan_repair.requested` 在修正节点创建后、模型调用前保存；`completed` 仅在新计划通过第二次确定性校验后保存；`skipped` 表示本次不修正或已修正失败后不再追加修正，必须结合 `stop_reason` 和修正节点 ID 区分。超时等未知结果只有 requested 和节点失败事实，不伪造 completed。
 - 三类事件关联业务轮次、原 Controller、原校验、修正节点和失败检查编号；二次校验后还关联新校验节点和模型 Attempt。公共事件不携带原始计划或提示词。事件提交后通知 SSE，回放与重复提交不新增事件；1.0.0 不增加这些事件。
-- 专用计划修正统计读取和测试仍待完成；不能计为新业务轮次，也不能把未调用的修正申请计为费用。现有 `loop_statistics` 尚不提供专用计划修正计数。
+- `loop_statistics.plan_repair_requested_count` 按请求修正的节点计数；`plan_repair_count` 按该节点实际保存的逻辑模型 Attempt 计数，包括节点内的 JSON 格式修正，不是 HTTP 重试次数。`plan_repair_attempt_ids` 提供对应 ID，`plan_repair_usage` 累加已记录用量，未知 Token／费用不是已证实的免费调用。
+- `plan_repair_succeeded_count` 仅来自二次校验通过的完成事件；`failed_count`、`cancelled_count`、`unknown_count`、`pending_count`（均带 `plan_repair_` 前缀）按尚无成功事件的修正节点和工作流状态区分。模型节点完成但校验尚未完成仍计 pending；后续其他节点失败不改写已有计划修正成功。
+- `plan_repair_skipped_count` 仅统计没有创建修正节点的未执行事件；修正后仍非法导致停止追加修正计 failed，不再重复计 skipped。旧 1.0.0 或无计划修正返回零值与空列表，不新增数据库表或迁移。
+- 计划修正用量与格式修正、第二轮返工小计可能重叠，不能相加。工作流总量仍按所有实际 Attempt 汇总一次；同轮计划修正不增加业务轮数，重复读取不写入统计。
 - 新版本地确定性回归已完成；真实 DeepSeek／MySQL／MinIO 两轮及浏览器成功续聊验收未执行。真实验收必须核对返回 Controller、两轮记录独立保存、引用有效、修正／返工计数、最终答案和刷新恢复；单轮历史成功不能代替。跨进程重启恢复属于阶段10，当前不承诺。
 
 ## 目标

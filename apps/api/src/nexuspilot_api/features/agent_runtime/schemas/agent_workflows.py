@@ -678,6 +678,18 @@ class WorkflowLoopStatistics(StrictContract):
     output_repair_failed_count: int = 0
     output_repair_pending_count: int = 0
     output_repair_unknown_count: int = 0
+    # Requests count repair nodes; count/usage count actual logical model calls,
+    # including any schema correction within those nodes, not HTTP retries.
+    plan_repair_requested_count: int = 0
+    plan_repair_count: int = 0
+    plan_repair_succeeded_count: int = 0
+    plan_repair_failed_count: int = 0
+    plan_repair_cancelled_count: int = 0
+    plan_repair_pending_count: int = 0
+    plan_repair_unknown_count: int = 0
+    plan_repair_skipped_count: int = 0
+    plan_repair_attempt_ids: list[str] = Field(default_factory=list)
+    plan_repair_usage: NodeUsageRead = Field(default_factory=NodeUsageRead)
     repair_usage: NodeUsageRead = Field(default_factory=NodeUsageRead)
     refinement_usage: NodeUsageRead = Field(default_factory=NodeUsageRead)
     repair_attempt_ids: list[str] = Field(default_factory=list)
