@@ -1,5 +1,34 @@
 # 2026-10-18 发布与 Strata 附件验证记录
 
+## 当日追加发布：20 MiB 上传与服务器 Strata（当前版本）
+
+下方 `0c84e72` 为当日首次发布历史。用户随后明确授权提高上传大小、服务器配置 Strata、提交推送部署，并允许维护重启可能中断一条长时间未终结的 DeepSeek 请求。
+
+- 当前源码目录 `/opt/nexuspilot/releases/20261018-c8f6665`。上传及 Strata 登记实现 `88dbc2d`，解析临时文件修复 `c8f6665`，均已推送 `codex/workflow-contract-repair`，未合并 main。
+- 前端、Web 代理、API、解析原件、Nginx 上限均为 20 MiB；解析 Socket 请求允许 base64 膨胀及协议字段。结果 4 MiB、Office 解压 20 MiB、块数/页数/超时等限制保持。不是无限大小或任意复杂文件都能解析。
+- 第一次线上 20 MiB PDF 上传返回 422，发现解析进程 `RLIMIT_FSIZE` 仍为 4 MiB，写临时 PDF 原件失败；修正为允许 20 MiB 原件，输出仍独立限制为 4 MiB。补充回归测试后更新解析镜像。执行器重启后第二次验收在能力检查即停止，因 Socket 目录重新创建需要刷新 API 挂载；重建 API 后最终验收通过。前两次均未调用 Strata。
+- API/Web 镜像业务内容仍为 `88dbc2d`；新 `c8f6665` 标签复用相同 API/Web/MySQL 镜像，不重新改变依赖。解析镜像为 `nexuspilot-file-runtime:20261018-c8f6665`，ID `sha256:c8b90bed93bc72d3b67798f45d5f6fa2ac6e385df88a2d41a364913bc08939d6`。API 已重建，Web 原进程继续使用相同业务内容。
+- Strata endpoint `https://mithfusion.site/v1`，模型 `tiel-coder-35b-a3b-ud-q4_k_xl`。Key 经 SSH 私密传输到 `/etc/nexuspilot/config/api.env`，不进入 Git、SQL 或响应；暂存 Key 文件安装后删除。登记脚本 `deployments/production/register_strata.py` 可重复运行，发现已启用地址冲突则停止，不覆盖。工具/流式/缓存记录有真实调用依据；结构化输出仍标为未确认支持，不宣称 Agent 已验收。
+- 更新前保存 `/opt/nexuspilot/backups/20261018-88dbc2d`：匹配的数据库、MinIO、私有配置/证书及 SHA256SUMS。校验和、gzip 完整性通过。同机备份，未做异地或恢复演练。解析热修复前另保存运行配置到 `20261018-c8f6665-parser`。
+
+验证结果：
+
+| 检查 | 实际结果 |
+|---|---|
+| 后端与模型完整回归 | 877 通过、32 项可选环境测试跳过；不把跳过项计为通过 |
+| 临时文件修复后专项回归 | 28 通过、2 项可选 Docker 测试跳过；目标主机真实解析镜像检查另通过 |
+| 前端测试及 TypeScript | 142 通过；类型检查通过 |
+| 目标 AMD64 API/Web 构建、受限解析镜像检查 | 通过 |
+| 线上恰好 20 MiB PDF 上传、下载校验、解析对象读取 | 通过，原件 20,971,520 字节，解析 1 块 |
+| 大于 20 MiB 的文件预留 | 422 拒绝 |
+| DOCX、TXT 上传及持久解析 | 通过，分别 4 块、1 块 |
+| 登录、CSRF、跨用户会话/消息/文件读取拒绝、退出 | 通过；合成测试账号已停用 |
+| Strata 模型目录可选、实际文件工具调用、答案重新读取 | 通过 |
+
+20 MiB PDF 是在已有合成单页 PDF 后增加空白构造的大小边界样本，用于验证传输和原件资源限制，不证明 20 MiB 密集正文或扫描文档可解析。最终服务器测试 Session `b8a5236f-3ca0-439c-8416-79cce271d5d0`、Run `5c2490f4-24ef-41b1-8137-e04b0e547de3`。Strata 两次模型请求、一次实际 `read_file_content`，返回 PDF 内的英文原句并恢复消息正文；耗时 11.398 秒，输入 4,551、输出 236，共 4,787 token，缓存命中 1,732。没有已配置价格，不推算费用。验收脚本 `/tmp/nexus-smoke-upload-20261018.py`，镜像修复步骤 `/tmp/nexus-parser-fix.sh`；脚本 report 的 `release=88dbc2d` 指业务版本，实际执行器修复为 `c8f6665`。
+
+维护前的 DeepSeek Attempt `920b2d67-5b18-4aaa-a018-3bc2e8500b40` 在本轮前已超过 10 分钟仍为 STARTED、Run 为 PENDING；用户允许重启后继续发布。没有伪造其成功、取消或费用状态，数据库仍保留该未终结记录，需要另行诊断恢复。此问题不是本次 Strata 验收请求。未做额外浏览器人工交互或真实 Agent 验收。
+
 ## 发布结果
 
 用户授权：一次 Strata 含文件调用通过后，提交、推送并部署。业务代码包含 `9d90baf` 的完整对话正文对象存储修改；已发布源码提交为 `0c84e7213506ebc3f91831070924f0499a0e6bcf`，分支 `codex/workflow-contract-repair` 已推送，未合并 main。
