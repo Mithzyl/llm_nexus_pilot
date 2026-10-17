@@ -1078,7 +1078,7 @@ async def test_budgeted_workflow_requires_an_explicit_output_bound(
 async def test_agent_workflow_reuses_session_history_for_each_model_node(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify every Agent model node receives anchored history plus its node input."""
+    """Preserve anchored history and include authoritative final-stage execution facts once."""
 
     catalog = await client.post(
         "/api/v1/internal/model-catalog-versions",
@@ -1187,7 +1187,10 @@ async def test_agent_workflow_reuses_session_history_for_each_model_node(
         for request in provider.requests
         if request.metadata["agent_node_execution_key"] == "final_synthesis"
     )
-    assert json.loads(final_request.messages[-1].content) == {}
+    final_input = json.loads(final_request.messages[-1].content)
+    assert set(final_input) == {"execution_facts"}
+    assert final_input["execution_facts"]["source"] == "persisted_workflow_nodes_and_events"
+    assert final_input["execution_facts"]["loop_statistics"]["plan_repair_count"] == 0
     run_detail = (await client.get(f"/api/v1/runs/{current_turn['run']['run_id']}")).json()
     assert all(attempt["context_build_id"] for attempt in run_detail["attempts"])
 

@@ -1024,13 +1024,19 @@ async def test_stream_timeout_emits_failure_and_finalizes_attempt(
 @pytest.mark.parametrize(
     "chunk",
     [
-        {"error": {"message": "private upstream error"}},
+        {
+            "error": {
+                "code": "context_length_exceeded",
+                "param": "max_tokens",
+                "message": "private upstream error with Bearer test-secret",
+            }
+        },
         {"choices": [{"delta": {"refusal": "private refusal"}, "finish_reason": "stop"}]},
         {"choices": [{"delta": {"content": "partial"}}]},
     ],
 )
 async def test_chat_stream_failure_persists_failed_attempt_without_completion(client, chunk):
-    """Exercise chat decoding through ASGI; invalid completion never becomes saved success."""
+    """Persist safe error diagnostics through ASGI without leaking upstream text to clients."""
     run = await create_test_run(client)
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(
@@ -1063,6 +1069,15 @@ async def test_chat_stream_failure_persists_failed_attempt_without_completion(cl
     assert "private" not in response.text
     detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
     assert detail["attempts"][0]["status"] == "failed"
+    if "error" in chunk:
+        storage = app.dependency_overrides[get_object_storage]()
+        uri = detail["attempts"][0]["raw_response_uri"]
+        diagnostic = json.loads(storage.objects[uri][0])
+        assert diagnostic["provider_error"]["category"] == "context_length_exceeded"
+        assert diagnostic["provider_error"]["param"] == "max_tokens"
+        assert "private" not in json.dumps(diagnostic)
+        assert "test-secret" not in json.dumps(diagnostic)
+        assert "provider_error" not in response.text
 
 
 @pytest.mark.parametrize("stream", [False, True])

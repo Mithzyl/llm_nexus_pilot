@@ -20,6 +20,7 @@ from nexuspilot_models.contracts import (
     ToolCall,
 )
 from nexuspilot_models.errors import ModelProviderError
+from nexuspilot_models.diagnostics import provider_error_diagnostic
 from nexuspilot_models.providers.common import (
     parse_json_arguments,
     validate_structured_response,
@@ -546,16 +547,13 @@ class OpenAICompatibleChatProvider:
 
     @staticmethod
     def _check_provider_error(payload: dict[str, Any], attempts: list) -> None:
-        """Reject HTTP-200 error envelopes without exposing arbitrary upstream text."""
+        """Reject in-band errors with fixed public text and allowlisted private diagnostics."""
         if payload.get("error") is not None:
             raise ModelProviderError(
                 "provider_unavailable",
                 "Chat provider returned an error envelope.",
                 transport_attempts=attempts,
-                raw_error={
-                    "record_kind": "protocol_diagnostic",
-                    "error_envelope": True,
-                },
+                raw_error=provider_error_diagnostic(payload, http_status=200),
             )
 
     @staticmethod

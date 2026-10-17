@@ -159,6 +159,92 @@ async def test_chat_failure_is_not_success(stream, kind):
         assert "sensitive" not in str(caught.value)
 
 
+def test_chat_error_diagnostic_keeps_categories_not_upstream_secrets():
+    """Keep actionable private diagnostics without echoing credentials or arbitrary text."""
+    from nexuspilot_models.providers.openai_compatible import (
+        OpenAICompatibleChatProvider,
+    )
+
+    payload = {
+        "error": {
+            "code": "context_length_exceeded",
+            "type": "invalid_request_error",
+            "param": "max_tokens",
+            "message": "maximum context length exceeded; Authorization: Bearer secret-key; user@example.com",
+            "api_key": "secret-key",
+        }
+    }
+    with pytest.raises(ModelProviderError) as caught:
+        OpenAICompatibleChatProvider._check_provider_error(payload, [])
+    diagnostic = caught.value.raw_error
+    assert diagnostic["provider_error"]["category"] == "context_length_exceeded"
+    assert diagnostic["provider_error"]["param"] == "max_tokens"
+    assert len(diagnostic["provider_error"]["message_sha256"]) == 64
+    assert "secret-key" not in json.dumps(diagnostic)
+    assert "user@example.com" not in json.dumps(diagnostic)
+    assert "context_length" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "api-key SECRET",
+        {"code": "SECRET", "param": "SECRET"},
+        {"code": ["SECRET"], "message": {"token": "SECRET"}},
+    ],
+)
+def test_unknown_error_fields_are_not_preserved(error):
+    """Unknown and malformed diagnostic fields cannot smuggle free text into audit records."""
+    from nexuspilot_models.providers.openai_compatible import (
+        OpenAICompatibleChatProvider,
+    )
+
+    with pytest.raises(ModelProviderError) as caught:
+        OpenAICompatibleChatProvider._check_provider_error({"error": error}, [])
+    diagnostic = caught.value.raw_error
+    assert diagnostic["provider_error"]["category"] == "unknown"
+    assert diagnostic["provider_error"]["category_source"] == "unclassified"
+    assert "SECRET" not in json.dumps(diagnostic)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_http_error_diagnostics_are_safe_for_both_transport_paths(stream):
+    """HTTP failures retain allowlisted diagnostics without public or private secret echoes."""
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "context_length_exceeded",
+                        "param": "messages",
+                        "message": "Bearer SECRET user@example.com",
+                        "request": "SECRET",
+                    }
+                },
+            )
+        )
+    ) as client:
+        transport = HttpTransport(client, max_retries=0)
+        with pytest.raises(ModelProviderError) as caught:
+            if stream:
+                async with transport.open_sse(
+                    "https://offline.invalid", headers={}, payload={}, timeout_seconds=1
+                ):
+                    pytest.fail("HTTP failure must not yield a successful stream")
+            else:
+                await transport.post_json(
+                    "https://offline.invalid", headers={}, payload={}, timeout_seconds=1
+                )
+        diagnostic = caught.value.raw_error
+        assert diagnostic["provider_error"]["category"] == "context_length_exceeded"
+        assert diagnostic["http_status"] == 400
+        assert "SECRET" not in json.dumps(diagnostic)
+        assert "SECRET" not in str(caught.value)
+        assert "user@example.com" not in json.dumps(diagnostic)
+        assert "SECRET" not in str(caught.value.transport_attempts)
+
+
 async def test_disabled_thinking_accepts_tool_results_without_reasoning_state():
     """Non-thinking DeepSeek calls must not require reasoning that the provider never emitted."""
     from nexuspilot_models.contracts import ReasoningConfiguration

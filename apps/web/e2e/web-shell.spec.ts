@@ -143,6 +143,59 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => installApiMocks(page));
 
+/** A refreshed running conversation follows persisted results without a new POST or reload. */
+test("refreshing a running workflow follows it to completion without resubmitting", async ({ page }) => {
+  let complete = false;
+  let resultReads = 0;
+  let writes = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/nexus/") && request.method() === "POST") writes += 1;
+  });
+  const run = {
+    run_id: "run-1", session_id: "session-1", user_id: "nexuspilot-web",
+    status: "running", attempts: [], tasks: [], artifacts: [], cost_used: "0",
+    attempts_has_more: false, tasks_has_more: false, artifacts_has_more: false,
+    created_at: "2026-08-30T00:00:00Z", started_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:00Z", completed_at: null,
+  };
+  await page.route("**/api/nexus/sessions/session-1/messages/latest?*", (route) => fulfillJson(route, {
+    items: [{ message_id: "message-user", session_id: "session-1", run_id: "run-1",
+      role: "user", content_type: "text", content_text: "original question", sequence: 1,
+      created_at: "2026-08-30T00:00:00Z", metadata_json: {} }], has_more: false,
+  }));
+  await page.route("**/api/nexus/sessions/session-1/latest-run", (route) => fulfillJson(route, run));
+  await page.route("**/api/nexus/runs/run-1", (route) => fulfillJson(route, {
+    ...run, status: complete ? "completed" : "running",
+  }));
+  const summary = { workflow_execution_id: "workflow-1", run_id: "run-1", status: "running",
+    created_at: "2026-08-30T00:00:00Z", started_at: "2026-08-30T00:00:00Z",
+    updated_at: "2026-08-30T00:00:00Z", completed_at: null,
+    snapshot_version: 1, model_call_count: 1, max_model_calls: 16, node_count: 1,
+    active_node_execution_ids: [], current_stage: "worker_execution", execution_profile: "model_only_v1" };
+  await page.route("**/api/nexus/runs/run-1/agent-workflow", (route) => fulfillJson(route, summary));
+  await page.route("**/api/nexus/agent-workflows/workflow-1/events?*", (route) =>
+    route.fulfill({ status: 200, contentType: "text/event-stream", body: "" }));
+  await page.route("**/api/nexus/agent-workflows/workflow-1/result", (route) => {
+    resultReads += 1;
+    return fulfillJson(route, { ...summary, status: complete ? "completed" : "running",
+      snapshot_version: complete ? 2 : 1, nodes: [], aggregate_usage: { input_tokens: 10, output_tokens: 5, estimated_cost: "0" },
+      final_output: complete ? { final_text: "Recovered final answer", assistant_message_id: "saved-answer" } : null,
+      completion: complete ? { model_attempt_ids: [], total_duration_ms: 1000 } : null,
+    });
+  });
+  await page.goto("/c/session-1");
+  await expect.poll(() => resultReads).toBeGreaterThan(0);
+  await page.reload();
+  await expect(page.locator("article.assistant-message")).toBeVisible();
+  complete = true;
+  await expect(page.locator("article.assistant-message")).toContainText("Recovered final answer");
+  await expect(page.locator("article.assistant-message")).toContainText("工作流已完成");
+  const finalReads = resultReads;
+  await page.waitForTimeout(1800);
+  expect(resultReads).toBe(finalReads);
+  expect(writes).toBe(0);
+});
+
 /** Saved single/multi-round replies remain usable after reload and a failed follow-up upload. */
 for (const roundCount of [1, 3]) {
 test(`upload failure does not lock a completed quick-response conversation (${roundCount} rounds)`, async ({ page }, testInfo) => {

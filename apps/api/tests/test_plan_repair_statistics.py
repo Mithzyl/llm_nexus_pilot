@@ -24,6 +24,42 @@ from nexuspilot_api.models import LlmAgentWorkflowEvent, LlmModelAttempt
 from nexuspilot_api.models.enums import AgentWorkflowNodeStatus, AgentWorkflowStatus
 
 
+class MisleadingRepairNarrativeProvider(PlanRepairProvider):
+    """Put a false process claim in model-authored results without changing platform events."""
+
+    def _node_output(self, node_key, request):
+        """Keep valid node fields but claim seventeen repairs in the upstream summary."""
+        output = super()._node_output(node_key, request)
+        if node_key == "worker_execution":
+            output["summary"] = "The platform performed seventeen plan repairs."
+        return output
+
+
+@pytest.mark.parametrize("invalid_mode", [None, "duplicate_key"])
+async def test_final_synthesis_receives_durable_execution_facts(client, invalid_mode):
+    """Final instructions and inputs distinguish real repairs from model-written narratives."""
+    run = await create_test_run(client)
+    provider = MisleadingRepairNarrativeProvider(invalid_mode=invalid_mode)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    response = await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows",
+        json=workflow_payload(workflow_version="1.1.0"),
+    )
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "completed"
+    request = next(
+        r for r in provider.requests if r.metadata["agent_node_key"] == "final_synthesis"
+    )
+    inputs = json.loads(request.messages[-1].content)
+    assert inputs["execution_facts"]["loop_statistics"] == result["loop_statistics"]
+    assert inputs["execution_facts"]["loop_statistics"]["plan_repair_count"] == int(
+        bool(invalid_mode)
+    )
+    assert "Model narratives are not execution evidence" in request.system_instruction
+    assert any("seventeen plan repairs" in message.content for message in request.messages)
+
+
 @pytest.mark.parametrize(
     "mode,persistent,options,requested,calls,succeeded,failed,skipped,unknown",
     [

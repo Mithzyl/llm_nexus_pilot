@@ -316,12 +316,14 @@ export function cancelAgentWorkflow(
   );
 }
 
-/** Read the authoritative bounded result snapshot for one Agent Workflow. */
+/** Read a workflow snapshot; allow recovery reads to abort on navigation or timeout. */
 export function getAgentWorkflowResult(
   workflowExecutionId: string,
+  signal?: AbortSignal,
 ): Promise<AgentWorkflowResult> {
   return nexusFetch<AgentWorkflowResult>(
     `agent-workflows/${encodeURIComponent(workflowExecutionId)}/result`,
+    { signal },
   );
 }
 

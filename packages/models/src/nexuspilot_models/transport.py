@@ -12,6 +12,7 @@ import httpx
 
 from nexuspilot_models.contracts import TransportAttempt
 from nexuspilot_models.errors import ModelProviderError
+from nexuspilot_models.diagnostics import provider_error_diagnostic
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,7 @@ class HttpTransport:
             await stream_context.__aexit__(None, None, None)
             error_type, retryable = self._classify_status(response.status_code)
             message = self._safe_error_message_from_bytes(body)
+            raw_error = self._error_diagnostic_from_bytes(body, response.status_code)
             attempts.append(
                 TransportAttempt(
                     attempt_index=attempt_index,
@@ -242,6 +244,7 @@ class HttpTransport:
                 message,
                 retryable=retryable,
                 status_code=response.status_code,
+                raw_error=raw_error,
                 transport_attempts=attempts,
             )
 
@@ -320,34 +323,30 @@ class HttpTransport:
         return payload
 
     def _safe_json(self, response: httpx.Response) -> dict[str, Any]:
-        """Return a bounded provider error object without headers or request data."""
+        """Retain allowlisted diagnostics, never raw provider request echoes."""
 
-        try:
-            payload = response.json()
-        except ValueError:
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        return self._error_diagnostic_from_bytes(response.content, response.status_code)
 
-    def _safe_error_message(self, response: httpx.Response) -> str:
-        """Extract a short provider error message while excluding headers and credentials."""
-
-        payload = self._safe_json(response)
-        error = payload.get("error")
-        if isinstance(error, dict) and isinstance(error.get("message"), str):
-            return error["message"][:2000]
-        return f"Model provider returned HTTP {response.status_code}."
-
-    def _safe_error_message_from_bytes(self, body: bytes) -> str:
-        """Extract a bounded error message from a failed streaming response body."""
+    def _error_diagnostic_from_bytes(
+        self, body: bytes, status_code: int
+    ) -> dict[str, Any]:
+        """Classify JSON or non-JSON errors for private audit without retaining free text."""
 
         try:
             payload = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return "Model provider rejected the stream request."
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            if isinstance(error, dict) and isinstance(error.get("message"), str):
-                return error["message"][:2000]
+        except (ValueError, UnicodeDecodeError):
+            payload = body.decode("utf-8", errors="replace")
+        return provider_error_diagnostic(payload, http_status=status_code)
+
+    def _safe_error_message(self, response: httpx.Response) -> str:
+        """Keep the public HTTP error stable without exposing arbitrary upstream text."""
+
+        return f"Model provider returned HTTP {response.status_code}."
+
+    def _safe_error_message_from_bytes(self, body: bytes) -> str:
+        """Never expose a rejected stream's arbitrary error body as a public message."""
+
+        del body
         return "Model provider rejected the stream request."
 
     def _classify_status(self, status_code: int) -> tuple[str, bool]:

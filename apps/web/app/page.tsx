@@ -132,6 +132,7 @@ import { repeatableUserPrompt } from "../lib/message-actions";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { followWorkflowResult } from "../lib/workflow-recovery";
 import type { CSSProperties, KeyboardEvent } from "react";
 
 const EMPTY_PROVIDER_CATALOG: ProviderCatalog = {
@@ -354,6 +355,13 @@ export default function Home() {
   const restoredRouteKey = useRef<string | null>(null);
   const sessionRestoreRequestId = useRef(0);
   const workflowRestoreRequestId = useRef(0);
+  const workflowRecoveryController = useRef<AbortController | null>(null);
+
+  /** Release recovery reads on unmount; this never cancels server-side execution. */
+  useEffect(() => () => {
+    workflowRestoreRequestId.current += 1;
+    workflowRecoveryController.current?.abort();
+  }, []);
   const providerCatalogRequestId = useRef(0);
   const providerCatalogRequestController = useRef<AbortController | null>(null);
   const reasoningDisplayPreference = useRef<ReasoningDisplayPolicy | null>(null);
@@ -889,6 +897,8 @@ export default function Home() {
 
   /** Invalidate stale workflow reads and clear projections without changing the current Run. */
   function resetAgentWorkflowFacts() {
+    workflowRecoveryController.current?.abort();
+    workflowRecoveryController.current = null;
     workflowRestoreRequestId.current += 1;
     setAgentWorkflow(null);
     setWorkflowAbsentForRunId(null);
@@ -945,7 +955,7 @@ export default function Home() {
     if (result.error) setErrorMessage(result.error.public_message);
   }
 
-  /** Restore only the current Run's workflow facts; only a current 404 confirms absence. */
+  /** Restore current Run facts, then follow nonterminal snapshots without re-executing it. */
   async function restoreAgentWorkflowForRun(runId: string, assistantLocalId?: string) {
     resetAgentWorkflowFacts();
     const requestId = workflowRestoreRequestId.current;
@@ -995,12 +1005,53 @@ export default function Home() {
       const result = await getAgentWorkflowResult(summary.workflow_execution_id);
       if (workflowRestoreRequestId.current !== requestId) return;
       applyAgentWorkflowResult(result, assistantLocalId);
+      if (!["pending", "running", "waiting_for_input"].includes(result.status)) return;
     } catch (error) {
       if (workflowRestoreRequestId.current !== requestId) return;
       setErrorMessage(
         `工作流摘要已恢复，但完整节点暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
       );
     }
+    if (workflowRestoreRequestId.current !== requestId) return;
+    const recovery = new AbortController();
+    workflowRecoveryController.current = recovery;
+    void followWorkflowResult({
+      signal: recovery.signal,
+      read: (signal) => getAgentWorkflowResult(summary.workflow_execution_id, signal),
+      apply: async (result, signal) => {
+        if (workflowRestoreRequestId.current !== requestId) return;
+        // Apply the durable answer even when event replay is temporarily unavailable.
+        applyAgentWorkflowResult(result, assistantLocalId);
+        setErrorMessage((current) => current === "暂时无法更新执行进度，正在重试读取；请勿重复提交。" ? null : current);
+        try {
+          const replay = await replayAgentWorkflowEvents(
+            summary.workflow_execution_id, restoredEvents.lastSequence, signal,
+          );
+          await readAgentWorkflowEventStream(replay, (event) => {
+            restoredEvents = appendAgentWorkflowEvent(restoredEvents, event);
+          }, { requireTerminalEvent: false });
+          if (workflowRestoreRequestId.current !== requestId) return;
+          setAgentEventState(restoredEvents);
+        } catch (error) {
+          if (signal.aborted || workflowRestoreRequestId.current !== requestId) return;
+          setErrorMessage(`执行结果已更新，过程记录暂不可用：${error instanceof Error ? error.message : "未知错误"}`);
+        }
+        if (!["pending", "running", "waiting_for_input"].includes(result.status)) {
+          const updatedRun = await getRun(runId);
+          if (workflowRestoreRequestId.current === requestId) setRun(updatedRun);
+        }
+      },
+      onError: (error) => {
+        if (workflowRestoreRequestId.current === requestId) {
+          if (error instanceof NexusApiError && [401, 403, 404].includes(error.status)) {
+            recovery.abort();
+            setErrorMessage("无法继续读取执行结果，请确认登录状态和访问权限。");
+            return;
+          }
+          setErrorMessage("暂时无法更新执行进度，正在重试读取；请勿重复提交。");
+        }
+      },
+    });
   }
 
   /**

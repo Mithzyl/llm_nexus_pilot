@@ -56,6 +56,9 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
     WorkflowExecutionStateService,
     WorkflowExecutionStopped,
 )
+from nexuspilot_api.features.agent_runtime.services.workflow_loop_statistics import (
+    read_loop_statistics,
+)
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import validate_controller_plan
 from nexuspilot_api.features.memory.schemas.collaboration_memory import AgentHandoffCreate
 from nexuspilot_api.features.memory.services.collaboration_memory_service import submit_handoff
@@ -377,6 +380,23 @@ class ModelOnlyWorkflowOrchestrator:
             worker_result_inputs = [self._worker_record_input(record) for record in worker_records]
             handoff_outputs = [record.handoff for record in worker_records]
             worker_agent_run_ids = [record.agent_run_id for record in worker_records]
+            # Execution counts come from committed nodes/events, never a model's
+            # description of what it thinks the platform did.
+            execution_nodes = list(
+                await self.db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id
+                        == workflow.workflow_execution_id
+                    )
+                )
+            )
+            execution_facts = {
+                "source": "persisted_workflow_nodes_and_events",
+                "scope": "before_final_synthesis",
+                "loop_statistics": (
+                    await read_loop_statistics(self.db_session, workflow, execution_nodes)
+                ).model_dump(mode="json"),
+            }
 
             current_node = await self._start_node(
                 workflow,
@@ -385,6 +405,7 @@ class ModelOnlyWorkflowOrchestrator:
                 output_type="final_synthesis",
                 input_values={
                     "objective": run.user_request,
+                    "execution_facts": execution_facts,
                     "worker_results": worker_result_inputs,
                     "handoffs": [item.model_dump(mode="json") for item in handoff_outputs],
                     "verification": verification.model_dump(mode="json"),
@@ -416,11 +437,20 @@ class ModelOnlyWorkflowOrchestrator:
                     "requests, or replanning requests exist. Treat every Reviewer finding and "
                     "required_action as an evidence constraint: do not present rejected claims "
                     "as confirmed, clearly state limitations and missing inputs, and provide "
-                    "safe next actions when work remains."
+                    "safe next actions when work remains. "
+                    "Model narratives are not execution evidence. execution_facts is the sole "
+                    "authority for whether retries, output repairs, plan repairs or refinement "
+                    "actually occurred. Zero means no such action occurred, even if the user "
+                    "requested it or an upstream summary claims it. Never repeat contradictory "
+                    "process claims from plans, handoffs or reviews. Answer the user's substantive "
+                    "question in their language; omit internal process narration unless requested. "
+                    "When process is requested, report the supplied execution_facts accurately, "
+                    "including a requested repair that did not occur."
                 ),
                 model_output=FinalSynthesisModelOutput,
                 model_input={
                     "objective": run.user_request,
+                    "execution_facts": execution_facts,
                     "worker_results": worker_result_inputs,
                     "handoffs": [item.model_dump(mode="json") for item in handoff_outputs],
                     "verification": verification.model_dump(mode="json"),
