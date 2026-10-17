@@ -175,6 +175,40 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 
 ### Controller 修正与 Strata 真实验证（2026-10-17）
 
+#### 浏览器发起、刷新、断网与取消续验（2026-10-17）
+
+状态：限定场景验证已执行，整体验收未通过。先提交修复、测试和文档为 `3750c1e`，再以该代码启动本地 API 18000、Web 3100、MySQL 13306、MinIO 19000；以下时间均为 UTC。本次仅调用 Strata `tiel-coder-35b-a3b-ud-q4_k_xl`，没有 DeepSeek 请求、推送或部署。三个工作流均由 Playwright 操作页面发起，不由验收脚本创建；真实页面角色配置为 controller/planner/reviewer 全部 Strata、prompted_json、每次调用 timeout_seconds=60。浏览器另加测试专用请求检查，拒绝非 Strata 的生成请求，不修改应用代码。
+
+Session `a8fbd288-5b02-4e31-b7ac-4ce35fef0f17` 内保存三个运行：
+
+| 样本 / Run | 实际结果 | 服务端工作流耗时 | 已知输入 / 输出 Token |
+|---|---|---:|---:|
+| 首次 `64d1c356-2569-47c1-8cbd-fbfc7ea71c9c` | Controller 完成，Worker 收到供应商错误；未执行刷新 | 14:46:43–14:47:02，约 19 秒 | 1156 / 616；失败 Worker 未返回用量 |
+| 刷新及断网 `612db30a-4c4f-458c-8481-e54ae443ab62` | 刷新、断网后继续执行；Reviewer 收到供应商错误；页面自动恢复失败终态 | 14:48:42–14:49:33，约 51 秒 | 1932 / 1207；失败 Reviewer 未返回用量 |
+| 显式取消 `45859413-90ae-4a00-a03c-a02fcffd6fcd` | 用户取消后不再执行后续节点；已发出 Worker 返回后保存用量 | 14:50:34–14:50:51，约 17 秒；末次调用至 14:50:57 才结束 | 1919 / 1134，按 Attempt 统计完整 |
+
+耗时来自数据库秒精度时间，不冒充浏览器端毫秒测量。第三个样本浏览器接受响应耗时 109 毫秒；点击取消到 HTTP 200 为 104 毫秒。共 7 个模型调用记录，5 个已完成、2 个失败；已知合计输入 **5007**、输出 **2957**、总计 **7964 Token**，另外两个失败调用用量未知，不能记为零。没有登记 Strata 价格，金额未知；聚合费用 0 不代表免费。
+
+逐调用记录：首次 Controller 1156/616、12.699 秒；断网样本 Controller 1156/569、11.576 秒，Worker 776/638、12.056 秒；取消样本 Controller 1152/699、13.954 秒，Worker 767/435、8.952 秒。失败调用没有 latency_ms，不伪造。两次失败都是 HTTP 200 中的错误对象，安全分类 unknown，消息长度分别 74、68，摘要哈希不同；已保存最小诊断，但没有原始错误正文，不能据此确认供应商内部原因。两次完整尝试失败后停止付费重复尝试，仅完成独立取消样本。
+
+检查结果：
+
+- **通过：浏览器发起后刷新不取消执行。** 第二次运行收到 POST 流响应后立即刷新会话；14:48:53 仍是同一 Run、Controller 正在运行。没有重发工作流 POST。
+- **通过：浏览器离线期间后台推进。** 14:48:56.980 断开浏览器网络；数据库显示 Worker 在 14:49:06 完成并启动 Reviewer。API 进程与供应商连接保持，不模拟 API 进程崩溃。
+- **通过：重新联网自动恢复真实终态。** 14:49:22.139 联网但不刷新、不发送；页面先提示重试读取，随后自行显示 Reviewer 失败。控制台 6 条 ERR_INTERNET_DISCONNECTED 均来自人为断网期间的只读请求，没有把它们描述成零错误。
+- **通过（历史成功样本）：最终回答刷新恢复。** 只读打开已有 Strata Session `8889361d-ae80-47da-b478-c093b6e94f48`，再刷新；14:52:11 DOM 正文与 Workflow `15424c3a-514a-4b9b-9ffc-f5edda9a9ca5` 的 final_text 一致，仍为原 6 次 Strata 调用，未追加调用。**本次新建工作流没有成功最终回答，发起→断网→自动显示成功回答的一次完整流程仍未通过，不能用历史样本代替。**
+- **通过（执行控制）：显式取消并刷新恢复 cancelled。** Workflow `4246a1bf-db9c-4fe3-b5e0-48547a2394c2` 在 Worker 调用中取消。Worker 后来返回，不提交已取消节点结果，不启动 Reviewer/最终汇总；再次只读检查仍只有 2 个调用。已发出请求不能视为撤销或免费。
+- **失败：取消后的迟到用量汇总。** Attempt 已保存输入 1919 / 输出 1134；result.aggregate_usage 仍为 1152 / 699，少了 Worker 的 767 / 435。`workflow_query_service.py` 汇总节点 usage_json，已取消节点未同步迟到 Attempt 用量。下一步需定义并测试终态后的用量更新，保持节点 cancelled、不重复累计、不再执行业务节点。
+- **失败：取消终态文案。** 刷新后执行摘要正确显示“执行已取消”，但消息状态仍是“已停止 · 等待服务端最终状态”。`apps/web/app/page.tsx` 对 message.cancelled 无条件使用等待文案，应区分本地停止等待与服务端已确认取消。另观察到输入模型刷新后回到默认 DeepSeek；本次再次发送前均手动选择 Strata，未误调，模型选择恢复需另行明确产品要求。
+
+复查命令（只读，不调用模型）：
+
+```bash
+apps/api/.venv/bin/python deployments/verification/check_live_strata_plan_repair.py --mode inspect --run-id RUN_ID --output NEW_OUTPUT_PATH
+```
+
+`inspect` 的 status=passed 只表示读取成功，不表示工作流成功。SQL 模型调用及 MinIO 已保存响应对象读取通过。证据位于本机忽略目录 `output/playwright/`：`strata-lifecycle-first-20261017.json`、`strata-lifecycle-offline-20261017.json`、`strata-lifecycle-recovered-20261017.json`、`strata-lifecycle-cancel-settled-20261017.json`；页面 `lifecycle-reconnected.yml`、`lifecycle-recovered-terminal.yml`、`lifecycle-cancel-restored.yml`、`lifecycle-historical-restored.yml`；两张对应 restored PNG 已实际查看。服务端调用使用的 Provider 已核对为 Strata。此次仅新增验收记录，未为取得通过修改运行代码或放宽判断。
+
 #### 后端执行观察分离（2026-10-17，已完成本地限定验证）
 
 POST SSE 创建成功后，执行任务由进程级 `WorkflowExecutionTasks` 持有，使用独立数据库会话；在返回响应前启动，不等浏览器开始消费响应体。观察连接结束只解除观察，不取消执行。观察队列最多 256 条，慢消费者不阻塞持久执行，遗漏的事件通过既有序号与 GET 回放读取。任务结束释放进程引用并消费异常；日志仅记录 Workflow ID，不打印任意异常正文。
