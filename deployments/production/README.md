@@ -1,6 +1,6 @@
 # NexusPilot 首次生产部署
 
-**当前发布（2026-10-12）：** 用户已授权推送和服务器更新，`2f06962` 已部署至 `/opt/nexuspilot/releases/20261012-2f06962`，current 已切换。专用 Office/PDF 执行器已启用，快速回复两轮真实文件读取通过；Agent 两次模型节点结构校验失败，验收未通过。新发布对象、备份、实际测试与维护命令见[2026-10-12 部署记录](../../docs/implementation/server-deployment-20261012.md)。下文 10 月 4 日验证描述属于历史，不能替代本次结果。未来重建 API 必须同时包含 `docker-compose.office.yml`。
+**当前发布（2026-10-18）：** `0c84e72` 已部署至 `/opt/nexuspilot/releases/20261018-0c84e72`，current 已切换，数据库为 `20261018_0024`。本地 Strata 真实附件调用通过；线上完成无模型调用的 TXT/DOCX/PDF、MinIO 正文恢复、登录与跨用户隔离检查。服务器仍沿用 DeepSeek 配置，没有自动复制本地 Strata Key。版本、备份和验收范围见[2026-10-18 部署记录](../../docs/implementation/server-deployment-20261018.md)。下文 10 月 4 日与 10 月 12 日验证描述属于历史，不代替本次结果；历史 Agent 失败也不在本次重新验收范围。重建 API 必须同时包含 `docker-compose.office.yml`。
 
 本目录提供单台 Linux 主机的 Docker Compose 部署，使用预置账号，只对外发布 Nginx。2026-10-04 已在目标 AMD64 主机启动首个实例，使用自签 HTTPS 8443；配置、实际检查和剩余限制见[服务器部署记录](../../docs/implementation/server-deployment-20261004.md)。部署准备来自 `codex/deployment`，前置功能提交为 `83d335e`；首次部署执行时使用获授权的未提交工作区快照，不能把该前置提交当成实际部署版本。部署验收后按用户要求提交并合入 `main`，后续开发以 `main` 为基础；服务器仍以记录中的源码快照及镜像 ID 标识，不随本地 Git 合并自动更新。
 
