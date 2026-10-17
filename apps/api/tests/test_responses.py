@@ -13,10 +13,15 @@ from nexuspilot_models.contracts import (
     ProviderName,
     ReasoningContinuationMode,
     ReasoningPresentationCapability,
+    StreamEvent,
+    StreamEventType,
     TransportAttempt,
 )
+from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog
+from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
+from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -34,8 +39,39 @@ from nexuspilot_api.main import app
 from nexuspilot_api.models import AttemptStatus, LlmModelAttempt
 from nexuspilot_api.schemas.responses import ResponsesRequest
 from nexuspilot_api.services.model_response_service import (
+    ModelInvocationService,
     calculate_prompt_prefix_fingerprint,
 )
+
+
+async def test_platform_stream_deadline_preserves_observed_usage():
+    """The total platform deadline keeps counters already seen from an otherwise stalled adapter."""
+
+    class Stalled:
+        """Provide accounting progress before waiting indefinitely."""
+
+        async def stream(self, request):
+            """Report a known input count, without inventing an output count."""
+            yield StreamEvent(type=StreamEventType.USAGE, sequence=1, data={"input_tokens": 25})
+            await asyncio.Event().wait()
+
+    request = ModelRequest(
+        provider=ProviderName.OPENAI, model="test", messages=[{"role": "user", "content": "test"}]
+    )
+    with pytest.raises(ModelProviderError) as caught:
+        _ = [
+            event
+            async for event in ModelInvocationService._stream_provider_with_deadline(
+                None,
+                Stalled(),
+                request,
+                timeout_seconds=0.01,
+            )
+        ]
+    assert caught.value.error_type == "timeout"
+    assert caught.value.response.input_tokens == 25
+    assert caught.value.response.output_tokens is None
+    assert caught.value.response.raw_response["usage_complete"] is False
 
 
 class RawResponseFailingObjectStorage:
@@ -1192,6 +1228,106 @@ async def test_invalid_json_preserves_usage_and_cost_once(
     assert "private reasoning fixture" not in reasoning.text
     if failure == "commit_ack":
         assert injected
+
+
+async def test_stream_usage_before_error_is_preserved_without_summing_snapshots(client):
+    """Retain last known cumulative usage without claiming an incomplete bill is final."""
+    run = await create_test_run(client)
+    chunks = [
+        {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 10}},
+        {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": 20}},
+        {"error": {"code": "server_error", "message": "PRIVATE"}},
+    ]
+    body = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body))
+    ) as upstream:
+        registry = create_provider_registry(
+            Settings(_env_file=None, deepseek_api_key="dummy", deepseek_models="deepseek-v4-flash"),
+            upstream,
+            {ProviderName.DEEPSEEK: "https://offline.invalid"},
+        )
+        app.dependency_overrides[get_provider_registry] = lambda: registry
+        response = await client.post(
+            "/api/v1/responses",
+            json={
+                "run_id": run["run_id"],
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "input": "test",
+                "stream": True,
+            },
+        )
+    assert "response.failed" in response.text
+    assert "PRIVATE" not in response.text
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "failed"
+    assert attempt["input_tokens"] == 100
+    assert attempt["output_tokens"] == 20
+    assert attempt["estimated_cost"] is None
+    storage = app.dependency_overrides[get_object_storage]()
+    audit = json.loads(storage.objects[attempt["raw_response_uri"]][0])
+    assert audit["usage_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "name,provider_type,stream",
+    [
+        (ProviderName.OPENAI, OpenAIResponsesProvider, True),
+        (ProviderName.ANTHROPIC, AnthropicMessagesProvider, True),
+        (ProviderName.OPENAI, OpenAIResponsesProvider, False),
+    ],
+)
+async def test_provider_failure_api_never_exposes_upstream_message(
+    client, name, provider_type, stream
+):
+    """Persist failed attempts and safe diagnostics through the actual API in both entry modes."""
+    run = await create_test_run(client)
+    error = {"code": "server_error", "message": "PRIVATE_SYNTHETIC", "echo": "PRIVATE_SYNTHETIC"}
+    body = {"type": "error", "error": error} if stream else {"status": "failed", "error": error}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: (
+                httpx.Response(200, text="data: " + json.dumps(body) + "\n\n")
+                if stream
+                else httpx.Response(200, json=body)
+            )
+        )
+    ) as upstream:
+        registry = ProviderRegistry()
+        registry.register(
+            name,
+            provider_type(
+                HttpTransport(upstream, max_retries=0),
+                base_url="https://offline.invalid",
+                api_key="dummy",
+            ),
+            allowed_models={"test"},
+        )
+        app.dependency_overrides[get_provider_registry] = lambda: registry
+        response = await client.post(
+            "/api/v1/responses",
+            json={
+                "run_id": run["run_id"],
+                "provider": name.value,
+                "model": "test",
+                "input": "test",
+                "stream": stream,
+            },
+        )
+    assert response.status_code == (200 if stream else 502), response.text
+    assert "PRIVATE_SYNTHETIC" not in response.text
+    if stream:
+        assert "response.failed" in response.text
+        assert "response.completed" not in response.text
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "failed"
+    storage = app.dependency_overrides[get_object_storage]()
+    diagnostic = json.loads(storage.objects[attempt["raw_response_uri"]][0])
+    assert "PRIVATE_SYNTHETIC" not in json.dumps(diagnostic)
+    assert diagnostic["provider_error"]["category"] == "server_error"
 
 
 async def test_unconfigured_provider_returns_stable_error(client: httpx.AsyncClient) -> None:

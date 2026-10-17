@@ -18,10 +18,12 @@ from nexuspilot_models.contracts import (
     ToolCall,
 )
 from nexuspilot_models.errors import ModelProviderError
+from nexuspilot_models.diagnostics import provider_error_diagnostic
 from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
     validate_structured_response,
+    preserve_stream_usage,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -58,6 +60,7 @@ class AnthropicMessagesProvider:
             attempts=result.attempts,
         )
 
+    @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         """Normalize Messages events and require message_stop plus an actual stop reason."""
 
@@ -102,6 +105,12 @@ class AnthropicMessagesProvider:
                     cached_tokens = normalized_usage["cached_tokens"]
                     cache_write_tokens = normalized_usage["cache_write_tokens"]
                     cache_miss_tokens = normalized_usage["cache_miss_tokens"]
+                    yield StreamEvent(
+                        type=StreamEventType.USAGE,
+                        sequence=sequence,
+                        data=normalized_usage,
+                    )
+                    sequence += 1
                 elif event_type == "content_block_start":
                     block = event.get("content_block") or {}
                     if block.get("type") == "tool_use":
@@ -163,9 +172,12 @@ class AnthropicMessagesProvider:
                     error = event.get("error") or {}
                     raise ModelProviderError(
                         "provider_unavailable",
-                        str(error.get("message") or "Anthropic stream failed."),
-                        retryable=error.get("type") == "overloaded_error",
-                        raw_error=error,
+                        "Anthropic stream failed.",
+                        retryable=isinstance(error, dict)
+                        and error.get("type") == "overloaded_error",
+                        raw_error=provider_error_diagnostic(
+                            {"error": error}, http_status=200
+                        ),
                         transport_attempts=attempts,
                     )
 

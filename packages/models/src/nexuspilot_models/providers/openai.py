@@ -20,10 +20,12 @@ from nexuspilot_models.contracts import (
     ToolCall,
 )
 from nexuspilot_models.errors import ModelProviderError
+from nexuspilot_models.diagnostics import provider_error_diagnostic
 from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
     validate_structured_response,
+    preserve_stream_usage,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -60,6 +62,7 @@ class OpenAIResponsesProvider:
             attempts=result.attempts,
         )
 
+    @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         """Normalize Responses events and reject EOF before an explicit terminal response."""
 
@@ -157,6 +160,14 @@ class OpenAIResponsesProvider:
                     )
                     sequence += 1
                 elif event_type in {"response.failed", "error"}:
+                    failed_usage = (event.get("response") or {}).get("usage")
+                    if isinstance(failed_usage, dict):
+                        yield StreamEvent(
+                            type=StreamEventType.USAGE,
+                            sequence=sequence,
+                            data=self._normalize_usage(failed_usage),
+                        )
+                        sequence += 1
                     error = (
                         event.get("error")
                         or (event.get("response") or {}).get("error")
@@ -164,9 +175,11 @@ class OpenAIResponsesProvider:
                     )
                     raise ModelProviderError(
                         "provider_unavailable",
-                        str(error.get("message") or "OpenAI stream failed."),
+                        "OpenAI stream failed.",
                         retryable=True,
-                        raw_error=error if isinstance(error, dict) else {},
+                        raw_error=provider_error_diagnostic(
+                            {"error": error}, http_status=200
+                        ),
                         transport_attempts=attempts,
                     )
 
@@ -322,7 +335,31 @@ class OpenAIResponsesProvider:
         latency_ms: int,
         attempts: list,
     ) -> ModelResponse:
-        """Normalize Responses output items, usage, status, and incomplete reasons."""
+        """Normalize terminal Responses output; reject failed or unknown lifecycle states."""
+
+        if payload.get("status") not in {"completed", "incomplete"} or payload.get(
+            "error"
+        ):
+            diagnostic = provider_error_diagnostic(payload, http_status=200)
+            usage = payload.get("usage")
+            failed_response = None
+            if isinstance(usage, dict) and usage:
+                failed_response = ModelResponse(
+                    **self._normalize_usage(usage),
+                    finish_reason="error",
+                    latency_ms=latency_ms,
+                    raw_response={**diagnostic, "usage_complete": False},
+                    transport_attempts=attempts,
+                )
+            raise ModelProviderError(
+                "provider_unavailable"
+                if payload.get("status") == "failed"
+                else "response_parse_error",
+                "OpenAI response did not complete successfully.",
+                raw_error=diagnostic,
+                response=failed_response,
+                transport_attempts=attempts,
+            )
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []

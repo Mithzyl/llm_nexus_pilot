@@ -151,7 +151,7 @@ class AgentWorkflowExecutionService:
         *,
         event_sink: EventSink,
     ) -> AgentWorkflowResultRead:
-        """Execute streamed work in a session that lives as long as the response body."""
+        """Execute work in its own session, independently of the observing response body."""
 
         async with self.db_session_factory() as db_session:
             workflow_orchestrator = self._create_model_only_workflow_orchestrator(db_session)

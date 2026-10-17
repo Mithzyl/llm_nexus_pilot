@@ -26,6 +26,7 @@ from nexuspilot_models.contracts import (
 )
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import PriceCatalog
+from nexuspilot_models.providers.common import preserve_stream_usage
 from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -456,6 +457,7 @@ class ModelInvocationService:
                 )
             yield failure_event
 
+    @preserve_stream_usage
     async def _stream_provider_with_deadline(
         self,
         provider: Any,
@@ -952,7 +954,7 @@ class ModelInvocationService:
         model_attempt: LlmModelAttempt,
         error: ModelProviderError,
     ) -> None:
-        """Persist failure evidence, including known JSON-generation usage and cost once."""
+        """Persist known usage once; interrupted streams do not imply a final bill."""
 
         model_attempt = await self._reload_started_model_attempt(model_attempt.attempt_id)
         if model_attempt is None:
@@ -986,7 +988,11 @@ class ModelInvocationService:
                 await self._persist_provider_response_state(
                     model_attempt,
                     response,
-                    status=AttemptStatus.FAILED,
+                    status=(
+                        AttemptStatus.TIMED_OUT
+                        if error.error_type == "timeout"
+                        else AttemptStatus.FAILED
+                    ),
                     raw_response_uri=raw_uri,
                     error_code=error.error_type,
                     error_message=error.message[:4000],
@@ -1345,6 +1351,9 @@ class ModelInvocationService:
         model: str,
     ) -> ModelResponse:
         """Attach an estimate only when explicit pricing and complete usage are available."""
+
+        if response.raw_response.get("usage_complete") is False:
+            return response.model_copy(update={"estimated_cost": None})
 
         estimated = self.prices.estimate(
             provider,

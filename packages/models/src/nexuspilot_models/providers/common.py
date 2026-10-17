@@ -1,6 +1,8 @@
 """Shared parsing helpers that do not define provider wire formats."""
 
 import json
+import time
+from functools import wraps
 from typing import Any
 
 from nexuspilot_models.contracts import (
@@ -9,8 +11,57 @@ from nexuspilot_models.contracts import (
     ModelRequest,
     ModelResponse,
     ProviderName,
+    StreamEventType,
 )
 from nexuspilot_models.errors import ModelProviderError
+
+
+def preserve_stream_usage(stream):
+    """Retain cumulative usage on stream failure, without inventing final billing or output."""
+
+    @wraps(stream)
+    async def tracked(*args, **kwargs):
+        """Copy known nonnegative counters; repeated snapshots replace, never add."""
+        usage = {}
+        started = time.perf_counter()
+        fields = {
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+            "cache_miss_tokens",
+            "reasoning_tokens",
+        }
+        try:
+            async for event in stream(*args, **kwargs):
+                if event.type == StreamEventType.USAGE:
+                    for key in fields:
+                        value = event.data.get(key)
+                        if (
+                            isinstance(value, int)
+                            and not isinstance(value, bool)
+                            and value >= 0
+                        ):
+                            usage[key] = value
+                yield event
+        except ModelProviderError as error:
+            if usage and error.response is None:
+                error.response = ModelResponse(
+                    **usage,
+                    finish_reason="error",
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    raw_response={
+                        "record_kind": "interrupted_stream_usage",
+                        "usage_complete": False,
+                        "usage": usage,
+                        "diagnostic": error.raw_error,
+                    },
+                    transport_attempts=error.transport_attempts,
+                    provider_request_id=error.provider_request_id,
+                )
+            raise
+
+    return tracked
 
 
 def validate_structured_response(

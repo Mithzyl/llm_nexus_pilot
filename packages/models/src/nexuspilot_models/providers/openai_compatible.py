@@ -24,6 +24,7 @@ from nexuspilot_models.diagnostics import provider_error_diagnostic
 from nexuspilot_models.providers.common import (
     parse_json_arguments,
     validate_structured_response,
+    preserve_stream_usage,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -74,6 +75,7 @@ class OpenAICompatibleChatProvider:
             attempts=result.attempts,
         )
 
+    @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         """Normalize Chat SSE; reject errors/refusals and require an observed finish reason."""
 

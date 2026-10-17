@@ -22,6 +22,7 @@ from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
     validate_structured_response,
+    preserve_stream_usage,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -58,6 +59,7 @@ class GeminiGenerateContentProvider:
             attempts=result.attempts,
         )
 
+    @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
         """Normalize GenerateContent SSE, rejecting blocked prompts, errors and missing finish."""
 
@@ -100,6 +102,13 @@ class GeminiGenerateContentProvider:
                     )
                 request_id = chunk.get("responseId") or request_id
                 usage = chunk.get("usageMetadata") or usage
+                if chunk.get("usageMetadata"):
+                    yield StreamEvent(
+                        type=StreamEventType.USAGE,
+                        sequence=sequence,
+                        data=self._normalize_usage(usage),
+                    )
+                    sequence += 1
                 candidates = chunk.get("candidates") or []
                 if candidates:
                     candidate = candidates[0]

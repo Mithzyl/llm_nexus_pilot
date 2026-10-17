@@ -11,6 +11,170 @@ from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.transport import HttpTransport
+from nexuspilot_models.providers.strata import StrataChatProvider
+
+
+@pytest.mark.parametrize(
+    "provider_class,name",
+    [
+        (OpenAIResponsesProvider, ProviderName.OPENAI),
+        (AnthropicMessagesProvider, ProviderName.ANTHROPIC),
+    ],
+)
+async def test_inband_errors_never_echo_private_provider_fields(provider_class, name):
+    """HTTP-successful SSE errors must use the same safe diagnostics as HTTP failures."""
+    marker = "SYNTHETIC_PRIVATE_MARKER"
+    body = (
+        "data: "
+        + json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "message": marker,
+                    "code": "server_error",
+                    "private": marker,
+                },
+            }
+        )
+        + "\n\n"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, text=body))
+    ) as client:
+        provider = provider_class(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid",
+            api_key="dummy",
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            _ = [
+                event
+                async for event in provider.stream(
+                    ModelRequest(
+                        provider=name,
+                        model="test",
+                        messages=[{"role": "user", "content": "hi"}],
+                    )
+                )
+            ]
+    assert marker not in caught.value.message
+    assert marker not in json.dumps(caught.value.raw_error)
+    assert caught.value.raw_error["provider_error"]["category"] == "server_error"
+
+
+@pytest.mark.parametrize(
+    "status", ["failed", "cancelled", "queued", "in_progress", None, "unknown"]
+)
+async def test_openai_nonterminal_or_failed_json_is_not_success(status):
+    """A 200 envelope without a successful terminal status must not become stop."""
+    payload = {"status": status, "output": [], "error": {"message": "PRIVATE"}}
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))
+    ) as client:
+        provider = OpenAIResponsesProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid",
+            api_key="dummy",
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            await provider.generate(
+                ModelRequest(
+                    provider=ProviderName.OPENAI,
+                    model="test",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            )
+    assert "PRIVATE" not in caught.value.message
+
+
+@pytest.mark.parametrize("collected", [False, True])
+@pytest.mark.parametrize("ending", ["error", "eof", "network"])
+async def test_strata_failure_keeps_latest_usage_in_both_consumption_modes(
+    collected, ending
+):
+    """Real codec paths retain known counters through error, EOF and network failures."""
+
+    class Interrupted(httpx.AsyncByteStream):
+        """Send cumulative snapshots then the selected failure without using any network."""
+
+        async def __aiter__(self):
+            """Emit repeated and corrected counters to prove they are not added or maximized."""
+            for output in (10, 20, 15):
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": 100,
+                                "completion_tokens": output,
+                            },
+                        }
+                    )
+                    + "\n\n"
+                ).encode()
+            if ending == "network":
+                raise httpx.ReadError("synthetic")
+            if ending == "error":
+                yield b'data: {"error":{"message":"PRIVATE","code":"server_error"}}\n\n'
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=Interrupted())
+        )
+    ) as client:
+        provider = StrataChatProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid",
+            api_key="dummy",
+        )
+        request = ModelRequest(
+            provider=ProviderName.STRATA,
+            model="test",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            if collected:
+                await provider.generate(request)
+            else:
+                _ = [event async for event in provider.stream(request)]
+    facts = caught.value.response
+    assert facts is not None
+    assert (facts.input_tokens, facts.output_tokens) == (100, 15)
+    assert facts.raw_response["usage_complete"] is False
+    assert "PRIVATE" not in json.dumps(facts.raw_response)
+
+
+async def test_openai_failed_json_keeps_known_usage_without_success():
+    """Business failure can preserve reported tokens while still rejecting the answer."""
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={
+                    "status": "failed",
+                    "error": {"message": "PRIVATE"},
+                    "usage": {"input_tokens": 100, "output_tokens": 20},
+                },
+            )
+        )
+    ) as client:
+        provider = OpenAIResponsesProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid",
+            api_key="dummy",
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            await provider.generate(
+                ModelRequest(
+                    provider=ProviderName.OPENAI,
+                    model="test",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            )
+    assert caught.value.response.input_tokens == 100
+    assert caught.value.response.output_tokens == 20
+    assert "PRIVATE" not in json.dumps(caught.value.response.raw_response)
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,6 @@
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Response, status
@@ -21,6 +20,9 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
 from nexuspilot_api.features.agent_runtime.services.claim_source_service import (
     ClaimSourcesRead,
     read_claim_sources,
+)
+from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks import (
+    workflow_execution_tasks,
 )
 from nexuspilot_api.features.agent_runtime.services.workflow_query_service import (
     get_run_workflow_summary,
@@ -91,11 +93,22 @@ async def post_agent_workflow(
     """Execute one idempotent model-only workflow and return JSON or persisted SSE events."""
 
     if payload.stream:
-        event_queue: asyncio.Queue = asyncio.Queue()
+        # Slow or disconnected observers must not block or retain execution events;
+        # every event is already durable and can be recovered through GET endpoints.
+        event_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+        observing = True
+
+        async def publish(event) -> None:
+            """Offer committed events without blocking execution on an HTTP consumer."""
+            if observing:
+                if event_queue.full():
+                    event_queue.get_nowait()
+                event_queue.put_nowait(event)
+
         workflow, replayed = await service.prepare_workflow(
             run_id,
             payload,
-            event_sink=event_queue.put,
+            event_sink=publish,
         )
         if replayed:
             events = await list_workflow_events(
@@ -117,16 +130,18 @@ async def post_agent_workflow(
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
-        async def live_event_source() -> AsyncIterator[str]:
-            """Execute the prepared workflow while forwarding only committed events."""
+        execution_task = workflow_execution_tasks.start(
+            workflow.workflow_execution_id,
+            service.execute_prepared_workflow_in_new_session(
+                workflow.workflow_execution_id,
+                payload,
+                event_sink=publish,
+            ),
+        )
 
-            execution_task = asyncio.create_task(
-                service.execute_prepared_workflow_in_new_session(
-                    workflow.workflow_execution_id,
-                    payload,
-                    event_sink=event_queue.put,
-                )
-            )
+        async def live_event_source() -> AsyncIterator[str]:
+            """Observe process-owned execution; closing the response only detaches this reader."""
+            nonlocal observing
             try:
                 while not execution_task.done() or not event_queue.empty():
                     try:
@@ -134,12 +149,11 @@ async def post_agent_workflow(
                     except TimeoutError:
                         continue
                     yield event.to_sse()
-                await execution_task
+                await asyncio.shield(execution_task)
             finally:
-                if not execution_task.done():
-                    execution_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await execution_task
+                observing = False
+                while not event_queue.empty():
+                    event_queue.get_nowait()
 
         return StreamingResponse(
             live_event_source(),
