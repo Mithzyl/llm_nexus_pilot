@@ -51,9 +51,9 @@ def run_pdf_command(directory: Path, arguments: list[str]) -> str:
 
 
 def extract_pages(content: bytes) -> tuple[list[str], str]:
-    """Extract at most 200 pages without OCR; reject encrypted, empty or oversized documents."""
+    """Extract up to 200 pages from at most 20 MiB; retain text-output and timeout limits."""
 
-    if not content.startswith(b"%PDF-") or not 0 < len(content) <= 1024 * 1024:
+    if not content.startswith(b"%PDF-") or not 0 < len(content) <= 20 * 1024 * 1024:
         raise ValueError("Unsupported PDF source")
     with tempfile.TemporaryDirectory(prefix="pdf-") as temporary:
         directory = Path(temporary)

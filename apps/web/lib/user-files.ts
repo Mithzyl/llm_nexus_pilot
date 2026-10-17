@@ -22,13 +22,13 @@ export function getFileUploadCapabilities(signal?: AbortSignal): Promise<FileUpl
   return nexusFetch<FileUploadCapabilities>("files/capabilities", { signal });
 }
 
-/** Validate browser size and suffix early; the backend independently validates actual content. */
+/** Admit source files up to 20 MiB; backend parsing and quota limits remain independent. */
 export function validateUploadFiles(files: readonly File[]): void {
   if (files.length > 10) throw new Error("每条消息最多添加 10 个文件。");
   for (const file of files) {
     const suffix = `.${file.name.split(".").at(-1)?.toLowerCase()}`;
     if (!FILE_ACCEPT.split(",").includes(suffix)) throw new Error(`暂不支持 ${file.name} 的格式。`);
-    if (file.size === 0 || file.size > 1024 * 1024) throw new Error(`${file.name} 需为非空文件，且不超过 1 MiB。`);
+    if (file.size === 0 || file.size > 20 * 1024 * 1024) throw new Error(`${file.name} 需为非空文件，且不超过 20 MiB。`);
   }
 }
 

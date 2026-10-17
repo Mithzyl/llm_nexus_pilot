@@ -21,7 +21,8 @@ test("checks Office availability before reserving a file", async () => {
 test("rejects empty, oversized, unsupported and excessive attachments before upload", () => {
   assert.throws(() => validateUploadFiles([new File([], "empty.txt")]));
   assert.throws(() => validateUploadFiles([new File(["x"], "photo.png")]));
-  assert.throws(() => validateUploadFiles([new File([new Uint8Array(1024 * 1024 + 1)], "big.txt")]));
+  assert.doesNotThrow(() => validateUploadFiles([new File([new Uint8Array(20 * 1024 * 1024)], "allowed.pdf")]));
+  assert.throws(() => validateUploadFiles([new File([new Uint8Array(20 * 1024 * 1024 + 1)], "big.txt")]));
   assert.throws(() => validateUploadFiles(Array.from({ length: 11 }, () => new File(["x"], "a.txt"))));
   assert.doesNotThrow(() => validateUploadFiles([new File(["text"], "notes.TXT")]));
 });

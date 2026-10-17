@@ -51,12 +51,12 @@ def file_runtime_status() -> str:
 
 
 def request_file_parse(content: bytes, media_type: str, *, protocol: str) -> dict:
-    """Send a bounded file request and validate response identity before format adaptation."""
+    """Send up to 20 MiB of source bytes and validate the bounded parser response identity."""
 
     socket_path = get_settings().file_runtime_socket
     if not socket_path:
         raise FileRuntimeError("服务器尚未启用 Office／PDF 文件解析，请联系管理员。")
-    if not 0 < len(content) <= 1024 * 1024:
+    if not 0 < len(content) <= 20 * 1024 * 1024:
         raise FileRuntimeError("Unsupported file request size")
     request = (
         json.dumps(

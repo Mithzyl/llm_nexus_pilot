@@ -63,11 +63,16 @@ test("forwards bounded raw file bytes without JSON coercion and rejects excessiv
     }), createContext("files/test/content"));
     assert.equal(accepted.status, 200);
     assert.equal(new TextDecoder().decode(requests[0].body as Uint8Array), "hello");
+    const large = await PUT(createRequest("files/test/content", {
+      method: "PUT", body: new Uint8Array(2 * 1024 * 1024),
+    }), createContext("files/test/content"));
+    assert.equal(large.status, 200);
+    assert.equal((requests[1].body as Uint8Array).byteLength, 2 * 1024 * 1024);
     const denied = await PUT(createRequest("files/test/content", {
-      method: "PUT", body: new Uint8Array(1024 * 1024 + 1),
+      method: "PUT", body: new Uint8Array(20 * 1024 * 1024 + 1),
     }), createContext("files/test/content"));
     assert.equal(denied.status, 413);
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 2);
   } finally { globalThis.fetch = originalFetch; }
 });
 

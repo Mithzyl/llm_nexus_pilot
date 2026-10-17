@@ -23,7 +23,7 @@ from pathlib import Path
 
 from manage_runtime import IMAGE_TAG, container_create_arguments
 
-MAX_REQUEST_BYTES = 1_500_000
+MAX_REQUEST_BYTES = ((20 * 1024 * 1024 + 2) // 3) * 4 + 4096
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 
 

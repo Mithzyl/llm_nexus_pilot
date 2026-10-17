@@ -31,7 +31,7 @@ from nexuspilot_api.schemas.file_parsing import (
     cell_range_bounds,
 )
 
-MAX_PARSE_BYTES = 1024 * 1024
+MAX_PARSE_BYTES = 20 * 1024 * 1024
 MAX_PARSE_BLOCKS = 10000
 MAX_READ_BYTES = 128 * 1024
 TEXT_MEDIA_TYPES = (

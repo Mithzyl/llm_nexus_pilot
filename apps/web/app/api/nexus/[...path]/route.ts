@@ -419,6 +419,7 @@ function browserSystemPromptReferenceError(
 /**
  * Forward only the UI's explicitly allow-listed resources and force every
  * browser request into the authenticated user's ownership boundary.
+ * Raw file uploads admit up to 20 MiB; JSON and ownership checks remain separate.
  */
 async function proxy(request: NextRequest, context: RouteContext): Promise<Response> {
   if (!API_KEY) {
@@ -477,9 +478,9 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > 1024 * 1024) {
+        if (size > 20 * 1024 * 1024) {
           await reader.cancel();
-          return Response.json({ detail: "单文件不能超过 1 MiB。" }, { status: 413 });
+          return Response.json({ detail: "单文件不能超过 20 MiB。" }, { status: 413 });
         }
         chunks.push(value);
       }

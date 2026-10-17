@@ -12,7 +12,7 @@ class FileUploadCapabilities(BaseModel):
 
     accepted_extensions: list[str]
     executor_status: Literal["available", "not_configured", "unavailable", "busy"]
-    max_file_size_bytes: int = 1024 * 1024
+    max_file_size_bytes: int = 20 * 1024 * 1024
     unavailable_reason: str | None = None
 
 
@@ -21,7 +21,7 @@ class UserFileCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     filename: str = Field(min_length=1, max_length=255)
-    size_bytes: int = Field(gt=0, le=1024 * 1024, strict=True)
+    size_bytes: int = Field(gt=0, le=20 * 1024 * 1024, strict=True)
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotency_key: str = Field(min_length=8, max_length=128)
 

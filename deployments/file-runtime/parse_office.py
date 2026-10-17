@@ -19,8 +19,9 @@ from datetime import date, datetime, time
 from pathlib import PurePosixPath
 from xml.etree import ElementTree
 
-MAX_SOURCE_BYTES = 1024 * 1024
-MAX_REQUEST_BYTES = 1_500_000
+MAX_SOURCE_BYTES = 20 * 1024 * 1024
+# Include base64 expansion and fixed JSON protocol fields, not just source bytes.
+MAX_REQUEST_BYTES = ((MAX_SOURCE_BYTES + 2) // 3) * 4 + 4096
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 MAX_BLOCKS = 10000
 OFFICE_TYPES = {

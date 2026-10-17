@@ -2185,7 +2185,7 @@ export default function Home() {
               />
               {pendingUploadFiles.length > 0 && (
                 <p className="composer-file-notice" role="status">
-                  {uploadProgress || "发送时上传并解析 · 每个文件不超过 1 MiB · 暂不支持扫描件与图片"}
+                  {uploadProgress || "发送时上传并解析 · 每个文件不超过 20 MiB · 暂不支持扫描件与图片"}
                 </p>
               )}
               {executionMode === "agent" && (
