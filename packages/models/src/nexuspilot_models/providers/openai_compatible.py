@@ -281,11 +281,20 @@ class OpenAICompatibleChatProvider:
         )
 
     def _build_payload(self, request: ModelRequest, *, stream: bool) -> dict[str, Any]:
-        """Encode ordered tool exchanges and attach each turn's private reasoning exactly once."""
+        """Encode ordered tool turns and supply JSON guidance only when system policy is absent."""
 
         messages: list[dict[str, Any]] = []
-        if request.system_instruction:
-            messages.append({"role": "system", "content": request.system_instruction})
+        system_instruction = request.system_instruction
+        if request.json_object_output and not (system_instruction or "").strip():
+            # Native JSON mode alone has returned malformed values in real
+            # completions without system guidance. Keep explicit caller policy
+            # unchanged, but make the requested format unambiguous when absent.
+            system_instruction = (
+                "Output one valid JSON object matching the user's requested structure. "
+                "Do not include Markdown fences or text outside the JSON."
+            )
+        if system_instruction:
+            messages.append({"role": "system", "content": system_instruction})
         continuation_inserted = False
         for message in request.messages:
             continuation_state = request.provider_continuation_state

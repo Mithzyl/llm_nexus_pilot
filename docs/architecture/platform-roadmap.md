@@ -4,7 +4,7 @@
 
 **状态：** 进行中
 
-2026-10-17 模型接口复查：共享 Chat、OpenAI Responses、Anthropic、Gemini 的异常终止规则及非法 JSON 失败用量/费用保存已修正；工作流内部延后 JSON 校验，以保存正常结束的生成和用量并允许有限修正，不改变节点职责或公共 HTTP 校验。DeepSeek 普通文本、SSE、工具续接、本地 API JSON 样例及工作流有限修正通过；直接适配器最小 JSON 样例仍失败，不能声称所有 JSON 配置通过。Strata 本次未调用。接口清单、验证范围和 JSON 配置差异调查集中维护在[阶段2模型接口复查](../implementation/phase-2-llm-core-capabilities.md#模型接口复查与失败语义2026-10-17)，工作流受控修正和两轮结果维护在阶段3，不新增离散阶段。
+2026-10-17 模型接口复查：异常终止规则、非法 JSON 失败记账与工作流有限修正已修正并验证，先提交为 `65b8054`。后续单变量对照确认 API 与适配器相同完整请求均成功；只删除 system 消息时两个 DeepSeek 模型标识均返回非法 JSON。共享 Chat 仅为没有 system 指令的 JSON 模式补充格式引导，保持严格校验；DeepSeek 原失败样例及 SSE 复测通过，新授权后的 Strata 两种模型消费方式通过，不能等同于完整 Strata 工作流通过。接口清单、具体样例与 Token 记录集中维护在[阶段2模型接口复查](../implementation/phase-2-llm-core-capabilities.md#模型接口复查与失败语义2026-10-17)，工作流受控修正和两轮结果维护在阶段3，不新增离散阶段。未部署。
 
 **当前范围：** 本地实施节点格式修正与证据传递。2026-10-12 用户已授权的一次服务器发布见[部署记录](../implementation/server-deployment-20261012.md)，新的部署仍需相应授权。本地已实现 Worker 引用、Handoff 保存、文件快照/读取范围检查及 Reviewer 补读；确定性测试及真实 DeepSeek + MySQL/MinIO 两段 TXT 样例通过，服务器未更新，详见工具主计划的真实联调记录。
 

@@ -7,7 +7,7 @@
 
 ## 模型接口复查与失败语义（2026-10-17）
 
-本次状态：进行中。共享 Chat Completions 和四家协议的流结束校验、非法 JSON 用量与费用保存已修改并完成离线回归；DeepSeek 普通生成、SSE、非思考工具续接以及本地 API JSON 样例通过，直接适配器的两个 JSON 样例仍失败。工作流有限修正真实通过，详见阶段3本日续验。没有调用 Strata，也没有部署。既有阶段验收记录保留，不等于所有厂商的当前真实兼容性已验收。
+本次状态：进行中。共享 Chat Completions 和四家协议的流结束校验、非法 JSON 用量与费用保存已修改并完成离线回归。此前直接适配器 JSON 样例失败，随后完成实际请求体单变量对照及无 system 指令时的格式引导修复，DeepSeek 普通生成与 SSE JSON 复测通过；新授权后 Strata 小型 JSON 的两种消费方式也通过，完整 Strata 工作流仍未验收。工作流有限修正真实通过，详见阶段3本日续验。未部署。既有阶段验收记录保留，不等于所有厂商的当前真实兼容性已验收。
 
 | 检查对象 | 当前职责与本次结论 |
 |---|---|
@@ -28,7 +28,7 @@
 - 已正常结束但 JSON 解析失败的生成，通过 `ModelProviderError.response` 携带标准化用量、耗时、供应商请求 ID 和传输记录；共享 Chat、OpenAI Responses、Anthropic、Gemini 共用这项处理。普通 `/responses` 仍返回失败，Attempt 保存 `failed/response_parse_error`，已知费用在同一数据库事务计入 Run，复用既有提交失败重试及提交状态核对，不重复计费。未配置价格或供应商未返回完整用量时，费用保持 null，不能推断免费。
 - 失败正文按既有私有审计路径保存到 MinIO；写入失败时保留数据库用量，raw_response_uri 为空。JSON 异常携带的未投影推理块和续接状态不作为公共展示或可复用续接保存；原始错误审计继续删除私有推理与签名字段，公共错误只含固定说明。
 - 本次修正：工作流经内部调用参数延后 JSON 结构校验，先保存正常结束的生成正文和供应商用量，再由节点解析、记录失败及有限修正。该参数不是 HTTP 字段，也不发送给供应商；普通 `/responses` 保持严格解析。节点未通过校验不能提交结果，模型 Attempt 完成不等于节点完成。空输出、拒绝和断流不适用该策略。
-- 剩余验证：直接适配器 `deepseek-flash` 的最小 JSON 样例失败，而经过本地 API、`deepseek-v4-flash` 与实际 Context 组装的样例成功；模型标识和完整消息不同，尚未通过单变量对照确定差异原因。不为获得通过而放宽 JSON 语法校验、静默改参数或自动重试。
+- 已完成单变量续验：实际 HTTP 请求体相同的 API 与适配器均成功；保留完整消息只改变模型标识也成功，删除 system 消息时两个标识均返回非法 JSON。共享 Chat 编码仅在 `json_object_output=true` 且 system 指令缺失或为空白时补充明确 JSON 格式指令，不覆盖已有 system 指令、不改普通文本、不把非法正文改写成 JSON、不增加自动付费重试。供应商内部为什么在这种消息结构下生成异常内容尚不可知；新增引导不代替严格解析和失败记账。
 - 真实厂商矩阵仍未执行；Anthropic/Gemini/OpenAI 本次只有离线协议测试。Strata 真实工作流仍未验收，禁止以 DeepSeek 结果替代。
 
 ### DeepSeek 真实验证
@@ -69,6 +69,73 @@
 
 续修验证：新增非法 JSON ASGI 回归先失败，再修实现；最终覆盖非流式/SSE × 有价/无价 × 正常持久化/对象存储失败/提交成功但确认丢失/供应商缺失用量，共16项通过；重复请求不增加 Attempt 或费用，失败推理内容不进入公共响应。价格测试使用明确夹具费率，100输入（10缓存）+20输出应为 USD 0.001520，不能套用于真实 DeepSeek。
 本次中途全后端与模型回归为811通过、32跳过；之后补充三家原生协议非法 JSON 标准化用量断言及失败推理不公开断言。最终 `apps/api/.venv/bin/pytest packages/models/tests apps/api/tests -q -rs`：814通过、32跳过，108.92秒。跳过项要求显式的独立数据库迁移环境、Docker 解析/任务镜像或专用集成开关；不能算通过，也不代替本节单独运行的真实 MySQL/MinIO 验证。Ruff、`git diff --check`、两份验证脚本 `--help` 均通过；测试生成的安全报告差异已恢复。临时 API 已停止，未提交、未推送、未部署。
+
+### JSON 请求单变量对照与共享修复（2026-10-17 后续授权）
+
+先将上述已验收改动提交为 `65b8054`，未推送。随后仅对当前合成任务做以下对照。
+脚本 `check_live_json_parity.py` 在进程内通过真实 ASGI 路由、MySQL/MinIO 执行本地 API，
+在 HTTP 发送前记录模型完整请求体，再让直接适配器生成相同请求体；不更换密钥、地址、
+超时、思考开关、JSON 模式、输出上限或传输方式。请求 hook 在发送前检查内容相等。
+API 自动加入的平台 system 指令为上下文保护说明，不含额外 JSON 样例。
+
+| 修复前样例 | 唯一变化 / 比较对象 | 结果 | 秒 | 输入 / 输出 Token |
+|---|---|---|---:|---:|
+| API，v4，完整 system+user | 基准 | 通过 | 0.789 | 63 / 5 |
+| 适配器，v4，完整 system+user | 仅执行入口不同 | 通过，实际请求体完全相同 | 0.905 | 63 / 5 |
+| 适配器，flash，完整 system+user | 上一项仅 model 不同 | 通过 | 0.710 | 63 / 5 |
+| 适配器，v4，仅 user | v4 完整消息仅删除 system | 失败，冒号后含 JSON 不允许的 U+00A0 | 0.699 | 36 / 6 |
+| 适配器，flash，仅 user | flash 完整消息仅删除 system | 失败，JSON 值位置混入未引用普通文字 | 1.010 | 36 / 46 |
+
+第一对请求体的 SHA-256 均为 `f0e9e068d92c4bcf9c9fb8e663157e64e9a7df5b9fe5a5e0423fb4246e195dc0`。
+原始 HTTP JSON 与独立 `json.loads` 均证明非法内容已经来自供应商返回，而非平台文本拼接。
+因此不能把此前差异归因为 API 路径有独立 JSON 修复，或只归因为模型名称不同。
+当前证据定位到缺少 system 指令的请求组合；不是证明协议规范要求所有调用必须有 system。
+
+修复位置为共享 `OpenAICompatibleChatProvider._build_payload`。当 JSON 模式没有有效 system 指令时，
+加入“输出符合用户要求的合法 JSON 对象，不添加 Markdown 围栏或 JSON 外正文”的格式引导。
+这项固定引导不覆盖调用方已有策略，不只针对 DeepSeek；新增请求内容与 Token 开销在验证报告中可见。
+先写回归：3失败、5通过，复现缺失、空字符串、纯空白三种情况；实施后全部通过。
+
+| 修复后样例 | 结果 | 秒 | 输入 / 输出 Token |
+|---|---|---:|---:|
+| v4 完整消息（已有 system 不变） | 通过 | 0.779 | 63 / 5 |
+| flash 完整消息（已有 system 不变） | 通过 | 0.725 | 63 / 5 |
+| v4 最小消息，自动格式引导 | 通过 | 0.689 | 59 / 5 |
+| flash 最小消息，自动格式引导 | 通过 | 0.778 | 59 / 5 |
+| flash 原失败非流式样例复测 | 通过 | 0.844 | 59 / 5 |
+| flash 原失败 SSE 样例复测 | 通过 | 0.839 | 59 / 5 |
+
+修复后检查只允许最小消息组增加一条 system 消息，其他字段与修复前相同。
+DeepSeek 本轮共11次真实请求，输入623／输出97 Token，合计720；复用 API 基准记录不重复计入。
+首次诊断脚本重建 system 消息时发生本地类型校验失败，未发出额外供应商请求；修正脚本后复用已捕获的基准，保留首次报告，不覆盖失败记录。
+
+证据文件位于 `output/playwright/`：`deepseek-json-parity-20261017.json`（首次基准及诊断失败）、
+`deepseek-json-parity-controls-20261017.json`（修复前对照）、
+`deepseek-json-parity-fixed-20261017.json`（修复后对照）、
+`deepseek-json-fixed-stream-20261017.json`（非流式/SSE复测）。
+复现入口：`check_live_json_parity.py --output NEW_PATH`；复用基准增加 `--baseline BASELINE_PATH`，
+验收新增 system 指令增加 `--verify-fix`；这些命令使用 `apps/api/.venv/bin/python`，会真实计费。
+修复后的代码运行无 `--verify-fix` 的旧最小消息对照时，发送前相等检查会主动拒绝，不会静默改变对照条件。
+
+在上述修复验证通过之后，按新增授权调用 Strata，模型 `tiel-coder-35b-a3b-ud-q4_k_xl`：
+
+| Strata 消费方式 | 结果 | 首字节 / 总秒数 | 输入 / 输出 Token | 缓存输入 |
+|---|---|---:|---:|---:|
+| 增量 stream | 合法 `{"ok":true}`，stop | 2.708 / 3.140 | 288 / 19 | 0 |
+| generate 收齐 SSE | 合法 `{"ok":true}`，stop | 1.041 / 1.394 | 288 / 19 | 287 |
+
+Strata 共2次请求，输入576／输出38 Token，合计614；本轮两家合计1334 Token。
+未配置价格，不报告货币费用；缓存 Token 已包含在输入中，不重复相加。
+`check_live_strata_json.py --output NEW_PATH` 保存实际 SSE 字节，不以聚合记录替代抓包；
+报告为 `output/playwright/strata-json-after-fix-20261017.json`。
+验证范围仅为快速回复采用的增量消费与 Agent 采用的收集式模型调用，不是完整工作流或浏览器验收。
+1024 Token 上限仅用于本次合成样例，不改产品配置。未部署、未推送。
+
+本轮最终自动化验证：`apps/api/.venv/bin/pytest packages/models/tests apps/api/tests -q -rs`，
+822通过、32跳过，109.06秒；跳过原因与前次相同，独立 Docker/迁移环境未启用，不计通过。
+模型、Responses、Strata 定向回归151通过。Ruff 与 `git diff --check` 通过。
+最后移除测试文件无关格式变化后，单独运行该文件未指定 API pytest 配置，35项异步测试因未启用 asyncio auto 而失败；显式执行 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml packages/models/tests/test_providers.py -q` 后50项通过。此问题为测试命令配置，不通过修改业务或断言解决。
+本轮新增格式引导、测试和验证脚本保留为提交 `65b8054` 之后的未提交修改。
 
 ## 正式文件上传（2026 年 9 月 16 日）
 

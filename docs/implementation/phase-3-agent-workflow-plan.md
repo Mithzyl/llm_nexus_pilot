@@ -175,6 +175,10 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 
 ### Controller 修正与 Strata 真实验证（2026-10-17）
 
+后续状态补充：共享 JSON 格式引导修复后，获新授权的 Strata 小型 JSON 请求在增量流式和
+收集式调用均通过；这不是完整 Agent 工作流，本节历史 Strata 工作流失败记录不变。
+单变量对照、调用用量与验证范围统一见[阶段2 JSON 对照](phase-2-llm-core-capabilities.md#json-请求单变量对照与共享修复2026-10-17-后续授权)。
+
 本日续验（仅 DeepSeek，不调用 Strata、不部署）：使用本地 MySQL/MinIO 与 API，执行
 `check_live_strata_plan_repair.py --mode repair --output output/playwright/deepseek-bounded-repair-20261017.json`。
 该脚本仅 `repair` 分支选择 DeepSeek，本次未执行 seed/quick/agent 分支。

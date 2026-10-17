@@ -173,6 +173,11 @@ JSON-object 请求；Agent 使用 `prompted_json`，不宣称原生 JSON Schema�
 真实耗时、用量和失败限制见阶段3的 2026-10-17 验证记录。没有登记价格，不能把数据库
 费用 0 解释为调用免费。
 
+JSON-object 模式没有有效 system 指令时，共享 Chat 编码会补充明确 JSON 格式说明；
+已有 system 指令保持不变，普通文本请求不添加说明，返回内容仍严格解析。
+后续同请求体对照及 Strata 小型 JSON 的增量/收集式调用已通过，完整工作流仍未据此验收；
+样例、耗时和 Token 记录见[阶段2单变量验证](docs/implementation/phase-2-llm-core-capabilities.md#json-请求单变量对照与共享修复2026-10-17-后续授权)。
+
 可以通过以下接口查看当前实际可用 Provider：
 
 ```http

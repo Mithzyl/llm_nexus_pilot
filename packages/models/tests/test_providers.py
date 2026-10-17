@@ -247,6 +247,34 @@ async def test_openai_compatible_provider_forwards_an_explicit_output_allowance(
     assert len(response.transport_attempts) == 1
 
 
+@pytest.mark.parametrize(
+    "system_instruction", [None, "", "   ", "Keep my original policy."]
+)
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_chat_json_mode_supplies_format_instruction_only_without_system(
+    system_instruction, json_mode
+):
+    """JSON-only calls need explicit system format guidance without replacing caller policy."""
+    provider = DeepSeekChatProvider(
+        HttpTransport(None), base_url="https://offline.invalid", api_key="dummy"
+    )
+    request = model_request(ProviderName.DEEPSEEK).model_copy(
+        update={
+            "system_instruction": system_instruction,
+            "json_object_output": json_mode,
+        }
+    )
+    body = provider._build_payload(request, stream=False)
+    if json_mode and not (system_instruction or "").strip():
+        assert body["messages"][0]["role"] == "system"
+        assert "JSON object" in body["messages"][0]["content"]
+        assert body["messages"][1] == {"role": "user", "content": "Hello"}
+    elif system_instruction:
+        assert body["messages"][0] == {"role": "system", "content": system_instruction}
+    else:
+        assert body["messages"] == [{"role": "user", "content": "Hello"}]
+
+
 async def test_deepseek_provider_uses_native_json_object_output() -> None:
     """Verify prompted Agent JSON is syntactically enforced by DeepSeek JSON mode."""
 
