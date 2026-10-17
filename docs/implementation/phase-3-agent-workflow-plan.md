@@ -26,7 +26,7 @@
 
 ## 后续工具能力的统一归属
 
-2026-10-14 新增兼容工作流版本 `1.1.0`：保留原节点职责，新增有限输出修正和 Reviewer 返回 Controller 的第二轮规划。当前规则统一维护在下节；工具输入、原文引用与工具循环由阶段7维护，不重复定义外层节点流转。旧 `1.0.0` 继续单轮执行，原完成记录不变。新版本本地实现与确定性回归已完成，真实 Provider 两轮验收未执行；历史命令与结果见[验收记录](phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。
+2026-10-14 新增兼容工作流版本 `1.1.0`：保留原节点职责，新增有限输出修正和 Reviewer 返回 Controller 的第二轮规划。当前规则统一维护在下节；工具输入、原文引用与工具循环由阶段7维护，不重复定义外层节点流转。旧 `1.0.0` 继续单轮执行，原完成记录不变。新版本本地实现与确定性回归已完成；2026-10-16 真实两轮样本通过，真实计划修正成功分支仍未覆盖，见本文件真实联调记录。历史命令与结果见[验收记录](phase-7-tool-runtime-plan.md#工作流整体修正与两轮-refinement2026-10-14)。
 
 2026-10-12 新增工作项，2026-10-13 进行中：节点 JSON 局部修正、Worker 逐条 `claims` 关联原文、Handoff 保留引用、固定文件快照和读取范围检查、Reviewer 原文输入与有限补读均已有本地实现及确定性测试。随后本地真实 DeepSeek + MySQL/MinIO 的两段 TXT 样例通过：Worker 首段引用保存，Reviewer 实际补读最终记录并区分初步/最终型号；服务器未更新，不以单样例代替全部模型质量评估。用户随后确认前端设计，已新增结论与来源面板及只读授权原文接口；最终答案逐句引用仍后置。唯一详细设计和验收维护在[节点结果修正与结论证据传递](phase-7-tool-runtime-plan.md#节点结果修正与结论证据传递)。新工具工作流采用 `worker_evidence.v2` / `agent_handoff.v2`，历史 v1 不补造引用；来源校验通过不等于结论正确。
 
@@ -102,7 +102,7 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 | 6. 前端类型与事件消费 | 仅事件白名单、类型和对应测试，保持现有展示，不新增无用途页面内容 |
 | 7. 组合验收 | 前六项通过后再编写并执行计划修正加两次 workflow round 的固定样本测试，不提前让模型猜测尚未实现的接口 |
 
-这些是现有工作项内的实施批次，不新增 Phase。第 1～7 批已完成本地确定性测试：资格判断、节点转换、单次 Controller 业务计划修正、专用事件、统计、前端类型兼容及两轮组合测试已接入。真实业务 Provider 验收尚未执行。后续若工具仍仅支持完整文件返回，大文件局部修改应使用准确匹配的独立补丁并先检查，不把整份文件作为默认交付。
+这些是现有工作项内的实施批次，不新增 Phase。第 1～7 批已完成本地确定性测试：资格判断、节点转换、单次 Controller 业务计划修正、专用事件、统计、前端类型兼容及两轮组合测试已接入。2026-10-16 真实 DeepSeek 两轮执行及浏览器刷新通过，但计划修正成功分支未触发，且前两次请求暴露角色规划与任务额度问题，见下方真实联调记录。后续若工具仍仅支持完整文件返回，大文件局部修改应使用准确匹配的独立补丁并先检查，不把整份文件作为默认交付。
 
 真实小任务进度验证（2026-10-14）：三次均观察到 progress.json 从 reasoning_only 到 generating_content，正常结束，无重复窗口警告，未触发 300 秒仅推理提醒。未保存或人工阅读推理原文；只能说明此次固定窗口检测未报警，不能证明没有语义重复。当前长驻 MCP 服务未重新加载，状态接口不返回新增字段，核查直接读取进度文件。
 
@@ -149,7 +149,27 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 
 组合用例涵盖首轮修正、第二轮修正、两轮均修正、修正内再发生 JSON 格式修正、第二轮持续非法及第二轮超时。核对两轮节点独立保存、同轮修正不增加业务轮数、实际 Attempt 与 Token／费用汇总、重新读取和重复提交不增加调用；第二轮失败保留首轮成功记录，不伪造最终回答。
 
-验证：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_plan_repair_statistics.py apps/api/tests/test_controller_plan_repair_events.py apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，139 项通过（26.42 秒）；前端 `npm run typecheck` 通过。环境为 SQLite／测试存储／脚本化 Provider；真实 DeepSeek／MySQL／MinIO、浏览器和服务器验收未执行。本批统计与组合测试改动尚未提交。
+验证：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_plan_repair_statistics.py apps/api/tests/test_controller_plan_repair_events.py apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py -q`，139 项通过（26.42 秒）；前端 `npm run typecheck` 通过。环境为 SQLite／测试存储／脚本化 Provider；当时未执行真实 Provider 和浏览器验收。统计与组合测试已于后续提交为 `5f63ecc`，服务器未部署。
+
+### 真实两轮与浏览器联调（2026-10-16）
+
+本次先提交 `5f63ecc`，再使用本地 API 18000、Web 3100、独立 MySQL 13306／MinIO 19000，模型为 `deepseek-v4-flash`，登记端点核对为 `https://api.deepseek.com`。凭据只从本地 API `.env` 加载，没有复制到报告；未迁移、推送或部署。浏览器上传合成两行 TXT：旧型号 X100／待复核，批准型号 X200／已批准。输入明确要求分阶段核验，是受控验收样本，不代表普通问题自动产生两轮的概率。
+
+| 请求 | Run / Workflow | 结果及证据 |
+|---|---|---|
+| 首次 | Run `ab854703-7fd9-4c4b-91fc-9a174e487b3f`；Workflow `ec283bd7-c6aa-46b6-a515-e0d9c358b389` | 失败，1 次模型调用。Controller 将 worker/reviewer/controller 列入 tasks，超出可调度角色，`agent_capability_unavailable`；`plan_repair_skipped_count=1`、修正调用 0，原因 unrepairable_checks。没有绕过权限或将越权变成可修正错误。 |
+| 明确角色后 | Run `74c9a495-ee83-475b-9dc2-d3f79de75520`；Workflow `846ca37f-2379-4d27-84c4-b402dda65a8d` | 失败，2 次模型调用。Controller 仅分配 `max_model_calls=1`，读取任务不能完成工具请求与结果生成，`agent_budget_exhausted`；工具实际调用 0。计划通过上限校验，尚未提前识别工具任务的最低调用需求。 |
+| 明确任务额度 3 后 | Run `7f9e8682-4036-4f0b-b0ea-e99c19406b83`；Workflow `fee4f760-8cf0-4dd5-8f45-44855d0d5d35` | 完成，18 节点、11 次模型调用、6 次工具调用。首轮 Reviewer 请求重新规划，平台创建第二轮 Controller／Worker／Reviewer；最终回复 X200／已批准，不采用被替代的 X100。 |
+
+共同会话：`bd5fadb1-af33-4f0a-b579-5ccd307a89fd`。成功请求的 `workflow_round_count=2`、`refinement_count=1`，第二轮小计 5 次模型调用／3 次工具调用；`plan_repair_count=0`，没有发生计划业务修正或 JSON 输出修正。此结果验证了两轮业务返工，不是“真实计划修正成功”的证据；后者仍需独立固定样本验收，不盲目反复付费碰撞。
+
+浏览器 Playwright 验证：第二轮执行期间打开前一次失败的运行证据，当前工作流继续并实时显示最终回答，不需刷新；随后刷新会话，最终回答、完成摘要、来源入口恢复。展开批准型号结论，实际加载 Worker 第 2 行原文及 Reviewer 补读原文。浏览器同源结果接口确认刷新前后业务轮数 2、返工 1、模型调用 11、计划修正调用 0，首个失败记录仍为 skipped 1。当前没有统计面板，统计验收通过浏览器实际读取的 API 数据完成，不声称页面显示了不存在的计数器。控制台 0 error／0 warning。
+
+存储核对：上传文件 `458f6b6e-8fb9-42af-a506-91d1ddda56ba` 的 MinIO 原件和解析对象哈希均通过；成功请求的 11 个模型响应对象可读取。三次请求共 14 条 MySQL Attempt，输入 102785、输出 22699 Token，均与结果接口汇总一致；费用字段为 0，仅是当前登记计价结果，不表示真实调用免费。没有另行重跑付费请求。
+
+证据存于本机忽略目录 `output/playwright/`：`workflow-20261016-{workflow_id}.json`、`workflow-20261016-first-failure.png`、`workflow-20261016-history-during-round2.png`、`workflow-20261016-completed-before-refresh.png`、`workflow-20261016-restored-sources.png`。核查脚本 `inspect_workflow_20261016.py` 只读指定测试记录；不是部署脚本或自动验收系统。
+
+待处理：Controller 提示与允许角色的约束表达、工具任务最低模型调用额度的校验、错误文案仍将 tool_enabled_v1 写为 model_only_v1。最终回答包含较多内部字段，用户回答与技术证据的措辞分离也需改进。本次只做验证与记录，不更改上述业务行为，不将三个请求全部记为通过。Office/PDF、真实取消传播、跨用户、服务重启恢复未纳入本次验收。
 
 ### 节点职责
 
@@ -204,7 +224,7 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 - `plan_repair_succeeded_count` 仅来自二次校验通过的完成事件；`failed_count`、`cancelled_count`、`unknown_count`、`pending_count`（均带 `plan_repair_` 前缀）按尚无成功事件的修正节点和工作流状态区分。模型节点完成但校验尚未完成仍计 pending；后续其他节点失败不改写已有计划修正成功。
 - `plan_repair_skipped_count` 仅统计没有创建修正节点的未执行事件；修正后仍非法导致停止追加修正计 failed，不再重复计 skipped。旧 1.0.0 或无计划修正返回零值与空列表，不新增数据库表或迁移。
 - 计划修正用量与格式修正、第二轮返工小计可能重叠，不能相加。工作流总量仍按所有实际 Attempt 汇总一次；同轮计划修正不增加业务轮数，重复读取不写入统计。
-- 新版本地确定性回归已完成；真实 DeepSeek／MySQL／MinIO 两轮及浏览器成功续聊验收未执行。真实验收必须核对返回 Controller、两轮记录独立保存、引用有效、修正／返工计数、最终答案和刷新恢复；单轮历史成功不能代替。跨进程重启恢复属于阶段10，当前不承诺。
+- 新版本地确定性回归已完成；2026-10-16 真实 DeepSeek／MySQL／MinIO 两轮、同会话失败后续聊及浏览器恢复通过一个受控样本，返回 Controller 和两轮记录真实保存。计划业务修正成功分支未触发，不能将业务返工计为计划修正成功；其他真实输入稳定性与成功回答后的新附件续聊仍需另验。跨进程重启恢复属于阶段10，当前不承诺。
 
 ## 目标
 
