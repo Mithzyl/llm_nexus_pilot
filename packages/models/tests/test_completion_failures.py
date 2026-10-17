@@ -323,6 +323,24 @@ async def test_chat_failure_is_not_success(stream, kind):
         assert "sensitive" not in str(caught.value)
 
 
+def test_structured_output_failure_is_classified_without_saving_raw_message():
+    """Recognize provider-side JSON failure while retaining fixed public errors and no retry."""
+    from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatProvider
+
+    with pytest.raises(ModelProviderError) as caught:
+        OpenAICompatibleChatProvider._check_provider_error({"error": {
+            "code": "structured_output_failed",
+            "type": "structured_output_failed",
+            "message": "model did not return valid JSON: SECRET user@example.com",
+        }}, [])
+    assert caught.value.raw_error["provider_error"]["category"] == "structured_output_failed"
+    assert caught.value.raw_error["provider_error"]["category_source"] == "code"
+    assert caught.value.error_type == "provider_unavailable"
+    assert caught.value.retryable is False
+    assert "SECRET" not in json.dumps(caught.value.raw_error)
+    assert "user@example.com" not in caught.value.message
+
+
 def test_chat_error_diagnostic_keeps_categories_not_upstream_secrets():
     """Keep actionable private diagnostics without echoing credentials or arbitrary text."""
     from nexuspilot_models.providers.openai_compatible import (

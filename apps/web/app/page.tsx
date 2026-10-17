@@ -64,6 +64,7 @@ import {
 import {
   isAgentWorkflowAssistantMessage,
   isAgentWorkflowCancellable,
+  cancelledMessageStatusLabel,
 } from "../lib/agent-workflow-view";
 import {
   hasSavedAssistantForLatestTurn,
@@ -161,6 +162,7 @@ type LocalMessage = MessageSummary & {
   saveFailed?: boolean;
   failed?: boolean;
   cancelled?: boolean;
+  cancellationConfirmed?: boolean;
   agentWorkflow?: boolean;
   truncated?: boolean;
   reasoningBlocks: ReasoningPresentation[];
@@ -253,7 +255,8 @@ function createLocalMessage(
 }
 
 /**
- * Render the first NexusPilot conversation workspace and coordinate its durable API flow.
+ * Render the workspace and coordinate durable API flow, distinguishing confirmed cancellation
+ * from a local response abort whose server-side outcome is not yet known.
  */
 export default function Home() {
   const router = useRouter();
@@ -916,7 +919,7 @@ export default function Home() {
     );
   }
 
-  /** Apply one authoritative workflow snapshot to metrics and the optional local answer. */
+  /** Apply persisted metrics and answer state, including server-confirmed cancellation. */
   function applyAgentWorkflowResult(result: AgentWorkflowResult, assistantLocalId?: string) {
     setAgentWorkflow((current) =>
       current && current.snapshot_version > result.snapshot_version ? current : result,
@@ -947,6 +950,7 @@ export default function Home() {
               saving: false,
               failed: result.status === "failed" || result.status === "outcome_unknown",
               cancelled: result.status === "cancelled",
+              cancellationConfirmed: result.status === "cancelled",
               saveFailed: isCompleted && !result.final_output?.assistant_message_id,
             }
           : message,
@@ -1152,6 +1156,7 @@ export default function Home() {
   /**
    * Load one immutable conversation history and either its latest or explicitly requested Run.
    * Ignore late reads after another conversation, Run route or submission replaces this view.
+   * Restored cancellation is confirmed by the persisted Run, not a local response abort.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
     const requestId = ++sessionRestoreRequestId.current;
@@ -1185,7 +1190,8 @@ export default function Home() {
       const projection = assistantProjectionForLatestTurn(page.items, latestRun);
       const pendingAssistant = projection
         ? { ...createLocalMessage("assistant", projection.content, projection.runId),
-            pending: projection.pending, failed: projection.failed, cancelled: projection.cancelled }
+            pending: projection.pending, failed: projection.failed, cancelled: projection.cancelled,
+            cancellationConfirmed: projection.cancelled }
         : null;
       setMessages(pendingAssistant ? [...restoredMessages, pendingAssistant] : restoredMessages);
       setMessageCursor(page.next_cursor);
@@ -1535,7 +1541,7 @@ export default function Home() {
     }
   }
 
-  /** Durably cancel future Agent nodes while keeping any active Provider call auditable. */
+  /** Confirm cancellation only after the server accepts it; active Provider calls remain auditable. */
   async function handleCancelAgentWorkflow() {
     if (!run || isCancellingWorkflow) return;
     const workflowRunId = run.run_id;
@@ -1563,6 +1569,7 @@ export default function Home() {
                 content_preview: message.content_preview || "工作流已取消，未生成最终回答。",
                 pending: false,
                 cancelled: true,
+                cancellationConfirmed: true,
               }
           : message,
         ),
@@ -2097,7 +2104,7 @@ export default function Home() {
                       <div className="assistant-avatar"><span /></div>
                       <div>
                         <strong>NexusPilot</strong>
-                        <small><i className={message.failed || message.cancelled || message.saveFailed || message.truncated ? "failed-dot" : ""} /> {message.cancelled ? "已停止 · 等待服务端最终状态" : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.truncated ? "达到输出上限 · 已保存部分回复" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
+                        <small><i className={message.failed || message.cancelled || message.saveFailed || message.truncated ? "failed-dot" : ""} /> {message.cancelled ? cancelledMessageStatusLabel(message.cancellationConfirmed) : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.truncated ? "达到输出上限 · 已保存部分回复" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
                       </div>
                     </div>
                     <div className="assistant-content">

@@ -795,6 +795,53 @@ class WorkflowExecutionStateService:
             ),
         )
 
+    async def reconcile_terminal_usage(self, workflow_id: str) -> None:
+        """Replace terminal-node accounting from committed attempts, never revive output or status.
+
+        An explicit cancellation may commit before an in-flight provider returns.
+        Discard uncommitted business changes first; serialize accounting with the
+        workflow row and replace totals rather than adding them a second time.
+        """
+        await self.db_session.rollback()
+        workflow = await self.db_session.scalar(
+            select(LlmAgentWorkflowExecution)
+            .where(LlmAgentWorkflowExecution.workflow_execution_id == workflow_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if workflow is None or workflow.status not in {
+            AgentWorkflowStatus.CANCELLED,
+            AgentWorkflowStatus.FAILED,
+            AgentWorkflowStatus.OUTCOME_UNKNOWN,
+        }:
+            return
+        nodes = list(await self.db_session.scalars(
+            select(LlmAgentWorkflowNodeExecution).where(
+                LlmAgentWorkflowNodeExecution.workflow_execution_id == workflow_id,
+                LlmAgentWorkflowNodeExecution.status.in_([
+                    AgentWorkflowNodeStatus.CANCELLED,
+                    AgentWorkflowNodeStatus.FAILED,
+                    AgentWorkflowNodeStatus.OUTCOME_UNKNOWN,
+                ]),
+            )
+        ))
+        changed = False
+        for node in nodes:
+            evidence, usage = await self.node_attempt_evidence_and_usage(workflow, node)
+            updated = {
+                **(node.evidence_json or {}),
+                "model_attempt_ids": evidence.model_attempt_ids,
+                "tool_call_ids": evidence.tool_call_ids,
+                "tool_results": evidence.tool_results,
+            }
+            if node.usage_json != usage.model_dump(mode="json") or node.evidence_json != updated:
+                node.usage_json = usage.model_dump(mode="json")
+                node.evidence_json = updated
+                changed = True
+        if changed:
+            self.bump_snapshot(workflow)
+        await self.db_session.commit()
+
     async def record_tool_progress(self, workflow, node) -> None:
         """Commit read-tool evidence and a replayable progress event while the Worker continues."""
         # The same workflow row serializes event numbers from concurrent Workers in MySQL.

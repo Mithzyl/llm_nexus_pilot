@@ -227,8 +227,9 @@ class ModelOnlyWorkflowOrchestrator:
         workflow: LlmAgentWorkflowExecution,
         payload: AgentWorkflowCreate,
     ) -> None:
-        """Run the graph using persisted effective policy, including automatic attachment reads."""
+        """Run persisted policy and reconcile late paid usage after terminal execution."""
 
+        execution_id = workflow.workflow_execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node: LlmAgentWorkflowNodeExecution | None = None
         try:
@@ -564,6 +565,9 @@ class ModelOnlyWorkflowOrchestrator:
             if current_node is not None:
                 await self._fail_node(workflow, current_node, error)
             await self._fail_workflow(workflow, error=error)
+
+        finally:
+            await self.workflow_state.reconcile_terminal_usage(execution_id)
 
     async def _execute_round(self, workflow, payload, run, previous_node_id, refinement):
         """Execute roles with one bounded plan repair and committed decision/result events."""

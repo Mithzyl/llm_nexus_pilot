@@ -14,8 +14,16 @@ import {
   selectVisibleAgentWorkflowActivities,
   isAgentWorkflowAssistantMessage,
   isAgentWorkflowCancellable,
+  cancelledMessageStatusLabel,
 } from "../lib/agent-workflow-view";
 import type { AgentWorkflowEvent, AgentWorkflowNodeResult, AgentWorkflowSummary } from "../lib/types";
+
+/** Server-confirmed cancellation must not claim that its final state is still pending. */
+test("distinguishes confirmed cancellation from a locally aborted response", () => {
+  assert.equal(cancelledMessageStatusLabel(true), "已取消");
+  assert.equal(cancelledMessageStatusLabel(false), "已停止 · 等待服务端最终状态");
+  assert.equal(cancelledMessageStatusLabel(undefined), "已停止 · 等待服务端最终状态");
+});
 
 /** Persisted reads and discovery remain visible even when the worker has no final output. */
 test("renders committed tool results for a running or failed worker after reload", () => {

@@ -175,6 +175,71 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 
 ### Controller 修正与 Strata 真实验证（2026-10-17）
 
+#### 仅提示词 JSON 与有限修正实验（2026-10-18）
+
+状态：已完成本次小样本验证，不据此宣布模型稳定或修改生产策略。新增诊断脚本 `deployments/verification/check_live_strata_prompt_only.py`，通过真实本地 ASGI API、MySQL 13306、MinIO 19000 执行完整工作流。仅验证进程移除 Strata HTTP 请求的 `response_format`，保留完整节点提示、内部 `json_object_output`、JSON 解析、节点类型/计划业务校验及现有一次输出修正；退出即恢复方法。没有修改业务代码、供应商配置或部署，不调用 DeepSeek。两个样本使用相同问题：三句话说明 Python 列表/元组，单 planner、无工具，任务允许 2 次模型调用；工作流 1.1.0、最多一轮业务规划、每轮总额度 10、节点 240 秒，供应商 HTTP 不重试。最多 20 次实际调用的实验保护未触发。
+
+正常样本 Run `d6d6705f-05d2-445e-b015-a08f97277a94`：约 132.340 秒，7 次真实请求，最终 completed，Assistant `9dea51d0-3983-4a07-9ad9-2e48c83148b2`。首次通过率的分母是各节点的一次首次输出，不包括修正调用：
+
+| 节点 | 首次 JSON/字段检查 | 一次修正 | 首次 / 修正耗时（秒） | 首次输入/输出 Token | 修正输入/输出 Token |
+|---|---|---|---:|---:|---:|
+| Controller 规划 | 1/1，通过；计划业务检查也通过 | 不需要 | 39.724 / — | 1118/2704 | — |
+| Worker | 0/1，返回三句普通文本，不是 JSON | 通过 | 6.718 / 8.221 | 773/275 | 986/375 |
+| Reviewer | 0/1，JSON 不完整，解析报第 2721 列缺少分隔符，正文结尾为数组结束但缺少外层结束 | 通过 | 19.358 / 22.643 | 1444/1138 | 2201/1396 |
+| 最终汇总（另列） | 0/1，返回普通文本 | 通过 | 8.396 / 26.346 | 4039/192 | 4254/1463 |
+
+三个目标节点首次合计 1/3（33.3%）；仅本样本，不是总体可靠性估计。自然触发的三次修正均通过，修正调用共 57.210 秒、10675 Token，不能把这部分算成首次成功。正常样本合计输入 14815、输出 7543，总 22358 Token。格式通过不代表内容正确：最终回答仍缺少“元组所有元素都可哈希才可作字典键”的必要条件，Reviewer 没有可靠纠正该问题；Worker 修正摘要也偏向描述任务已满足，而非完整保留原解释。
+
+受控修正样本 Run `980a62c2-2511-4222-8f0b-c56802e0ea31`：约 120.720 秒，7 次请求，最终 completed，Assistant `9140bf5e-b698-4d08-87d2-b7dc2a8614b5`。模型的 Controller/Worker/Reviewer 原始首次输出均通过字段检查；诊断脚本在实际节点校验前分别删除 `decision_summary`、`summary`、`review_summary`，保留真实 Provider 原始响应，只修改测试用校验输入。三个 missing 错误均触发真实后端修正事件，并各一次修正成功；不把人为删除计作模型失败，也不将缺失字段重建当作“纯格式无语义变化”。
+
+| 受控节点 | 原始首次输入/输出 | 修正输入/输出 | 首次 / 修正耗时（秒） |
+|---|---:|---:|---:|
+| Controller | 1118/1871 | 1567/1382 | 30.012 / 22.496 |
+| Worker | 774/606 | 1076/690 | 11.685 / 11.954 |
+| Reviewer | 1526/618 | 1920/594 | 12.941 / 11.653 |
+| 最终汇总，无注入 | 3994/951 | — | 18.842 / — |
+
+受控组输入 11975、输出 6712，总 18687 Token，其中修正 7229 Token、46.103 秒。两组共 **14 次请求，输入 26790、输出 14255，总 41045 Token**，全部返回 usage，金额无价格依据。原始未注入首次字段结果若两组一起列出，Controller 为 2/2，Worker 与 Reviewer 各 1/2；第二组下游输入受上游人为修正影响，不作为独立无干预成功率。两组均只有一轮业务执行，`output_repair_succeeded_count=3`，计划业务修正和返回 Controller 的 refinement 为 0；不宣称本次验证了那些分支。
+
+证据：本机忽略目录 `output/playwright/strata-prompt-only-20261018.json` 保存实际正文、逐次用量/耗时、移除字段与消息哈希、注入字段、节点结果、修正事件和最终消息 ID；数据库/MinIO 保留正常平台记录。此报告是合成测试数据，不能误当真实用户文件评价。未运行浏览器流程；不包括工具、文件引用、长上下文及多并发。
+
+本次复查：`pytest` 节点输出修正/Controller 计划修正/修正资格 56 项通过；工作流/统计/生命周期/供应商失败/Responses 178 项通过；前端 142 项单元测试、TypeScript、ESLint 通过。首次前端测试被沙箱 IPC 权限阻止，获准运行后通过，未修改测试标准。脚本 Ruff 与差异检查通过。之前取消修复的浏览器 4 项结果保留原日期，本次不重复宣称浏览器已验收。
+
+结论：提示词加后端有限修正在这两个样本中可以得到最终结果，但首次输出不稳定，修正增加明显用量，内容错误仍存在。当前业务 `prompted_json` 仍会发送供应商 JSON 模式，本实验不改变它。若后续实施，应另行决定策略与验收样本，不自动切换供应商设置。
+
+#### 取消迟到用量修复与完整请求重放（2026-10-17）
+
+状态：取消用量及终态文案已完成本地限定验证；新的完整工作流仍失败。先提交上次验证记录为 `c2e5264`，再修改代码、测试和本节记录。仅使用本地 API/Web、MySQL、MinIO 与 Strata，没有真实 DeepSeek 请求、推送或部署。下节旧失败记录保留其当时条件，不再表示取消两项修复尚未实施。
+
+实现：工作流执行退出时，`reconcile_terminal_usage` 从已提交 Model Attempt/工具记录重新计算取消、失败或结果未知节点的用量及调用引用，以替换方式保存并更新快照版本，不重复累加。取消节点保持 cancelled，不提交迟到业务输出、不启动后续节点。前端仅在服务端取消响应、工作流结果或已保存 Run 确认取消后显示“已取消”；仅本地停止读取仍显示等待服务端状态。此次没有批量修正历史记录，也没有新增终态后的用量推送：迟到调用结束后重新读取 result/刷新可获得更新，已停止跟进的页面不能据此宣称实时收到用量。
+
+新增真实 Session `c0ecc3a5-6c26-45e2-a851-7f9590b31466`，所有角色均为 Strata `tiel-coder-35b-a3b-ud-q4_k_xl`、prompted_json；时间为 UTC：
+
+| 检查 | 实际结果 | 耗时 | 已知输入 / 输出 Token |
+|---|---|---:|---:|
+| 浏览器取消，Run `2d89614a-6df9-4e04-bd0f-8696e6ae5e32` | Worker 调用中取消；迟到返回后 Attempt 合计与 result.aggregate_usage 同为 1891/631；仅 2 次调用、无 Reviewer/最终答案 | 15:04:15–15:04:29，约 14 秒；Worker 至 15:04:31 才结束；取消 HTTP 200 为 136 毫秒 | 1891 / 631 |
+| 再次完整执行，Run `58edae0d-7fa1-4b9c-b59c-402efe41c909` | Controller 成功，Worker 供应商错误；无最终答案 | 15:05:47–15:06:03，约 16 秒 | 1154 / 493，失败 Worker 用量未知 |
+| 首次诊断 Worker 重放 | 成功，但脚本漏平台安全 system 前缀，不能作为严格复现 | 9.565 秒 | 704 / 452 |
+| 首次诊断 Reviewer 重放 | 同上，不能作为严格复现 | 22.078 秒 | 1355 / 1403 |
+| 经额外授权的完整 Worker 重放 | HTTP 200 内返回 structured_output_failed，错误消息哈希与历史完全相同 | 6.442 秒 | 未返回 |
+| 经额外授权的完整 Reviewer 重放 | 成功，finish_reason=stop；历史错误未复现 | 23.990 秒 | 1383 / 1456 |
+
+两轮直接诊断各请求一次，无隐式重试。首次脚本遗漏已明确告知用户；修正为读取已保存 Context Source 的全部选中 system 来源、逐项核对内容哈希，并先执行 `--audit-only`，随后获得用户额外授权才完整重放。合计 **8 次实际模型请求，已知输入 6487、输出 4435，共 10922 Token**，另有 2 次失败调用未返回用量；错误的首次重放仍计入消耗。未登记 Strata 价格，费用未知，不将金额 0 当作免费。
+
+Worker 历史 Attempt `3450e918-5f42-44ef-ba18-b6a96ce24a57` 的完整重放返回 `model did not return valid JSON: Expecting value: line 1 column 1 (char 0)`，SHA-256 为 `31e224cc484a8a3e0db8325dab81c337793bc446b306326bdff91e5899770e74`、长度 74，与原失败一致。已确认错误发生在 Strata 的结构化输出处理，而非平台收到可用 JSON 后拒绝 Worker 字段。仅凭此错误不能确定模型输出为空、普通文本或其他内容，需要 Strata 服务端解析前的输出记录。Reviewer 历史 Attempt `c4cd8c91-c2b1-40ce-a1e4-d549e0bb0269` 的完整重放成功，原错误只有不同哈希及长度 68，具体原因仍未知，不能与 Worker 合并归因。
+
+安全诊断新增 `structured_output_failed` 白名单分类；公开错误仍为通用消息，生产记录不保存任意上游正文，不改变重试资格、JSON 要求或模型能力。完整 Worker 重放发生在分类修改前，报告仍为 unknown；新分类由离线回归验证，不冒充真实请求已验证。诊断脚本 `deployments/verification/check_live_strata_failed_attempt.py` 仅允许上述两个合成测试 Attempt，局部报告保留经过 Key 替换的有界错误文字，不保存完整消息、推理或认证头。
+
+验证记录（适用本次修改）：
+
+- `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_agent_workflows.py apps/api/tests/test_plan_repair_statistics.py apps/api/tests/test_workflow_execution_tasks.py -q`：**87 passed**。取消迟到用量用例修改前出现 100 != 200，修改后通过；覆盖迟到成功/带用量失败、金额与缓存统计、重复汇总不改变快照、取消状态与输出不复活。
+- `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml packages/models/tests/test_completion_failures.py apps/api/tests/test_responses.py -q`：**91 passed**。分类用例修改前 unknown 与预期不符，修改后通过；核对公开消息和私有诊断不含样例秘密。
+- `cd apps/web && npm run test`：**142 passed**；TypeScript、ESLint 通过。
+- `cd apps/web && PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npm run test:e2e -- --grep 'refreshing a running workflow'`：**4 passed**，桌面/移动完成与取消恢复，无重新 POST。模拟供应商不产生真实 DeepSeek 请求。
+- 真实浏览器确认取消后显示“已取消”；只读刷新历史取消会话也恢复该文案，实际查看截图。定向 Ruff、`git diff --check` 通过。
+
+本机忽略目录 `output/playwright/` 保存 `strata-cancel-fixed-20261017.json`、`strata-cancel-fix-full-20261017.json`、`strata-{worker,reviewer}-{error,complete}-replay-20261017.json`、两份 replay-audit 报告，以及 `cancel-confirmed-fix.png`、`cancel-fixed-live.yml`。脚本与结论入版本管理，临时报告不作为跨机器必备测试输入。未通过项：本次完整工作流成功回答；Reviewer 原始供应商错误具体原因。跨进程重启恢复仍非此次实现范围。
+
 #### 浏览器发起、刷新、断网与取消续验（2026-10-17）
 
 状态：限定场景验证已执行，整体验收未通过。先提交修复、测试和文档为 `3750c1e`，再以该代码启动本地 API 18000、Web 3100、MySQL 13306、MinIO 19000；以下时间均为 UTC。本次仅调用 Strata `tiel-coder-35b-a3b-ud-q4_k_xl`，没有 DeepSeek 请求、推送或部署。三个工作流均由 Playwright 操作页面发起，不由验收脚本创建；真实页面角色配置为 controller/planner/reviewer 全部 Strata、prompted_json、每次调用 timeout_seconds=60。浏览器另加测试专用请求检查，拒绝非 Strata 的生成请求，不修改应用代码。

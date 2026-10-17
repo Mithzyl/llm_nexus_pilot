@@ -11,6 +11,11 @@ import { isAgentWorkflowNodeActivitySummary } from "./agent-workflow";
 type AgentDispatchGroup = AgentWorkflowNodeOutputMap["agent_dispatch"]["dispatch_groups"][number];
 type AgentNodeBudget = AgentWorkflowNodeResult["budget"];
 
+/** Only a persisted cancellation may be presented as a confirmed terminal state. */
+export function cancelledMessageStatusLabel(confirmed?: boolean): string {
+  return confirmed ? "已取消" : "已停止 · 等待服务端最终状态";
+}
+
 export type AgentWorkflowActivityItem = AgentWorkflowNodeActivitySummary & {
   nodeExecutionId: string;
   eventSequence: number;

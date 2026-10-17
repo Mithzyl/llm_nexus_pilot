@@ -1,6 +1,7 @@
 """Offline lifecycle tests: observers do not own execution; application shutdown does."""
 
 import asyncio
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -13,13 +14,13 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks imp
 )
 
 
-@pytest.mark.parametrize("action", ["finish", "cancel", "shutdown"])
+@pytest.mark.parametrize("action", ["finish", "cancel", "cancel_error", "shutdown"])
 async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     client,
     test_database_session_factory,
     action,
 ):
-    """Exercise real SQL execution after ASGI disconnect and enforce explicit cancellation."""
+    """Keep disconnected work alive and count late usage without reviving cancelled nodes."""
     from test_agent_workflows import ReleasableWorkerProvider, scripted_registry, workflow_payload
     from test_api import create_test_run
 
@@ -36,6 +37,21 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
 
     run = await create_test_run(client)
     provider = ReleasableWorkerProvider()
+    if action == "cancel_error":
+        from nexuspilot_models.errors import ModelProviderError
+
+        generate = provider.generate
+
+        async def late_failure(request):
+            """Return known billable usage on a provider failure after explicit cancellation."""
+            response = await generate(request)
+            if request.metadata["agent_node_execution_key"].startswith("worker_execution."):
+                raise ModelProviderError(
+                    "invalid_json", "Synthetic late failure", response=response
+                )
+            return response
+
+        provider.generate = late_failure
     registry = scripted_registry(provider)
     app.dependency_overrides[get_provider_registry] = lambda: registry
     payload = AgentWorkflowCreate.model_validate(workflow_payload(stream=True))
@@ -64,7 +80,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
         try:
             await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
             assert not task.done()
-            if action == "cancel":
+            if action in {"cancel", "cancel_error"}:
                 cancelled = await client.post(f"/api/v1/agent-workflows/{workflow_id}/cancel")
                 assert cancelled.status_code == 200
             elif action == "shutdown":
@@ -74,8 +90,32 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
         if action != "shutdown":
             await asyncio.wait_for(asyncio.shield(task), 5)
     result = (await client.get(f"/api/v1/agent-workflows/{workflow_id}/result")).json()
-    expected = {"finish": "completed", "cancel": "cancelled", "shutdown": "outcome_unknown"}[action]
+    expected = {
+        "finish": "completed", "cancel": "cancelled",
+        "cancel_error": "cancelled", "shutdown": "outcome_unknown",
+    }[action]
     assert result["status"] == expected
+    if action in {"cancel", "cancel_error"}:
+        run_result = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+        attempts = run_result["attempts"]
+        assert len(attempts) == 2
+        assert all(a["status"] in {"completed", "failed"} for a in attempts)
+        for field in ("input_tokens", "output_tokens", "cached_tokens"):
+            assert result["aggregate_usage"][field] == sum(a[field] or 0 for a in attempts)
+        assert Decimal(result["aggregate_usage"]["estimated_cost"]) == sum(
+            Decimal(a["estimated_cost"] or "0") for a in attempts
+        )
+        worker = next(n for n in result["nodes"] if n["node_key"].startswith("worker_execution."))
+        assert worker["status"] == "cancelled"
+        assert worker["output"] is None
+        async with test_database_session_factory() as accounting_db:
+            accounting = service._create_model_only_workflow_orchestrator(
+                accounting_db
+            ).workflow_state
+            await accounting.reconcile_terminal_usage(workflow_id)
+        reread = (await client.get(f"/api/v1/agent-workflows/{workflow_id}/result")).json()
+        assert reread["aggregate_usage"] == result["aggregate_usage"]
+        assert reread["snapshot_version"] == result["snapshot_version"]
     if action == "shutdown":
         assert result["error"]["error_code"] == "agent_provider_outcome_unknown"
         assert result["error"]["outcome_is_known"] is False

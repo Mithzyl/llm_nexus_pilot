@@ -5,7 +5,7 @@ from typing import Any
 
 
 def provider_error_diagnostic(payload: Any, http_status: int | None = None) -> dict:
-    """Classify errors without storing arbitrary messages, request echoes or credentials."""
+    """Classify errors, including provider-side JSON failure, without retaining private text."""
     error = payload.get("error") if isinstance(payload, dict) else payload
     fields = error if isinstance(error, dict) else {}
     message = fields.get("message", error if isinstance(error, str) else "")
@@ -20,6 +20,7 @@ def provider_error_diagnostic(payload: Any, http_status: int | None = None) -> d
         "unsupported_parameter",
         "server_error",
         "invalid_json_schema",
+        "structured_output_failed",
     }
     code = fields.get("code")
     category = code if isinstance(code, str) and code in categories else "unknown"
