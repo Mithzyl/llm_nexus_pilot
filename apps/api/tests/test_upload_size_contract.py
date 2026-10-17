@@ -37,6 +37,21 @@ def test_parser_transport_accepts_base64_twenty_mib():
     assert parser["MAX_REQUEST_BYTES"] >= ((20 * 1024 * 1024 + 2) // 3) * 4 + 1024
 
 
+def test_parser_private_source_file_can_hold_admitted_upload(monkeypatch):
+    """The process file-size limit must allow the PDF source, not just the smaller result."""
+    import runpy
+
+    root = Path(__file__).resolve().parents[3]
+    parser = runpy.run_path(str(root / "deployments/file-runtime/parse_office.py"))
+    calls = {}
+    monkeypatch.setattr(
+        parser["resource"], "setrlimit", lambda kind, limits: calls.update({kind: limits})
+    )
+    parser["limit_process_resources"]()
+    assert calls[parser["resource"].RLIMIT_FSIZE] == (20 * 1024 * 1024,) * 2
+    assert parser["MAX_RESULT_BYTES"] == 4 * 1024 * 1024
+
+
 @pytest.mark.asyncio
 async def test_strata_registration_is_idempotent_and_rejects_other_endpoint(
     test_database_session_factory,

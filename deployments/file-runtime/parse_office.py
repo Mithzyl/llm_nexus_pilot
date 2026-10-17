@@ -304,11 +304,17 @@ def parse_request(request: dict) -> dict:
     }
 
 
-def main() -> int:
-    """Bound resources and emit sanitized failures, preserving legacy Office error codes."""
-
+def limit_process_resources() -> None:
+    """Allow private source files up to the upload limit; output is bounded separately."""
     resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_RESULT_BYTES, MAX_RESULT_BYTES))
+    maximum = max(MAX_SOURCE_BYTES, MAX_RESULT_BYTES)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (maximum, maximum))
+
+
+def main() -> int:
+    """Bound source-file resources and result bytes, preserving safe Office error codes."""
+
+    limit_process_resources()
     protocol = None
     try:
         encoded = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
