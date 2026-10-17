@@ -63,6 +63,7 @@ test("parses the persisted workflow event rather than the Responses SSE shape", 
 
 test("uses prompted JSON for DeepSeek and native schema for supported providers", () => {
   assert.equal(agentStructuredOutputMode("deepseek"), "prompted_json");
+  assert.equal(agentStructuredOutputMode("strata"), "prompted_json");
   assert.equal(agentStructuredOutputMode("openai"), "native_schema");
 });
 

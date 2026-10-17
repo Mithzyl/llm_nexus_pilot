@@ -6,9 +6,34 @@ from typing import Any
 from nexuspilot_models.contracts import (
     NATIVE_MEDIA_TYPES_BY_PROVIDER,
     Message,
+    ModelRequest,
+    ModelResponse,
     ProviderName,
 )
 from nexuspilot_models.errors import ModelProviderError
+
+
+def validate_structured_response(
+    response: ModelResponse, request: ModelRequest
+) -> ModelResponse:
+    """Validate completed JSON while retaining normalized billing evidence on failure.
+
+    The response attached to an exception is backend-only evidence, not a successful
+    public response. Workflow nodes may defer validation until after accounting.
+    """
+    if not (request.output_schema or request.json_object_output):
+        return response
+    try:
+        response.structured_output = parse_structured_output(
+            response.text, defer_validation=request._defer_structured_validation
+        )
+    except ModelProviderError as error:
+        error.response = response
+        error.raw_error = response.raw_response
+        error.transport_attempts = response.transport_attempts
+        error.provider_request_id = response.provider_request_id
+        raise
+    return response
 
 
 def native_content_blocks(
@@ -94,19 +119,25 @@ def parse_json_arguments(
     return parsed
 
 
-def parse_structured_output(text: str | None) -> dict[str, Any] | list[Any] | None:
-    """Parse a requested structured response and reject invalid JSON deterministically."""
+def parse_structured_output(
+    text: str | None, *, defer_validation: bool = False
+) -> dict[str, Any] | list[Any] | None:
+    """Parse JSON; an internal workflow may retain raw text and validate it after accounting."""
 
     if text is None:
         return None
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
+        if defer_validation:
+            return None
         raise ModelProviderError(
             "response_parse_error",
             "Provider returned invalid structured JSON output.",
         ) from exc
     if not isinstance(parsed, (dict, list)):
+        if defer_validation:
+            return None
         raise ModelProviderError(
             "response_parse_error",
             "Provider returned a structured scalar instead of an object or array.",

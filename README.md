@@ -147,6 +147,32 @@ Base URL 必须使用 `http` 或 `https`，必须包含主机，不能包含用�
 可以保留多个停用地址，但最多只能有一个启用地址。Registry 只在进程启动时读取这些记录，
 修改后需要重启 API。地址、密钥和内部配置都不会由 Provider 发现接口返回。
 
+### Strata（Chat Completions）
+
+新增 Provider 标识 `strata`，复用 Chat Completions 编码，快速回复和 Agent 都通过 SSE
+接收，Agent 收齐后仍执行节点 JSON 校验。数据库地址为 `https://mithfusion.site/v1`，
+适配器追加 `/chat/completions`，不要重复追加 `/v1`。只有数据库启用地址与本地密钥同时
+存在才注册。密钥只填写 `apps/api/.env` 的 `NEXUSPILOT_STRATA_API_KEY`；
+`NEXUSPILOT_STRATA_MODELS=tiel-coder-35b-a3b-ud-q4_k_xl` 指定模型白名单。
+
+先检查目标库的 `llm_provider_endpoints`；没有启用 Strata 地址时可插入
+`provider_endpoint_id=UUID()`、`provider=strata`、`base_url=https://mithfusion.site/v1`、
+`enabled=1`。不要覆盖其他已配置地址。模型身份和能力仍分别使用现有
+`/api/v1/internal/models` 与 `/api/v1/internal/model-catalog-versions` 管理接口登记；
+新增枚举不改变已有 VARCHAR 表结构，不包含自动修改生产库的迁移。
+
+2026-10-17 `/v1/models` 返回该模型及 `meta.n_ctx=163840`。目前只确认文本、流式和
+JSON-object 请求；Agent 使用 `prompted_json`，不宣称原生 JSON Schema、工具、视觉或
+思考等级控制已通过验收。空思考映射表示保留服务默认行为，不发送开关或 effort，
+前端不显示无效调节项；显式设置未经支持的思考参数会被拒绝。空 SSE 或缺少结束标记
+不能作为成功响应。
+
+本次仅在隔离的本地验证 MySQL 中登记模型。验证入口
+`deployments/verification/check_live_strata_plan_repair.py` 的模块说明列出依赖和执行方式；
+`seed` 只针对验证库，不是部署命令。快速回复通过；完整 Strata Agent 尚未通过，
+真实耗时、用量和失败限制见阶段3的 2026-10-17 验证记录。没有登记价格，不能把数据库
+费用 0 解释为调用免费。
+
 可以通过以下接口查看当前实际可用 Provider：
 
 ```http
@@ -183,7 +209,7 @@ DeepSeek 当前通过专用 Chat Completions 适配器调用，不调用 DeepSee
 }
 ```
 
-`deepseek-v4-pro` 的 `low` 会在网络请求前被拒绝；思考启用时传入 `temperature` 也会被拒绝。流式响应只有收到 DeepSeek 的 `[DONE]` 终止标记才会记为完成。`strict` 工具和结构化 JSON Schema 目前没有经过模型能力目录确认，因此不会被静默降级或发送到普通 DeepSeek 端点。
+`deepseek-v4-pro` 的 `low` 会在网络请求前被拒绝；思考启用时传入 `temperature` 也会被拒绝。DeepSeek 流式响应必须有实际 `finish_reason` 和 `[DONE]`，错误、拒绝、空答案或中途断连不记为正常完成。关闭思考的工具续接不要求推理状态；开启思考仍保留每轮私有状态。`strict` 工具和结构化 JSON Schema 目前没有经过模型能力目录确认，因此不会被静默降级或发送到普通 DeepSeek 端点。接口复查、JSON 修正职责和真实测试限制见[阶段2模型接口复查](docs/implementation/phase-2-llm-core-capabilities.md#模型接口复查与失败语义2026-10-17)。
 
 同一个接口设置 `"stream": true` 后返回 SSE。公开事件固定为：
 

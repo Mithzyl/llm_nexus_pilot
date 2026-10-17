@@ -146,7 +146,7 @@ class HttpTransport:
     ) -> AsyncIterator[
         tuple[AsyncIterator[SSEMessage], httpx.Headers, list[TransportAttempt]]
     ]:
-        """Open an SSE stream after retrying connection and retryable HTTP status failures."""
+        """Retry pre-stream connection failures; classify read failures without replaying output."""
 
         attempts: list[TransportAttempt] = []
         for attempt_index in range(1, self.max_retries + 2):
@@ -202,6 +202,21 @@ class HttpTransport:
                         response.headers,
                         attempts,
                     )
+                except (httpx.TimeoutException, httpx.RequestError) as exc:
+                    error_type = (
+                        "timeout"
+                        if isinstance(exc, httpx.TimeoutException)
+                        else "network_error"
+                    )
+                    attempts[-1].error_type = error_type
+                    attempts[-1].error_message = type(exc).__name__
+                    attempts[-1].latency_ms = self._elapsed_ms(started)
+                    # Some output may already be delivered: never restart the generation here.
+                    raise ModelProviderError(
+                        error_type,
+                        "Model provider stream read failed.",
+                        transport_attempts=attempts,
+                    ) from exc
                 finally:
                     await stream_context.__aexit__(None, None, None)
                 return

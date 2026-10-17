@@ -23,7 +23,7 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
-    parse_structured_output,
+    validate_structured_response,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -61,7 +61,7 @@ class OpenAIResponsesProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize OpenAI Responses events without exposing native event names to clients."""
+        """Normalize Responses events and reject EOF before an explicit terminal response."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -170,35 +170,18 @@ class OpenAIResponsesProvider:
                         transport_attempts=attempts,
                     )
 
-        if final_payload:
-            response = self._parse_response(
-                final_payload,
-                request,
-                latency_ms=self._elapsed_ms(started),
-                attempts=attempts,
-            )
-        else:
-            text = "".join(text_parts) or None
-            response = ModelResponse(
-                text=text,
-                tool_calls=[
-                    ToolCall(
-                        id=value["id"],
-                        name=value["name"],
-                        arguments=parse_json_arguments(
-                            value["arguments"], context="tool call"
-                        ),
-                    )
-                    for value in tool_parts.values()
-                ],
-                structured_output=parse_structured_output(text)
-                if request.output_schema
-                else None,
-                finish_reason="stop",
-                latency_ms=self._elapsed_ms(started),
-                raw_response={"streamed": True},
+        if not final_payload:
+            raise ModelProviderError(
+                "response_parse_error",
+                "OpenAI stream ended without a terminal response event.",
                 transport_attempts=attempts,
             )
+        response = self._parse_response(
+            final_payload,
+            request,
+            latency_ms=self._elapsed_ms(started),
+            attempts=attempts,
+        )
         if reasoning_summary_parts and not response.reasoning_blocks:
             response = response.model_copy(
                 update={
@@ -421,12 +404,9 @@ class OpenAIResponsesProvider:
             if encrypted_reasoning_items
             else None
         )
-        return ModelResponse(
+        response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
             finish_reason=finish_reason or payload.get("status", "stop"),
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
@@ -440,6 +420,8 @@ class OpenAIResponsesProvider:
             raw_response=self._sanitize_raw_response(payload),
             transport_attempts=attempts,
         )
+
+        return validate_structured_response(response, request)
 
     def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         """Map Responses usage to the stable stream usage event."""

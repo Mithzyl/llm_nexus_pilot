@@ -80,7 +80,7 @@ export function isAgentWorkflowNodeActivitySummary(
 export function agentStructuredOutputMode(
   provider: ProviderName,
 ): "native_schema" | "prompted_json" {
-  return provider === "deepseek" ? "prompted_json" : "native_schema";
+  return provider === "deepseek" || provider === "strata" ? "prompted_json" : "native_schema";
 }
 
 /** Validate one persisted Agent Workflow SSE block and reject mismatched projections. */

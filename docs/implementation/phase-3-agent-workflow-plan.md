@@ -4,6 +4,8 @@
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
+2026-10-17 当前补充：Controller 角色提示与任务额度校验已修复，真实 DeepSeek 的计划修正成功及两轮执行已验证；新增 Strata Provider，快速回复通过，Strata 完整工作流仍未通过。详细事实见“Controller 修正与 Strata 真实验证”，此前日期的失败／未执行记录保留为历史，不代表当前验收状态。
+
 2026-10-12 工具扩展：存在当前回合可访问的附件时，服务端自动选择 `tool_enabled_v1`，不再要求 Web 手动启用。Worker 可多轮调用五类已上传附件只读工具；工具请求、结果、累计用量和进度持久保存，模型继续后才提交节点输出。无附件的默认 `model_only_v1` 和历史请求回放保持原行为。快速回复的独立工具循环也归[工具主计划及本地验证范围](phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)，不在本阶段重复维护工具待办；尚未提供独立后台恢复、Python/Shell 或动态工具。
 
 2026 年 9 月 16 日文件接入：上传文件绑定当前 Run 后，各模型节点通过统一 Context Builder 读取同一固定解析结果。测试检查 Controller、Worker、Reviewer 和最终汇总的实际模型请求均含附件文字；不新增 File Agent，不自动切换模式，不开放 Shell 或模型文件工具。这里只是既有 `model_only_v1` 的输入扩展，附件驱动编排与独立后台恢复仍后置。具体上传限制见[阶段2正式文件上传](phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)。
@@ -170,6 +172,99 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 证据存于本机忽略目录 `output/playwright/`：`workflow-20261016-{workflow_id}.json`、`workflow-20261016-first-failure.png`、`workflow-20261016-history-during-round2.png`、`workflow-20261016-completed-before-refresh.png`、`workflow-20261016-restored-sources.png`。核查脚本 `inspect_workflow_20261016.py` 只读指定测试记录；不是部署脚本或自动验收系统。
 
 待处理：Controller 提示与允许角色的约束表达、工具任务最低模型调用额度的校验、错误文案仍将 tool_enabled_v1 写为 model_only_v1。最终回答包含较多内部字段，用户回答与技术证据的措辞分离也需改进。本次只做验证与记录，不更改上述业务行为，不将三个请求全部记为通过。Office/PDF、真实取消传播、跨用户、服务重启恢复未纳入本次验收。
+
+### Controller 修正与 Strata 真实验证（2026-10-17）
+
+本日续验（仅 DeepSeek，不调用 Strata、不部署）：使用本地 MySQL/MinIO 与 API，执行
+`check_live_strata_plan_repair.py --mode repair --output output/playwright/deepseek-bounded-repair-20261017.json`。
+该脚本仅 `repair` 分支选择 DeepSeek，本次未执行 seed/quick/agent 分支。
+Run `826b3a7b-1024-4e84-928b-d32c6c0a5c59` 完成，51.194秒，12次实际调用，
+输入51568／输出9225 Token（合计60793）；12份响应对象均从 MinIO 读取成功。
+
+- 受控首次计划重复 task_key，`unique_task_keys` 未通过；请求计划修正1次、成功1次、失败0次。
+  修正调用输入1823／输出296 Token，已经包含在总量中。
+- Reviewer 第一次输出含 Schema 不允许的额外字段（`extra_forbidden`），触发节点输出修正1次并成功；
+  修正调用输入3850／输出911 Token，同样包含在总量中。不是解析器拼接生成的修正结果。
+- 业务执行两轮、返工1次；第二轮再次要求返工时以 `round_limit` 停止继续循环，并生成带限制说明的最终回答，
+  Assistant ID `53a93bbf-e5d0-4c62-824e-05fef3ab5c64`。
+- 最终正文正确说明列表/元组，但也声明上游解释未充分交付、模型无法确认内部计划修正经过。
+  因此通过的是“实际计划修正、字段修正、两轮上限和最终答案保存”，不是上游内容质量全部通过；
+  不用最后一段模型自述代替真实平台事件。
+- 本地没有配置 DeepSeek 价格，Attempt estimated_cost 为 null；现有工作流统计中费用0是已知费用求和，
+  本次不能用它推导真实调用免费。费用未知的表达后续需单独完善；非法 JSON 的失败记账规则见阶段2。
+
+先提交此前五份验证文档为 `6cedce7`。本批代码在该提交之后修改，未推送、未部署。
+使用本地 API 18000／Web 3100、MySQL 13306／MinIO 19000，保留历史数据；Strata Key 只写入
+被 Git 忽略的 `apps/api/.env`，没有进入数据库、报告或前端。
+
+当前规则：Controller 的 tasks 只允许 `allowed_roles` 中的 planner/researcher，不把
+controller、worker、reviewer、handoff 或最终汇总当作额外调度角色。纯文本模式每任务
+`max_model_calls` 必须为 1；工具模式声明 read/tool 的任务至少为 2（工具请求、结果生成），
+先发现文件再读取至少需要 3，更多顺序读取仍需要额外额度。最低值不是任务完成保证。
+数值不符进入 `workflow_limits`，1.1.0 可在现有剩余额度规则内修正一次；角色未授权或
+能力越权仍不修正。错误文案使用真实 execution_profile。测试先复现单次工具任务被误接受、
+纯文本数值错误被误分类为工具权限错误，再修复；不取消上限、权限或二次校验。
+
+DeepSeek 三次真实请求（模型均 `deepseek-v4-flash`）：
+
+| 样本 / Run | 耗时 | 输入 / 输出 Token | 结果 |
+|---|---:|---:|---|
+| 自然语言重复键指令 `2651a724-381b-471f-b227-aea456b0102d` | 209.943 秒 | 38543 / 43277 | 工作流完成，但模型初次给出合法键，修正 0；目标分支验收失败 |
+| 明确 JSON 样本 `39044362-3b5b-4b7c-b007-924eb7e02c50` | 3.513 秒 | 3071 / 482 | 触发修正，修正计划把文本任务额度改为 2，二次校验失败；促成本批提示与数值错误分类修复 |
+| 修复后同一明确样本 `38c32957-50b8-4dfb-8bbc-7b10c75e4a8f` | 39.850 秒 | 38375 / 7441 | 完成：计划修正 1、成功 1、失败 0；业务轮数 2、返工 1、实际调用 10 |
+
+后两次仅对该验收请求设置 reasoning.enabled=false，不改变产品中等思考默认设置。
+成功 Workflow `7db5f265-189f-4aec-955f-56baebf7197d`：三份计划校验依次为
+false（unique_task_keys）、true、true。计划修正用量输入 1823／输出 298，已包含在总量，
+不能再次相加。独立 GET result 复读确认统计和 Assistant ID
+`2d78b26b-652c-4af4-acc1-036176680ff8` 保留，10 个响应对象从 MinIO 读取成功。
+这是受控故障输入，不代表自然请求的触发概率；没有伪造模型输出或修改校验结果。
+最终回答解释了列表／元组，但因模型未获得完整内部修正记录，仍称测试过程证据不足。
+本次以真实节点、事件和 Attempt 判定修正成功，不将模型对测试本身的描述计为通过。
+
+Strata 地址 `https://mithfusion.site/v1`，实际模型目录确认
+`tiel-coder-35b-a3b-ud-q4_k_xl` 和 `meta.n_ctx=163840`。独立 `strata` 标识复用
+Chat Completions，密钥和白名单走环境配置，地址走数据库。Strata 暂不支持思考参数映射，
+空配置使用服务默认，Web 不发送虚构 effort；完整 JSON 仍由节点验证，不放松 schema。
+
+同一问题“用两句话解释 Python 列表与元组的区别”的实际比较：
+
+| 模式 / Run | 耗时 | 已知输入 / 输出 Token | 结果 |
+|---|---:|---:|---|
+| 快速回复 SSE `8b1facf0-9720-4e15-bf26-24332027c740` | 4.405 秒，首正文 3.344 秒 | 237 / 105，完整用量 | 通过 |
+| Agent 非流式 `4d9256a2-2404-46b1-b2b5-baddbcaf2b28` | 10.546 秒 | 未知 | Controller HTTP 502 |
+| Agent 非流式复测 `0c92d5a5-77d2-4bec-8b68-1033fc4ec5c5` | 8.585 秒 | 未知 | Controller HTTP 502 |
+| Agent 改为 SSE `2a122592-9ae8-4814-9ad1-c4490038d934` | 67.233 秒 | 至少 3589 / 1941，非完整总量 | 5 次调用；Controller、Worker 完成，Reviewer 修正响应形状错误，最终失败 |
+
+SSE Agent 中两次调用的本地聚合记录没有正文、工具或 usage，另外三次返回上述已知用量。
+2026-10-17 复查更正：聚合记录不是原始 SSE，且旧共享解析器会忽略异常并默认 stop，
+因此不能据此认定上游返回空正文。共享解析与真实 DeepSeek 复查结果见
+[阶段2模型接口复查](phase-2-llm-core-capabilities.md#模型接口复查与失败语义2026-10-17)。
+Reviewer 最后返回 `output_repair` 包装字段而非 Reviewer 输出字段。随后新增空流拒绝测试和
+适配器检查，避免再将空流记为成功；该检查完成离线验证，没有再次发起付费工作流。
+本次进一步要求修正只返回节点对象，明确禁止把修正输入包装当输出；空结果在字段修正前失败。
+工作流内部调用现将非法 JSON 的结构校验延后到节点：先保存正常结束的生成及用量，
+再进入既有有限修正；合法 JSON 的字段错误与非法 JSON 均不能绕过节点校验。
+普通 HTTP 调用仍严格解析，拒绝、空响应和断流不进入字段修正。
+不能仅凭这些结果断言 502 根因，也不能宣称 Strata 完整 Agent 可用。最小 JSON-object
+诊断请求另耗时 3.115 秒、输入 265／输出 57，不计入两种模式的同题比较。
+旧失败报告中 0 或小计须结合 usage_complete=false 解读，未知不等于零；脚本已改为
+用量不完整时总量 null、已知部分单列。没有价格依据，不计算货币费用。
+
+验证入口 `deployments/verification/check_live_strata_plan_repair.py`；证据在忽略目录
+`output/playwright/strata-*-20261017.json`、`deepseek-plan-repair*-20261017.json`。
+Playwright 已检查 Strata 可选、选择后不显示无效思考等级，截图
+`output/playwright/strata-picker-20261017.png`。没有新增统计面板或在浏览器再次发送付费请求。
+本批未验收 Office/PDF、Strata 工具调用、视觉、后台进程恢复或生产部署。
+
+最终自动化验证：后端／模型适配 253 项通过（33.66 秒），命令如下；包括新增额度规则、
+修正失败后不 dispatch、Strata 注册条件、SSE 收集、缺少 DONE／空流拒绝和思考参数拒绝。
+
+```bash
+apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_strata_provider.py apps/api/tests/test_controller_tool_plan_policy.py apps/api/tests/test_plan_repair_statistics.py apps/api/tests/test_controller_plan_repair_events.py apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_policy.py apps/api/tests/test_workflow_definition_registry.py apps/api/tests/test_workflow_refinement.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_model_reasoning_policy.py apps/api/tests/test_provider_endpoint_configuration.py apps/api/tests/test_prompt_catalog.py packages/models/tests -q
+```
+
+`apps/web` 下 `npm run typecheck` 通过；`npx tsx --test tests/reasoning-settings.test.ts tests/agent-workflow.test.ts tests/model-directory-view.test.ts` 14 项通过。相关 Python Ruff 和 `git diff --check` 通过。自动化结果不替代上表的真实 Provider 失败记录。
 
 ### 节点职责
 

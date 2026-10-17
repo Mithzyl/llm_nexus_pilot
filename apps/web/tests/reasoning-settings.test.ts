@@ -36,6 +36,13 @@ test("matches the default display policy to the model presentation capability", 
   assert.deepEqual(availableReasoningDisplayPolicies("hidden"), []);
 });
 
+test("omits unverified controls for provider-default models in either execution mode", () => {
+  assert.equal(createReasoningConfiguration("medium", {
+    supported_efforts: [], supports_disable: false, default_enabled: true,
+    default_effort: "medium", profile_version: "strata.provider-default.v1",
+  }), undefined);
+});
+
 test("preserves an explicit display preference without exposing more detail", () => {
   assert.equal(resolveReasoningDisplayPolicy("raw", "hidden"), "hidden");
   assert.equal(

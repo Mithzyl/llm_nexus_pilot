@@ -1,9 +1,74 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-**文档日期：** 2026 年 10 月 8 日
+**文档日期：** 2026 年 10 月 17 日
 **文档状态：** 原阶段已完成；新增文件输入工作项进行中（浏览器私有上传、不可变原件与解析结果保存、同会话连续文件上下文及逐轮快照已实现；逻辑文件版本历史、跨文件解析缓存及 OCR 尚未完成；模型工具能力统一由工具主计划安排）
 
 > 2026-10-08 规划归并：本文维护模型编解码、Context 和文件解析/来源规则；新增工具参数适配、结果消息与续接测试作为[工具主计划](phase-7-tool-runtime-plan.md)同一交付中的实施任务，不再在阶段2单列工具完成条件。基础上传当前状态以下节为准，早期带日期的基线不代表当前待办。
+
+## 模型接口复查与失败语义（2026-10-17）
+
+本次状态：进行中。共享 Chat Completions 和四家协议的流结束校验、非法 JSON 用量与费用保存已修改并完成离线回归；DeepSeek 普通生成、SSE、非思考工具续接以及本地 API JSON 样例通过，直接适配器的两个 JSON 样例仍失败。工作流有限修正真实通过，详见阶段3本日续验。没有调用 Strata，也没有部署。既有阶段验收记录保留，不等于所有厂商的当前真实兼容性已验收。
+
+| 检查对象 | 当前职责与本次结论 |
+|---|---|
+| `POST /responses` 的 JSON/SSE 两种入口 | 继续共用 ModelInvocationService、Context、Attempt 和自动附件工具服务；不新增 Strata 专属业务入口。ASGI 回归验证错误事件不产生 completed，并保存 failed Attempt。 |
+| `/providers`、`/models`、`/model-capabilities` 及内部模型登记 | Registry 需数据库启用地址和环境凭据；目录支持/不支持/未知不等于真实模型测试通过。不因兼容 Chat Completions 自动声明严格 Schema、工具、视觉或思考等级。 |
+| Context、Prompt、Evaluation、Attempt 和 Transport Attempt 接口 | 保留现有资源授权、内部写入与对象存储规则；本次无数据库迁移或公开字段变化，相关既有回归随后端测试执行。 |
+| Chat Completions（DeepSeek、compatible、Strata） | 区分 HTTP 200 错误对象、refusal、content_filter、缺失 finish reason 和空答案；usage-only 的空 choices 合法。不得用默认 stop 替代未知结束状态。DeepSeek 关闭思考不再强制要求不存在的 reasoning 续接状态。 |
+| OpenAI Responses | 必须收到 terminal response 事件，不再把断流前的正文直接构造为成功。 |
+| Anthropic Messages | 必须观察到 message_stop 和 stop_reason，不能把 EOF 当成 end_turn。 |
+| Gemini GenerateContent | 流必须观察到 finishReason；错误 envelope 和 promptFeedback 拦截单独失败。 |
+| Agent 节点结构校验 | 属于阶段3；与 HTTP/SSE 完成不同。空输出不能进入已有 JSON 字段修正；修正结果必须是节点对象，而不是 output_repair 输入包装。 |
+
+### 当前规则
+
+- HTTP 传输成功、生成正常结束、JSON 可解析、节点字段合法是不同检查，不能互相替代。`json_object` 不保证符合节点 Schema；保留后端字段校验，不给未知能力自动开启 `json_schema`。
+- HTTP/SSE 已开始输出后的读取超时、断连分别记录 timeout/network_error，不自动重放已开始的生成；连接前重试策略保持不变。离线模拟两类失败先复现，再修正。
+- 流式 `raw_response` 是聚合结果，不是原始 SSE 抓包。Chat 聚合结果新增 `record_kind=normalized_stream_aggregate`。此前 Strata 两条空聚合记录不能证明上游确实发送空正文。
+- 已正常结束但 JSON 解析失败的生成，通过 `ModelProviderError.response` 携带标准化用量、耗时、供应商请求 ID 和传输记录；共享 Chat、OpenAI Responses、Anthropic、Gemini 共用这项处理。普通 `/responses` 仍返回失败，Attempt 保存 `failed/response_parse_error`，已知费用在同一数据库事务计入 Run，复用既有提交失败重试及提交状态核对，不重复计费。未配置价格或供应商未返回完整用量时，费用保持 null，不能推断免费。
+- 失败正文按既有私有审计路径保存到 MinIO；写入失败时保留数据库用量，raw_response_uri 为空。JSON 异常携带的未投影推理块和续接状态不作为公共展示或可复用续接保存；原始错误审计继续删除私有推理与签名字段，公共错误只含固定说明。
+- 本次修正：工作流经内部调用参数延后 JSON 结构校验，先保存正常结束的生成正文和供应商用量，再由节点解析、记录失败及有限修正。该参数不是 HTTP 字段，也不发送给供应商；普通 `/responses` 保持严格解析。节点未通过校验不能提交结果，模型 Attempt 完成不等于节点完成。空输出、拒绝和断流不适用该策略。
+- 剩余验证：直接适配器 `deepseek-flash` 的最小 JSON 样例失败，而经过本地 API、`deepseek-v4-flash` 与实际 Context 组装的样例成功；模型标识和完整消息不同，尚未通过单变量对照确定差异原因。不为获得通过而放宽 JSON 语法校验、静默改参数或自动重试。
+- 真实厂商矩阵仍未执行；Anthropic/Gemini/OpenAI 本次只有离线协议测试。Strata 真实工作流仍未验收，禁止以 DeepSeek 结果替代。
+
+### DeepSeek 真实验证
+
+入口：`apps/api/.venv/bin/python deployments/verification/check_live_completion_protocol.py --cases json_object stream_json_object --output output/playwright/NEW_REPORT.json`（输出路径必须不存在）。
+仅从本地隔离 MySQL 13306 读取官方 DeepSeek 地址，凭据来自 `apps/api/.env`，不修改数据库；模型 `deepseek-flash`，显式关闭思考。1024 输出 Token 仅为该合成测试上限，不改变产品配置。未上传文件、未调用生产服务。
+
+| 样例 | 结果 | 秒 | 输入/输出 Token |
+|---|---|---:|---:|
+| 非流式正文 | 通过 | 0.613 | 10/4 |
+| SSE 正文 | 通过 | 0.849 | 10/4 |
+| JSON 对象第一次 | 失败：已解析值不符合指定样例 | 未记录 | 未记录 |
+| JSON 对象复测 | 失败：非法 JSON；随后停止重试 | 未记录 | 未记录 |
+| 工具请求 | 通过 | 0.972 | 279/32 |
+| 关闭思考后的工具结果续接 | 通过 | 0.806 | 333/11（缓存读取128） |
+
+两次 JSON 失败发生在补齐失败证据保存之前，无法从已有终端记录恢复完整返回值或用量；未知不等于零。没有价格依据，不报告货币金额。此脚本验证 Provider completion，不等于完整工作流或浏览器验收。
+
+2026-10-17 续验（保留上表历史失败，不覆盖）：
+
+| 当前样例 | 结果 | 秒 | 输入 / 输出 Token | 证据 |
+|---|---|---:|---:|---|
+| 直接适配器，`deepseek-flash`，最小 JSON 提示 | 失败：返回 stop，但 JSON 值位置混入未转义代码，不是合法 JSON | 4.858 | 36 / 1019 | `output/playwright/deepseek-json-accounting-20261017.json` |
+| 同配置 SSE | 失败：返回 stop，但 JSON 值位置为未加引号的自然语言 | 1.236 | 36 / 70 | 同上 |
+| 本地 API，`deepseek-v4-flash`，system 中明确 JSON 示例 | 通过：`{"color":"blue"}`；MySQL 用量与 MinIO 原始响应相同 | 0.858 | 92 / 5 | `output/playwright/deepseek-json-system-example-20261017.json` |
+| 本地 API，相同模型，最小 JSON 提示 | 通过：`{"ok":true}`；MySQL 用量与 MinIO 原始响应相同 | 0.662 | 63 / 5 | `output/playwright/deepseek-json-minimal-api-20261017.json` |
+
+后两项执行 `check_live_json_accounting.py --output NEW_REPORT.json`，最小提示额外传 `--minimal`。依赖本地 API 18000、MySQL 13306、MinIO 19000，只创建合成测试会话，不迁移或修改真实业务记录。DeepSeek Key 从现有环境读取。JSON 示例设计参考 [DeepSeek JSON Output 官方说明](https://api-docs.deepseek.com/guides/json_mode/)；本次失败的最小提示也包含 JSON 字样和示例，不能简单归因为完全没给格式指令。
+
+所有当前 JSON 样例显式关闭思考，1024 为测试请求上限，不修改产品默认。四次共输入 227、输出 1099 Token。价格未配置，已持久化两次 API 调用 estimated_cost=null，不能把费用算作 0。真实失败的两项发生在直接适配器验证中，其标准化失败用量已记录到报告；真实 API 的两项均成功，因此“真实非法 JSON 落库”本轮未触发，该分支由 ASGI + SQL 回归验证，不混称真实通过。
+
+### 离线验证记录
+
+修复前 `test_completion_failures.py`：11 失败、1 通过，复现流缺失终态、refusal 和空输出被当成完成。新增 ASGI 回归检查 failed Attempt，保留已有 usage-only、工具参数、私有续接和幂等测试。
+全后端与模型测试首次运行：771 通过、10 失败、32 跳过；10 项失败全部为本地 Unix socket 被沙箱禁止。获准重跑对应 Office/PDF 模块：24 通过、2 跳过（真实 Docker 解析未启用），这不代表启动了实际 Office 容器。
+
+最终全量复验命令 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -q -rs`：793 通过、32 跳过，105.95 秒。跳过项为未显式启用的 MySQL/MinIO、Docker 文件/任务执行器检查，不计通过。之后新增传输读错误分类与 HTTP 内部选项拒绝断言，定向 `packages/models/tests apps/api/tests/test_responses.py`：118 通过；内部选项拒绝单项通过。Ruff 与 `git diff --check` 通过。测试产生的旧安全报告随机 ID 改动已移除，保留原报告。未执行浏览器或部署验收。
+
+续修验证：新增非法 JSON ASGI 回归先失败，再修实现；最终覆盖非流式/SSE × 有价/无价 × 正常持久化/对象存储失败/提交成功但确认丢失/供应商缺失用量，共16项通过；重复请求不增加 Attempt 或费用，失败推理内容不进入公共响应。价格测试使用明确夹具费率，100输入（10缓存）+20输出应为 USD 0.001520，不能套用于真实 DeepSeek。
+本次中途全后端与模型回归为811通过、32跳过；之后补充三家原生协议非法 JSON 标准化用量断言及失败推理不公开断言。最终 `apps/api/.venv/bin/pytest packages/models/tests apps/api/tests -q -rs`：814通过、32跳过，108.92秒。跳过项要求显式的独立数据库迁移环境、Docker 解析/任务镜像或专用集成开关；不能算通过，也不代替本节单独运行的真实 MySQL/MinIO 验证。Ruff、`git diff --check`、两份验证脚本 `--help` 均通过；测试生成的安全报告差异已恢复。临时 API 已停止，未提交、未推送、未部署。
 
 ## 正式文件上传（2026 年 9 月 16 日）
 

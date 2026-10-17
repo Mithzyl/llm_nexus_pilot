@@ -17,6 +17,7 @@ from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.providers.openai_compatible import OpenAICompatibleChatProvider
+from nexuspilot_models.providers.strata import StrataChatProvider
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
 
@@ -115,6 +116,17 @@ def create_provider_registry(
                 ),
             ),
             allowed_models=_parse_model_allowlist(settings.openai_compatible_models),
+        )
+    strata_base_url = enabled_base_urls_by_provider.get(ProviderName.STRATA)
+    if settings.strata_api_key and strata_base_url:
+        registry.register(
+            ProviderName.STRATA,
+            StrataChatProvider(
+                transport=transport,
+                base_url=strata_base_url,
+                api_key=settings.strata_api_key.get_secret_value(),
+            ),
+            allowed_models=_parse_model_allowlist(settings.strata_models),
         )
     return registry
 

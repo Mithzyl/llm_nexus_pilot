@@ -21,7 +21,8 @@ export type ProviderName =
   | "deepseek"
   | "anthropic"
   | "gemini"
-  | "openai_compatible";
+  | "openai_compatible"
+  | "strata";
 
 export type ProviderCatalog = {
   providers: ProviderName[];

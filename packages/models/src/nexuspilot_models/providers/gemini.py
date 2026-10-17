@@ -21,7 +21,7 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
-    parse_structured_output,
+    validate_structured_response,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -59,7 +59,7 @@ class GeminiGenerateContentProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize streamed GenerateContent response objects from Gemini SSE."""
+        """Normalize GenerateContent SSE, rejecting blocked prompts, errors and missing finish."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -67,7 +67,7 @@ class GeminiGenerateContentProvider:
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         usage: dict[str, Any] = {}
-        finish_reason = "stop"
+        finish_reason = None
         request_id: str | None = None
         async with self.transport.open_sse(
             self._url(request.model, stream=True),
@@ -86,6 +86,18 @@ class GeminiGenerateContentProvider:
                         "Gemini returned invalid stream JSON.",
                         transport_attempts=attempts,
                     ) from exc
+                if not isinstance(chunk, dict) or chunk.get("error"):
+                    raise ModelProviderError(
+                        "provider_unavailable",
+                        "Gemini returned an invalid or error stream envelope.",
+                        transport_attempts=attempts,
+                    )
+                if (chunk.get("promptFeedback") or {}).get("blockReason"):
+                    raise ModelProviderError(
+                        "content_filter",
+                        "Gemini blocked the prompt.",
+                        transport_attempts=attempts,
+                    )
                 request_id = chunk.get("responseId") or request_id
                 usage = chunk.get("usageMetadata") or usage
                 candidates = chunk.get("candidates") or []
@@ -123,6 +135,12 @@ class GeminiGenerateContentProvider:
                             )
                             sequence += 1
 
+        if not finish_reason:
+            raise ModelProviderError(
+                "response_parse_error",
+                "Gemini stream ended without a finish reason.",
+                transport_attempts=attempts,
+            )
         yield StreamEvent(
             type=StreamEventType.USAGE,
             sequence=sequence,
@@ -133,9 +151,6 @@ class GeminiGenerateContentProvider:
         response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
             finish_reason=self._finish_reason(finish_reason),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -152,6 +167,7 @@ class GeminiGenerateContentProvider:
             },
             transport_attempts=attempts,
         )
+        response = validate_structured_response(response, request)
         yield StreamEvent(
             type=StreamEventType.COMPLETED,
             sequence=sequence,
@@ -281,7 +297,7 @@ class GeminiGenerateContentProvider:
                 )
         text = "".join(text_parts) or None
         usage = payload.get("usageMetadata") or {}
-        return ModelResponse(
+        response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
             provider_continuation_state=(
@@ -292,9 +308,6 @@ class GeminiGenerateContentProvider:
                 if tool_calls
                 else None
             ),
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
             finish_reason=self._finish_reason(candidate.get("finishReason")),
             input_tokens=usage.get("promptTokenCount"),
             output_tokens=usage.get("candidatesTokenCount"),
@@ -305,6 +318,8 @@ class GeminiGenerateContentProvider:
             raw_response=payload,
             transport_attempts=attempts,
         )
+
+        return validate_structured_response(response, request)
 
     def _url(self, model: str, *, stream: bool) -> str:
         """Build a fixed-origin Gemini model endpoint using an escaped model identifier."""

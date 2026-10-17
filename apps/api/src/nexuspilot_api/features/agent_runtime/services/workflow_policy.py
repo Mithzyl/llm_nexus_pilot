@@ -82,6 +82,19 @@ def structured_model_instructions(
         "requests, or external evidence that are not explicitly present. Do not return hidden "
         "reasoning or chain-of-thought. Return only the requested result fields."
     )
+    if output_model is ControllerPlanOutput:
+        instructions += (
+            " Each task.assigned_role must be an exact member of input.allowed_roles."
+            " Worker is a responsibility, not an additional role named worker."
+            " Controller, handoff, deterministic verification, reviewer and final synthesis"
+            " are platform-managed nodes: do not add them to tasks or dependencies."
+            " If input.allowed_capabilities contains neither read nor tool, every task must"
+            " use exactly 1 max_model_calls; this model-only profile has no tool loop."
+            " A task requiring read or tool needs at least 2 max_model_calls: one to request"
+            " tools and one to consume results and submit JSON. Discovery followed by reading"
+            " needs at least 3; further sequential tool rounds require additional calls."
+            " Respect the remaining total budget including review and final synthesis."
+        )
     if not prompted_json:
         return instructions
     prompt_schema = _remove_prompt_only_json_schema_metadata(output_model.model_json_schema())
@@ -105,7 +118,7 @@ def validate_controller_plan(
     used_model_calls: int = 1,
     used_nodes: int = 3,
 ) -> PlanValidationOutput:
-    """Validate task graphs against remaining capacity, reserving review and final synthesis."""
+    """Validate roles/graphs and minimum tool calls within remaining review/synthesis capacity."""
 
     checks: list[PlanValidationCheck] = []
     capability_gaps: list[dict[str, str]] = []
@@ -137,14 +150,6 @@ def validate_controller_plan(
     )
 
     for task in plan.tasks:
-        if payload.execution_profile == "model_only_v1" and task.max_model_calls != 1:
-            capability_gaps.append(
-                {
-                    "task_key": task.task_key,
-                    "capability": "multi_turn_tools",
-                    "reason_code": "agent_capability_unavailable",
-                }
-            )
         if task.assigned_role not in MODEL_ONLY_ALLOWED_ROLES:
             capability_gaps.append(
                 {
@@ -179,7 +184,7 @@ def validate_controller_plan(
             status="fail" if capability_gaps else "pass",
             error_code="agent_capability_unavailable" if capability_gaps else None,
             message=(
-                "Plan requests capabilities unavailable in model_only_v1"
+                f"Plan requests roles or capabilities unavailable in {payload.execution_profile}"
                 if capability_gaps
                 else "All requested roles and capabilities are available"
             ),
@@ -258,7 +263,25 @@ def validate_controller_plan(
         required_node_count += used_nodes - 3
     within_node_limit = required_node_count <= payload.max_nodes
     within_model_call_limit = total_model_calls <= payload.max_model_calls
-    within_limits = len(plan.tasks) <= 8 and within_model_call_limit and within_node_limit
+    insufficient_tool_tasks = [
+        task.task_key
+        for task in plan.tasks
+        if payload.execution_profile == "tool_enabled_v1"
+        and {"read", "tool"}.intersection(task.required_capabilities)
+        and task.max_model_calls < 2
+    ]
+    invalid_text_tasks = [
+        task.task_key
+        for task in plan.tasks
+        if payload.execution_profile == "model_only_v1" and task.max_model_calls != 1
+    ]
+    within_limits = (
+        len(plan.tasks) <= 8
+        and within_model_call_limit
+        and within_node_limit
+        and not insufficient_tool_tasks
+        and not invalid_text_tasks
+    )
     checks.append(
         PlanValidationCheck(
             check_id="workflow_limits",
@@ -268,14 +291,22 @@ def validate_controller_plan(
                 if not within_node_limit
                 else "agent_model_call_limit_exceeded"
                 if not within_model_call_limit
+                else "agent_plan_invalid"
+                if insufficient_tool_tasks or invalid_text_tasks
                 else None
             ),
             message=(
                 "Plan fits configured node, task, and model-call limits"
                 if within_limits
+                else "Tool tasks require at least 2 model calls "
+                "(request tools, then consume results); "
+                "allocate more for discovery or sequential reads within the total workflow budget"
+                if insufficient_tool_tasks
+                else "Model-only tasks require exactly 1 model call; no tool loop is available"
+                if invalid_text_tasks
                 else "Plan exceeds configured node, task, or model-call limits"
             ),
-            related_task_keys=[],
+            related_task_keys=insufficient_tool_tasks + invalid_text_tasks,
         )
     )
     is_valid = all(check.status == "pass" for check in checks)

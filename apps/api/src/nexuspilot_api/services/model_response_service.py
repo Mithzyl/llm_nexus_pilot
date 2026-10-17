@@ -136,11 +136,13 @@ class ModelInvocationService:
         context_source_references: RuntimeContextSourceReferences | None = None,
         tool_messages: list[Message] | None = None,
         request_type: str | None = None,
+        defer_structured_validation: bool = False,
     ) -> ResponsesResult:
         """Execute a response; append server-owned tool history after persisted base Context.
 
         Tool history is an internal runtime argument, never an HTTP request field.
         The exact effective messages are stored in the private attempt request audit.
+        Workflow-only deferred JSON validation preserves generation usage before node repair.
         """
 
         model_attempt_id = new_id()
@@ -154,6 +156,7 @@ class ModelInvocationService:
         )
         request = await self._append_tool_history(request, context_build_id, tool_messages)
         request = await resolve_registered_model_reasoning(self.db_session, request)
+        request._defer_structured_validation = defer_structured_validation
         model_attempt = await self._start_model_attempt(
             payload,
             request=request,
@@ -949,10 +952,57 @@ class ModelInvocationService:
         model_attempt: LlmModelAttempt,
         error: ModelProviderError,
     ) -> None:
-        """Persist safe provider failure evidence and all completed physical HTTP attempts."""
+        """Persist failure evidence, including known JSON-generation usage and cost once."""
 
         model_attempt = await self._reload_started_model_attempt(model_attempt.attempt_id)
         if model_attempt is None:
+            return
+
+        if error.response is not None:
+            response = self._apply_price(
+                error.response, ProviderName(model_attempt.provider), model_attempt.model
+            )
+            # Failed JSON carries billing evidence, not approved presentation or
+            # reusable continuation. Stream interruption handles visible blocks.
+            response = response.model_copy(
+                update={"reasoning_blocks": [], "provider_continuation_state": None}
+            )
+            raw_uri = None
+            try:
+                stored = await self.storage.put_bytes(
+                    f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-error.json",
+                    json.dumps(
+                        self._sanitize_raw_response_for_audit(response.raw_response),
+                        ensure_ascii=False,
+                    ).encode(),
+                    "application/json",
+                )
+                raw_uri = stored.uri
+            except Exception:
+                # An unavailable raw audit must not erase known paid usage. The
+                # missing URI explicitly records that no raw evidence was saved.
+                pass
+            try:
+                await self._persist_provider_response_state(
+                    model_attempt,
+                    response,
+                    status=AttemptStatus.FAILED,
+                    raw_response_uri=raw_uri,
+                    error_code=error.error_type,
+                    error_message=error.message[:4000],
+                )
+            except Exception as exc:
+                await self._record_response_persistence_unknown(
+                    model_attempt,
+                    response,
+                    raw_response_uri=raw_uri,
+                )
+                raise ModelProviderError(
+                    "response_persistence_error",
+                    "Provider responded, but its accounting state could not be confirmed.",
+                    provider_request_id=response.provider_request_id,
+                    transport_attempts=response.transport_attempts,
+                ) from exc
             return
 
         model_attempt.status = (

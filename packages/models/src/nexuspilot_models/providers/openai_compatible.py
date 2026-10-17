@@ -22,7 +22,7 @@ from nexuspilot_models.contracts import (
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
     parse_json_arguments,
-    parse_structured_output,
+    validate_structured_response,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -74,7 +74,7 @@ class OpenAICompatibleChatProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize data-only Chat Completions SSE chunks into stable platform events."""
+        """Normalize Chat SSE; reject errors/refusals and require an observed finish reason."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -83,7 +83,7 @@ class OpenAICompatibleChatProvider:
         reasoning_parts: list[str] = []
         reasoning_started = False
         tool_parts: dict[int, dict[str, str]] = {}
-        finish_reason = "stop"
+        finish_reason = None
         usage: dict[str, Any] = {}
         request_id: str | None = None
         received_done_marker = False
@@ -108,7 +108,12 @@ class OpenAICompatibleChatProvider:
                         transport_attempts=attempts,
                     ) from exc
                 if not isinstance(chunk, dict):
-                    continue
+                    raise ModelProviderError(
+                        "response_parse_error",
+                        "Chat stream chunk must be an object.",
+                        transport_attempts=attempts,
+                    )
+                self._check_provider_error(chunk, attempts)
                 request_id = chunk.get("id") or request_id
                 if isinstance(chunk.get("usage"), dict):
                     usage = chunk["usage"]
@@ -124,6 +129,7 @@ class OpenAICompatibleChatProvider:
                 choice = choices[0]
                 finish_reason = choice.get("finish_reason") or finish_reason
                 delta = choice.get("delta") or {}
+                self._check_refusal(delta, attempts)
                 reasoning_content = delta.get("reasoning_content")
                 if isinstance(reasoning_content, str) and reasoning_content:
                     if not reasoning_started:
@@ -183,6 +189,7 @@ class OpenAICompatibleChatProvider:
             )
 
         text = "".join(text_parts) or None
+        self._check_completion(finish_reason, text, bool(tool_parts), attempts)
         reasoning_text = "".join(reasoning_parts) or None
         reasoning_tokens = self._reasoning_tokens(usage)
         reasoning_blocks = (
@@ -231,9 +238,6 @@ class OpenAICompatibleChatProvider:
                 )
                 for index, value in sorted(tool_parts.items())
             ],
-            structured_output=parse_structured_output(text)
-            if request.output_schema or request.json_object_output
-            else None,
             finish_reason=self._finish_reason(finish_reason),
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
@@ -245,6 +249,7 @@ class OpenAICompatibleChatProvider:
             latency_ms=self._elapsed_ms(started),
             provider_request_id=request_id,
             raw_response={
+                "record_kind": "normalized_stream_aggregate",
                 "streamed": True,
                 "text": text,
                 "reasoning_content": reasoning_text,
@@ -254,6 +259,7 @@ class OpenAICompatibleChatProvider:
             },
             transport_attempts=attempts,
         )
+        response = validate_structured_response(response, request)
         if reasoning_blocks:
             yield StreamEvent(
                 type=StreamEventType.REASONING_COMPLETED,
@@ -385,8 +391,9 @@ class OpenAICompatibleChatProvider:
         latency_ms: int,
         attempts: list,
     ) -> ModelResponse:
-        """Normalize one compatible non-streaming completion response."""
+        """Validate terminal status and normalize a non-streaming chat response."""
 
+        self._check_provider_error(payload, attempts)
         choices = payload.get("choices") or []
         if not choices:
             raise ModelProviderError(
@@ -396,7 +403,11 @@ class OpenAICompatibleChatProvider:
             )
         choice = choices[0]
         message = choice.get("message") or {}
+        self._check_refusal(message, attempts)
         text = message.get("content")
+        self._check_completion(
+            choice.get("finish_reason"), text, bool(message.get("tool_calls")), attempts
+        )
         reasoning_text = message.get("reasoning_content")
         if not isinstance(reasoning_text, str) or not reasoning_text:
             reasoning_text = None
@@ -446,12 +457,9 @@ class OpenAICompatibleChatProvider:
             if self.name is ProviderName.DEEPSEEK and reasoning_text and tool_calls
             else None
         )
-        return ModelResponse(
+        response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
-            structured_output=parse_structured_output(text)
-            if request.output_schema or request.json_object_output
-            else None,
             finish_reason=self._finish_reason(choice.get("finish_reason")),
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
@@ -466,6 +474,8 @@ class OpenAICompatibleChatProvider:
             transport_attempts=attempts,
         )
 
+        return validate_structured_response(response, request)
+
     def _headers(self) -> dict[str, str]:
         """Return authentication and content headers for a compatible endpoint."""
 
@@ -475,7 +485,7 @@ class OpenAICompatibleChatProvider:
         return headers
 
     def _validate_request(self, request: ModelRequest) -> None:
-        """Validate routing/features and each tool turn's state, or the legacy request state."""
+        """Validate routing and thinking tool state; disabled thinking needs no private state."""
 
         if any(message.attachments for message in request.messages):
             raise ModelProviderError(
@@ -502,8 +512,10 @@ class OpenAICompatibleChatProvider:
                 "unsupported_capability",
                 f"Provider '{self.name.value}' does not declare reasoning configuration support.",
             )
-        if self.name is ProviderName.DEEPSEEK and any(
-            message.role is MessageRole.TOOL for message in request.messages
+        if (
+            self.name is ProviderName.DEEPSEEK
+            and (request.reasoning is None or request.reasoning.enabled)
+            and any(message.role is MessageRole.TOOL for message in request.messages)
         ):
             # Match _build_payload: explicit assistant tool turns carry their own
             # state. The legacy request-level state is used only when the payload
@@ -522,6 +534,60 @@ class OpenAICompatibleChatProvider:
                     "invalid_request",
                     "DeepSeek tool continuation requires backend-preserved reasoning state.",
                 )
+
+    @staticmethod
+    def _check_provider_error(payload: dict[str, Any], attempts: list) -> None:
+        """Reject HTTP-200 error envelopes without exposing arbitrary upstream text."""
+        if payload.get("error") is not None:
+            raise ModelProviderError(
+                "provider_unavailable",
+                "Chat provider returned an error envelope.",
+                transport_attempts=attempts,
+                raw_error={
+                    "record_kind": "protocol_diagnostic",
+                    "error_envelope": True,
+                },
+            )
+
+    @staticmethod
+    def _check_refusal(message: dict[str, Any], attempts: list) -> None:
+        """Keep refusal distinct from empty output and never attempt JSON repair on it."""
+        if message.get("refusal"):
+            raise ModelProviderError(
+                "content_filter",
+                "Chat provider refused the request.",
+                transport_attempts=attempts,
+            )
+
+    @staticmethod
+    def _check_completion(
+        reason: str | None, text: str | None, has_tools: bool, attempts: list
+    ) -> None:
+        """Require a real terminal reason; preserve partial length output, reject empty success."""
+        if not reason:
+            raise ModelProviderError(
+                "response_parse_error",
+                "Chat response has no terminal finish reason.",
+                transport_attempts=attempts,
+            )
+        if reason == "content_filter":
+            raise ModelProviderError(
+                "content_filter",
+                "Chat provider filtered the response.",
+                transport_attempts=attempts,
+            )
+        if reason == "insufficient_system_resource":
+            raise ModelProviderError(
+                "provider_unavailable",
+                "Chat provider exhausted execution resources.",
+                transport_attempts=attempts,
+            )
+        if not text and not has_tools:
+            raise ModelProviderError(
+                "response_parse_error",
+                "Chat response contains no text or tool output.",
+                transport_attempts=attempts,
+            )
 
     def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         """Map compatible usage fields to public stream accounting names."""

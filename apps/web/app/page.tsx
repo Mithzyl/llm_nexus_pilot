@@ -1031,7 +1031,7 @@ export default function Home() {
           planner: binding,
           ...(reviewPolicy === "never" ? {} : { reviewer: binding }),
         },
-        reasoning: createReasoningConfiguration(reasoningEffort),
+        reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
         review_policy: reviewPolicy,
         max_nodes: 32,
         max_model_calls: 16,
@@ -1665,7 +1665,7 @@ export default function Home() {
           model: selectedModel,
           input,
           timeout_seconds: 60,
-          reasoning: createReasoningConfiguration(reasoningEffort),
+          reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
           reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
           stream: true,
@@ -2189,7 +2189,7 @@ export default function Home() {
                       onFilesSelected={handlePendingFilesSelected}
                     />
                   <FileLibrary disabled={isSending} />
-                  {selectedReasoningPolicy && (
+                  {selectedReasoningPolicy && (selectedReasoningPolicy.supported_efforts.length > 0 || selectedReasoningPolicy.supports_disable) && (
                     <ReasoningSettings
                       effort={reasoningEffort}
                       supportedEfforts={selectedReasoningPolicy.supported_efforts}

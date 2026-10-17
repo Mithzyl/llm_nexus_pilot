@@ -26,6 +26,7 @@ class ProviderName(StrEnum):
     ANTHROPIC = "anthropic"
     GEMINI = "gemini"
     OPENAI_COMPATIBLE = "openai_compatible"
+    STRATA = "strata"
 
 
 class MessageRole(StrEnum):
@@ -357,6 +358,9 @@ class TransportAttempt(ContractModel):
 
 class ModelRequest(ContractModel):
     """Define one provider-neutral model generation request."""
+
+    # Internal workflow policy, never accepted as an HTTP or provider payload field.
+    _defer_structured_validation: bool = PrivateAttr(default=False)
 
     provider: ProviderName
     model: str = Field(min_length=1, max_length=256)

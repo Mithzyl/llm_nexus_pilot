@@ -23,7 +23,8 @@ async def resolve_registered_model_reasoning(
 ) -> ModelRequest:
     """Resolve one request against its model policy before any Provider dispatch.
 
-    Registered models always receive an explicit effective configuration. Requests
+    Registered models receive an explicit effective configuration unless their
+    Strata profile deliberately leaves controls to the provider default. Requests
     for legacy unregistered model identities retain their existing contract so
     internal migrations and low-level adapter tests are not silently reinterpreted.
     Invalid or unsupported registered-model choices fail without calling a Provider.
@@ -79,6 +80,19 @@ async def resolve_registered_model_reasoning_configuration(
             f"Model '{model}' is disabled in the registered model directory.",
         )
 
+    # Strata currently has no verified reasoning-control codec. An empty profile
+    # means provider defaults, not an invented medium effort or disabled thinking.
+    if (
+        provider is ProviderName.STRATA
+        and registered_model.reasoning_supported_efforts_json == []
+        and registered_model.reasoning_effort_mapping_json == {}
+        and not registered_model.reasoning_supports_disable
+    ):
+        if requested_reasoning is not None:
+            raise ModelProviderError(
+                "unsupported_capability", "Strata reasoning controls are not configured.",
+            )
+        return None, None
     supported_efforts, effort_mapping, default_effort = _validated_policy(registered_model)
     source = (
         ReasoningConfigurationSource.MODEL_DEFAULT
@@ -198,7 +212,7 @@ def validate_provider_reasoning_mapping(
         ProviderName.ANTHROPIC: {"low", "medium", "high", "xhigh", "max"},
         ProviderName.GEMINI: {"minimal", "low", "medium", "high"},
     }
-    if provider is ProviderName.OPENAI_COMPATIBLE:
+    if provider in {ProviderName.OPENAI_COMPATIBLE, ProviderName.STRATA}:
         if effort_mapping:
             raise ValueError(
                 "OpenAI-compatible models require a dedicated reasoning codec before mapping"

@@ -46,6 +46,9 @@ class PlanRepairProvider(ScriptedAgentProvider):
                     output["tasks"][0]["required_capabilities"] = ["write"]
                 elif self.invalid_mode == "over_budget":
                     output["tasks"][0]["max_model_calls"] = 16
+                elif self.invalid_mode == "tool_minimum":
+                    output["tasks"][0]["required_capabilities"] = ["read"]
+                    output["tasks"][0]["max_model_calls"] = 1
         return output
 
 
@@ -81,7 +84,7 @@ async def test_plan_repair_timeout_preserves_nodes_without_dispatch(client):
 
 
 @pytest.mark.parametrize(
-    "invalid_mode", ["duplicate_key", "self_dep", "review_policy", "over_budget"]
+    "invalid_mode", ["duplicate_key", "self_dep", "review_policy", "over_budget", "tool_minimum"]
 )
 async def test_controller_plan_repair_once_and_preserves_round(client, invalid_mode):
     """Retry once after invalid plan, complete normally with repair accounting."""
@@ -121,10 +124,11 @@ async def test_controller_plan_repair_once_and_preserves_round(client, invalid_m
     assert reread == result
 
 
-async def test_persistent_invalid_plan_fails_without_dispatch(client):
-    """Fail persistently without dispatching tasks."""
+@pytest.mark.parametrize("mode", ["duplicate_key", "tool_minimum"])
+async def test_persistent_invalid_plan_fails_without_dispatch(client, mode):
+    """Stop after one failed correction, including insufficient tool-call budgets."""
     run = await create_test_run(client)
-    provider = PlanRepairProvider(invalid_mode="duplicate_key", persistent=True)
+    provider = PlanRepairProvider(invalid_mode=mode, persistent=True)
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
     result = (
         await client.post(

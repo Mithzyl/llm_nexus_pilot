@@ -39,12 +39,15 @@ export function modelCapabilityLabels(model: ModelDirectoryEntry): string[] {
   return capabilities;
 }
 
-/** Translate the portable reasoning policy into concise read-only directory facts. */
+/** Distinguish explicit reasoning controls from an unconfigured provider default. */
 export function modelReasoningPolicyLabels(model: ModelDirectoryEntry): {
   defaultLabel: string;
   supportedLabel: string;
   disableLabel: string;
 } {
+  if (model.reasoning_supported_efforts.length === 0 && !model.reasoning_supports_disable) {
+    return { defaultLabel: "服务默认", supportedLabel: "不支持调节", disableLabel: "未提供开关" };
+  }
   return {
     defaultLabel: model.reasoning_default_enabled
       ? REASONING_EFFORT_LABELS[model.reasoning_default_effort]

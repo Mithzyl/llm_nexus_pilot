@@ -1,5 +1,7 @@
 # 阶段4：NexusPilot Web 前端规划
 
+2026-10-17 Strata：模型选择支持独立 strata 标识，Agent 使用 prompted_json；无可用思考映射时不发送 effort、隐藏无效思考控件，目录显示“服务默认”而非声称中等或强制启用。Playwright 实际选择模型并查看截图通过，定向前端测试和类型检查通过；真实 Strata 快速回复通过、Agent 失败原因及用量见阶段3的“Controller 修正与 Strata 真实验证”。没有部署。
+
 2026-10-16 真实联调：本地 DeepSeek／MySQL／MinIO 的两轮工作流成功，运行中打开历史失败证据未中断当前执行，最终答案无需刷新出现；刷新后回复、执行摘要和来源原文恢复，浏览器同源接口统计保持一致。没有新增统计面板；真实计划修正成功分支未触发。前两次请求分别因任务角色非法和任务调用额度不足失败，不计通过。Run ID、Token、存储核对和验收限制统一见[阶段3真实联调](../implementation/phase-3-agent-workflow-plan.md#真实两轮与浏览器联调2026-10-16)，本轮未改前端代码或部署。
 
 2026-10-14 计划修正事件：解析白名单及 TypeScript 类型增加 `agent.controller.plan_repair.requested/completed/skipped`，保持现有事件保存方式，不新增页面或统计面板。定向 `agent-workflow.test.ts` 7 项及 TypeScript 检查通过；本批没有浏览器验收。2026-10-15 后端专用计划修正统计已实现，前端结果类型同步为可选字段以兼容旧 API，TypeScript 检查通过；未新增统计展示。字段含义和成功时机只维护在阶段3当前规则。

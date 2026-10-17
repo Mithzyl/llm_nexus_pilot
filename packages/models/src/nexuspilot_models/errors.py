@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from nexuspilot_models.contracts import TransportAttempt
+from nexuspilot_models.contracts import ModelResponse, TransportAttempt
 
 
 class ModelProviderError(Exception):
@@ -18,6 +18,7 @@ class ModelProviderError(Exception):
         provider_request_id: str | None = None,
         raw_error: dict[str, Any] | None = None,
         transport_attempts: list[TransportAttempt] | None = None,
+        response: ModelResponse | None = None,
     ) -> None:
         """Create a provider error without embedding authentication headers or credentials."""
 
@@ -29,6 +30,7 @@ class ModelProviderError(Exception):
         self.provider_request_id = provider_request_id
         self.raw_error = raw_error or {}
         self.transport_attempts = transport_attempts or []
+        self.response = response
 
 
 class ProviderNotRegisteredError(ModelProviderError):

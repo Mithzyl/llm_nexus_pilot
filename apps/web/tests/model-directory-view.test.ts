@@ -56,3 +56,9 @@ test("presents only server-confirmed model availability and capabilities", () =>
     "能力尚未确认",
   );
 });
+
+test("does not label provider defaults as medium or forced thinking", () => {
+  assert.deepEqual(modelReasoningPolicyLabels({
+    ...model, provider: "strata", reasoning_supported_efforts: [], reasoning_supports_disable: false,
+  }), { defaultLabel: "服务默认", supportedLabel: "不支持调节", disableLabel: "未提供开关" });
+});

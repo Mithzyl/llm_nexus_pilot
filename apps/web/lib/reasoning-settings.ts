@@ -1,6 +1,7 @@
 import type {
   ModelReasoningCapabilities,
   ModelReasoningSelection,
+  ModelReasoningPolicy,
   ReasoningConfiguration,
 } from "./types";
 
@@ -17,10 +18,14 @@ const DISPLAY_POLICIES_BY_PRESENTATION: Record<
   none: [],
 };
 
-/** Convert the Composer selection into the provider-neutral backend contract. */
+/** Omit controls for provider-default profiles; otherwise serialize the Composer choice. */
 export function createReasoningConfiguration(
   selection: ModelReasoningSelection,
-): ReasoningConfiguration {
+  policy?: ModelReasoningPolicy,
+): ReasoningConfiguration | undefined {
+  if (policy && policy.supported_efforts.length === 0 && !policy.supports_disable) {
+    return undefined;
+  }
   return selection === "disabled"
     ? { enabled: false }
     : { enabled: true, effort: selection };

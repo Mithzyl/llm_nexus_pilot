@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from nexuspilot_models.contracts import (
     ReasoningPresentationCapability,
     TransportAttempt,
 )
+from nexuspilot_models.pricing import ModelPrice, PriceCatalog
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.registry import ProviderRegistry
 from nexuspilot_models.transport import HttpTransport
@@ -21,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_api import create_test_run
 
 from nexuspilot_api.core.config import Settings
-from nexuspilot_api.core.dependencies import get_provider_registry
+from nexuspilot_api.core.dependencies import get_price_catalog, get_provider_registry
 from nexuspilot_api.infrastructure.object_storage import (
     ObjectStorageError,
     StoredObject,
@@ -1019,6 +1021,164 @@ async def test_stream_timeout_emits_failure_and_finalizes_attempt(
     assert run_detail["attempts"][0]["status"] == "timed_out"
 
 
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"error": {"message": "private upstream error"}},
+        {"choices": [{"delta": {"refusal": "private refusal"}, "finish_reason": "stop"}]},
+        {"choices": [{"delta": {"content": "partial"}}]},
+    ],
+)
+async def test_chat_stream_failure_persists_failed_attempt_without_completion(client, chunk):
+    """Exercise chat decoding through ASGI; invalid completion never becomes saved success."""
+    run = await create_test_run(client)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n"
+            )
+        )
+    ) as upstream:
+        registry = create_provider_registry(
+            Settings(_env_file=None, deepseek_api_key="dummy", deepseek_models="deepseek-v4-flash"),
+            upstream,
+            {ProviderName.DEEPSEEK: "https://offline.invalid"},
+        )
+        app.dependency_overrides[get_provider_registry] = lambda: registry
+        response = await client.post(
+            "/api/v1/responses",
+            json={
+                "run_id": run["run_id"],
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "input": "test",
+                "stream": True,
+            },
+        )
+    events = [
+        json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
+    ]
+    assert events[-1]["type"] == "response.failed"
+    assert not any(e["type"] == "response.completed" for e in events)
+    assert "private" not in response.text
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert detail["attempts"][0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("priced", [False, True])
+@pytest.mark.parametrize("failure", [None, "storage", "commit_ack", "missing_usage"])
+async def test_invalid_json_preserves_usage_and_cost_once(
+    client, stream, priced, failure, monkeypatch, test_database_session_factory
+):
+    """Invalid JSON is failed but billable; replay must not duplicate usage or run cost."""
+    original_commit = AsyncSession.commit
+    injected = False
+
+    async def lose_commit_ack(db):
+        """Simulate a committed failed attempt whose acknowledgement was lost once."""
+        nonlocal injected
+        inject = not injected and any(
+            isinstance(item, LlmModelAttempt) and item.status == AttemptStatus.FAILED
+            for item in db.identity_map.values()
+        )
+        await original_commit(db)
+        if inject:
+            injected = True
+            raise RuntimeError("synthetic lost commit acknowledgement")
+
+    class ErrorStorage(RawResponseFailingObjectStorage):
+        """Keep request writes available while failing the invalid-JSON audit write."""
+
+        async def put_bytes(self, object_name, content, content_type):
+            """Reject raw-error only, allowing the attempted call to be recorded first."""
+            if object_name.endswith("/raw-error.json"):
+                raise ObjectStorageError("synthetic unavailable audit")
+            return await super().put_bytes(object_name, content, content_type)
+
+    if failure == "commit_ack":
+        monkeypatch.setattr(AsyncSession, "commit", lose_commit_ack)
+    if failure == "storage":
+        app.dependency_overrides[get_object_storage] = ErrorStorage
+    run = await create_test_run(client)
+    body = {
+        "id": "invalid-json-fixture",
+        "choices": [
+            {
+                "delta" if stream else "message": {
+                    "content": '{"ok":broken}',
+                    "reasoning_content": "private reasoning fixture",
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20, "prompt_cache_hit_tokens": 10},
+    }
+    if failure == "missing_usage":
+        body.pop("usage")
+    app.dependency_overrides[get_price_catalog] = lambda: PriceCatalog(
+        {
+            (ProviderName.DEEPSEEK, "deepseek-v4-flash"): ModelPrice(
+                input_per_million=Decimal("10"),
+                output_per_million=Decimal("30"),
+                cached_input_per_million=Decimal("2"),
+            )
+        }
+        if priced
+        else {}
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: (
+                httpx.Response(200, text="data: " + json.dumps(body) + "\n\ndata: [DONE]\n\n")
+                if stream
+                else httpx.Response(200, json=body)
+            )
+        )
+    ) as upstream:
+        registry = create_provider_registry(
+            Settings(_env_file=None, deepseek_api_key="dummy", deepseek_models="deepseek-v4-flash"),
+            upstream,
+            {ProviderName.DEEPSEEK: "https://offline.invalid"},
+        )
+        app.dependency_overrides[get_provider_registry] = lambda: registry
+        payload = {
+            "run_id": run["run_id"],
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "input": "Return JSON",
+            "json_object_output": True,
+            "stream": stream,
+            "idempotency_key": "invalid-json-accounting-fixture",
+        }
+        response = await client.post("/api/v1/responses", json=payload)
+        assert response.status_code == (200 if stream else 502), response.text
+        assert "response_parse_error" in response.text
+        assert "private reasoning fixture" not in response.text
+        replay = await client.post("/api/v1/responses", json={**payload, "stream": False})
+        assert replay.status_code == 409
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    assert len(detail["attempts"]) == 1
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == "failed"
+    assert attempt["input_tokens"] == (None if failure == "missing_usage" else 100)
+    assert attempt["output_tokens"] == (None if failure == "missing_usage" else 20)
+    assert attempt["cached_tokens"] == (None if failure == "missing_usage" else 10)
+    cost_known = priced and failure != "missing_usage"
+    assert attempt["estimated_cost"] == ("0.001520" if cost_known else None)
+    assert detail["cost_used"] == ("0.001520" if cost_known else "0.000000")
+    assert attempt["provider_request_id"] is None  # Intentionally private in public DTOs.
+    assert len(attempt["retries"]) == 1
+    async with test_database_session_factory() as db:
+        stored = await db.get(LlmModelAttempt, attempt["attempt_id"])
+        assert stored.provider_request_id == "invalid-json-fixture"
+        assert (stored.raw_response_uri is None) == (failure == "storage")
+    reasoning = await client.get(f"/api/v1/attempts/{attempt['attempt_id']}/reasoning-blocks")
+    assert "private reasoning fixture" not in reasoning.text
+    if failure == "commit_ack":
+        assert injected
+
+
 async def test_unconfigured_provider_returns_stable_error(client: httpx.AsyncClient) -> None:
     """Verify absent credentials produce a clear platform error instead of an attribute failure."""
 
@@ -1040,7 +1200,7 @@ async def test_unconfigured_provider_returns_stable_error(client: httpx.AsyncCli
 async def test_response_rejects_unknown_and_deprecated_provider_fields(
     client: httpx.AsyncClient,
 ) -> None:
-    """Verify unsupported provider parameters cannot be accepted and silently discarded."""
+    """Reject unsupported parameters and internal-only JSON validation controls at HTTP ingress."""
 
     run = await create_test_run(client)
     base_payload = {
@@ -1050,7 +1210,13 @@ async def test_response_rejects_unknown_and_deprecated_provider_fields(
         "input": "Hello",
     }
 
-    for field_name in ["frequency_penalty", "presence_penalty", "unknown_option"]:
+    for field_name in [
+        "frequency_penalty",
+        "presence_penalty",
+        "unknown_option",
+        "defer_structured_validation",
+        "_defer_structured_validation",
+    ]:
         response = await client.post(
             "/api/v1/responses",
             json={**base_payload, field_name: 1},

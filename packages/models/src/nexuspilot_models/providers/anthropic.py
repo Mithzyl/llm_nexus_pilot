@@ -21,7 +21,7 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.common import (
     native_content_blocks,
     parse_json_arguments,
-    parse_structured_output,
+    validate_structured_response,
 )
 from nexuspilot_models.transport import HttpTransport
 
@@ -59,7 +59,7 @@ class AnthropicMessagesProvider:
         )
 
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize Anthropic named SSE content block events and cumulative usage."""
+        """Normalize Messages events and require message_stop plus an actual stop reason."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -71,7 +71,8 @@ class AnthropicMessagesProvider:
         cache_write_tokens: int | None = None
         cache_miss_tokens: int | None = None
         output_tokens: int | None = None
-        stop_reason = "stop"
+        stop_reason = None
+        received_message_stop = False
         request_id: str | None = None
         async with self.transport.open_sse(
             f"{self.base_url}/messages",
@@ -156,6 +157,8 @@ class AnthropicMessagesProvider:
                         },
                     )
                     sequence += 1
+                elif event_type == "message_stop":
+                    received_message_stop = True
                 elif event_type == "error":
                     error = event.get("error") or {}
                     raise ModelProviderError(
@@ -166,6 +169,12 @@ class AnthropicMessagesProvider:
                         transport_attempts=attempts,
                     )
 
+        if not received_message_stop or not stop_reason:
+            raise ModelProviderError(
+                "response_parse_error",
+                "Anthropic stream ended without message_stop and stop_reason.",
+                transport_attempts=attempts,
+            )
         text = "".join(text_parts) or None
         response = ModelResponse(
             text=text,
@@ -179,9 +188,6 @@ class AnthropicMessagesProvider:
                 )
                 for _, value in sorted(tools.items())
             ],
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
             finish_reason=self._finish_reason(stop_reason),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -205,6 +211,7 @@ class AnthropicMessagesProvider:
             },
             transport_attempts=attempts,
         )
+        response = validate_structured_response(response, request)
         yield StreamEvent(
             type=StreamEventType.COMPLETED,
             sequence=sequence,
@@ -338,7 +345,7 @@ class AnthropicMessagesProvider:
         text = "".join(text_parts) or None
         usage = payload.get("usage") or {}
         normalized_usage = self._normalize_usage(usage)
-        return ModelResponse(
+        response = ModelResponse(
             text=text,
             tool_calls=tool_calls,
             provider_continuation_state=(
@@ -349,9 +356,6 @@ class AnthropicMessagesProvider:
                 if tool_calls
                 else None
             ),
-            structured_output=parse_structured_output(text)
-            if request.output_schema
-            else None,
             finish_reason=self._finish_reason(payload.get("stop_reason")),
             input_tokens=normalized_usage["input_tokens"],
             output_tokens=usage.get("output_tokens"),
@@ -363,6 +367,8 @@ class AnthropicMessagesProvider:
             raw_response=payload,
             transport_attempts=attempts,
         )
+
+        return validate_structured_response(response, request)
 
     def _normalize_usage(self, usage: dict[str, Any]) -> dict[str, int | None]:
         """Convert Anthropic's disjoint cache counters to the platform's inclusive total."""

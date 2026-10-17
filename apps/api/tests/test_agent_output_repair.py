@@ -57,6 +57,75 @@ class RepairProvider(ScriptedAgentProvider):
         return output
 
 
+def test_empty_node_response_cannot_enter_field_repair():
+    """Even a custom provider reporting stop must not turn an absent answer into format repair."""
+    from types import SimpleNamespace
+
+    from nexuspilot_api.core.errors import InvalidRequestError
+    from nexuspilot_api.features.agent_runtime.services.agent_model_node_service import (
+        AgentModelNodeService,
+    )
+
+    with pytest.raises(InvalidRequestError, match="no output"):
+        AgentModelNodeService._require_complete_response(
+            SimpleNamespace(
+                output_text=None, structured_output=None, tool_calls=[], finish_reason="stop"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "target", ["controller_planning", "worker_execution", "independent_review", "final_synthesis"]
+)
+async def test_malformed_json_is_accounted_then_repaired_by_node(client, target):
+    """An internal parse policy retains paid generation before the existing bounded node repair."""
+    from nexuspilot_models.providers.common import parse_structured_output
+
+    class MalformedProvider(ScriptedAgentProvider):
+        """Return malformed text once at the selected node, using the actual shared JSON parser."""
+
+        malformed_sent = False
+
+        def _node_output(self, node_key, request):
+            """Give the synthetic worker enough declared calls for the repair being tested."""
+            output = super()._node_output(node_key, request)
+            if node_key == "controller_planning" and target == "worker_execution":
+                for task in output["tasks"]:
+                    task["max_model_calls"] = 3
+            return output
+
+        async def generate(self, request):
+            """Exercise the runtime's private validation policy before emitting a valid repair."""
+            result = await super().generate(request)
+            assert request._defer_structured_validation is True
+            if request.metadata.get("agent_node_key") == target and not self.malformed_sent:
+                self.malformed_sent = True
+                text = '{"broken":'
+                return result.model_copy(
+                    update={
+                        "text": text,
+                        "structured_output": parse_structured_output(
+                            text, defer_validation=request._defer_structured_validation
+                        ),
+                    }
+                )
+            return result
+
+    run = await create_test_run(client)
+    provider = MalformedProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    result = (
+        await client.post(
+            f"/api/v1/runs/{run['run_id']}/agent-workflows",
+            json=workflow_payload(execution_profile="tool_enabled_v1"),
+        )
+    ).json()
+    assert result["status"] == "completed", result.get("error")
+    node = next(n for n in result["nodes"] if n["node_key"].split(".")[0] == target)
+    assert node["usage"]["model_call_count"] == 2
+    assert len(node["evidence"]["model_attempt_ids"]) == 2
+
+
 @pytest.mark.parametrize(
     "target", ["controller_planning", "worker_execution", "independent_review", "final_synthesis"]
 )
@@ -80,6 +149,7 @@ async def test_invalid_node_is_repaired_once_with_full_usage(client, target):
     assert len(repair) == 1
     assert repair[0].tools == []
     assert "validation_errors" in str(repair[0].messages)
+    assert "Do not return the output_repair wrapper" in repair[0].system_instruction
 
 
 async def test_worker_status_is_ignored_without_extra_model_call(client):
