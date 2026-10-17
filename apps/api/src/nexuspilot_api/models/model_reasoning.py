@@ -5,10 +5,10 @@ from datetime import datetime
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, new_id, utc_now
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, new_id, utc_now
 
 
-class LlmModelResponseEvent(Base):
+class LlmModelResponseEvent(ConversationBodyMixin, Base):
     """Persist one sanitized model-response event for ordered reconnect replay."""
 
     __tablename__ = "llm_model_response_events"
@@ -33,7 +33,7 @@ class LlmModelResponseEvent(Base):
     )
 
 
-class LlmReasoningBlock(Base):
+class LlmReasoningBlock(ConversationBodyMixin, Base):
     """Store the authoritative public projection of one model reasoning block."""
 
     __tablename__ = "llm_reasoning_blocks"

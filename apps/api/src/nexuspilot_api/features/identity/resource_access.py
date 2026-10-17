@@ -120,6 +120,7 @@ async def require_resource_owner(db: AsyncSession, model, identifier: str, user_
                     ("attempt_id", m.LlmModelAttempt),
                     ("project_id", m.LlmProject),
                     ("workflow_execution_id", m.LlmAgentWorkflowExecution),
+                    ("context_build_id", m.LlmContextBuild),
                 )
                 if getattr(record, field, None)
             ),

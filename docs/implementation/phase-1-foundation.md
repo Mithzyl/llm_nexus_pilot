@@ -92,6 +92,8 @@ created_at
 
 默认列表接口只返回摘要和 URI；前端恢复使用有界的 `messages/latest` 完整正文窗口，继续加载更早消息时使用其游标，避免单条消息的 N+1 查询。完整大内容仍写入 MinIO；`latest-run` 返回最新 RunDetail 的有界 Attempt/Task/Artifact 快照。
 
+2026-10-18 存储兼容调整：上述字段是应用读取后的消息结构，不代表全部内容仍驻留 SQL。新增 `body_ref_json` 保存私有版本/URI/哈希/大小；新消息的 `content_text`、`metadata_json` 存 MinIO，旧列留空占位。历史空引用继续读取 SQL，HTTP 仍返回完整正文而非内部对象引用。Run 的用户请求和 Task 的目标同样迁出，状态/归属/统计保留；详细规则及验证见[阶段2正文对象化](phase-2-llm-core-capabilities.md#完整对话正文对象化)。
+
 #### 轮次保存与重试（2026 年 9 月 12 日兼容增强）
 
 `POST /sessions/{session_id}/turns` 将 Run 与当前 User Message 一起提交，可选 `idempotency_key` 为 8～128 字符。首次创建返回 201；同会话同 key、相同 `user_id/content_text/run_type/budget_limit` 返回原 Run/Message 和 200；输入不同返回 409。重放仍检查会话归属和用户启用状态。旧调用方省略 key 时保持每次新建，不猜测两段相同文字是重复提交。

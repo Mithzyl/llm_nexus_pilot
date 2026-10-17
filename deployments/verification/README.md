@@ -1,5 +1,29 @@
 # Docker 部署验证
 
+## 本地对话正文对象存储验证（2026-10-18）
+
+`serve_body_storage_fixture.py` 只绑定本机 `18005/3305`，复用本目录下文已有隔离 MySQL `13306`、MinIO `19000` 和已登记模型目录。先对该隔离库执行迁移到 head；它不会自行迁移、清空数据库或部署服务器。所有 Provider 实现替换为脚本响应，页面模型名称仅复用目录；没有真实 DeepSeek/Strata 请求，也不以脚本 token 计数说明真实计费。
+
+```bash
+PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/serve_body_storage_fixture.py
+```
+
+用浏览器打开 `http://127.0.0.1:3305`，新建会话，依次发送以 `BODY_USER_ONE`、`BODY_USER_TWO` 开头的两轮快速回复；刷新后确认两轮正文。切换 Agent 发送第三轮，等待完成后再次刷新，检查最终答案和执行摘要。脚本 Provider 按实际允许的工作角色产生计划，不调用网络模型。Ctrl-C 停止本次 API/Web，保留 MySQL/MinIO 验证数据供核对。再次启动可检查服务重启后的历史读取。
+
+完成后使用同一脚本只读检查（传入实际会话 ID）：
+
+```bash
+PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/serve_body_storage_fixture.py --inspect-session SESSION_ID
+```
+
+检查读取实际 SQL 占位、逐条校验 MinIO 对象，以及第二个请求的 `effective_messages` 是否包含第一轮双方正文；必须存在完成的 Agent 工作流。没有生成记录的表报告 `not_exercised`，不记作通过。只输出 ID、计数和状态，不导出消息/凭据。实现记录与实测范围见[阶段2正文对象化](../../docs/implementation/phase-2-llm-core-capabilities.md#完整对话正文对象化)。
+
+跨用户检查复用 `test_resource_authorization.py`：设置 `NEXUSPILOT_TEST_AUTH_MYSQL_URL` 为本机 `authz_audit` 测试管理库（测试账号需有建库权限），以及 `NEXUSPILOT_TEST_AUTH_MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY`。每项测试创建随机后缀数据库并仅删除自己的库，MinIO 使用 `authorization-audit` 桶；不得配置生产凭据。此模式通过实际登录 Cookie 和实际应用 Session 读写 MinIO，不只替换文件上传存储。
+
+```bash
+apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_resource_authorization.py -q
+```
+
 本目录的测试程序不包含在生产镜像中。下方本地预验证使用 `docker-compose.fixture.yml` 显式挂载程序并提供内部模拟 Provider，所有 Provider 出站网络改为内部网络，避免调用真实模型。末节 `check_release.py` 则是明确授权后的目标服务器验收，会调用真实模型；不要混用两者。
 
 测试对象为实际生产 Compose、MySQL、MinIO、非 root API/Web 和 HTTPS Nginx。模拟 Provider 只验证 HTTP 协议、SSE 转发及模型请求是否确实包含提取的文件文字，不证明真实模型质量或供应商连通性。

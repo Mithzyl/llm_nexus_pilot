@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, TimestampMixin, new_id, utc_now
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, TimestampMixin, new_id, utc_now
 from nexuspilot_api.models.enums import MessageRole, SessionStatus
 
 
@@ -77,7 +77,7 @@ class LlmSession(TimestampMixin, Base):
     next_message_sequence: Mapped[int] = mapped_column(Integer, default=1)
 
 
-class LlmMessage(Base):
+class LlmMessage(ConversationBodyMixin, Base):
     """Represent one immutable ordered message inside a durable conversation."""
 
     __tablename__ = "llm_messages"

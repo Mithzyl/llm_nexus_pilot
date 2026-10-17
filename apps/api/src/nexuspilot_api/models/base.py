@@ -3,7 +3,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, func
+from sqlalchemy import JSON, DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -37,3 +37,9 @@ class TimestampMixin:
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class ConversationBodyMixin:
+    """Keep a versioned private object reference while retaining legacy body columns."""
+
+    body_ref_json: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)

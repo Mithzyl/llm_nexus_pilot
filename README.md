@@ -77,7 +77,25 @@ make api-run
 
 新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
 
-文件上传需启动 MinIO；当前代码要求迁移到 `20261008_0023`（包含 `user_files` 和新增工具调用记录字段）。备份并确认目标库后执行 `make api-migrate`，再重启 API；本次只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
+文件上传及新对话正文保存均需启动 MinIO；当前代码要求迁移到 `20261018_0024`（新增对话正文对象引用，兼容旧正文列）。备份并确认目标库后执行 `make api-migrate`，再重启 API；本次只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
+
+#### 历史对话正文迁移与恢复
+
+API 新写入将完整正文保存为 MinIO 不可变对象，MySQL 保存归属、统计和校验引用。旧行引用为空时继续读取 SQL 原文，读取不会隐式迁移；对象读取失败会报错，不返回空白消息。API 返回格式不变。完整字段与验收范围见[阶段2](docs/implementation/phase-2-llm-core-capabilities.md#完整对话正文对象化)。备份必须同时包含数据库和对象，不能只恢复其中之一。
+
+以下命令从 `apps/api` 执行，使用该目录 `.env` 指向的数据库与 MinIO；先确认环境并备份。默认只检查，不写入：
+
+```bash
+.venv/bin/python -m nexuspilot_api.services.conversation_body_maintenance backfill --table llm_messages --limit 100
+# 确认检查结果后才应用这一批：
+.venv/bin/python -m nexuspilot_api.services.conversation_body_maintenance backfill --table llm_messages --limit 100 --apply
+```
+
+按输出 `last_id` 通过 `--after ID` 继续；对字段清单中每张表分别执行。游标按主键字典序，不是创建时间，完成后从无游标再检查一遍，避免漏掉并发产生的较小 ID。每批先上传并校验，再事务清空原文并保存引用；失败批次可重新检查和执行。
+
+回退必须先停止 API、后台任务和其他写入者，然后使用 `restore --table TABLE --apply --writers-stopped` 分批校验对象并恢复旧列；所有表完成恢复后才能降级数据库及旧代码。该参数是操作者确认，不会代替你停止服务。对象丢失时先从备份恢复，不可直接删引用。新正文可能大于旧 TEXT 列容量，此时恢复会失败而非截断，须保留当前版本或另行审批旧模式容量变更，不能强行降级。新增迁移在仍有对象引用时拒绝降级。
+
+写入记录核对使用 `reconcile --limit 100`，默认只报告；停止所有写入后才可加 `--apply --writers-stopped`。它只检查超过 24 小时的写入记录并删除 SQL 未引用的精确对象，不扫描删除其他业务前缀。成功但后来被替换的对象也会被视为未引用；如需保留历史版本，应先备份，不执行清理。本次没有自动清理定时任务。
 
 本地启用 Office/PDF：先执行 `make file-runtime-build`、`make file-runtime-check`；然后在一个终端运行 `make file-runtime-run`，另一个终端用 `make api-run-with-files` 启动 API。两者共用 `/tmp/nexuspilot-file-runtime-<uid>/executor.sock`，可用相同的 `FILE_RUNTIME_SOCKET` 覆盖；不改写私有 `.env`。API 启动目标仍会先执行迁移，需先确认开发库和备份。已有检查通过的自定义镜像可用 `FILE_RUNTIME_IMAGE` 指定。前端从需身份认证的 `GET /api/v1/files/capabilities` 获取可用格式；仅填写 Socket 路径但未启动服务，不会被视为已启用。快速回复和 Agent 的文件工具均读取上传时保存的解析结果，续聊不重复解析；自动提供工具不能替代执行器部署。
 

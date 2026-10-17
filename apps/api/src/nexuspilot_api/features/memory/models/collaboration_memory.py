@@ -15,7 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, new_id, utc_now
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, new_id, utc_now
 from nexuspilot_api.models.enums import (
     HandoffStatus,
     MemoryPacketItemType,
@@ -23,7 +23,7 @@ from nexuspilot_api.models.enums import (
 )
 
 
-class LlmAgentHandoff(Base):
+class LlmAgentHandoff(ConversationBodyMixin, Base):
     """Represent one immutable handoff fact submitted by an Agent coordinator."""
 
     __tablename__ = "llm_agent_handoffs"
@@ -83,7 +83,7 @@ class LlmAgentHandoff(Base):
     )
 
 
-class LlmRunMemorySnapshot(Base):
+class LlmRunMemorySnapshot(ConversationBodyMixin, Base):
     """Represent one immutable merged version of completed Agent Handoffs."""
 
     __tablename__ = "llm_run_memory_snapshots"
@@ -159,7 +159,7 @@ class LlmRunMemorySnapshotHandoff(Base):
     handoff_order: Mapped[int] = mapped_column(Integer)
 
 
-class LlmMemoryPacket(Base):
+class LlmMemoryPacket(ConversationBodyMixin, Base):
     """Represent one immutable, version-pinned input package given to a model call."""
 
     __tablename__ = "llm_memory_packets"

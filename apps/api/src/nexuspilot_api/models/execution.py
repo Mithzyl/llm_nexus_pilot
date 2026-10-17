@@ -16,11 +16,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from nexuspilot_api.models.base import Base, TimestampMixin, new_id
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, TimestampMixin, new_id
 from nexuspilot_api.models.enums import RunStatus, TaskStatus
 
 
-class LlmRun(TimestampMixin, Base):
+class LlmRun(ConversationBodyMixin, TimestampMixin, Base):
     """Represent one complete user request and its budget consumption."""
 
     __tablename__ = "llm_runs"
@@ -65,7 +65,7 @@ class LlmRun(TimestampMixin, Base):
     tasks: Mapped[list["LlmTask"]] = relationship(back_populates="run")
 
 
-class LlmTask(TimestampMixin, Base):
+class LlmTask(ConversationBodyMixin, TimestampMixin, Base):
     """Represent one concrete work item belonging to a run."""
 
     __tablename__ = "llm_tasks"

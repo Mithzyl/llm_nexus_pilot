@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from nexuspilot_api.infrastructure.conversation_body_session import ConversationBodySession
 from nexuspilot_api.models import Base
 
 
@@ -28,7 +29,7 @@ async def authorization_mysql_factory(url):
             await connection.exec_driver_sql(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
-        yield async_sessionmaker(engine, expire_on_commit=False)
+        yield async_sessionmaker(engine, class_=ConversationBodySession, expire_on_commit=False)
     finally:
         await engine.dispose()
         async with admin.connect() as connection:

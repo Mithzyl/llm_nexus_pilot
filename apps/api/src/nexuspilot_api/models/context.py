@@ -16,7 +16,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, new_id, utc_now
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, new_id, utc_now
 from nexuspilot_api.models.enums import (
     ContextBuildStatus,
     ContextSourceSelectionStatus,
@@ -94,7 +94,7 @@ class LlmContextBuild(Base):
     )
 
 
-class LlmContextSource(Base):
+class LlmContextSource(ConversationBodyMixin, Base):
     """Record one selected or excluded source with its version and token evidence."""
 
     __tablename__ = "llm_context_sources"

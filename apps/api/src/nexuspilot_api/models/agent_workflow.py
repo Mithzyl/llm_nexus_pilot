@@ -18,14 +18,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from nexuspilot_api.models.base import Base, new_id, utc_now
+from nexuspilot_api.models.base import Base, ConversationBodyMixin, new_id, utc_now
 from nexuspilot_api.models.enums import (
     AgentWorkflowNodeStatus,
     AgentWorkflowStatus,
 )
 
 
-class LlmAgentWorkflowExecution(Base):
+class LlmAgentWorkflowExecution(ConversationBodyMixin, Base):
     """Represent one Run executing one immutable Agent workflow definition version."""
 
     __tablename__ = "llm_agent_workflow_executions"
@@ -89,7 +89,7 @@ class LlmAgentWorkflowExecution(Base):
     )
 
 
-class LlmAgentWorkflowNodeExecution(Base):
+class LlmAgentWorkflowNodeExecution(ConversationBodyMixin, Base):
     """Store one typed orchestration node result without duplicating Attempt evidence."""
 
     __tablename__ = "llm_agent_workflow_node_executions"
@@ -176,7 +176,7 @@ class LlmAgentWorkflowNodeExecution(Base):
     )
 
 
-class LlmAgentWorkflowEvent(Base):
+class LlmAgentWorkflowEvent(ConversationBodyMixin, Base):
     """Persist one ordered public workflow event for SSE replay and page refresh."""
 
     __tablename__ = "llm_agent_workflow_events"

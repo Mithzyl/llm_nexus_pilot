@@ -36,6 +36,7 @@ from nexuspilot_api.core.dependencies import (  # noqa: E402
     get_provider_registry,
 )
 from nexuspilot_api.features.identity.resource_access import authorize_resource_request
+from nexuspilot_api.infrastructure.conversation_body_session import ConversationBodySession
 from nexuspilot_api.infrastructure.database import (  # noqa: E402
     get_database_session,
     get_database_session_factory,
@@ -198,6 +199,7 @@ async def test_database_session_factory(
         from resource_infrastructure import authorization_mysql_factory
 
         async with authorization_mysql_factory(url) as factory:
+            factory.configure(info={"body_storage": FakeObjectStorage()})
             yield factory
         return
 
@@ -211,7 +213,12 @@ async def test_database_session_factory(
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
-    test_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    test_factory = async_sessionmaker(
+        test_engine,
+        class_=ConversationBodySession,
+        expire_on_commit=False,
+        info={"body_storage": FakeObjectStorage()},
+    )
 
     async with test_engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -240,7 +247,9 @@ async def client(
                 await db_session.rollback()
                 raise
 
-    fake_object_storage = FakeObjectStorage()
+    fake_object_storage = test_database_session_factory.kw.get("info", {}).get(
+        "body_storage", FakeObjectStorage()
+    )
     app.dependency_overrides[get_database_session] = override_database_session
     app.dependency_overrides[get_database_session_factory] = lambda: test_database_session_factory
     app.dependency_overrides[get_object_storage] = lambda: fake_object_storage
@@ -258,7 +267,7 @@ async def client(
 
 
 @pytest_asyncio.fixture
-async def resource_client(client):
+async def resource_client(client, test_database_session_factory):
     """Exercise real authorization; optional MinIO settings must name a loopback test instance."""
     app.dependency_overrides.pop(authorize_resource_request, None)
     if endpoint := os.environ.get("NEXUSPILOT_TEST_AUTH_MINIO_ENDPOINT"):
@@ -278,4 +287,5 @@ async def resource_client(client):
             )
         )
         app.dependency_overrides[get_object_storage] = lambda: storage
+        test_database_session_factory.kw["info"]["body_storage"] = storage
     yield client

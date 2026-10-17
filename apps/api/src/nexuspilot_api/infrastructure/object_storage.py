@@ -124,6 +124,28 @@ class ObjectStorage:
             digest.update(chunk)
         return digest.hexdigest() == expected_hash
 
+    async def list_object_page(self, prefix: str, *, after: str | None, limit: int) -> list[str]:
+        """List at most one bounded maintenance page without collecting an entire bucket prefix."""
+        if not 1 <= limit <= 500:
+            raise ValueError("Object page limit must be 1..500")
+
+        def collect_page():
+            """Consume the MinIO paginator off the event loop and stop at the requested limit."""
+            names = []
+            for item in self.client.list_objects(
+                self.settings.minio_bucket, prefix=prefix, recursive=True, start_after=after
+            ):
+                if item.object_name:
+                    names.append(item.object_name)
+                if len(names) >= limit:
+                    break
+            return names
+
+        try:
+            return await to_thread.run_sync(collect_page)
+        except Exception as exc:
+            raise ObjectStorageError("Object storage operation failed.") from exc
+
     def _list_object_names(self, prefix: str) -> list[str]:
         """Return object names matching one opaque prefix without exposing pagination state."""
 
