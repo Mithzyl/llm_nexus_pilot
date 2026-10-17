@@ -42,6 +42,10 @@ FILE_TYPES = {
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
 
+# Reserve the maximum persisted parse until its verified actual size is known.
+# This object-storage bound is independent of SQL TEXT and model Context budgets.
+MAX_PARSED_OBJECT_BYTES = 8 * 1024 * 1024
+
 
 async def file_upload_capabilities() -> FileUploadCapabilities:
     """Report parser availability off the event loop; existing parsed files remain readable."""
@@ -134,7 +138,11 @@ async def interrupt_upload(db: AsyncSession, file_id: str) -> None:
 async def reserve_file(
     db: AsyncSession, storage: ObjectStorage, user_id: str, payload: UserFileCreate
 ) -> UserFile:
-    """Replay identical uploads; reject unavailable parsers before reserving storage quota."""
+    """Replay uploads and reserve original plus maximum parse bytes under the owner lock.
+
+    Ready parses count their actual persisted size; unfinished/failed reservations
+    keep the maximum until cleanup. Unavailable parsers cannot reserve new quota.
+    """
 
     filename = payload.filename
     if (
@@ -173,8 +181,8 @@ async def reserve_file(
     # MySQL repeatable-read snapshot. Reserve parser-result space before any I/O.
     sizes = list(
         (
-            await db.scalars(
-                select(UserFile.size_bytes)
+            await db.execute(
+                select(UserFile.size_bytes, UserFile.parsed_size)
                 .where(
                     UserFile.user_id == user_id,
                     UserFile.status != "deleted",
@@ -183,10 +191,11 @@ async def reserve_file(
             )
         ).all()
     )
-    used, count = sum(size + 55000 for size in sizes), len(sizes)
+    used = sum(size + (parsed_size or MAX_PARSED_OBJECT_BYTES) for size, parsed_size in sizes)
+    count = len(sizes)
     settings = get_settings()
     if (
-        used + payload.size_bytes + 55000 > settings.user_file_quota_bytes
+        used + payload.size_bytes + MAX_PARSED_OBJECT_BYTES > settings.user_file_quota_bytes
         or count >= settings.user_file_count_limit
     ):
         raise HTTPException(413, "文件存储额度不足，请删除不再需要的文件。")
@@ -239,7 +248,11 @@ async def read_verified_bytes(storage: ObjectStorage, uri: str, size: int, diges
 async def finish_upload(
     db: AsyncSession, storage: ObjectStorage, file: UserFile, content: bytes
 ) -> UserFile:
-    """Parse and verify both persisted objects before publishing; retain failure cleanup state."""
+    """Save the complete bounded parse in MinIO; never couple upload size to SQL Context.
+
+    Reservations cover the largest allowed parse; readiness records its verified
+    actual size. Failed publication retains the existing exact-key cleanup state.
+    """
 
     from nexuspilot_api.services.parsed_artifact_service import FILE_PARSE_LIMITER
 
@@ -263,9 +276,8 @@ async def finish_upload(
             limiter=FILE_PARSE_LIMITER,
         )
         parsed = document.model_dump_json().encode()
-        # Context currently uses MySQL TEXT; reject before saving a turn rather than truncate.
-        if len(parsed) > 55000:
-            raise FileParsingError("提取内容过大，请拆分文件后上传（当前尚无分段选择入口）。")
+        if len(parsed) > MAX_PARSED_OBJECT_BYTES:
+            raise FileParsingError("解析结果超过 8 MiB 存储限制，请拆分文件后上传。")
         await storage.put_bytes(f"user-files/{file.file_id}/source", content, file.mime_type)
         parsed_object = await storage.put_bytes(
             f"user-files/{file.file_id}/parsed", parsed, "application/json"

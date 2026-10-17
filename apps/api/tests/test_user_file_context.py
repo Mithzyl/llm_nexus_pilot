@@ -6,7 +6,7 @@ from test_user_files import reserve_file
 
 
 async def test_uploaded_file_is_bound_to_turn_and_automatically_enters_context(client, monkeypatch):
-    """Saved uploads reach model calls without vision or reparsing, and deletion revokes reuse."""
+    """Saved upload manifests reach calls without unread text; deletion still revokes reuse."""
 
     first = await reserve_file(client)
     file_id = first.json()["file_id"]
@@ -50,7 +50,8 @@ async def test_uploaded_file_is_bound_to_turn_and_automatically_enters_context(c
     )
     response = await client.post("/api/v1/responses", json=payload)
     assert response.status_code == 200, response.text
-    assert any("hello file" in message.content for message in provider.requests[-1].messages)
+    assert all("hello file" not in message.content for message in provider.requests[-1].messages)
+    assert any("file_manifest.v1" in message.content for message in provider.requests[-1].messages)
 
     async def other_principal(*_):
         """Represent another authenticated identity at the legacy resource authorization check."""
@@ -84,7 +85,7 @@ async def test_uploaded_file_is_bound_to_turn_and_automatically_enters_context(c
 async def test_agent_nodes_all_receive_bound_file_without_new_file_agent(
     client, test_database_session_factory, followup
 ):
-    """All Agent nodes reuse the parsed file on the upload turn and on a later conversation turn."""
+    """All Agent nodes receive file metadata, not unread text, on first and subsequent turns."""
     from test_agent_workflows import (
         ScriptedAgentProvider,
         registered_agent_test_model,
@@ -126,6 +127,11 @@ async def test_agent_nodes_all_receive_bound_file_without_new_file_agent(
     assert response.json()["status"] == "completed", response.text
     assert len(provider.requests) >= 4
     assert all(
-        any("hello file" in message.content for message in request.messages)
+        any("file_manifest.v1" in message.content for message in request.messages)
         for request in provider.requests
+    )
+    assert all(
+        "hello file" not in message.content
+        for request in provider.requests
+        for message in request.messages
     )

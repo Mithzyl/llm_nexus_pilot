@@ -36,6 +36,7 @@ class QuickFileProvider(ScriptedAgentProvider):
                     {"type": "reasoning", "encrypted_content": "PRIVATE_TEST_CONTINUATION"}
                 ]
         if not results:
+            assert all("UNIQUE_FILE_TEXT_2718" not in m.content for m in request.messages)
             calls = [ToolCall(id="list-1", name="list_run_files", arguments={})]
         elif len(results) == 1:
             file_id = json.loads(results[0].content)["result"]["files"][0]["file_id"]

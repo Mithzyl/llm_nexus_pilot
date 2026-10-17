@@ -118,7 +118,7 @@ async def parse_run_artifact(
     run_id: str,
     reference: ParsedArtifactReference,
 ) -> tuple[dict, str]:
-    """Parse a verified source and pin selected positions before block pagination.
+    """Pin a verified source; default private uploads expose a manifest, never full text.
 
     Sources without an inventory retain their previous hash and snapshot shape.
     Native selections receive a range-bound source version while retaining the
@@ -140,13 +140,60 @@ async def parse_run_artifact(
             document = await read_parsed_file(storage, private_file)
         else:
             document = await to_thread.run_sync(
-                parse_file_content, parse_request, content, limiter=FILE_PARSE_LIMITER,
+                parse_file_content,
+                parse_request,
+                content,
+                limiter=FILE_PARSE_LIMITER,
             )
         # Preserve old text/PDF/legacy-Office hashes when no structure was supplied.
         absent_fields = {"structure"} if document.structure is None else set()
         document_hash = hashlib.sha256(
             document.model_dump_json(exclude=absent_fields).encode()
         ).hexdigest()
+        if (
+            private_file is not None
+            and reference.selection is None
+            and reference.block_limit is None
+            and reference.block_offset == 0
+        ):
+            # Do not include structure inventories: even metadata can be large.
+            # Source identity and the complete parse remain pinned and verified;
+            # only successful tool reads establish what the model actually saw.
+            snapshot = document.model_dump(
+                include={
+                    "source_id",
+                    "source_hash",
+                    "filename",
+                    "media_type",
+                    "parser_name",
+                    "parser_version",
+                    "extraction_method",
+                    "status",
+                    "total_pages",
+                    "uncovered_pages",
+                    "warnings",
+                }
+            )
+            snapshot.update(
+                schema_version="file_manifest.v1",
+                document_hash=document_hash,
+                parsed_hash=private_file.parsed_hash,
+                parsed_size_bytes=private_file.parsed_size,
+                reading={
+                    "offset": 0,
+                    "total_blocks": len(document.blocks),
+                    "next_offset": 0 if document.blocks else None,
+                    "has_more": bool(document.blocks),
+                    "returned_blocks": 0,
+                },
+                read_instruction=(
+                    "File text has not been read. Use read_file_content(file_id=source_id, "
+                    "offset=0, limit=50), search_file_content or get_file_outline as needed. "
+                    "Follow next_offset for subsequent pages; do not claim unread content "
+                    "or unsupported graphics/OCR were inspected."
+                ),
+            )
+            return snapshot, document_hash
         selected_document = document
         if reference.selection is not None:
             selected_document = document.model_copy(
@@ -212,7 +259,8 @@ async def validate_parsed_context_sources(
     """Recheck pinned artifact identity and bytes before generation, including Context replay.
 
     Historical Context reads remain immutable; dispatch must not bypass missing or
-    replaced originals. This trusted API baseline is not final-user file authorization.
+    replaced originals. Manifest snapshots also verify the pinned complete parse,
+    without turning that parse into an automatically included model message.
     """
 
     for message in context.messages:
@@ -241,5 +289,23 @@ async def validate_parsed_context_sources(
                 )
             ):
                 raise ResourceConflictError("Parsed Context source changed after snapshot")
+            if snapshot.get("schema_version") == "file_manifest.v1":
+                from nexuspilot_api.models import UserFile
+                from nexuspilot_api.services.user_file_service import read_parsed_file
+
+                file = await db_session.get(UserFile, message.source_id, populate_existing=True)
+                if (
+                    file is None
+                    or file.parsed_hash != snapshot["parsed_hash"]
+                    or file.parsed_size != snapshot["parsed_size_bytes"]
+                ):
+                    raise ResourceConflictError("Parsed file version changed after snapshot")
+                document = await read_parsed_file(storage, file)
+                absent = {"structure"} if document.structure is None else set()
+                if (
+                    hashlib.sha256(document.model_dump_json(exclude=absent).encode()).hexdigest()
+                    != snapshot["document_hash"]
+                ):
+                    raise ResourceConflictError("Parsed file document changed after snapshot")
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ResourceConflictError("Parsed Context snapshot is invalid") from exc

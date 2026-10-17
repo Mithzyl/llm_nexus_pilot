@@ -51,8 +51,8 @@ def assert_same_context(actual, expected):
     )
 
 
-async def test_followup_provider_receives_persisted_file_text(resource_client):
-    """Send historical file text through Responses to the fake provider without reupload."""
+async def test_followup_provider_receives_manifest_not_file_text(resource_client):
+    """Offer tools and pinned metadata on followup, without injecting unread file text."""
     from nexuspilot_models.contracts import ProviderName
     from nexuspilot_models.registry import ProviderRegistry
     from test_responses import CapturingContextProvider
@@ -82,11 +82,13 @@ async def test_followup_provider_receives_persisted_file_text(resource_client):
         },
     )
     assert result.status_code == 200, result.text
-    assert any("UNIQUE_FILE_TEXT_2718" in msg.content for msg in provider.requests[-1].messages)
+    assert all("UNIQUE_FILE_TEXT_2718" not in msg.content for msg in provider.requests[0].messages)
+    assert any("file_manifest.v1" in msg.content for msg in provider.requests[0].messages)
+    assert provider.requests[0].tools
 
 
 async def test_followup_reuses_file_text_and_saved_context(resource_client, monkeypatch):
-    """Persist fixed extraction, source and hash for subsequent turns, refresh and replay."""
+    """Persist manifest and hashes, but no unread text, across subsequent turns and replay."""
     client = resource_client
     owner, session, file, _ = await prepare_conversation_file(client)
     second = (
@@ -106,7 +108,8 @@ async def test_followup_reuses_file_text_and_saved_context(resource_client, monk
     payload = context_payload(owner, session, second, "followup-context-key")
     response = await client.post("/api/v1/context-builds", json=payload)
     assert response.status_code == 201, response.text
-    assert "UNIQUE_FILE_TEXT_2718" in response.text
+    assert "UNIQUE_FILE_TEXT_2718" not in response.text
+    assert "file_manifest.v1" in response.text
     context = response.json()
     source = next(s for s in context["sources"] if s["source_id"] == file["file_id"])
     assert source["source_type"] == "parsed_artifact"
@@ -155,6 +158,38 @@ async def test_later_upload_never_changes_older_context(resource_client):
         },
     )
     assert explicit.status_code == 409
+
+
+async def test_manifest_dispatch_rejects_replaced_parsed_object(
+    resource_client, test_database_session_factory
+):
+    """A replayed manifest must not authorize a newly replaced parse of the same source."""
+    import hashlib
+
+    from nexuspilot_api.core.errors import ResourceConflictError
+    from nexuspilot_api.infrastructure.object_storage import get_object_storage
+    from nexuspilot_api.main import app
+    from nexuspilot_api.models import UserFile
+    from nexuspilot_api.schemas.context_builds import ContextBuildRead
+    from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
+
+    owner, session, file, turn = await prepare_conversation_file(resource_client)
+    response = await resource_client.post(
+        "/api/v1/context-builds", json=context_payload(owner, session, turn, "pinned-manifest")
+    )
+    assert response.status_code == 201
+    context = ContextBuildRead.model_validate(response.json())
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        await validate_parsed_context_sources(db, storage, context)
+        row = await db.get(UserFile, file["file_id"])
+        original, media_type = storage.objects[row.parsed_uri]
+        replaced = original.replace(b"UNIQUE_FILE_TEXT_2718", b"UNIQUE_FILE_TEXT_0000")
+        storage.objects[row.parsed_uri] = (replaced, media_type)
+        row.parsed_hash = hashlib.sha256(replaced).hexdigest()
+        await db.commit()
+        with pytest.raises(ResourceConflictError, match="version changed"):
+            await validate_parsed_context_sources(db, storage, context)
 
 
 @pytest.mark.parametrize("deleted", [False, True])

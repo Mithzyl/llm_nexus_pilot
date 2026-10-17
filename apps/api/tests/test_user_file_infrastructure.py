@@ -68,7 +68,7 @@ async def test_mysql_reservations_are_serialized_and_minio_bytes_are_verified(mo
             resource_principal,
         )
         app.dependency_overrides[get_object_storage] = lambda: storage
-        monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 60000)
+        monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 8 * 1024 * 1024 + 100)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",

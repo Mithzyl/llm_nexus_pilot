@@ -56,6 +56,24 @@ async def test_file_size_hash_and_type_fail_without_ready_state(client):
     assert metadata.json()["status"] == "failed"
 
 
+async def test_large_parsed_document_is_saved_without_sql_context_limit(client):
+    """Store a multi-block parse above 55 KB intact in object storage, not reject the upload."""
+    import json
+
+    content = ("A bounded document line for paginated reading.\n" * 1500).encode()
+    reservation = await reserve_file(client, content, "many-lines.txt")
+    assert reservation.status_code == 201, reservation.text
+    file_id = reservation.json()["file_id"]
+    uploaded = await client.put(f"/api/v1/files/{file_id}/content", content=content)
+    assert uploaded.status_code == 200, uploaded.text
+    storage = app.dependency_overrides[get_object_storage]()
+    parsed = storage.objects[storage.uri_for_object(f"user-files/{file_id}/parsed")][0]
+    assert len(parsed) > 55000
+    document = json.loads(parsed)
+    assert len(document["blocks"]) == 1500
+    assert "".join(block["text"] for block in document["blocks"]) == content.decode()
+
+
 async def test_cleanup_does_not_delete_a_file_that_became_ready(
     client, test_database_session_factory
 ):
@@ -142,9 +160,34 @@ async def test_quota_counts_reserved_and_failed_files(client, monkeypatch):
 
     from nexuspilot_api.core.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 60000)
+    monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 8 * 1024 * 1024 + 100)
     assert (await reserve_file(client, b"12345678")).status_code == 201
     assert (await reserve_file(client, b"1234", "other.txt")).status_code == 413
+
+
+async def test_ready_parse_uses_actual_bytes_and_retains_room_for_next_reservation(
+    client, monkeypatch
+):
+    """Publishing a small parse releases unused reserved capacity without ignoring its bytes."""
+    from nexuspilot_api.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "user_file_quota_bytes", 8 * 1024 * 1024 + 4096)
+    file = (await reserve_file(client)).json()
+    assert (await reserve_file(client, b"second", "next.txt")).status_code == 413
+    assert (
+        await client.put(f"/api/v1/files/{file['file_id']}/content", content=b"hello file")
+    ).status_code == 200
+    assert (await reserve_file(client, b"second", "next.txt")).status_code == 201
+
+
+async def test_parse_object_limit_rejects_before_writing_objects(client, monkeypatch):
+    """The independent parse-object resource bound rejects oversize output without truncation."""
+    file = (await reserve_file(client)).json()
+    monkeypatch.setattr("nexuspilot_api.services.user_file_service.MAX_PARSED_OBJECT_BYTES", 10)
+    result = await client.put(f"/api/v1/files/{file['file_id']}/content", content=b"hello file")
+    assert result.status_code == 422
+    assert not app.dependency_overrides[get_object_storage]().objects
+    assert (await client.get(f"/api/v1/files/{file['file_id']}")).json()["status"] == "failed"
 
 
 async def test_storage_failure_keeps_exact_cleanup_record(

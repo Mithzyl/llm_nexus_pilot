@@ -149,11 +149,11 @@ Strata 共2次请求，输入576／输出38 Token，合计614；本轮两家合�
 
 - `POST /api/v1/files` 先保存身份归属、额度预留、文件大小、SHA-256 和幂等键；`PUT /files/{id}/content` 接收原始字节，验证后解析。成功时原件和完整 `ParsedFileDocument` 分别保存 MinIO，并回读校验；数据库 `user_files` 只有引用、状态与提取摘要，不保存文件正文。迁移为 `20260916_0022`。
 - 仅接受非空且不超过 1 MiB 的 `.txt/.md/.py/.js/.ts/.css/.json/.csv/.tsv/.yaml/.yml/.xml/.pdf/.docx/.xlsx/.pptx`，每轮最多 10 个。文件名不能含路径或控制字符；解析器继续检查内容。图片、扫描 PDF OCR、旧 Office、宏文件、音视频及通用压缩包不开放。
-- 当前 MySQL Context 正文仍是 `TEXT`；完整解析 JSON 超过 55000 字节会在创建轮次前拒绝，提示拆分，不静默截断。此限制不是模型输出 token 上限。多附件仍须满足已有模型输入预算。尚无前端分段选择、大文件后台解析。
-- `reserved → uploading → ready`；失败记录保留 `failed`，删除先变 `deleting`，两个精确对象键清理成功才变 `deleted`。接收字节限时 60 秒；预留／上传租约 2 小时。每用户默认 500 MiB、最多 500 条活记录，包含原件和每份 55000 字节解析预留；失败对象未清理前不释放额度。上传接受后不允许覆盖原件或改变解析结果。
-- 用户消息提交通过 `file_ids` 原子绑定首次上传所在 Run，并保存附件名称。2026 年 9 月 26 日补齐同一会话连续追问：快速回复及 Controller、Worker、Reviewer、最终汇总从统一 Context Builder 复用当前用户、当前会话、当前 User Message 序号之前已提交的附件解析结果，不直接给 Provider 发送文件。后续轮次无需重新上传；文件本身不重复绑定、不复制原件。其他会话及之后上传的文件不会自动进入本轮，旧的普通 Artifact 仍禁止跨 Run 引用。项目内文件提交继续拒绝，等待项目授权实现。
-- 文件文字的上下文记录保存在既有 `llm_context_builds`／`llm_context_sources`：包含当轮来源文件 ID、内容快照、哈希、解析版本和提取范围；可通过 Context 查询重新读取。同一请求重放不重新解析，之后的新附件不改变旧消息锚点的上下文。原始文件和完整解析结果仍在 MinIO；消息附件信息仍随消息保存。删除原件不删除历史快照，但新的生成会明确拒绝读取已删除文件，不能静默忽略附件后继续回答。
-- 会话自动携带文件最多 10 个；累计超过上限或必要文件内容超过模型输入预算时明确拒绝，需新建会话并只上传需要的文件。当前没有历史附件的逐轮选择／移除控件，也没有大文件分段选择；不承诺无限附件或无损压缩。
+- 2026-10-18 本地文件修复已完成：取消完整解析 JSON 的 55000 字节 Context 存储限制，完整解析结果只存 MinIO；本轮使用独立的 8 MiB 解析对象上限保护存储/进程资源，保持原件 1 MiB、解析文本 128 KiB、最多 10000 块等执行器限制，不承诺任意大文件。上传附件默认 Context 仅携带文件标识、版本哈希、块数、解析限制和工具读取说明，不自动注入正文。工具按 offset/limit 分页（最多 100 块），记录实际读取范围和 next_offset；已有显式选区/分页引用继续有独立的 Context 大小检查。尚无前端分段选择、大文件后台解析。
+- `reserved → uploading → ready`；失败记录保留 `failed`，删除先变 `deleting`，两个精确对象键清理成功才变 `deleted`。接收字节限时 60 秒；预留／上传租约 2 小时。每用户默认 500 MiB、最多 500 条活记录；未完成对象按原件加 8 MiB 解析预留计算，已有解析大小按实际字节计算，失败对象未清理前保守预留。上传接受后不允许覆盖原件或改变解析结果。
+- 用户消息提交通过 `file_ids` 原子绑定首次上传所在 Run，并保存附件名称。2026 年 9 月 26 日补齐同一会话连续追问，2026 年 10 月 18 日将自动注入正文改为文件清单：快速回复及 Controller、Worker、Reviewer、最终汇总复用当前用户、当前会话、当前 User Message 序号之前已提交的附件标识；需要正文时调用读取工具，不直接给 Provider 发送原件。后续轮次无需重新上传；文件本身不重复绑定、不复制原件。其他会话及之后上传的文件不会自动进入本轮，旧的普通 Artifact 仍禁止跨 Run 引用。项目内文件提交继续拒绝，等待项目授权实现。
+- 默认附件上下文在 `llm_context_builds`／`llm_context_sources` 保存文件清单快照：文件 ID、原件/解析哈希、解析版本、块数、解析限制及尚未读取状态，不保存整份文件正文。读取工具记录实际返回页的范围和来源；旧 Context 正文快照继续可读，同一请求重放不重新解析，之后的新附件不改变旧消息锚点。删除原件不删除历史记录，但新生成拒绝已删除文件。完整对话正文、旧 Context 正文和工具结果迁往 MinIO 尚待独立迁移与兼容验收，不能宣称目前 MySQL 已没有任何正文。
+- 会话自动携带文件清单最多 10 个；累计超过上限明确拒绝，需新建会话并只上传需要的文件。模型输入预算仍适用于选定摘录及工具历史，但不再因未读取文件的全文大小直接拒绝基础 Context。当前没有历史附件的逐轮选择／移除控件，也没有前端分段选择；不承诺无限附件或无损压缩。
 - `GET /files`、`GET /files/{id}`、`GET /files/{id}/content` 和 `DELETE /files/{id}` 均校验当前用户；身份不取自上传请求。启用登录时写入还校验 Origin 和会话 CSRF。下载强制 attachment、nosniff、no-store，不向浏览器暴露对象地址。删除撤销后续读取，但不会删除已保存回答和 Context 摘录。
 - 上传前先记录两个确定的对象键；对象存储或数据库失败可按记录补偿，不扫描整桶。运维从 `apps/api` 显式执行 `PYTHONPATH=src .venv/bin/python -m nexuspilot_api.services.user_file_cleanup --limit 100`，重试失败删除及过期预留。命令会再次原子检查状态，不删除已变为 ready 的文件；**没有自动定时任务**，需运维配置调度。请求进程崩溃不自动恢复解析。
 - 固定解析对象复用于同一上传，避免每个模型节点重复解析；不是按文件哈希跨用户共享缓存，也不是逻辑文件版本历史。不新增附件专用 Agent 或强制模式切换；两种模式附件工具循环已由阶段7实现，后台恢复仍未实现。
@@ -163,6 +163,44 @@ Strata 共2次请求，输入576／输出38 Token，合计614；本轮两家合�
 本次执行记录：`NEXUSPILOT_TEST_FILE_RUNTIME=1 FILE_RUNTIME_TEST_IMAGE=nexuspilot-file-runtime:structure-test apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -q` → 481 通过、8 跳过（未启用的可选基础设施检查，不计通过）；上传专项 `test_user_file_infrastructure.py` 在显式配置的独立 MySQL/MinIO 上另行通过 1 项。Ruff 通过。数据库提交前失败及提交成功后响应不确定两种故障均有测试，后者保留 ready 对象，不误删。此次未连接真实模型、未迁移开发数据库，也未启用自动清理调度。
 
 2026-09-26 连续文件上下文验证：先复现后续轮次丢失文件文字及删除后错误地继续生成 Context，再修复。新增 `test_conversation_file_context.py` 验证真实授权路径上的后续文字传递、来源／哈希／内容快照保存与重读、重放稳定、未来附件排除、跨会话拒绝和删除撤销；已有 Agent 测试同时覆盖上传轮次及后续轮次。完整后端与模型测试 499 通过、8 跳过；独立 MySQL/MinIO 文件上下文专项 5 通过。Context 内容与来源逐字段一致；时间比较按既有 MySQL DATETIME 秒精度处理，不将数据库精度差异误判为文字快照变化。没有新增迁移、没有修改前端组件，也没有本轮浏览器验收或真实 Provider 调用。
+### 2026-10-18 本地 PDF 上传与分页验收
+
+文件路径 `/Users/mith/Downloads/FULLTEXT03 (1).pdf`，SHA-256 为 `3e6fe276084c0d44b45ce806576bc8092f8934147b6f5885c490030b35e4caec`。旧实现失败原因已复现：746073 字节完整解析 JSON 超过为 SQL Context 设置的 55000 字节上传限制，并非原件超过 1 MiB。已完成本轮文件修复；没有迁移历史对话正文。
+
+| 检查 | 本地实际结果 |
+| --- | --- |
+| API 上传与持久解析 | 通过；原件 941686 字节，40 页，1542 块，提取文字 95827 字节；完整 JSON 746073 字节存 MinIO |
+| 原件/解析对象完整性 | 通过；两个对象回读及哈希校验，不截断、不写整份解析正文到 Context 表 |
+| 工具分页 | 通过；每次 50 块，共 31 次；最后一页 42 块，next_offset=null、has_more=false；拼接与完整解析 blocks 逐字段一致 |
+| Context 保存/重放/续聊 | 通过；文件清单 1348 字节，returned_blocks=0；重新查询、同键重放及续聊内容一致，没有自动注入文件正文 |
+| 解析限制 | partial；第 2、4、6、10 页无提取文字；未验证图片含义，未实现 OCR/复杂表格理解，不能宣称整份文档视觉内容已读取 |
+| 时间 | 最终复验上传/解析/写入 0.487 秒；含 Context 和 31 次工具读取共 1.346 秒，仅本机已有镜像的单次结果 |
+
+本地记录：File `98588bd8-fa36-4874-b25c-e31c3b74bee1`，Session `c37ad61f-0785-4bae-be66-6c189dcf8f88`，Run `79f20443-3f67-4e81-b94d-fff98c888979`，Context `c801325d-122f-4570-826e-e0934ef58c40`。完整解析 SHA-256 `afec3bdd6d152bb9bbab8bb0d6194f1a28c4467b0abfdb44ef09c455538007ef`；不同上传的 file_id 不同，因此解析 JSON 哈希不要求相同。执行器固定镜像 ID 为 `sha256:24c46a817590b76ae7651dee4325eb1df98046f2a65e5ee4ce3132c10e930c51`。
+
+复现命令（须先启动本地专用解析 Socket；仅连接既有验证 MySQL 13306、MinIO 19000）：
+
+```bash
+apps/api/.venv/bin/python deployments/file-runtime/serve_runtime.py --socket /tmp/nexus-file-pagination-20261018/runtime.sock --image nexuspilot-file-runtime:unified-local --create-directory
+PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/check_pdf_paginated_upload.py --pdf '/Users/mith/Downloads/FULLTEXT03 (1).pdf' --socket /tmp/nexus-file-pagination-20261018/runtime.sock
+apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests packages/models/tests -q
+```
+
+验证脚本手工驱动平台工具服务并保存逐次调用，不代表真实模型自行选择了 31 次读取；模型请求数 0、无模型 token 费用。SQL 的诊断 attempt 明确标记 `tool_verification`/`local_verification`，不冒充真实模型调用。样本文本只进入本地解析执行器和 MinIO，没有发给外部模型；本次没有浏览器或公网部署验收。
+
+回归：先新增测试复现上传 422 和自动全文注入两项失败，再修改业务实现。全量后端/模型测试最终 **862 通过、32 跳过**；跳过项为未开启的可选真实基础设施/执行器检查，不计通过。第一次执行中 10 项 Unix Socket 测试被沙箱禁止绑定，另 3 项旧测试要求全文注入；更新为新需求的“清单可见、未读正文不可见”断言并允许本机 Socket 后复验通过。显式配置隔离 MySQL/MinIO 后，`test_user_file_infrastructure.py` **1 通过**，验证并发预留不会超额及真实对象回读。Ruff 和 `git diff --check` 通过。增加解析对象被替换时拒绝生成、实际解析大小计费预留、独立对象上限拒绝及快速回复首轮不带未读正文的检查。
+
+### 完整对话正文对象化（后续工作，未开始）
+
+目标：MySQL 只保存消息/运行归属、顺序、标题、状态、用量、费用、对象 URI/大小/哈希等结构化信息；MinIO 保存完整消息正文、Context 正文快照和完整工具结果。目前 `llm_messages`、`llm_context_sources`、工具结果及节点输出仍有数据库正文路径，不能将本轮文件修复表述为已完成所有正文迁移。
+
+实施与验收条件：
+
+1. 逐一核对消息、有效模型请求、工具结果和节点输出的读写方，新增版本化对象引用；完整正文不混入元数据字段。按用户/会话授权后由服务端读取，不向浏览器泄露内部对象地址。
+2. 新写入先写不可变对象并校验哈希，再事务保存引用/统计；数据库失败记录精确对象补偿，缺失或损坏对象明确报错，不返回空正文冒充成功。
+3. 保留历史数据库正文双读，分批迁移、回读验证、记录进度及恢复路径；未完成校验前不删除旧正文，不改已执行迁移。
+4. 验证首轮、续聊、工具多轮、流式结束、取消、刷新恢复、跨用户拒绝、对象缺失和重放一致性；完成后再更改本节状态。该后续迁移不阻塞本轮 MinIO 文件解析与分页读取，也不自动授权部署。
+
 **前置阶段：** `phase-1-foundation.md`
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
