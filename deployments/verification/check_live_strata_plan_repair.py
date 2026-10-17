@@ -1,10 +1,12 @@
 """Paid local Strata comparison and DeepSeek plan-repair verification.
 
-Run with apps/api/.venv/bin/python, --mode seed|quick|agent|repair and a fresh
+Run with apps/api/.venv/bin/python, --mode seed|quick|agent|repair|strata-repair|inspect and a fresh
 --output path. Reuses check_live_worker_evidence's isolated MySQL/MinIO settings.
 Start a local API on 18000 with those settings after seed. Never deploys or
 migrates. Seed adds only Strata endpoint/model records, refusing conflicting URLs.
 Reports contain synthetic prompts, timings, usage and IDs, never credentials.
+The inspect mode requires --run-id and makes only local read requests. The repair
+mode uses DeepSeek; strata-repair uses Strata, including every correction attempt.
 """
 
 import argparse
@@ -114,6 +116,10 @@ async def inspect_attempts(run_id):
                         "reasoning_tokens",
                         "latency_ms",
                         "error_code",
+                        "started_at",
+                        "completed_at",
+                        "first_visible_token_at",
+                        "estimated_cost",
                     )
                 }
                 | {"raw_response_bytes": response_bytes}
@@ -124,7 +130,7 @@ async def inspect_attempts(run_id):
 async def check(mode, report):
     """Submit one synthetic request, measure wall time and retain durable result/statistics."""
     question = "请用两句话解释 Python 列表与元组的区别，不用工具，不创建额外任务。"
-    if mode == "repair":
+    if mode in {"repair", "strata-repair"}:
         question = (
             "这是计划校验的受控测试。目标是解释 Python 列表与元组的区别。"
             "初次计划请列两个 planner 子任务，一个说明列表一个说明元组，"
@@ -269,11 +275,47 @@ async def check(mode, report):
             )
         else:
             assert report["workflow"]["status"] == "completed", "Workflow not completed"
-            if mode == "repair":
+            if mode in {"repair", "strata-repair"}:
                 assert (
                     report["workflow"]["loop_statistics"]["plan_repair_succeeded_count"]
                     == 1
                 ), "Real model did not exercise the repair-success branch"
+
+
+async def inspect_run(run_id, report):
+    """Read durable messages, workflow statistics and usage without invoking any provider."""
+    report["run_id"] = run_id
+    async with httpx.AsyncClient(
+        base_url="http://127.0.0.1:18000/api/v1/",
+        headers={"X-API-Key": local.get_settings().api_key},
+    ) as client:
+        run = await local.request_json(client, "GET", f"runs/{run_id}")
+        report["run"] = run
+        report["session_id"] = run["session_id"]
+        report["messages"] = await local.request_json(
+            client, "GET", f"sessions/{run['session_id']}/messages/latest?limit=100"
+        )
+        workflow = await client.get(f"runs/{run_id}/agent-workflow")
+        if workflow.status_code != 404:
+            workflow.raise_for_status()
+            summary = workflow.json()
+            report["workflow"] = await local.request_json(
+                client,
+                "GET",
+                f"agent-workflows/{summary['workflow_execution_id']}/result",
+            )
+    report["attempts"] = await inspect_attempts(run_id)
+    report["usage_complete"] = bool(report["attempts"]) and all(
+        attempt["input_tokens"] is not None and attempt["output_tokens"] is not None
+        for attempt in report["attempts"]
+    )
+    for token_type in ("input_tokens", "output_tokens"):
+        report[f"known_{token_type}"] = sum(
+            attempt[token_type] or 0 for attempt in report["attempts"]
+        )
+        report[token_type] = (
+            report[f"known_{token_type}"] if report["usage_complete"] else None
+        )
 
 
 async def main(args):
@@ -282,6 +324,8 @@ async def main(args):
     try:
         if args.mode == "seed":
             await seed()
+        elif args.mode == "inspect":
+            await inspect_run(args.run_id, report)
         else:
             await check(args.mode, report)
         report["status"] = "passed"
@@ -304,6 +348,8 @@ async def main(args):
                         "response",
                         "attempts",
                         "question",
+                        "run",
+                        "messages",
                     }
                 },
                 ensure_ascii=False,
@@ -315,10 +361,17 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--mode", choices=["seed", "quick", "agent", "repair"], required=True
+        "--mode",
+        choices=["seed", "quick", "agent", "repair", "strata-repair", "inspect"],
+        required=True,
+    )
+    parser.add_argument(
+        "--run-id", help="Existing local run to inspect without a model call"
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists():
         parser.error("Refusing to overwrite report")
+    if args.mode == "inspect" and not args.run_id:
+        parser.error("inspect requires --run-id")
     asyncio.run(main(args))

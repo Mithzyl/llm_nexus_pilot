@@ -4,7 +4,7 @@
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
-2026-10-17 当前补充：Controller 角色提示与任务额度校验已修复，真实 DeepSeek 的计划修正成功及两轮执行已验证；新增 Strata Provider，快速回复通过，Strata 完整工作流仍未通过。详细事实见“Controller 修正与 Strata 真实验证”，此前日期的失败／未执行记录保留为历史，不代表当前验收状态。
+2026-10-17 当前补充：Controller 角色提示与任务额度校验已修复，真实 DeepSeek 的计划修正成功及两轮执行已验证。Strata 快速回复及一个完整 Agent 样本已保存最终回答，但真实计划修正未触发、模型虚构修正经过、运行中刷新后页面不自动跟进，因此完整验收仍未通过。详细事实见“Controller 修正与 Strata 真实验证”，此前日期的失败／未执行记录保留为历史，不代表当前验收状态。
 
 2026-10-12 工具扩展：存在当前回合可访问的附件时，服务端自动选择 `tool_enabled_v1`，不再要求 Web 手动启用。Worker 可多轮调用五类已上传附件只读工具；工具请求、结果、累计用量和进度持久保存，模型继续后才提交节点输出。无附件的默认 `model_only_v1` 和历史请求回放保持原行为。快速回复的独立工具循环也归[工具主计划及本地验证范围](phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)，不在本阶段重复维护工具待办；尚未提供独立后台恢复、Python/Shell 或动态工具。
 
@@ -174,6 +174,63 @@ SSE 工具已将传输包装与生成内容分别计数：传输最多 32 MB，�
 待处理：Controller 提示与允许角色的约束表达、工具任务最低模型调用额度的校验、错误文案仍将 tool_enabled_v1 写为 model_only_v1。最终回答包含较多内部字段，用户回答与技术证据的措辞分离也需改进。本次只做验证与记录，不更改上述业务行为，不将三个请求全部记为通过。Office/PDF、真实取消传播、跨用户、服务重启恢复未纳入本次验收。
 
 ### Controller 修正与 Strata 真实验证（2026-10-17）
+
+#### Strata 完整流程与刷新续验（提交 8ad539e 后）
+
+状态：进行中。先提交共享 JSON 指令修复及既有验证文档为 `8ad539e`，然后在本地
+API 18000、Web 3100、MySQL 13306、MinIO 19000 真实调用 Strata；未推送、未部署。
+模型均为 `tiel-coder-35b-a3b-ud-q4_k_xl`，保留供应商默认思考行为，无服务端模型参数修改。
+以下是本次新增调用，不与此前小型 JSON 验证合并统计。
+
+| 样本 | 结果 | 耗时 | 输入 / 输出 Token |
+|---|---|---:|---:|
+| 浏览器快速回复 | 最终回答已保存，完成后刷新仍可见 | 模型调用 4.491 秒 | 237 / 145 |
+| 浏览器普通 Agent | Controller 收到供应商错误对象，未生成最终回答 | Run 起止时间差约 10 秒（数据库秒级精度） | 未返回，不能记为 0 |
+| API 受控重复任务键样本，浏览器观察 | 13 节点、5 次调用完成，最终回答保存；计划修正目标分支未触发 | 请求至完整结果 179.154 秒；服务端工作流 178.770 秒 | 11687 / 12242 |
+
+成功 Agent 的逐次调用：Controller 1454/1983、Worker 987/4560、Worker 984/1280、
+Reviewer 2448/3141、最终汇总 5814/1278。总计 23929 Token，均已保存对应 MinIO 响应。
+本批已知总量输入 11924、输出 12387、合计 24311 Token，另有一次失败用量未知。
+所有 Attempt 均没有价格依据；界面费用 0 不能解释为免费。
+
+验证结论分开记录：
+
+- **最终输出与保存通过**：受控样本 Run `17660868-078c-4d6d-80a6-587e6207f343`，
+  Workflow `b1b6a336-073d-4814-a0cd-107781fa72b0`，Assistant
+  `45e414de-5657-49ca-a6d9-bd229dfe61fd`。完成后浏览器刷新可见回答；只读复查确认
+  Workflow ID、Assistant ID、正文、修正统计及五个 Attempt 均与完成时一致。
+- **有限修正真实验收失败（目标分支未触发）**：模型首次已生成 `compare_list` / `compare_tuple`，
+  没有提交重复键。计划修正、输出修正及业务返工均为 0，业务轮次为 1。
+  脚本的修正成功断言正确失败，不能将工作流 `completed` 当成该断言通过。
+- **回答内容准确性未通过**：首次 Controller 的摘要及最终答案声称“先被平台拒绝，再经过 plan_repair”，
+  但数据库事件没有这段过程。最终汇总沿用了模型描述，不能用模型自述验证平台事件。
+  后续应将平台执行事实与模型描述分开提供、核对；本轮只记录问题，未改业务代码。
+- **运行中刷新后自动跟进失败**：13:36:07 UTC 刷新后，页面停留在 Worker 执行中；
+  后端已于约 13:37:56 完成，13:38:13 的页面仍显示旧进度。13:38:39 再次刷新才恢复最终答案。
+  代码核对：`apps/web/app/page.tsx` 的 `restoreAgentWorkflowForRun()` 只执行一次事件回放和
+  一次 result 查询；`GET /agent-workflows/{id}/events` 明确只返回已有事件，不持续订阅。
+  因此后端未被此次刷新截断，但前端缺少恢复后的持续读取。阶段4需补充非终态查询／事件续读，
+  验收应覆盖“不再次刷新也显示最终结果”，不能仅验证已完成会话的恢复。
+- **普通 Agent 首次失败原因仍不完整**：Run `6ef6b295-c522-4eeb-ba52-edff074c0670`，
+  `provider_unavailable / Chat provider returned an error envelope.`；持久诊断只保存
+  `error_envelope=true`，没有供应商具体错误内容，无法进一步判定原因。失败状态可从会话恢复。
+  后续受控样本使用仅本地进程的脱敏错误观察，但未再次触发错误，不能据此声称根因已修复。
+
+复现入口：`deployments/verification/check_live_strata_plan_repair.py --mode strata-repair --output NEW_REPORT.json`；
+`--mode inspect --run-id RUN_ID --output NEW_REPORT.json` 只读本地记录，不调用模型。
+脚本原 `repair` 仍使用 DeepSeek，不能混用。浏览器快速回复及普通 Agent 使用真实界面发送，
+受控 Agent 由 API 创建，浏览器在运行中打开、刷新并观察；未伪造模型返回或修改校验结果。
+
+证据位于 `output/playwright/`：`strata-quick-ui-20261017.json`、`strata-agent-ui-20261017.json`、
+`strata-plan-repair-20261017.json`、`strata-agent-restored-20261017.json`；
+`strata-quick-after-refresh.yml`、`strata-repair-after-running-refresh.yml`、
+`strata-agent-final-before-refresh.yml`、`strata-agent-final-after-refresh.yml` 及同名截图。
+这些本地生成证据不包含密钥，不作为部署数据。
+
+本轮执行 `apps/api/.venv/bin/pytest -c apps/api/pyproject.toml
+apps/api/tests/test_controller_plan_repair.py apps/api/tests/test_controller_plan_repair_events.py
+apps/api/tests/test_plan_repair_statistics.py -q`：**41 passed**。
+这是确定性修正、事件、统计和两轮组合回归，不代替 Strata 未触发的真实修正分支。
 
 后续状态补充：共享 JSON 格式引导修复后，获新授权的 Strata 小型 JSON 请求在增量流式和
 收集式调用均通过；这不是完整 Agent 工作流，本节历史 Strata 工作流失败记录不变。
