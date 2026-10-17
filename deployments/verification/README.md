@@ -1,5 +1,17 @@
 # Docker 部署验证
 
+## Strata 真实附件调用（2026-10-18）
+
+`check_live_strata_file.py` 对本机 MySQL/MinIO 与真实 Strata 执行一次快速回复。仅上传随机核验编号的合成 TXT，不更改模型参数、不模拟工具、不自动重复付费测试。使用下文既有本地隔离服务与 `apps/api/.env` 中的私有 Key：
+
+```bash
+PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/check_live_strata_file.py --output /tmp/strata-file-NEW.json
+```
+
+在 `9d90baf` 业务代码上通过，Run `07bd95b7-bf8b-4893-8c73-f77f5db2c4be`：上传到最终回答重新读取耗时 12.628 秒；模型真实调用 `read_file_content` 并返回附件核验编号和设备型号。两次模型请求输入 4,352、输出 283，共 4,635 token，其中缓存命中 1,605 token；费用字段为空，不能当作零费用。初始上下文未包含文件全文，实际工具结果含核验编号；Assistant SQL 正文为空、有对象引用，从 MinIO 重新读取正文一致。
+
+这是快速回复 TXT 工具与存储验证，不是 Agent、PDF 或全部格式重新验收。原始脱敏报告保存于执行机器 `/tmp/strata-file-20261018-1.json`。发布前另执行前端测试 142 项通过、TypeScript 检查通过。
+
 ## 本地对话正文对象存储验证（2026-10-18）
 
 `serve_body_storage_fixture.py` 只绑定本机 `18005/3305`，复用本目录下文已有隔离 MySQL `13306`、MinIO `19000` 和已登记模型目录。先对该隔离库执行迁移到 head；它不会自行迁移、清空数据库或部署服务器。所有 Provider 实现替换为脚本响应，页面模型名称仅复用目录；没有真实 DeepSeek/Strata 请求，也不以脚本 token 计数说明真实计费。
