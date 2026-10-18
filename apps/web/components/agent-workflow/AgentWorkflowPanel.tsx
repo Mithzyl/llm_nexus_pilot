@@ -191,21 +191,26 @@ export function AgentWorkflowActivityFeed({ events }: { events: AgentWorkflowEve
         <i aria-hidden="true">{isExpanded ? "−" : "+"}</i>
       </button>
       <ol id={activityTimelineId} aria-live="polite" aria-atomic="false">
-        {visibleActivities.map((activity) => (
-          <li
-            key={activity.eventSequence}
-            data-phase={activity.phase}
-            data-latest={activity.eventSequence === latestActivity.eventSequence}
-          >
-            <i aria-hidden="true" />
-            <span>{activity.text}</span>
-            {isExpanded && (
-              <time dateTime={activity.occurredAt}>
-                {formatAgentActivityTime(activity.occurredAt)}
-              </time>
-            )}
-          </li>
-        ))}
+        {visibleActivities.map((activity, index) => {
+          const previousActivity = visibleActivities[index - 1];
+          const activityTime = formatAgentActivityTime(activity.occurredAt);
+          const showTime =
+            isExpanded &&
+            (!previousActivity ||
+              formatAgentActivityTime(previousActivity.occurredAt) !== activityTime);
+          return (
+            <li
+              key={activity.eventSequence}
+              data-phase={activity.phase}
+              data-latest={activity.eventSequence === latestActivity.eventSequence}
+              title={activityTime}
+            >
+              <i aria-hidden="true" />
+              <span>{activity.text}</span>
+              {showTime && <time dateTime={activity.occurredAt}>{activityTime}</time>}
+            </li>
+          );
+        })}
       </ol>
     </section>
   );
@@ -233,7 +238,7 @@ export function AgentWorkflowPanel({
   const workflowResult = "nodes" in workflow ? workflow : null;
 
   return (
-    <section className="agent-workflow" aria-label="Agent 工作流证据">
+    <section className="agent-workflow" data-status={workflow.status} aria-label="Agent 工作流证据">
       <div className="agent-workflow-heading">
         <div>
           <p className="eyebrow">{workflow.execution_profile === "tool_enabled_v1" ? "附件读取工作流" : "纯模型工作流"}</p>
@@ -281,11 +286,10 @@ export function AgentWorkflowPanel({
           {nodes.map((node) => (
             <li key={node.node_execution_id} data-status={node.status}>
               <details>
-                <summary>
+                <summary title={agentNodePublicActivityText(node.public_view)}>
                   <i aria-hidden="true" />
                   <span>
                     <strong>{NODE_LABELS[node.output_type]}</strong>
-                    <small>{agentNodePublicActivityText(node.public_view)}</small>
                   </span>
                   <time>{node.timing.duration_ms} ms</time>
                 </summary>

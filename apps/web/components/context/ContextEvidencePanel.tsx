@@ -16,6 +16,11 @@ const SOURCE_LABELS: Record<string, string> = {
   evaluation: "评估",
 };
 
+/** Keep content hashes compact in the summary; the full version remains on hover. */
+function compactSourceVersion(version: string): string {
+  return version.length > 8 ? `${version.slice(0, 8)}…` : version;
+}
+
 /** Render persisted Context selection metadata without source bodies or object locations. */
 export function ContextEvidencePanel({
   evidence,
@@ -33,7 +38,7 @@ export function ContextEvidencePanel({
     <section className="inspector-section context-evidence-section">
       <div className="section-title">
         <h3>模型上下文</h3>
-        <span>
+        {state !== "empty" && <span>
           {state === "loading"
             ? "读取中"
             : state === "error"
@@ -41,7 +46,7 @@ export function ContextEvidencePanel({
               : evidence
                 ? `${selectedCount} 纳入 · ${excludedCount} 排除`
                 : "等待调用"}
-        </span>
+        </span>}
       </div>
       {state === "error" ? (
         <p className="context-evidence-error">{errorMessage ?? "上下文证据暂不可用。"}</p>
@@ -53,28 +58,33 @@ export function ContextEvidencePanel({
             <div><dt>模型目录</dt><dd>{evidence.catalog_version_id.slice(0, 8)}</dd></div>
           </dl>
           <ul className="context-source-list">
-            {browserVisibleSources.map((source) => (
-              <li key={`${source.source_type}-${source.source_id}`}>
-                <div>
-                  <strong>{SOURCE_LABELS[source.source_type] ?? source.source_type}</strong>
-                  <small>
-                    {source.trust_level}
-                    {source.source_version ? ` · v${source.source_version}` : ""}
-                  </small>
-                </div>
-                <span className={source.selection_status}>
-                  {source.selection_status === "selected"
-                    ? `${source.token_estimate} tokens`
-                    : source.exclusion_reason ?? "已排除"}
-                  {source.is_required ? " · 必选" : ""}
-                </span>
-              </li>
-            ))}
+            {browserVisibleSources.map((source) => {
+              const selectionLabel =
+                source.selection_status === "selected"
+                  ? `${source.token_estimate} tokens`
+                  : source.exclusion_reason ?? "已排除";
+              const sourceStatus = `${selectionLabel}${source.is_required ? " · 必选" : ""}`;
+              const sourceVersion = source.source_version
+                ? compactSourceVersion(source.source_version)
+                : null;
+              return (
+                <li key={`${source.source_type}-${source.source_id}`}>
+                  <div>
+                    <strong>{SOURCE_LABELS[source.source_type] ?? source.source_type}</strong>
+                    <small title={source.source_version ?? undefined}>
+                      {source.trust_level}
+                      {sourceVersion ? ` · v${sourceVersion}` : ""}
+                    </small>
+                  </div>
+                  <span className={source.selection_status} title={sourceStatus}>
+                    {sourceStatus}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </>
-      ) : (
-        <p className="context-evidence-empty">模型调用后显示实际纳入与排除来源。</p>
-      )}
+      ) : null}
     </section>
   );
 }

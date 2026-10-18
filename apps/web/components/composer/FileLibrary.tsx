@@ -5,7 +5,7 @@ import { nexusFetch } from "../../lib/api";
 import type { UserFile } from "../../lib/user-files";
 
 /** Let users inspect interrupted uploads and explicitly delete their private stored files. */
-export function FileLibrary({ disabled }: { disabled: boolean }) {
+export function FileLibrary({ disabled, compact = false }: { disabled: boolean; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<UserFile[]>([]);
   const [error, setError] = useState("");
@@ -31,11 +31,12 @@ export function FileLibrary({ disabled }: { disabled: boolean }) {
   const labels: Record<string, string> = {
     reserved: "待上传", uploading: "上传或解析中", ready: "已保存", failed: "上传失败", deleting: "待清理",
   };
-  return <div className="file-library">
-    <button type="button" className="composer-quiet-button" disabled={disabled}
-      aria-expanded={open} onClick={() => { setOpen(!open); if (!open) void refresh(); }}>已上传文件</button>
-    {open && <section className="file-library-panel" aria-label="已上传文件"
-      onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}>
+  return <div className="file-library"
+    onKeyDown={(event) => { if (open && event.key === "Escape") setOpen(false); }}>
+    <button type="button" className={compact ? "file-library-caret" : "composer-quiet-button"} disabled={disabled}
+      aria-label={compact ? "我的文件" : undefined} title={compact ? "我的文件" : undefined}
+      aria-expanded={open} onClick={() => { setOpen(!open); if (!open) void refresh(); }}>{compact ? "⌄" : "已上传文件"}</button>
+    {open && <section className="file-library-panel" aria-label="已上传文件">
       <header><strong>我的文件</strong><button type="button" disabled={busy} onClick={() => void refresh()}>刷新</button>
         <button type="button" aria-label="关闭文件列表" onClick={() => setOpen(false)}>×</button></header>
       {error && <p role="alert">{error}</p>}
