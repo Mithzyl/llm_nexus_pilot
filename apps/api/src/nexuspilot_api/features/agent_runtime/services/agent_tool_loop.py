@@ -12,7 +12,7 @@ from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.models import LlmModelToolCall, LlmProviderContinuationState, LlmTask
 from nexuspilot_api.schemas.responses import ResponsesResult
 from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
-from nexuspilot_api.services.tool_context import allow_tool_request
+from nexuspilot_api.services.tool_context import ToolProgressTracker, allow_tool_request
 
 
 @dataclass
@@ -25,7 +25,7 @@ class ToolLoopResult:
 
 
 async def run_file_tool_loop(service, workflow, node, options):
-    """Run bounded reads, reserving one format-repair call when at least three are allocated."""
+    """Continue useful reads until final output; honor cancellation, time and no-progress checks."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -34,26 +34,20 @@ async def run_file_tool_loop(service, workflow, node, options):
     history = []
     records = []
     seen = {}
+    progress = ToolProgressTracker()
     deadline = monotonic() + min(
         task.timeout_seconds, service.workflow_state.remaining_wall_time_ms(workflow) / 1000
     )
-    max_calls = options["model_input"]["max_model_calls"]
-    typed_final_round = (
-        node.node_key == "independent_review" or workflow.workflow_version != "1.0.0"
-    )
-    # A two-call legacy plan can only read then answer. Larger plans reserve the last
-    # call for validated-output repair instead of spending every call on discovery/reads.
-    answer_round_limit = max_calls - 1 if typed_final_round and max_calls >= 3 else max_calls
     # Native call batches run sequentially: every read observes current ownership.
-    for round_index in range(1, answer_round_limit + 1):
+    round_index = 0
+    while True:
+        round_index += 1
         await service.workflow_state.ensure_workflow_running(workflow)
         await tools.validate_history(workflow.run_id, records)
         remaining = deadline - monotonic()
         if remaining < 1:
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
         definitions = tools.definitions()
-        if typed_final_round and round_index == answer_round_limit:
-            definitions = []
         offered_versions = {
             definition.name: tools.loaded_versions[definition.name] for definition in definitions
         }
@@ -116,6 +110,8 @@ async def run_file_tool_loop(service, workflow, node, options):
                 )
             records.append(record)
             await service.workflow_state.record_tool_progress(workflow, node)
+            if not progress.observe(call.name, call.arguments, record.output_json):
+                raise InvalidRequestError("Agent file tools repeated evidence without progress")
             history.append(
                 Message(
                     role=MessageRole.TOOL,
@@ -124,4 +120,3 @@ async def run_file_tool_loop(service, workflow, node, options):
                     content=json.dumps(record.output_json, ensure_ascii=False),
                 )
             )
-    raise InvalidRequestError("Agent task model-call budget is exhausted")

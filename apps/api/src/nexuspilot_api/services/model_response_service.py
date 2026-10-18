@@ -64,6 +64,7 @@ from nexuspilot_api.services.model_reasoning_service import (
     record_model_response_event,
 )
 from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
+from nexuspilot_api.services.run_cancellation_watch import watch_run_cancellation
 from nexuspilot_api.services.tool_context import (
     estimate_messages_tokens,
     estimate_text_tokens,
@@ -182,7 +183,9 @@ class ModelInvocationService:
             # The platform deadline remains authoritative even when a provider
             # adapter or custom transport fails to enforce its own timeout.
             provider_dispatch_may_have_started = True
-            async with asyncio.timeout(payload.timeout_seconds):
+            async with watch_run_cancellation(self.db_session, payload.run_id), asyncio.timeout(
+                payload.timeout_seconds
+            ):
                 response = await provider.generate(request)
             response = self._apply_price(response, request.provider, request.model)
             response = self._project_response_reasoning(
@@ -303,6 +306,7 @@ class ModelInvocationService:
                 provider,
                 request,
                 timeout_seconds=payload.timeout_seconds,
+                run_id=payload.run_id,
             ):
                 event = self._scope_reasoning_event(event, model_attempt.attempt_id)
                 if event.type in {
@@ -478,11 +482,14 @@ class ModelInvocationService:
         request: ModelRequest,
         *,
         timeout_seconds: float | None,
+        run_id: str,
     ) -> AsyncIterator[StreamEvent]:
-        """Apply the optional total deadline; cancellation still closes an unbounded stream."""
+        """Apply an optional deadline and observe explicit cancellation during idle streams."""
 
         try:
-            async with asyncio.timeout(timeout_seconds):
+            async with watch_run_cancellation(self.db_session, run_id), asyncio.timeout(
+                timeout_seconds
+            ):
                 async for event in provider.stream(request):
                     yield event
         except TimeoutError as exc:

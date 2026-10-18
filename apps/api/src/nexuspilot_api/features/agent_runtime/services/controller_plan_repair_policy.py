@@ -6,7 +6,7 @@ def controller_plan_repair_skip_reason(
     workflow_version: str,
     failed_check_ids: set[str],
     repair_attempts_this_round: int,
-    remaining_model_calls: int,
+    remaining_model_calls: int | None,
     minimum_completion_model_calls: int,
     remaining_nodes: int,
     minimum_completion_nodes: int,
@@ -40,13 +40,14 @@ def controller_plan_repair_skip_reason(
     if remaining_wall_time_ms <= 0:
         return "time_budget"
     if (
-        remaining_model_calls < 0
+        (remaining_model_calls is not None and remaining_model_calls < 0)
         or remaining_nodes < 0
         or minimum_completion_model_calls < 0
         or minimum_completion_nodes < 0
     ):
         return "invalid_budget"
-    if remaining_model_calls < 1 + minimum_completion_model_calls:
+    if (remaining_model_calls is not None
+            and remaining_model_calls < 1 + minimum_completion_model_calls):
         return "model_call_budget"
     if remaining_nodes < 2 + minimum_completion_nodes:
         return "node_budget"
@@ -58,7 +59,7 @@ def can_repair_controller_plan(
     workflow_version: str,
     failed_check_ids: set[str],
     repair_attempts_this_round: int,
-    remaining_model_calls: int,
+    remaining_model_calls: int | None,
     minimum_completion_model_calls: int,
     remaining_nodes: int,
     minimum_completion_nodes: int,

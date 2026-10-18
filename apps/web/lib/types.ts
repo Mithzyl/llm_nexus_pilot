@@ -664,7 +664,7 @@ export type AgentWorkflowNodeOutputMap = {
     total_cached_tokens: number;
     total_estimated_cost: string | number;
     total_duration_ms: number;
-    remaining_model_calls: number;
+    remaining_model_calls: number | null;
     final_output_reference: string;
     warnings: string[];
     errors: AgentWorkflowError[];
@@ -728,7 +728,7 @@ type AgentWorkflowNodeBase = {
     cost_used_before: string | number;
     cost_used_after: string | number;
     reserved_estimated_cost: string | number;
-    remaining_model_calls: number;
+    remaining_model_calls: number | null;
     remaining_nodes: number;
     remaining_wall_time_ms: number;
     remaining_cost: string | number | null;

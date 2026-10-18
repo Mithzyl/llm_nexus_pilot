@@ -44,8 +44,15 @@ from nexuspilot_api.services.model_response_service import (
 )
 
 
-async def test_platform_stream_deadline_preserves_observed_usage():
-    """The total platform deadline keeps counters already seen from an otherwise stalled adapter."""
+async def test_platform_stream_deadline_preserves_observed_usage(
+    client, test_database_session_factory,
+):
+    """Keep observed counters on deadline expiry while the Run cancellation observer is active."""
+    from types import SimpleNamespace
+
+    from test_api import create_test_run
+
+    run = await create_test_run(client)
 
     class Stalled:
         """Provide accounting progress before waiting indefinitely."""
@@ -58,16 +65,18 @@ async def test_platform_stream_deadline_preserves_observed_usage():
     request = ModelRequest(
         provider=ProviderName.OPENAI, model="test", messages=[{"role": "user", "content": "test"}]
     )
-    with pytest.raises(ModelProviderError) as caught:
-        _ = [
-            event
-            async for event in ModelInvocationService._stream_provider_with_deadline(
-                None,
-                Stalled(),
-                request,
-                timeout_seconds=0.01,
-            )
-        ]
+    async with test_database_session_factory() as db:
+        with pytest.raises(ModelProviderError) as caught:
+            _ = [
+                event
+                async for event in ModelInvocationService._stream_provider_with_deadline(
+                    SimpleNamespace(db_session=db),
+                    Stalled(),
+                    request,
+                    timeout_seconds=0.01,
+                    run_id=run["run_id"],
+                )
+            ]
     assert caught.value.error_type == "timeout"
     assert caught.value.response.input_tokens == 25
     assert caught.value.response.output_tokens is None

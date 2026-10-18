@@ -153,6 +153,7 @@ def test_plan_validation_counts_paid_planning_repairs_and_reserves_review_calls(
         workflow_payload(
             workflow_version="1.1.0",
             execution_profile="tool_enabled_v1",
+            max_model_calls=16,
         )
     )
     plan = ControllerPlanOutput(

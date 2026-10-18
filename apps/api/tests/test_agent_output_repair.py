@@ -207,8 +207,8 @@ class ToolRepairProvider(RepairProvider):
                     raw_response={"fixture": "list-once"},
                 )
             else:
-                # With three calls available, the second must submit JSON and leave one repair.
-                assert not request.tools
+                # The model chooses to answer; only the correction request disables tools.
+                assert request.tools
         return await super().generate(request)
 
 
@@ -253,8 +253,8 @@ async def test_repair_respects_workflow_call_budget(client):
     assert not any(r.metadata.get("node_output_repair") for r in provider.requests)
 
 
-async def test_repair_respects_worker_call_budget(client):
-    """Task limits include the correction even when the workflow has spare calls."""
+async def test_repair_ignores_legacy_worker_call_estimate(client):
+    """A one-call planning estimate must not suppress the permitted output correction."""
 
     class OneCallWorkerProvider(RepairProvider):
         """Constrain the test task to a single model invocation."""
@@ -275,9 +275,9 @@ async def test_repair_respects_worker_call_budget(client):
             json=workflow_payload(execution_profile="tool_enabled_v1"),
         )
     ).json()
-    assert result["status"] == "failed", result
-    assert provider.target_calls == 1
-    assert not any(r.metadata.get("node_output_repair") for r in provider.requests)
+    assert result["status"] == "completed", result
+    assert provider.target_calls == 2
+    assert any(r.metadata.get("node_output_repair") for r in provider.requests)
 
 
 async def test_semantically_conflicting_review_is_not_format_repaired(client):

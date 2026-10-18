@@ -21,6 +21,7 @@ def test_tool_task_requires_request_and_result_calls(capability, calls, valid):
         workflow_payload(
             workflow_version="1.1.0",
             execution_profile="tool_enabled_v1",
+            max_model_calls=16,
         )
     )
     plan = ControllerPlanOutput(
@@ -63,13 +64,15 @@ def test_controller_instructions_separate_platform_nodes_from_worker_roles():
         )
         assert "allowed_roles" in instructions
         assert "platform" in instructions
-        assert "at least 2" in instructions
-        assert "exactly 1" in instructions
+        assert "legacy planning estimate" in instructions
+        assert "not a Worker execution ceiling" in instructions
 
 
 def test_model_only_call_count_is_budget_error_not_a_tool_permission_error():
     """Keep single-call text tasks mandatory but classify bad numbers as repairable limits."""
-    payload = AgentWorkflowCreate.model_validate(workflow_payload(workflow_version="1.1.0"))
+    payload = AgentWorkflowCreate.model_validate(
+        workflow_payload(workflow_version="1.1.0", max_model_calls=16)
+    )
     plan = ControllerPlanOutput(
         decision_summary="Text task",
         review_policy="always",

@@ -1,12 +1,14 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
-## 2026-10-18 工具 Worker 预留输出修正额度
+## 2026-10-18 工具 Worker 调用次数策略修正
 
 本地 Run `01ab1581-9542-4bf1-b049-6b00c0890b11` 的 Controller 有限计划修正已成功，但 `worker_execution.discover_tools` 的三个调用额度全部消耗后，最后输出仍不满足 `EvidenceWorkerModelOutput`（诊断 `model_type`），故无额度修正，报 `agent_budget_exhausted`。这是生成结构与任务额度问题，不是文件上传解析失败。计划还单独分出发现工具任务，但已加载工具定义仅在当前 Worker 内生效，不能替后续 Worker 加载。
 
-新版 Worker 与 Reviewer 工具循环在任务分配至少 3 次调用时，保留最后一次供已有有限 JSON/字段修正，倒数第二次停止提供工具并要求提交原定 JSON。额度仍包含修正，不增加 Task 或 Workflow 总额度。两次调用的旧计划仍只能读取后回答，不能保证有修正机会；1.0 Worker 行为保持兼容。Controller 提示同步说明：发现、读取、提交 JSON、一次修正需分配至少 4 次，后续顺序读取另计；将发现和读取放在实际使用工具的 Worker 内，不创建仅为其他任务加载工具的独立发现任务。
+早先采用“预留最后一次修正、倒数第二次撤掉工具”的处理已被本次替代：Worker/Reviewer 不再根据 Controller 的 `max_model_calls` 估计限制实际工具循环。新运行默认 `max_model_calls=0`，表示未设置调用次数上限；正整数仍表示调用方明确设置的全局预算，历史记录不改写。已有字段不需数据库迁移；节点和完成记录的 `remaining_model_calls=null` 表示无次数预算，不能显示为零。计划字段仍兼容读取，但输入给 Worker 时改称 `legacy_model_call_estimate`，不再命令其固定次数结束。
 
-验证：修正测试先因未预留额度失败，修改后通过；`test_agent_output_repair.py`、`test_agent_file_tools.py`、`test_agent_tool_discovery.py`、`test_response_file_tools.py`、`test_controller_tool_plan_policy.py` 共 55 项通过。固定 Provider 验证工具只执行一次，第二次提交无工具的 JSON，格式错误后第三次修正并完成。未修改现有节点职责及字段校验，没有重放真实供应商请求，未部署。
+原生工具调用继续到模型提交最终节点 JSON；最终 JSON 仍经过原字段/引用校验，格式错误最多修正一次，修正请求明确禁止工具。Controller 初次计划、计划修正及 Worker 使用实际工具定义说明，已经提供的工具无需先 search/describe。工作流时间、节点数量、业务 refine 轮次及权限/费用约束不变。进展和重复操作规则见[阶段7](phase-7-tool-runtime-plan.md#持续工具调用策略2026-10-18)。
+
+历史验证：早先预留额度方案的 55 项测试曾通过，但后续 Strata 联调暴露工具加载说明冲突和提前撤工具问题，不能作为新策略验收。新策略增加快速回复和 Agent 各连续 20 次真实测试工具读取后提交答案的回归；当前验证进度和真实 Strata 结果统一记录在阶段7及联调报告。未部署。
 
 **文档日期：** 2026 年 10 月 17 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）

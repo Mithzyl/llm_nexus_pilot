@@ -37,7 +37,7 @@
 - `read_file_content` / `read_file_table` / 搜索结果在原有块数和字节安全限制内，按约 4,096 估算 Token 分页，只在完整块之间缩小一页。`next_offset` 依实际返回块数前进，不按请求 limit 跳过正文；范围、解析遗漏、文件快照和 `evidence_ref` 保留。单个超大块仍不截断，无法装入窗口时明确失败。这是工具输入分页，不是模型输出上限。
 - 两种模式共享工具历史投影：能装入窗口时保留全部；超出时按时间顺序移出较早的文件工具正文，保留文件/解析哈希、原调用和结果引用、读取范围、分页和遗漏信息，并明确标注正文已从工作上下文省略、需要时重新读取。最近一组 Assistant 工具调用和对应的全部 Tool 结果保留，Assistant 的私有续接状态不改写。原始消息列表、持久工具结果、Worker/Handoff/Reviewer 证据校验不删除或替换成摘要。
 - 相同文件参数允许在其他调用之后补读一次；连续相同读取、超过两次的循环，以及重复的非文件工具仍拒绝。补读仍重新核对归属、文件状态、快照及工具版本，不缓存权限判断。
-- 快速回复最后一个调用名额不再提供工具，留给模型生成回答；若尚未读取足够内容，应说明范围限制，而不是声称通读全文。Agent 继续保留现有最终结构化输出和有限修正名额。
+- 后续已取消按次数强制撤工具的行为，当前执行规则见下节；最终回答仍必须保留未读范围和解析限制。
 - 限制：不是无限上下文、全文自动总结或无损压缩。旧正文移出后，模型必须补读才能重新核对原文；没有引入额外付费总结调用。整批最近结果、不可压缩消息或单个块仍可能超过小模型窗口，届时明确拒绝；OCR、语义搜索和章节摘要另行实施。
 
 设计参考：[Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) 的按需检索、保留轻量引用、清理旧工具结果；[OpenAI Compaction](https://developers.openai.com/api/docs/guides/compaction) 的工作上下文管理。这里只采用设计原则，没有把 OpenAI 专属的加密压缩接口用于 Strata/DeepSeek，也没有声称完全复现 Claude Code 或 Codex。
@@ -45,6 +45,16 @@
 环境准备：`make api-install` 安装分词依赖并预缓存公开词表；API 镜像构建同样预缓存，运行用户可读。不要只复制业务代码而不更新依赖。历史模型目录不需要迁移；历史记录保持原样。
 
 本地验证：`apps/api/.venv/bin/pytest` 运行 `apps/api/tests/` 下 `test_tool_context.py`、`test_context_builds.py`、`test_response_file_tools.py`、`test_agent_file_tools.py`、`test_agent_tool_discovery.py`、`test_responses.py`、`test_agent_output_repair.py`、`test_worker_evidence.py`、`test_claim_sources.py`、`test_evidence_output_repair.py`、`test_file_parsing.py`、`test_parsed_file_ranges.py`、`test_conversation_file_context.py`，及 `packages/models/tests/test_transport_cancellation.py`：194 项通过。覆盖代理分词、旧 Context 字节估算重算、旧结果正文省略、最新并行工具结果与私有续接保留、末尾块搜索与分页、有限补读、最终回答名额、引用/归属和取消。测试使用 SQLite/内存对象存储及脚本化 Provider；另已只读核对上述真实运行的 MySQL/MinIO 记录。未把这些结果解释为 Strata/DeepSeek 实测通过；API Docker 镜像本轮未构建。
+
+## 持续工具调用策略（2026-10-18）
+
+状态：进行中。已取消快速回复固定 8 次模型调用/32 次工具调用上限；Agent 新运行默认无调用次数上限（`max_model_calls=0`），Web 不再发送 16。正数仅保留为显式调用方预算及历史兼容，不把它偷偷设为默认值。Controller 每任务字段是旧估计值，不再阻止 Worker/Reviewer 读取或正常输出修正。确定性测试通过；Strata 小文件实测已执行，但最终答案验收未通过，详见 [真实联调记录](strata-long-files-verification-20261018.md)。不能以调用次数超过旧限制替代最终答案验收。
+
+继续与停止：每次读取保存原始结果后，比较当前任务已见的文件解析版本与块 ID。新增块不受总次数限制；连续三次成功结果仅重复旧块时停止。相同请求的既有重复检测仍生效；文件范围允许一次间隔补读，非文件完全重复请求拒绝。连续六次空搜索停止。首次空搜索、工具发现和参数修正可以继续；这些计数仅判断重复或空结果，不宣称能判断模型理解是否正确，也不是上一轮完整“进展服务/暂停恢复”设计的全部实现。
+
+停止：Agent 每轮/每次工具前检查工作流状态；快速回复保留客户端取消传播。本轮另补充模型调用期间的独立数据库监听，每 0.5 秒读取 Run 取消状态，在途 JSON/SSE 请求不再只等待供应商自行返回。读取失败中断等待并报告错误；监听结束释放任务和连接。取消关闭本地响应，不能保证远端停止计费；迟到用量只计账不能恢复执行。调用次数取消不改变工作流 600 秒上限、任务时限、单批工具数量、文件权限、成本预算、节点上限、最多两轮业务 refine 或一次输出格式修正；跨进程暂停恢复尚未新增。
+
+工具说明由 `FILE_TOOL_CATALOG` 的实际初始加载项生成；Worker/Reviewer 直接读取本次请求提供的定义。搜索、正文读取等已加载工具不要先 search/describe。分页结果的 `next_offset` 要作为下一请求的 `offset`。不再因次数到达而撤掉所有工具；有足够依据时模型返回最终 JSON，后端执行字段与引用校验。格式修正是独立请求，明确只允许提交 JSON，不能继续调用工具。
 
 ## 当前事实
 

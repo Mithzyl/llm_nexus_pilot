@@ -420,5 +420,17 @@ class AgentFileToolService:
         return record
 
 
+def file_tool_guidance() -> str:
+    """Derive planning guidance from the same catalog that supplies initial tool definitions."""
+    loaded = sorted(entry.name for entry in FILE_TOOL_CATALOG.entries if entry.initially_loaded)
+    return (
+        "Already loaded tools: " + ", ".join(loaded) + ". Call these directly; "
+        "do NOT search or describe them first. Only discover/describe tools not in this list. "
+        "Continue useful reads until evidence supports the task, then submit final JSON. "
+        "For pagination pass the returned next_offset as the next request's offset parameter. "
+        "Search matches may be incomplete lines; read surrounding source before inferring meaning."
+    )
+
+
 class ToolUnavailableError(Exception):
     """Represent hidden, absent or incompatible catalog entries without revealing which one."""

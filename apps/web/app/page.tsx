@@ -1129,7 +1129,7 @@ export default function Home() {
         reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
         review_policy: reviewPolicy,
         max_nodes: 32,
-        max_model_calls: 16,
+        max_model_calls: 0,
         max_parallel_agents: maxParallelAgents,
         max_workflow_rounds: 2,
         wall_time_limit_ms: 600_000,
@@ -2537,7 +2537,7 @@ export default function Home() {
           <div>{!isEvidenceEmpty && <><span>总耗时</span><strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong></>}</div>
           <div>{!isEvidenceEmpty && <><span>总 Token</span><strong>{formatTokenTotal(evidenceUsage)}</strong></>}</div>
           <div>{!isEvidenceEmpty && <><span>预估费用</span><strong>{evidenceUsage?.cost ?? "—"}</strong></>}</div>
-          <div>{!isEvidenceEmpty && <><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count} / ${evidenceWorkflow.max_model_calls}` : evidenceAttemptId ? "已记录" : "—"}</strong></>}</div>
+          <div>{!isEvidenceEmpty && <><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count}${evidenceWorkflow.max_model_calls ? ` / ${evidenceWorkflow.max_model_calls}` : " 次"}` : evidenceAttemptId ? "已记录" : "—"}</strong></>}</div>
         </div>
 
         {(displayedContextEvidenceState !== "empty" || isEvidenceEmpty) && (

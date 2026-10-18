@@ -249,7 +249,7 @@ export function AgentWorkflowPanel({
 
       <dl className="agent-workflow-metrics">
         <div><dt>节点</dt><dd>{workflow.node_count} / {workflow.max_nodes}</dd></div>
-        <div><dt>模型调用</dt><dd>{workflow.model_call_count} / {workflow.max_model_calls}</dd></div>
+        <div><dt>模型调用</dt><dd>{workflow.model_call_count}{workflow.max_model_calls ? ` / ${workflow.max_model_calls}` : " 次"}</dd></div>
         <div><dt>活动节点</dt><dd>{workflow.active_node_execution_ids.length}</dd></div>
         <div><dt>快照</dt><dd>v{workflow.snapshot_version}</dd></div>
       </dl>
@@ -315,7 +315,7 @@ export function AgentWorkflowPanel({
                   <p>
                     {node.usage.model_call_count} 次模型调用 · {node.usage.input_tokens + node.usage.output_tokens} tokens ·
                     {node.usage.tool_call_count > 0 && ` ${node.usage.tool_call_count} 次工具调用 · `}
-                    剩余 {node.budget.remaining_model_calls} 次调用
+                    {node.budget.remaining_model_calls === null ? "未设调用次数上限" : `剩余 ${node.budget.remaining_model_calls} 次调用`}
                   </p>
                   {node.evidence.model_attempt_ids.flatMap(
                     (modelAttemptId) =>

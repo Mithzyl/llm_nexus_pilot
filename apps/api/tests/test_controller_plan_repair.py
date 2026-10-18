@@ -91,7 +91,8 @@ async def test_controller_plan_repair_once_and_preserves_round(client, invalid_m
     run = await create_test_run(client)
     provider = PlanRepairProvider(invalid_mode=invalid_mode)
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
-    payload = workflow_payload(workflow_version="1.1.0", execution_profile="tool_enabled_v1")
+    payload = workflow_payload(workflow_version="1.1.0", execution_profile="tool_enabled_v1",
+                               max_model_calls=16)
     response = await client.post(f"/api/v1/runs/{run['run_id']}/agent-workflows", json=payload)
     assert response.status_code == 201, response.text
     result = response.json()
@@ -133,7 +134,8 @@ async def test_persistent_invalid_plan_fails_without_dispatch(client, mode):
     result = (
         await client.post(
             f"/api/v1/runs/{run['run_id']}/agent-workflows",
-            json=workflow_payload(workflow_version="1.1.0", execution_profile="tool_enabled_v1"),
+            json=workflow_payload(workflow_version="1.1.0", execution_profile="tool_enabled_v1",
+                                  max_model_calls=16),
         )
     ).json()
     assert result["status"] == "failed", result.get("error")

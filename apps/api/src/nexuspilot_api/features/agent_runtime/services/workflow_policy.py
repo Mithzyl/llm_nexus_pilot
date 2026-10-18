@@ -22,6 +22,13 @@ MODEL_ONLY_DENIED_CAPABILITIES = frozenset(
 PROMPT_ONLY_JSON_SCHEMA_METADATA_KEYS = frozenset({"additionalProperties", "title"})
 
 
+def remaining_call_budget(workflow, reserved: int = 0) -> int | None:
+    """Represent unlimited calls as None while preserving explicit historical budgets."""
+    if workflow.max_model_calls == 0:
+        return None
+    return max(0, workflow.max_model_calls - workflow.model_call_count - reserved)
+
+
 def serialize_agent_generated_json(value: Any) -> str:
     """Serialize platform-generated Agent JSON with stable mapping order and whitespace."""
 
@@ -88,13 +95,10 @@ def structured_model_instructions(
             " Worker is a responsibility, not an additional role named worker."
             " Controller, handoff, deterministic verification, reviewer and final synthesis"
             " are platform-managed nodes: do not add them to tasks or dependencies."
-            " If input.allowed_capabilities contains neither read nor tool, every task must"
-            " use exactly 1 max_model_calls; this model-only profile has no tool loop."
-            " A task requiring read or tool needs at least 2 max_model_calls: one to request"
-            " tools and one to consume results and submit JSON. Discovery followed by reading"
-            " needs at least 3; further sequential tool rounds require additional calls."
-            " For v1.1 tool tasks with at least 3 calls, the last call is reserved for"
-            " one JSON/field repair: allocate 4 for discovery, reading, JSON and repair."
+            " max_model_calls is a legacy planning estimate, not a Worker execution ceiling."
+            " When remaining_model_calls is null, there is no model-call count budget."
+            " Define evidence-based completion criteria, not a fixed number of tool rounds."
+            " Do not schedule discovery for tools already listed as loaded."
             " Discovery is local to each task; do not split discovery into a separate task"
             " just to load tools for another task. Combine discovery and reading in its Worker."
             " Respect the remaining total budget including review and final synthesis."
@@ -266,18 +270,22 @@ def validate_controller_plan(
         )
         required_node_count += used_nodes - 3
     within_node_limit = required_node_count <= payload.max_nodes
-    within_model_call_limit = total_model_calls <= payload.max_model_calls
+    within_model_call_limit = (
+        payload.max_model_calls == 0 or total_model_calls <= payload.max_model_calls
+    )
     insufficient_tool_tasks = [
         task.task_key
         for task in plan.tasks
         if payload.execution_profile == "tool_enabled_v1"
+        and payload.max_model_calls > 0
         and {"read", "tool"}.intersection(task.required_capabilities)
         and task.max_model_calls < 2
     ]
     invalid_text_tasks = [
         task.task_key
         for task in plan.tasks
-        if payload.execution_profile == "model_only_v1" and task.max_model_calls != 1
+        if payload.max_model_calls > 0
+        and payload.execution_profile == "model_only_v1" and task.max_model_calls != 1
     ]
     within_limits = (
         len(plan.tasks) <= 8

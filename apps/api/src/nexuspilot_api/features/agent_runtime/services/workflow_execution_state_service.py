@@ -42,6 +42,7 @@ from nexuspilot_api.features.agent_runtime.services.workflow_definition_registry
 from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
     hash_node_input,
     hash_workflow_request,
+    remaining_call_budget,
 )
 from nexuspilot_api.models import (
     AgentRunStatus,
@@ -1190,7 +1191,7 @@ class WorkflowExecutionStateService:
         has_explicit_output_token_bound: bool = True,
         reserved_downstream_calls: int = 0,
     ) -> None:
-        """Reserve one call and distinguish a missing output bound from missing pricing."""
+        """Atomically count a running call, enforcing only explicit call and cost budgets."""
 
         reservation_cost = reserved_estimated_cost or Decimal("0")
         priced_budget_condition = select(LlmRun.run_id).where(
@@ -1211,8 +1212,11 @@ class WorkflowExecutionStateService:
             .where(
                 LlmAgentWorkflowExecution.workflow_execution_id == workflow.workflow_execution_id,
                 LlmAgentWorkflowExecution.status == AgentWorkflowStatus.RUNNING,
-                LlmAgentWorkflowExecution.model_call_count
-                < LlmAgentWorkflowExecution.max_model_calls - reserved_downstream_calls,
+                or_(
+                    LlmAgentWorkflowExecution.max_model_calls == 0,
+                    LlmAgentWorkflowExecution.model_call_count
+                    < LlmAgentWorkflowExecution.max_model_calls - reserved_downstream_calls,
+                ),
                 priced_budget_condition.exists(),
             )
             .values(
@@ -1233,7 +1237,9 @@ class WorkflowExecutionStateService:
         await self.db_session.refresh(workflow)
         if workflow.status != AgentWorkflowStatus.RUNNING:
             raise WorkflowExecutionStopped
-        if workflow.model_call_count >= workflow.max_model_calls - reserved_downstream_calls:
+        if workflow.max_model_calls and (
+            workflow.model_call_count >= workflow.max_model_calls - reserved_downstream_calls
+        ):
             raise InvalidRequestError(
                 "Agent workflow reached its model-call limit; downstream calls are reserved"
             )
@@ -1325,7 +1331,7 @@ class WorkflowExecutionStateService:
             cost_used_after=run.cost_used,
             remaining_cost=remaining_cost,
             reserved_estimated_cost=workflow.reserved_estimated_cost,
-            remaining_model_calls=max(0, workflow.max_model_calls - workflow.model_call_count),
+            remaining_model_calls=remaining_call_budget(workflow),
             remaining_nodes=max(0, workflow.max_nodes - node_count),
             remaining_wall_time_ms=self.remaining_wall_time_ms(workflow),
         )

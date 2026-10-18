@@ -59,7 +59,10 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_state_ser
 from nexuspilot_api.features.agent_runtime.services.workflow_loop_statistics import (
     read_loop_statistics,
 )
-from nexuspilot_api.features.agent_runtime.services.workflow_policy import validate_controller_plan
+from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
+    remaining_call_budget,
+    validate_controller_plan,
+)
 from nexuspilot_api.features.memory.schemas.collaboration_memory import AgentHandoffCreate
 from nexuspilot_api.features.memory.services.collaboration_memory_service import submit_handoff
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
@@ -88,6 +91,7 @@ from nexuspilot_api.models import (
 )
 from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.schemas.responses import ResponsesResult
+from nexuspilot_api.services.agent_file_tool_service import file_tool_guidance
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 
 
@@ -601,20 +605,9 @@ class ModelOnlyWorkflowOrchestrator:
                 + (["read", "tool"] if workflow.execution_profile == "tool_enabled_v1" else []),
                 **(
                     {
-                        "tool_guidance": (
-                            "Workers may list/read/search attached files. Allocate enough "
-                            "max_model_calls for discovery, describe/load, file tool requests "
-                            "and a final JSON answer. Only list_run_files/read_file_content "
-                            "are preloaded; outline/table/search require describe_tools first, "
-                            "within the workflow budget."
-                        ),
-                        "remaining_model_calls": max(
-                            0,
-                            workflow.max_model_calls
-                            - workflow.model_call_count
-                            - self._review_call_allowance(workflow)
-                            - 2,
-                        ),
+                        "tool_guidance": file_tool_guidance(),
+                        "remaining_model_calls": remaining_call_budget(
+                            workflow, self._review_call_allowance(workflow) + 2),
                     }
                     if workflow.execution_profile == "tool_enabled_v1"
                     else {}
@@ -651,7 +644,7 @@ class ModelOnlyWorkflowOrchestrator:
         )
 
         failed_ids = {check.check_id for check in validation.checks if check.status == "fail"}
-        remaining_calls = workflow.max_model_calls - workflow.model_call_count
+        remaining_calls = remaining_call_budget(workflow)
         min_completion_calls = 2 + self._review_call_allowance(workflow)
         remaining_nodes = workflow.max_nodes - await self._node_count(workflow) - 1
         min_completion_nodes = 6 + (1 if payload.review_policy != "never" else 0)
@@ -733,7 +726,7 @@ class ModelOnlyWorkflowOrchestrator:
                     "original_plan": plan.model_dump(mode="json"),
                     "validation": validation.model_dump(mode="json"),
                 },
-                "remaining_model_calls": workflow.max_model_calls - workflow.model_call_count,
+                "remaining_model_calls": remaining_call_budget(workflow),
                 "remaining_nodes": workflow.max_nodes - await self._node_count(workflow),
                 "remaining_wall_time_ms": self._remaining_wall_time_ms(workflow),
                 "objective": run.user_request,
@@ -752,20 +745,9 @@ class ModelOnlyWorkflowOrchestrator:
                 "repair_nodes": 2,
             }
             if workflow.execution_profile == "tool_enabled_v1":
-                repair_input["tool_guidance"] = (
-                    "Workers may list/read/search attached files. Allocate enough "
-                    "max_model_calls for discovery, describe/load, file tool requests "
-                    "and a final JSON answer. Only list_run_files/read_file_content "
-                    "are preloaded; outline/table/search require describe_tools first, "
-                    "within the workflow budget."
-                )
-                repair_input["available_worker_model_calls"] = max(
-                    0,
-                    workflow.max_model_calls
-                    - workflow.model_call_count
-                    - self._review_call_allowance(workflow)
-                    - 2,
-                )
+                repair_input["tool_guidance"] = file_tool_guidance()
+                repair_input["available_worker_model_calls"] = remaining_call_budget(
+                    workflow, self._review_call_allowance(workflow) + 2)
 
             repair_node = await self._start_node(
                 workflow,
@@ -1134,7 +1116,7 @@ class ModelOnlyWorkflowOrchestrator:
                 "dependency_results": dependency_results,
                 **({"refinement": self.refinement_input} if self.refinement_input else {}),
                 **(
-                    {"max_model_calls": max_model_calls}
+                    {"legacy_model_call_estimate": max_model_calls}
                     if workflow.execution_profile == "tool_enabled_v1"
                     else {}
                 ),
@@ -1943,9 +1925,7 @@ class ModelOnlyWorkflowOrchestrator:
                 "verification": verification.model_dump(mode="json"),
                 **(
                     {
-                        "max_model_calls": max(
-                            1, min(3, workflow.max_model_calls - workflow.model_call_count - 1)
-                        )
+                        "call_count_limited": False,
                     }
                     if workflow.execution_profile == "tool_enabled_v1"
                     else {}
@@ -2054,8 +2034,8 @@ class ModelOnlyWorkflowOrchestrator:
             stop_reason = "deterministic_verification_failed"
         elif self.workflow_round >= payload.max_workflow_rounds:
             stop_reason = "round_limit"
-        elif workflow.max_model_calls - workflow.model_call_count < 3 + self._review_call_allowance(
-            workflow
+        elif workflow.max_model_calls and remaining_call_budget(workflow) < (
+            3 + self._review_call_allowance(workflow)
         ):
             stop_reason = "model_call_budget"
         elif workflow.max_nodes - await self._node_count(workflow) < 9:
@@ -2152,7 +2132,7 @@ class ModelOnlyWorkflowOrchestrator:
             total_cached_tokens=total_usage.cached_tokens,
             total_estimated_cost=total_usage.estimated_cost,
             total_duration_ms=total_duration_ms,
-            remaining_model_calls=max(0, workflow.max_model_calls - workflow.model_call_count),
+            remaining_model_calls=remaining_call_budget(workflow),
             final_output_reference=final_node_id,
             warnings=[],
             errors=[],

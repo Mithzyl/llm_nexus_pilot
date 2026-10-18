@@ -156,11 +156,8 @@ async def test_quick_reply_automatically_reads_files_and_replays_one_final_answe
         assert any("UNIQUE_FILE_TEXT_2718" in str(c.output_json) for c in calls)
 
 
-async def test_quick_tools_reserve_last_round_for_answer(client, monkeypatch):
-    """The final budgeted call cannot spend its slot requesting another file read."""
-    monkeypatch.setattr(
-        "nexuspilot_api.services.response_file_tool_service.MAX_MODEL_ROUNDS", 3
-    )
+async def test_quick_tools_keep_tools_available_when_model_decides_to_answer(client):
+    """Useful evidence can produce a final answer without forcibly withdrawing tools."""
     _, _, _, turn = await prepare_conversation_file(client)
     provider = QuickFileProvider()
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
@@ -171,7 +168,7 @@ async def test_quick_tools_reserve_last_round_for_answer(client, monkeypatch):
     })
     assert reply.status_code == 200, reply.text
     assert reply.json()["output_text"] == "File answer: UNIQUE_FILE_TEXT_2718"
-    assert provider.requests[-1].tools == []
+    assert provider.requests[-1].tools
 
 
 @pytest.mark.parametrize("behavior", ["answer", "repeat", "forbidden"])

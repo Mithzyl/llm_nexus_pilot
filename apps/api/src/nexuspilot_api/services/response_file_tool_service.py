@@ -25,10 +25,7 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 from nexuspilot_api.services.model_reasoning_service import record_model_response_event
 from nexuspilot_api.services.model_response_service import ModelInvocationService
-from nexuspilot_api.services.tool_context import allow_tool_request
-
-MAX_MODEL_ROUNDS = 8
-MAX_TOOL_CALLS = 32
+from nexuspilot_api.services.tool_context import ToolProgressTracker, allow_tool_request
 
 
 async def has_automatic_file_tools(
@@ -70,6 +67,7 @@ class ResponseFileToolService:
         self.history: list[Message] = []
         self.records = []
         self.seen = {}
+        self.progress = ToolProgressTracker()
         self.root_attempt_id: str | None = None
         self.sequence = 0
         self.results: list[ResponsesResult] = []
@@ -134,18 +132,20 @@ class ResponseFileToolService:
         return public
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
-        """Continue within the call budget and optional deadline; propagate cancellation."""
+        """Continue while tools make progress, honoring cancellation and optional deadline."""
         deadline = (
             monotonic() + payload.timeout_seconds if payload.timeout_seconds is not None else None
         )
         try:
-            for index in range(MAX_MODEL_ROUNDS):
+            index = -1
+            while True:
+                index += 1
+                await asyncio.sleep(0)
                 await self.tools.validate_history(payload.run_id, self.records)
                 remaining = deadline - monotonic() if deadline is not None else None
                 if remaining is not None and remaining < 1:
                     raise InvalidRequestError("文件读取已超时，请缩小问题范围后重试。")
-                # Reserve the final round for an answer stating any unread scope.
-                definitions = self.tools.definitions() if index < MAX_MODEL_ROUNDS - 1 else []
+                definitions = self.tools.definitions()
                 versions = {
                     tool.name: self.tools.loaded_versions[tool.name] for tool in definitions
                 }
@@ -202,10 +202,6 @@ class ResponseFileToolService:
                 calls = response.tool_calls
                 if len(calls) > 8 or len({call.id for call in calls}) != len(calls):
                     raise InvalidRequestError("文件工具请求数量或标识不合法。")
-                if len(self.records) + len(calls) > MAX_TOOL_CALLS:
-                    raise InvalidRequestError("文件工具调用次数已达本轮上限。")
-                if index == MAX_MODEL_ROUNDS - 1:
-                    raise InvalidRequestError("文件读取轮数已达上限，尚未生成最终回答。")
                 assistant = Message(
                     role=MessageRole.ASSISTANT, content=response.output_text or "", tool_calls=calls
                 )
@@ -238,6 +234,10 @@ class ResponseFileToolService:
                             attempt_id=response.id, call=call, offered_versions=versions
                         )
                     self.records.append(record)
+                    if not self.progress.observe(call.name, call.arguments, record.output_json):
+                        raise InvalidRequestError(
+                            "文件工具重复返回相同证据或持续搜索无结果，已停止继续调用。"
+                        )
                     self.history.append(
                         Message(
                             role=MessageRole.TOOL,

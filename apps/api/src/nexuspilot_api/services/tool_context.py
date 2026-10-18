@@ -19,6 +19,37 @@ TOKENIZER_VERSION = "v1"
 FILE_BODY_TOOLS = {"read_file_content", "read_file_table", "search_file_content"}
 
 
+class ToolProgressTracker:
+    """Detect repeated successful evidence and errors per task, independent of call count."""
+
+    def __init__(self):
+        """Create task-local state; durable tool records remain the source for reconstruction."""
+        self.blocks = set()
+        self.results = set()
+        self.stalled = 0
+        self.empty_searches = 0
+
+    def observe(self, name: str, arguments: dict, output: dict) -> bool:
+        """Allow novel evidence/checks; stop after three redundant results or six empty searches."""
+        result = output.get("result") or {}
+        blocks = result.get("data", {}).get("blocks", [])
+        identities = {(result.get("file_id"), result.get("parsed_hash"), b["block_id"])
+                      for b in blocks}
+        if identities:
+            progress = bool(identities - self.blocks)
+            self.blocks.update(identities)
+            self.empty_searches = 0
+        else:
+            signature = json.dumps([name, arguments, output.get("status"),
+                                    output.get("error_code"), result], sort_keys=True)
+            progress = signature not in self.results
+            self.results.add(signature)
+            if name == "search_file_content" and output.get("status") == "completed":
+                self.empty_searches += 1
+        self.stalled = 0 if progress else self.stalled + 1
+        return self.stalled < 3 and self.empty_searches < 6
+
+
 def bound_file_page(page: FileContentPage, *, offset: int, token_budget: int = 4096):
     """Return whole blocks within a working-page budget, with an honest next offset.
 

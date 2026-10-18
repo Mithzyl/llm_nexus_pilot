@@ -49,7 +49,8 @@ class AgentWorkflowCreate(StrictContract):
     reasoning: ReasoningConfiguration | None = None
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     max_nodes: int = Field(default=32, ge=10, le=32)
-    max_model_calls: int = Field(default=16, ge=3, le=16)
+    max_model_calls: int = Field(default=0, ge=0,
+        description="Zero means no call-count limit; positive values are explicit caller budgets.")
     max_parallel_agents: int = Field(default=1, ge=1, le=2)
     max_workflow_rounds: int = Field(default=2, ge=1, le=2)
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
@@ -74,7 +75,7 @@ class AgentWorkflowCreate(StrictContract):
             and self.review_policy != "never"
         ):
             minimum_model_call_count = 6
-        if self.max_model_calls < minimum_model_call_count:
+        if self.max_model_calls and self.max_model_calls < minimum_model_call_count:
             raise ValueError(
                 "max_model_calls is too small for Controller, Worker, final synthesis, "
                 "and the configured review policy"
@@ -152,7 +153,7 @@ class NodeBudgetRead(StrictContract):
     cost_used_after: Decimal = Decimal("0")
     remaining_cost: Decimal | None = None
     reserved_estimated_cost: Decimal = Decimal("0")
-    remaining_model_calls: int = Field(ge=0)
+    remaining_model_calls: int | None = Field(ge=0)
     remaining_nodes: int = Field(ge=0)
     remaining_wall_time_ms: int = Field(ge=0)
 
@@ -535,7 +536,7 @@ class WorkflowCompletionOutput(StrictContract):
     total_cached_tokens: int = Field(ge=0)
     total_estimated_cost: Decimal
     total_duration_ms: int = Field(ge=0)
-    remaining_model_calls: int = Field(ge=0)
+    remaining_model_calls: int | None = Field(ge=0)
     final_output_reference: str
     warnings: list[str]
     errors: list[WorkflowErrorRead]
