@@ -193,13 +193,32 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
+/** Derive a compact file-type badge without rewriting the original filename. */
+function messageFileKind(filename: string): string {
+  const match = /\.([a-z0-9]{1,5})$/i.exec(filename);
+  return match ? match[1].toUpperCase() : "FILE";
+}
+
 /**
  * Calculate a run duration only when both server timestamps are available.
  */
 function formatDuration(run: Run | RunDetail | null): string {
-  if (!run?.started_at || !run.completed_at) return "等待服务端确认";
+  if (!run?.started_at || !run.completed_at) return "待确认";
   const duration = new Date(run.completed_at).getTime() - new Date(run.started_at).getTime();
   return `${Math.max(0, duration) / 1000} 秒`;
+}
+
+/** Keep historical run status in the same language as the rest of the inspector. */
+function runStatusLabel(status: Run["status"]): string {
+  const labels: Record<Run["status"], string> = {
+    pending: "等待执行",
+    running: "生成中",
+    completed: "已完成",
+    failed: "失败",
+    cancel_requested: "取消中",
+    cancelled: "已取消",
+  };
+  return labels[status];
 }
 
 /** Format restored token usage without inventing values when an attempt is incomplete. */
@@ -433,6 +452,9 @@ export default function Home() {
   const evidenceModelFacts = isInspectingHistoricalRun
     ? inspectedRunEvidence?.modelFacts ?? null
     : runModelFacts;
+  /** Keep empty-state placeholders out of the inspector without changing layout rules. */
+  const isEvidenceEmpty =
+    !evidenceRun && !evidenceWorkflow && !isSending && !isInspectingHistoricalRun;
   const displayedContextEvidence = isInspectingHistoricalRun
     ? inspectedRunEvidence?.contextEvidence ?? null
     : contextEvidence;
@@ -1998,7 +2020,6 @@ export default function Home() {
               >
                 <span className="session-copy">
                   <strong>{session.title ?? "未命名会话"}</strong>
-                  <small>{session.status === "active" ? "可继续对话" : "已归档"}</small>
                 </span>
                 <time>{formatTime(session.updated_at)}</time>
               </button>
@@ -2095,8 +2116,23 @@ export default function Home() {
                   <>
                     <div className="message-meta"><span>你</span><time>{formatTime(message.created_at)}</time></div>
                     <p className="user-bubble">{message.content}</p>
-                    {messageFiles(message.metadata_json).map((file) => <a className="message-file" key={file.file_id}
-                      href={`/api/nexus/files/${encodeURIComponent(file.file_id)}/content`}>{file.filename} ↓</a>)}
+                    {messageFiles(message.metadata_json).length > 0 && (
+                      <div className="message-file-list">
+                        {messageFiles(message.metadata_json).map((file) => (
+                          <a
+                            className="message-file"
+                            key={file.file_id}
+                            href={`/api/nexus/files/${encodeURIComponent(file.file_id)}/content`}
+                            title={file.filename}
+                            aria-label={`下载 ${file.filename}`}
+                          >
+                            <span className="message-file-kind" aria-hidden="true">{messageFileKind(file.filename)}</span>
+                            <span className="message-file-name">{file.filename}</span>
+                            <span className="message-file-action" aria-hidden="true">↓</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <>
@@ -2104,7 +2140,7 @@ export default function Home() {
                       <div className="assistant-avatar"><span /></div>
                       <div>
                         <strong>NexusPilot</strong>
-                        <small><i className={message.failed || message.cancelled || message.saveFailed || message.truncated ? "failed-dot" : ""} /> {message.cancelled ? cancelledMessageStatusLabel(message.cancellationConfirmed) : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中 · 状态来自服务端事件") : message.saving ? "已生成 · 正在保存" : message.truncated ? "达到输出上限 · 已保存部分回复" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
+                        <small><i className={message.failed || message.cancelled || message.saveFailed || message.truncated ? "failed-dot" : ""} /> {message.cancelled ? cancelledMessageStatusLabel(message.cancellationConfirmed) : message.saveFailed ? "已生成 · 保存失败" : message.failed ? (message.agentWorkflow ? "工作流失败" : "生成失败") : message.pending ? (message.agentWorkflow ? "Agent Workflow 运行中" : "生成中") : message.saving ? "已生成 · 正在保存" : message.truncated ? "达到输出上限 · 已保存部分回复" : message.agentWorkflow ? "工作流已完成" : "已完成"}</small>
                       </div>
                     </div>
                     <div className="assistant-content">
@@ -2118,24 +2154,20 @@ export default function Home() {
                         <AgentWorkflowActivityFeed events={agentEventState.events} />
                       )}
                       {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}
-                      {message.pending && <p className="stream-note">正在接收增量响应，不会把部分文本标记为完成。</p>}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
                       {message.truncated && !message.pending && <p className="stream-note error-note">模型达到输出 Token 上限，以上是已保存的部分回复；可以要求模型继续，或重新生成更短的回答。</p>}
                       {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
                       {(message.failed || message.cancelled) && <p className="stream-note error-note">此状态不代表已生成最终答案；可查看运行详情或再次提问。</p>}
                     </div>
                     {!message.pending && !message.saving && (
-                      <>
-                      {message.agentWorkflow && <button className="message-source-button" onClick={() => void handleOpenRunEvidence(message, "sources")}>
-                        <span>查看结论与来源</span>
-                        {message.run_id === run?.run_id && selectClaimEntries(agentWorkflowNodes).length > 0 && <span>{selectClaimEntries(agentWorkflowNodes).length} 条结论</span>}
-                      </button>}
                       <div className="message-actions">
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => handleRepeatQuestion(message)}>再次提问</button>
+                        {message.agentWorkflow && <button onClick={() => void handleOpenRunEvidence(message, "sources")}>
+                          查看结论与来源{message.run_id === run?.run_id && selectClaimEntries(agentWorkflowNodes).length > 0 ? ` · ${selectClaimEntries(agentWorkflowNodes).length} 条` : ""}
+                        </button>}
                         <button onClick={() => void handleOpenRunEvidence(message)}>查看运行证据 ↗</button>
                       </div>
-                      </>
                     )}
                   </>
                 )}
@@ -2154,17 +2186,15 @@ export default function Home() {
                 {isSending && <button type="button" className="composer-quiet-button" disabled={isCancellingWorkflow} onClick={handleStop}>{executionMode === "agent" ? "取消工作流" : "停止生成"}</button>}
               </div>}
               <div id="composer-editor" hidden={isComposerMinimized}>
-              <div className="composer-heading">
-                <span id="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
-                <button type="button" className="composer-quiet-button" aria-label="最小化输入框" aria-expanded={true} aria-controls="composer-editor" onClick={minimizeComposer}>最小化 −</button>
-              </div>
+              <span id="composer-keyboard-hint" className="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
+              <button type="button" className="composer-minimize" aria-label="收起输入框" aria-expanded={true} aria-controls="composer-editor" onClick={minimizeComposer}>收起</button>
               <textarea
                 ref={composerTextarea}
                 value={draft}
                 onChange={(event) => updateDraft(event.target.value)}
                 onKeyDown={handleComposerKeyDown}
                 aria-describedby="composer-keyboard-hint"
-                placeholder="继续对话…"
+                placeholder="输入问题，或粘贴内容…"
                 aria-label="消息内容"
                 rows={1}
               />
@@ -2217,10 +2247,6 @@ export default function Home() {
                       onChange={(value) => setReviewPolicy(value as ReviewPolicy)}
                     />
                   </div>
-                  <div className="agent-config-item agent-model-role">
-                    <span>模型角色</span>
-                    <strong>所有角色使用当前模型</strong>
-                  </div>
                 </div>
               )}
               <div className="composer-toolbar">
@@ -2241,12 +2267,14 @@ export default function Home() {
                       Agent
                     </button>
                   </div>
-                  <FilePickerButton
+                  <div className="composer-file-control">
+                    <FilePickerButton
                       selectedFileCount={pendingUploadFiles.length}
                       disabled={isSending}
                       onFilesSelected={handlePendingFilesSelected}
                     />
-                  <FileLibrary disabled={isSending} />
+                    <FileLibrary disabled={isSending} compact />
+                  </div>
                   {selectedReasoningPolicy && (selectedReasoningPolicy.supported_efforts.length > 0 || selectedReasoningPolicy.supports_disable) && (
                     <ReasoningSettings
                       effort={reasoningEffort}
@@ -2337,7 +2365,7 @@ export default function Home() {
             <button type="button" aria-pressed={evidenceTab === "process"} onClick={() => setEvidenceTab("process")}>运行过程</button>
           </div>
           {isInspectorOpen && evidenceTab === "sources" && <>
-            {["failed", "cancelled", "outcome_unknown"].includes(evidenceWorkflow.status) && <p className="claim-source-warning" role="status">本次执行未正常完成。以下仅展示已提交的阶段结论，详情请查看运行过程。</p>}
+            {["failed", "cancelled", "outcome_unknown"].includes(evidenceWorkflow.status) && <p className="claim-source-warning claim-execution-warning" role="status">本次执行未正常完成。以下仅展示已提交的阶段结论，详情请查看运行过程。</p>}
             <ClaimEvidencePanel key={evidenceWorkflow.workflow_execution_id} workflowId={evidenceWorkflow.workflow_execution_id}
               nodes={evidenceWorkflowNodes} running={["pending", "running"].includes(evidenceWorkflow.status)} />
             <button type="button" className="claim-technical-button" onClick={() => setEvidenceTab("process")}>运行过程与技术记录</button>
@@ -2348,23 +2376,25 @@ export default function Home() {
           <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
           <div>
             <strong>{evidenceWorkflow ? agentWorkflowStatusLabel(evidenceWorkflow.status) : isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "响应已保存" : evidenceRun?.status === "failed" ? "生成失败" : evidenceRun?.status === "cancelled" ? "已取消" : evidenceRun ? "运行处理中" : "等待证据" : isSending ? "生成进行中" : evidenceRun?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : evidenceRun ? "运行已创建" : "等待首次运行"}</strong>
-            <p>{isInspectingHistoricalRun ? "所选回复的只读快照，不改变当前工作台" : evidenceWorkflow ? "完整节点与事件均来自阶段3持久化事实" : "状态仅来自服务端响应与运行记录"}</p>
+            {isInspectingHistoricalRun && <p>所选回复的只读快照，不改变当前工作台</p>}
           </div>
-          <time>{evidenceRun ? formatTime(evidenceRun.updated_at) : "—"}</time>
+          {evidenceRun && <time>{formatTime(evidenceRun.updated_at)}</time>}
         </div>
 
         <div className="metric-grid">
-          <div><span>总耗时</span><strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong></div>
-          <div><span>总 Token</span><strong>{formatTokenTotal(evidenceUsage)}</strong></div>
-          <div><span>预估费用</span><strong>{evidenceUsage?.cost ?? "—"}</strong></div>
-          <div><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count} / ${evidenceWorkflow.max_model_calls}` : evidenceAttemptId ? "已记录" : "—"}</strong></div>
+          <div>{!isEvidenceEmpty && <><span>总耗时</span><strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong></>}</div>
+          <div>{!isEvidenceEmpty && <><span>总 Token</span><strong>{formatTokenTotal(evidenceUsage)}</strong></>}</div>
+          <div>{!isEvidenceEmpty && <><span>预估费用</span><strong>{evidenceUsage?.cost ?? "—"}</strong></>}</div>
+          <div>{!isEvidenceEmpty && <><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count} / ${evidenceWorkflow.max_model_calls}` : evidenceAttemptId ? "已记录" : "—"}</strong></>}</div>
         </div>
 
-        <ContextEvidencePanel
-          evidence={displayedContextEvidence}
-          state={displayedContextEvidenceState}
-          errorMessage={displayedContextEvidenceError}
-        />
+        {(displayedContextEvidenceState !== "empty" || isEvidenceEmpty) && (
+          <ContextEvidencePanel
+            evidence={displayedContextEvidence}
+            state={displayedContextEvidenceState}
+            errorMessage={displayedContextEvidenceError}
+          />
+        )}
 
         {evidenceWorkflow ? (
           <AgentWorkflowPanel
@@ -2379,14 +2409,14 @@ export default function Home() {
         ) : (
           <>
         <section className="inspector-section">
-          <div className="section-title"><h3>模型调用</h3><span>{evidenceAttemptId ? "已关联" : "等待"}</span></div>
-          <dl className="detail-list">
+          <div className="section-title"><h3>模型调用</h3>{!isEvidenceEmpty && <span>{evidenceAttemptId ? "已关联" : "等待"}</span>}</div>
+          {!isEvidenceEmpty && <dl className="detail-list">
             <div><dt>Provider</dt><dd>{(evidenceModelFacts?.provider ?? (isInspectingHistoricalRun ? "" : selectedProvider)) || "—"}</dd></div>
             <div><dt>Model</dt><dd>{(evidenceModelFacts?.model ?? (isInspectingHistoricalRun ? "" : selectedModel)) || "—"}</dd></div>
             <div><dt>输入 Token</dt><dd>{evidenceUsage?.input ?? "—"}</dd></div>
             <div><dt>输出 Token</dt><dd>{evidenceUsage?.output ?? "—"}</dd></div>
-            <div><dt>请求状态</dt><dd className={evidenceRun?.status === "failed" ? "error-text" : "success-text"}>{isInspectingHistoricalRun ? evidenceRun?.status ?? "等待" : statusLabel}</dd></div>
-          </dl>
+            <div><dt>请求状态</dt><dd className={evidenceRun?.status === "failed" ? "error-text" : "success-text"}>{isInspectingHistoricalRun ? evidenceRun ? runStatusLabel(evidenceRun.status) : "等待" : statusLabel}</dd></div>
+          </dl>}
           {(isInspectingHistoricalRun
             ? evidenceAttemptId ? evidenceReasoningBlocks[evidenceAttemptId] ?? [] : []
             : lastAssistantMessage?.reasoningBlocks ?? []).map((presentation) => (
@@ -2399,13 +2429,13 @@ export default function Home() {
         </section>
 
         <section className="inspector-section timeline-section">
-          <div className="section-title"><h3>运行时间线</h3><span>{evidenceRun ? "服务端事实" : "暂无事件"}</span></div>
+          <div className="section-title"><h3>运行时间线</h3>{!isEvidenceEmpty && <span>{evidenceRun ? "服务端事实" : "暂无事件"}</span>}</div>
           <ol className="timeline">
-            <li className={evidenceRun ? "complete" : "pending"}><i /><div><strong>请求已接收</strong><small>{evidenceRun ? formatTime(evidenceRun.created_at) : "等待"}</small></div></li>
-            <li className={evidenceRun?.started_at ? "complete" : "pending"}><i /><div><strong>模型生成</strong><small>{evidenceRun?.status === "running" ? "服务端处理中" : evidenceRun?.started_at ? "已开始" : "等待"}</small></div></li>
-            <li className={evidenceUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong><small>{evidenceUsage ? `${formatTokenTotal(evidenceUsage)} tokens` : "等待"}</small></div></li>
-            <li className={evidenceRun?.status === "completed" ? "complete" : evidenceRun?.status === "failed" ? "failed" : "pending"}><i /><div><strong>模型响应完成</strong><small>{evidenceRun?.status === "completed" ? "已完成" : evidenceRun?.status === "failed" ? "失败" : "等待"}</small></div></li>
-            <li className={isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "complete" : "pending" : assistantSaveFailed ? "failed" : assistantSaved ? "complete" : "pending"}><i /><div><strong>{!isInspectingHistoricalRun && assistantSaveFailed ? "响应保存失败" : "响应已保存"}</strong><small>{isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "已完成" : "等待" : assistantSaveFailed ? "需要重试" : assistantSaved ? "已完成" : "等待"}</small></div></li>
+            <li className={evidenceRun ? "complete" : "pending"}><i /><div><strong>请求已接收</strong>{!isEvidenceEmpty && <small>{evidenceRun ? formatTime(evidenceRun.created_at) : "等待"}</small>}</div></li>
+            <li className={evidenceRun?.started_at ? "complete" : "pending"}><i /><div><strong>模型生成</strong>{!isEvidenceEmpty && <small>{evidenceRun?.status === "running" ? "服务端处理中" : evidenceRun?.started_at ? "已开始" : "等待"}</small>}</div></li>
+            <li className={evidenceUsage ? "complete" : "pending"}><i /><div><strong>用量已确认</strong>{!isEvidenceEmpty && <small>{evidenceUsage ? `${formatTokenTotal(evidenceUsage)} tokens` : "等待"}</small>}</div></li>
+            <li className={evidenceRun?.status === "completed" ? "complete" : evidenceRun?.status === "failed" ? "failed" : "pending"}><i /><div><strong>模型响应完成</strong>{!isEvidenceEmpty && <small>{evidenceRun?.status === "completed" ? "已完成" : evidenceRun?.status === "failed" ? "失败" : "等待"}</small>}</div></li>
+            <li className={isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "complete" : "pending" : assistantSaveFailed ? "failed" : assistantSaved ? "complete" : "pending"}><i /><div><strong>{!isInspectingHistoricalRun && assistantSaveFailed ? "响应保存失败" : "响应已保存"}</strong>{!isEvidenceEmpty && <small>{isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "已完成" : "等待" : assistantSaveFailed ? "需要重试" : assistantSaved ? "已完成" : "等待"}</small>}</div></li>
           </ol>
         </section>
 

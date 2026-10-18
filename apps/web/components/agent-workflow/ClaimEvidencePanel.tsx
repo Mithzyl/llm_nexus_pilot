@@ -69,7 +69,6 @@ export function ClaimEvidencePanel({ workflowId, nodes, running }: {
   const entries = selectClaimEntries(nodes);
   const versioned = nodes.some((n) => n.output_type === "agent_model_execution" && n.output?.structured_output.schema_version === "worker_evidence.v2");
   return <section className="claim-panel" aria-label="结论与来源">
-    <p className="claim-panel-intro">模型审核意见，可对照原文查看。</p>
     {!entries.length && <p className="claim-source-note">{running ? "工作流运行中，尚未提交可展示的结论。" : versioned ? "本次没有提交逐条结论，可在运行过程查看未解决事项。" : "此记录未保存逐条来源，可查看原有运行过程。"}</p>}
     {entries.map((entry) => {
       const key = `${entry.nodeId}:${entry.claim.claim_key}`;
