@@ -180,8 +180,8 @@ export function getLatestRun(sessionId: string): Promise<RunDetail> {
 /**
  * Load a persisted run and its bounded model-attempt snapshot for the inspector.
  */
-export function getRun(runId: string): Promise<RunDetail> {
-  return nexusFetch<RunDetail>(`runs/${encodeURIComponent(runId)}`);
+export function getRun(runId: string, signal?: AbortSignal): Promise<RunDetail> {
+  return nexusFetch<RunDetail>(`runs/${encodeURIComponent(runId)}`, { signal });
 }
 
 /**

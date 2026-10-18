@@ -141,6 +141,8 @@ async def test_quick_reply_automatically_reads_files_and_replays_one_final_answe
     assert result["tool_calls"] == []
     assert result["usage"]["input_tokens"] == 90
     assert len(provider.requests) == 3
+    detail = (await client.get(f"/api/v1/runs/{turn['run']['run_id']}")).json()
+    assert detail["status"] == "completed"
     async with test_database_session_factory() as db:
         attempts = list(await db.scalars(select(LlmModelAttempt)))
         calls = list(await db.scalars(select(LlmModelToolCall)))
@@ -259,6 +261,10 @@ async def test_cancelling_quick_tool_execution_does_not_launch_another_model_rou
 
     async def wait_during_read(service, **kwargs):
         """Represent an unfinished tool I/O operation until the request is cancelled."""
+        from nexuspilot_api.models import LlmRun
+
+        run = await service.db.get(LlmRun, turn["run"]["run_id"])
+        assert run.status.value == "running"
         reading.set()
         await blocked.wait()
 
@@ -284,3 +290,5 @@ async def test_cancelling_quick_tool_execution_does_not_launch_another_model_rou
         with pytest.raises(asyncio.CancelledError):
             await request
     assert len(provider.requests) == 1
+    detail = (await client.get(f"/api/v1/runs/{turn['run']['run_id']}")).json()
+    assert detail["status"] == "cancelled"

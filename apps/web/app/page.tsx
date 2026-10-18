@@ -108,7 +108,7 @@ import {
 } from "../lib/model-catalog";
 import {
   conversationPath,
-  resolveWorkspaceRoute,
+  resolveWorkspacePath,
   terminalConversationNavigationTarget,
   workspaceRouteKey,
 } from "../lib/routes";
@@ -131,7 +131,8 @@ import {
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
-import { useParams, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
+import { readModelPreference, writeModelPreference } from "../lib/model-catalog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { followWorkflowResult } from "../lib/workflow-recovery";
 import type { CSSProperties, KeyboardEvent } from "react";
@@ -278,9 +279,8 @@ function createLocalMessage(
  * from a local response abort whose server-side outcome is not yet known.
  */
 export default function Home() {
-  const router = useRouter();
-  const routeParams = useParams<{ sessionId?: string; runId?: string }>();
-  const workspaceRoute = resolveWorkspaceRoute(routeParams);
+  const pathname = usePathname();
+  const workspaceRoute = resolveWorkspacePath(pathname);
   const currentRouteKey = workspaceRouteKey(workspaceRoute);
   const initialDraftSessionId = workspaceRoute.kind === "conversation"
     ? workspaceRoute.sessionId
@@ -725,9 +725,11 @@ export default function Home() {
     );
   }, []);
 
-  /** Apply the catalog's first usable model with its effort and presentation defaults. */
+  /** Restore the user's available model and apply its effort and presentation defaults. */
   const applyInitialModelSelection = useCallback((catalog: ProviderCatalog) => {
-    const initialSelection = resolveInitialModelSelection(catalog);
+    const preferred = workspacePrincipal
+      ? readModelPreference(window.localStorage, workspacePrincipal.user_id) : null;
+    const initialSelection = resolveInitialModelSelection(catalog, preferred);
     setSelectedProvider(initialSelection.provider);
     setSelectedModel(initialSelection.model);
     if (!initialSelection.provider || !initialSelection.model) {
@@ -753,6 +755,7 @@ export default function Home() {
       initialReasoningCapabilities?.presentation ?? "none",
     );
   }, [
+    workspacePrincipal,
     applyReasoningDisplayPolicyForModel,
     setReasoningEffort,
     setSelectedModel,
@@ -1031,7 +1034,11 @@ export default function Home() {
       const result = await getAgentWorkflowResult(summary.workflow_execution_id);
       if (workflowRestoreRequestId.current !== requestId) return;
       applyAgentWorkflowResult(result, assistantLocalId);
-      if (!["pending", "running", "waiting_for_input"].includes(result.status)) return;
+      if (!["pending", "running", "waiting_for_input"].includes(result.status)) {
+        const updatedRun = await getRun(runId);
+        if (workflowRestoreRequestId.current === requestId) setRun(updatedRun);
+        return;
+      }
     } catch (error) {
       if (workflowRestoreRequestId.current !== requestId) return;
       setErrorMessage(
@@ -1247,12 +1254,15 @@ export default function Home() {
     setInspectedRunEvidenceState("idle");
   }
 
-  /** Navigate to and restore one owned conversation from its stable URL. */
+  /** Switch history without remounting the workspace or resetting sidebar scroll and model selection. */
   async function handleSelectSession(sessionId: string) {
+    if (activeSessionId === sessionId) return;
+    setPendingUploadFiles([]);
+    uploadedFileCache.current.clear();
     showCurrentRunEvidence();
     switchDraftContext(sessionId);
     restoredRouteKey.current = workspaceRouteKey({ kind: "conversation", sessionId });
-    router.push(conversationPath(sessionId));
+    window.history.pushState(null, "", conversationPath(sessionId));
     await restoreSession(sessionId);
   }
 
@@ -1327,9 +1337,11 @@ export default function Home() {
 
   /** Navigate to the stable empty-workspace route without deleting persisted data. */
   function handleNewConversation() {
+    setPendingUploadFiles([]);
+    uploadedFileCache.current.clear();
     switchDraftContext(null);
     restoredRouteKey.current = "home";
-    router.push("/");
+    window.history.pushState(null, "", "/");
     resetConversationView();
   }
 
@@ -1648,6 +1660,7 @@ export default function Home() {
     catch (error) { setErrorMessage(error instanceof Error ? error.message : "文件不符合要求。"); return; }
     sessionRestoreRequestId.current += 1;
     const submittedMode = executionMode;
+    const submissionRestoreRequestId = sessionRestoreRequestId.current;
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
     let submittedSessionId: string | null = null;
@@ -1905,6 +1918,31 @@ export default function Home() {
         );
       }
     } finally {
+      if (submittedMode !== "agent" && submittedRunId &&
+          sessionRestoreRequestId.current === submissionRestoreRequestId) {
+        // A failed/aborted SSE stream is not proof that server cleanup has finished.
+        // Follow the whole Run until cleanup commits, without starting another request.
+        workflowRecoveryController.current?.abort();
+        const recovery = new AbortController();
+        workflowRecoveryController.current = recovery;
+        const runId = submittedRunId;
+        void followWorkflowResult({
+          signal: recovery.signal,
+          read: (signal) => getRun(runId, signal),
+          apply: (updatedRun) => {
+            setRun((current) => current?.run_id === runId ? updatedRun : current);
+            if (updatedRun.status === "cancelled") {
+              setMessages((current) => current.map((message) =>
+                message.run_id === runId && message.cancelled
+                  ? { ...message, cancellationConfirmed: true } : message,
+              ));
+            }
+          },
+          onError: () => {
+            setErrorMessage("暂时无法确认执行是否结束，正在重试读取状态；请勿重复提交。");
+          },
+        });
+      }
       setUploadProgress("");
       activeRequestController.current = null;
       setIsSending(false);
@@ -1922,7 +1960,7 @@ export default function Home() {
             kind: "conversation",
             sessionId: submittedSessionId,
           });
-          router.replace(navigationTarget);
+          window.history.replaceState(null, "", navigationTarget);
         }
       }
     }
@@ -2205,7 +2243,7 @@ export default function Home() {
               )}
               {!isActiveSessionBusyInAnotherTab && isPersistedConversationExecutionActive && !isSending && (
                 <p className="composer-sync-note" role="status">
-                  服务端仍在处理此会话；当前不可重复提交，可在运行详情中查看状态。
+                  此会话的执行状态尚未确认结束；暂不可重复提交，请在运行详情中查看状态。
                 </p>
               )}
               <PendingUploadFiles
@@ -2303,6 +2341,9 @@ export default function Home() {
                     onChange={(provider, model) => {
                       setSelectedProvider(provider);
                       setSelectedModel(model);
+                      if (workspacePrincipal) {
+                        writeModelPreference(window.localStorage, workspacePrincipal.user_id, { provider, model });
+                      }
                       const nextReasoningPolicy =
                         providerCatalog.reasoning_policies_by_provider_model?.[provider]?.[model];
                       if (nextReasoningPolicy) {

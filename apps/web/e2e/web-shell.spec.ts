@@ -144,8 +144,8 @@ async function installApiMocks(
 test.beforeEach(async ({ page }) => installApiMocks(page));
 
 /** A refreshed running conversation follows persisted results without a new POST or reload. */
-/** Recover either terminal state without resubmission or misleading cancellation labels. */
-for (const terminalStatus of ["completed", "cancelled"] as const) {
+/** Restore every terminal state, then submit and display the next deterministic reply. */
+for (const terminalStatus of ["completed", "failed", "cancelled"] as const) {
 test(`refreshing a running workflow follows it to ${terminalStatus} without resubmitting`, async ({ page }) => {
   let complete = false;
   let resultReads = 0;
@@ -193,17 +193,51 @@ test(`refreshing a running workflow follows it to ${terminalStatus} without resu
   if (terminalStatus === "completed") {
     await expect(page.locator("article.assistant-message")).toContainText("Recovered final answer");
     await expect(page.locator("article.assistant-message")).toContainText("工作流已完成");
+  } else if (terminalStatus === "cancelled") {
+    await expect(page.locator("article.assistant-message")).toContainText("已取消");
+    await expect(page.locator("article.assistant-message")).not.toContainText("等待服务端最终状态");
   } else {
-    await expect(page.locator("article.assistant-message")).toContainText("已取消");
-    await expect(page.locator("article.assistant-message")).not.toContainText("等待服务端最终状态");
-    await page.reload();
-    await expect(page.locator("article.assistant-message")).toContainText("已取消");
-    await expect(page.locator("article.assistant-message")).not.toContainText("等待服务端最终状态");
+    await expect(page.locator("article.assistant-message")).toContainText("工作流失败");
   }
   const finalReads = resultReads;
   await page.waitForTimeout(1800);
   expect(resultReads).toBe(finalReads);
   expect(writes).toBe(0);
+  // Reproduce stale running Run reads with an already-terminal workflow snapshot.
+  await page.reload();
+  if (terminalStatus === "cancelled") {
+    await expect(page.locator("article.assistant-message")).toContainText("已取消");
+    await expect(page.locator("article.assistant-message")).not.toContainText("等待服务端最终状态");
+  }
+  await page.getByRole("textbox", { name: "消息内容" }).fill("Continue after terminal state");
+  const send = page.getByRole("button", { name: "发送消息", exact: true });
+  await expect(send).toBeEnabled();
+  await expect(page.getByText(/此会话的执行状态尚未确认结束/)).toHaveCount(0);
+  // Exercise the next submission without permitting a real provider request.
+  let submitted = 0;
+  const nextMessage = { message_id: "next-user", session_id: "session-1", run_id: "run-2",
+    role: "user", content_text: "Continue after terminal state", content_type: "text",
+    sequence: 3, metadata_json: {}, created_at: "2026-08-30T00:01:00Z" };
+  await page.route("**/api/nexus/sessions/session-1/turns", (route) => {
+    submitted += 1;
+    return fulfillJson(route, { run: { ...run, run_id: "run-2", status: "pending" }, message: nextMessage }, 201);
+  });
+  await page.route("**/api/nexus/runs/run-2", (route) => fulfillJson(route, { ...run, run_id: "run-2", status: "completed" }));
+  await page.route("**/api/nexus/responses", (route) => route.fulfill({ status: 200,
+    contentType: "text/event-stream", body: `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed",
+      sequence: 1, response_id: "attempt-2", run_id: "run-2", data: { response: {
+        id: "attempt-2", output_text: "Next turn fixture answer", usage: {}, reasoning_blocks: [], finish_reason: "stop",
+      } } })}\n\n` }));
+  await page.route("**/api/nexus/sessions/session-1/messages", (route) => fulfillJson(route, {
+    ...nextMessage, message_id: "next-assistant", role: "assistant", sequence: 4,
+    content_text: "Next turn fixture answer", source_model_attempt_id: "attempt-2",
+  }, 201));
+  await page.getByRole("button", { name: "快速回复", exact: true }).click();
+  await send.click();
+  await expect.poll(() => submitted).toBe(1);
+  await expect(page.getByText("Next turn fixture answer", { exact: true })).toBeVisible();
+  await page.getByRole("textbox", { name: "消息内容" }).fill("Another turn");
+  await expect(send).toBeEnabled();
 });
 }
 

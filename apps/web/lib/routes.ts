@@ -5,6 +5,18 @@ export type NexusWorkspaceRoute =
 
 type RouteParams = Record<string, string | string[] | undefined>;
 
+/** Resolve native history navigation from its URL, including browser back and forward. */
+export function resolveWorkspacePath(pathname: string): NexusWorkspaceRoute {
+  const match = /^\/(c|runs)\/([^/]+)\/?$/.exec(pathname);
+  if (!match) return { kind: "home" };
+  try {
+    const id = decodeURIComponent(match[2]);
+    return match[1] === "c" ? { kind: "conversation", sessionId: id } : { kind: "run", runId: id };
+  } catch {
+    return { kind: "home" };
+  }
+}
+
 /** Return one non-empty dynamic route parameter and reject catch-all arrays. */
 function singleParam(value: string | string[] | undefined): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;

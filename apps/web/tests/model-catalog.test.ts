@@ -7,6 +7,8 @@ import {
   modelDirectoryToProviderCatalog,
   resolveModelReasoningSelection,
   resolveInitialModelSelection,
+  readModelPreference,
+  writeModelPreference,
 } from "../lib/model-catalog";
 import type { ModelDirectoryEntry, ProviderCatalog } from "../lib/types";
 
@@ -17,6 +19,28 @@ const catalog: ProviderCatalog = {
     openai_compatible: [],
   },
 };
+
+// Preference storage must not leak between users or fail model loading on invalid data.
+test("stores model choices per user and tolerates unavailable storage", () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); } };
+  const selection = { provider: "deepseek" as const, model: "deepseek-v4-pro" };
+  writeModelPreference(storage, "alice", selection);
+  assert.deepEqual(readModelPreference(storage, "alice"), selection);
+  assert.equal(readModelPreference(storage, "bob"), null);
+  assert.equal(readModelPreference({ getItem: () => "invalid" }, "alice"), null);
+  assert.equal(readModelPreference({ getItem: () => { throw new Error("denied"); } }, "alice"), null);
+  assert.doesNotThrow(() => writeModelPreference({ setItem: () => { throw new Error("denied"); } }, "alice", selection));
+});
+
+// A remembered selection must survive reloads without accepting disabled models.
+test("keeps an available preferred model and falls back when it is absent", () => {
+  assert.deepEqual(resolveInitialModelSelection(catalog, { provider: "deepseek", model: "deepseek-v4-pro" }),
+    { provider: "deepseek", model: "deepseek-v4-pro" });
+  assert.deepEqual(resolveInitialModelSelection(catalog, { provider: "deepseek", model: "removed" }),
+    { provider: "deepseek", model: "deepseek-v4-flash" });
+});
 
 test("selects the first configured provider model from the server catalog", () => {
   assert.deepEqual(resolveInitialModelSelection(catalog), {

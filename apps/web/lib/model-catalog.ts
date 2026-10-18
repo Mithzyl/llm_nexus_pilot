@@ -68,13 +68,35 @@ export function resolveModelReasoningSelection(
   return policy.default_enabled ? policy.default_effort : "disabled";
 }
 
-/** Resolve a usable first selection without inventing models outside the server catalog. */
-export function resolveInitialModelSelection(catalog: ProviderCatalog): ModelSelection {
+/** Prefer the user's available model, otherwise select the first model in the current catalog. */
+export function resolveInitialModelSelection(catalog: ProviderCatalog, preferred?: ModelSelection | null): ModelSelection {
+  if (preferred?.provider && catalog.models_by_provider[preferred.provider]?.includes(preferred.model)) {
+    return preferred;
+  }
   for (const provider of catalog.providers) {
     const firstConfiguredModel = catalog.models_by_provider[provider]?.[0];
     if (firstConfiguredModel) return { provider, model: firstConfiguredModel };
   }
   return { provider: catalog.providers[0] ?? "", model: "" };
+}
+
+/** Read a user-scoped model preference; blocked or malformed storage cannot prevent startup. */
+export function readModelPreference(storage: Pick<Storage, "getItem">, userId: string): ModelSelection | null {
+  try {
+    const value = JSON.parse(storage.getItem(`nexuspilot:model:${encodeURIComponent(userId)}`) ?? "null");
+    return value && typeof value.provider === "string" && typeof value.model === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Save an explicit model choice for this user without storing credentials or conversation text. */
+export function writeModelPreference(storage: Pick<Storage, "setItem">, userId: string, selection: ModelSelection): void {
+  try {
+    storage.setItem(`nexuspilot:model:${encodeURIComponent(userId)}`, JSON.stringify(selection));
+  } catch {
+    // Model selection remains usable when browser storage is unavailable.
+  }
 }
 
 /** Filter the active provider's configured options with a case-insensitive model query. */

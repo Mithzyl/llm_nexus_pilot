@@ -13,7 +13,7 @@ function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Follow an existing workflow with serial reads, bounded backoff and no execution writes. */
+/** Follow an existing Run or workflow with serial reads and no execution writes. */
 export async function followWorkflowResult<T extends { status: string }>(options: {
   signal: AbortSignal;
   read: (signal: AbortSignal) => Promise<T>;
@@ -31,7 +31,7 @@ export async function followWorkflowResult<T extends { status: string }>(options
       await options.apply(result, signal);
       if (options.signal.aborted) return;
       failures = 0;
-      if (!["pending", "running", "waiting_for_input"].includes(result.status)) return;
+      if (!["pending", "running", "waiting_for_input", "cancel_requested"].includes(result.status)) return;
     } catch (error) {
       if (options.signal.aborted) return;
       failures += 1;

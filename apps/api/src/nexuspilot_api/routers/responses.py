@@ -7,10 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from nexuspilot_api.core.dependencies import ModelInvocationServiceDependency
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult
-from nexuspilot_api.services.response_file_tool_service import (
-    ResponseFileToolService,
-    has_automatic_file_tools,
-)
+from nexuspilot_api.services.response_run_lifecycle import ConversationResponseService
 
 router = APIRouter(tags=["responses"])
 
@@ -20,10 +17,9 @@ async def post_response(
     payload: ResponsesRequest,
     service: ModelInvocationServiceDependency,
 ) -> ResponsesResult | StreamingResponse:
-    """Automatically offer owned conversation file tools in both JSON and streaming replies."""
+    """Execute whole conversation turns with durable terminal state and automatic file tools."""
 
-    if await has_automatic_file_tools(service, payload):
-        service = ResponseFileToolService(service)
+    service = ConversationResponseService(service)
     if not payload.stream:
         return await service.generate(payload)
 

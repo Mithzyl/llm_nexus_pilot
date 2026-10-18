@@ -33,6 +33,8 @@ export function isConversationExecutionActive({ run, workflowStatus, messages, w
     workflowStatus === "running" ||
     workflowStatus === "waiting_for_input"
   ) return true;
+  // A later durable workflow terminal snapshot overrides an earlier Run read.
+  if (workflowStatus && ["completed", "failed", "cancelled", "outcome_unknown"].includes(workflowStatus)) return false;
   if (!run || !["pending", "running", "cancel_requested"].includes(run.status)) return false;
 
   // A single quick call or fully completed server-owned file-tool loop can finish while pending.

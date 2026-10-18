@@ -4,10 +4,20 @@ import test from "node:test";
 import {
   conversationPath,
   resolveWorkspaceRoute,
+  resolveWorkspacePath,
   runPath,
   terminalConversationNavigationTarget,
   workspaceRouteKey,
 } from "../lib/routes";
+
+// Native history updates change the pathname, not the original dynamic route params.
+test("resolves conversation switches and home from the current pathname", () => {
+  assert.deepEqual(resolveWorkspacePath("/c/second"), { kind: "conversation", sessionId: "second" });
+  assert.deepEqual(resolveWorkspacePath("/runs/run-1"), { kind: "run", runId: "run-1" });
+  assert.deepEqual(resolveWorkspacePath("/"), { kind: "home" });
+  assert.deepEqual(resolveWorkspacePath("/c/a%20b"), { kind: "conversation", sessionId: "a b" });
+  assert.deepEqual(resolveWorkspacePath("/c/%"), { kind: "home" });
+});
 
 test("resolves home, conversation, and run routes from App Router params", () => {
   assert.deepEqual(resolveWorkspaceRoute({}), { kind: "home" });

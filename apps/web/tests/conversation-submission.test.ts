@@ -98,11 +98,22 @@ test("allows a saved single-call quick response after reload without rewriting p
 /** A returned answer cannot overrule an active workflow or unfinished discovery. */
 test("keeps active workflows and unknown workflow lookups blocked even with a saved answer", () => {
   const facts = savedQuickResponse();
-  for (const workflowStatus of ["pending", "running", "waiting_for_input", "completed"] as const) {
+  for (const workflowStatus of ["pending", "running", "waiting_for_input"] as const) {
     assert.equal(isConversationExecutionActive({ ...facts, workflowStatus }), true);
   }
   for (const workflowAbsentForRunId of [null, "another-run"]) {
     assert.equal(isConversationExecutionActive({ ...facts, workflowAbsentForRunId }), true);
+  }
+});
+
+/** A durable terminal workflow result supersedes an earlier active Run snapshot. */
+test("terminal workflow snapshots release stale active Run submission locks", () => {
+  const facts = savedQuickResponse();
+  for (const workflowStatus of ["completed", "failed", "cancelled", "outcome_unknown"] as const) {
+    for (const status of ["pending", "running", "cancel_requested"] as const) {
+      assert.equal(isConversationExecutionActive({ ...facts, workflowStatus,
+        run: { ...facts.run, status }, messages: [] }), false);
+    }
   }
 });
 
