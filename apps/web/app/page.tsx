@@ -2293,7 +2293,16 @@ export default function Home() {
                       {message.agentWorkflow && message.run_id === run?.run_id && (
                         <AgentWorkflowActivityFeed events={agentEventState.events} />
                       )}
-                      {message.content ? <MarkdownContent content={message.content} /> : <p className="typing-line"><span /> <span /> <span /></p>}
+                      {message.agentWorkflow && message.pending ? (
+                        <div className="agent-answer-pending" role="status">
+                          <span className="typing-line" aria-hidden="true"><span /><span /><span /></span>
+                          <span>正在生成最终回答…</span>
+                        </div>
+                      ) : message.content ? (
+                        <MarkdownContent content={message.content} />
+                      ) : (
+                        <p className="typing-line"><span /> <span /> <span /></p>
+                      )}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
                       {message.truncated && !message.pending && <p className="stream-note error-note">模型达到输出 Token 上限，以上是已保存的部分回复；可以要求模型继续，或重新生成更短的回答。</p>}
                       {message.saveFailed && <p className="stream-note error-note">响应已生成，但会话保存失败；已保留当前文本。</p>}
