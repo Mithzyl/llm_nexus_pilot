@@ -12,6 +12,56 @@ let DELETE: typeof import("../app/api/nexus/[...path]/route").DELETE;
 let PUT: typeof import("../app/api/nexus/[...path]/route").PUT;
 const originalFetch = globalThis.fetch;
 
+/** Prepared Run cancellation must check ownership before forwarding the bodyless mutation. */
+test("prepared Run cancellation is forwarded only for the current user", async () => {
+  for (const owner of ["nexuspilot-web", "other-user"]) {
+    let mutations = 0;
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.method === "POST") {
+        mutations += 1;
+        return Response.json({ run_id: "prepared", status: "cancelled", user_id: owner });
+      }
+      return Response.json({ run_id: "prepared", status: "pending", user_id: owner });
+    }) as typeof fetch;
+    try {
+      const response = await POST(createRequest("runs/prepared/cancel", { method: "POST" }),
+        createContext("runs/prepared/cancel"));
+      // Resource ownership failures hide existence using the established 404 policy.
+      assert.equal(response.status, owner === "nexuspilot-web" ? 200 : 404);
+      assert.equal(mutations, owner === "nexuspilot-web" ? 1 : 0);
+    } finally { globalThis.fetch = originalFetch; }
+  }
+});
+
+/** Removing the model deadline must preserve browser abort and response-body cancellation. */
+test("unbounded responses forward null timeout and propagate cancellation upstream", async () => {
+  const controller = new AbortController();
+  let upstreamSignal: AbortSignal | null | undefined;
+  let bodyCancelled = false;
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith("/runs/run-1")) {
+      return Response.json({ run_id: "run-1", user_id: "nexuspilot-web" });
+    }
+    upstreamSignal = init?.signal;
+    assert.equal(JSON.parse(String(init?.body)).timeout_seconds, null);
+    return new Response(new ReadableStream({
+      cancel() { bodyCancelled = true; },
+    }), { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const response = await POST(createRequest("responses", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ run_id: "run-1", timeout_seconds: null, stream: true }),
+      signal: controller.signal,
+    }), createContext("responses"));
+    assert.equal(response.status, 200);
+    controller.abort();
+    assert.equal(upstreamSignal?.aborted, true);
+    await response.body?.cancel();
+    assert.equal(bodyCancelled, true);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test.before(async () => {
   const route = await import("../app/api/nexus/[...path]/route");
   GET = route.GET;

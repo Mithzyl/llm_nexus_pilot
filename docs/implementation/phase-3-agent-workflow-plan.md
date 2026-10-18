@@ -1,5 +1,13 @@
 # 阶段3：Agent Runtime 与完整工作流节点结果规划
 
+## 2026-10-18 工具 Worker 预留输出修正额度
+
+本地 Run `01ab1581-9542-4bf1-b049-6b00c0890b11` 的 Controller 有限计划修正已成功，但 `worker_execution.discover_tools` 的三个调用额度全部消耗后，最后输出仍不满足 `EvidenceWorkerModelOutput`（诊断 `model_type`），故无额度修正，报 `agent_budget_exhausted`。这是生成结构与任务额度问题，不是文件上传解析失败。计划还单独分出发现工具任务，但已加载工具定义仅在当前 Worker 内生效，不能替后续 Worker 加载。
+
+新版 Worker 与 Reviewer 工具循环在任务分配至少 3 次调用时，保留最后一次供已有有限 JSON/字段修正，倒数第二次停止提供工具并要求提交原定 JSON。额度仍包含修正，不增加 Task 或 Workflow 总额度。两次调用的旧计划仍只能读取后回答，不能保证有修正机会；1.0 Worker 行为保持兼容。Controller 提示同步说明：发现、读取、提交 JSON、一次修正需分配至少 4 次，后续顺序读取另计；将发现和读取放在实际使用工具的 Worker 内，不创建仅为其他任务加载工具的独立发现任务。
+
+验证：修正测试先因未预留额度失败，修改后通过；`test_agent_output_repair.py`、`test_agent_file_tools.py`、`test_agent_tool_discovery.py`、`test_response_file_tools.py`、`test_controller_tool_plan_policy.py` 共 55 项通过。固定 Provider 验证工具只执行一次，第二次提交无工具的 JSON，格式错误后第三次修正并完成。未修改现有节点职责及字段校验，没有重放真实供应商请求，未部署。
+
 **文档日期：** 2026 年 10 月 17 日
 **文档状态：** 已完成（`model_only_v1`同步Agent Runtime、统一Context Builder后端接入、稳定模型思考配置透传、用量一致性门禁、自动缓存诊断、“审核约束回答但不吞掉回答”及版本化公开活动摘要均已实现并通过自动化验证；Composer产品入口属于阶段4）
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)

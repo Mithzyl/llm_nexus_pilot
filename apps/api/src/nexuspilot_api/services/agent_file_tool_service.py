@@ -29,6 +29,7 @@ from nexuspilot_api.services.file_parsing_service import (
     search_file_content,
 )
 from nexuspilot_api.services.tool_catalog import RegisteredTool, ToolCatalog
+from nexuspilot_api.services.tool_context import bound_file_page
 from nexuspilot_api.services.user_file_service import read_parsed_file
 
 
@@ -106,14 +107,17 @@ FILE_TOOLS = tuple(
         ),
         register_file_tool(
             "get_file_outline",
-            "Read extracted headings and coverage; not a complete visual outline.",
+            "Read extracted headings and coverage before choosing document ranges; "
+            "not a complete visual outline.",
             FileArguments,
             keywords=("结构", "目录", "章节", "outline"),
         ),
         register_file_tool(
             "read_file_content",
             "Read saved text from uploaded text, Word/DOCX, Excel/XLSX, PowerPoint/PPTX or PDF. "
-            "Use zero-based offset and limit; follow next_offset. "
+            "Use zero-based BLOCK offset (not page number) and limit; follow next_offset, "
+            "which may advance less than limit to keep results small. "
+            "For specific questions search_file_content first instead of reading every block. "
             "Reads cached extraction, not images or arbitrary local paths.",
             PageArguments,
             keywords=("正文", "文字", "读取", "Office", "文档", "电子表格", "幻灯片"),
@@ -128,9 +132,12 @@ FILE_TOOLS = tuple(
         ),
         register_file_tool(
             "search_file_content",
-            "Find literal text in extracted blocks; paginate matches with offset.",
+            "Search ALL extracted blocks, including unread document end, for literal text. "
+            "Offset paginates MATCHES, not source pages. Try alternative keywords if no match; "
+            "no match does not prove absence from images or unextracted content.",
             SearchArguments,
             keywords=("搜索", "查找", "文字"),
+            initially_loaded=True,
         ),
     ]
 )
@@ -267,7 +274,7 @@ class AgentFileToolService:
             raise
 
     async def _read(self, run_id: str, name: str, arguments: EmptyArguments) -> dict:
-        """Search permitted metadata or recheck owner and file readiness before reading content."""
+        """Recheck access, read saved extraction and return whole-block token-bounded pages."""
         run = await self.db.get(LlmRun, run_id, populate_existing=True)
         if run is None:
             raise ResourceNotFoundError("Run")
@@ -326,6 +333,7 @@ class AgentFileToolService:
             else:
                 reader = read_file_table if name == "read_file_table" else read_file_content
                 page = reader(document, offset=arguments.offset, limit=arguments.limit)
+            page = bound_file_page(page, offset=arguments.offset)
             data = page.model_dump(mode="json")
         return {
             "file_id": file.file_id,

@@ -87,7 +87,7 @@ async def test_context_preview_uses_catalog_limits_and_reloads_exact_messages(
     assert created.status_code == 201
     body = created.json()
     assert body["catalog_version_id"] == capability["catalog_version_id"]
-    assert body["tokenizer_name"] == "utf8_bytes_upper_bound"
+    assert body["tokenizer_name"] == "cl100k_base_proxy"
     assert body["tokenizer_version"] == "v1"
     assert body["reserved_output_tokens"] == 256
     assert body["recent_message_count"] == 2
@@ -274,7 +274,7 @@ async def test_runtime_context_resolves_prompt_release_and_text_artifact(
 
     assert created.status_code == 201, created.text
     body = created.json()
-    assert body["policy_version"] == "context_policy.v2"
+    assert body["policy_version"] == "context_policy.v3"
     assert [source["source_type"] for source in body["sources"]] == [
         "safety_instruction",
         "message",
@@ -339,7 +339,7 @@ async def test_runtime_context_keeps_current_message_and_latest_complete_turn(
             f"/api/v1/sessions/{conversation['session_id']}/turns",
             json={
                 "user_id": "context-budget-order-owner",
-                "content_text": "old-user-" + ("x" * 230),
+                "content_text": "old-user-" + ("x" * 2300),
             },
         )
     ).json()
@@ -347,7 +347,7 @@ async def test_runtime_context_keeps_current_message_and_latest_complete_turn(
         f"/api/v1/sessions/{conversation['session_id']}/messages",
         json={
             "role": "assistant",
-            "content_text": "old-assistant-" + ("y" * 230),
+            "content_text": "old-assistant-" + ("y" * 2300),
             "run_id": old_turn["run"]["run_id"],
         },
     )

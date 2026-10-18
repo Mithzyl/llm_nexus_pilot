@@ -140,6 +140,7 @@ async def test_tool_workflow_persists_result_and_continues(
     assert {tool.name for tool in worker_requests[0].tools} == {
         "list_run_files",
         "read_file_content",
+        "search_file_content",
         "search_tools",
         "describe_tools",
     }

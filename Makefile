@@ -28,6 +28,7 @@ api-install:
 	apps/api/.venv/bin/python -m pip install -e packages/models
 	apps/api/.venv/bin/python -m pip install -e apps/api
 	apps/api/.venv/bin/python -m pip install -r apps/api/requirements.txt
+	apps/api/.venv/bin/python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
 
 api-test:
 	apps/api/.venv/bin/python -m pytest apps/api/tests packages/models/tests

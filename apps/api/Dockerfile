@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 WORKDIR /app
 
 # PDF/Office dependencies live only in the dedicated file-runtime image.
@@ -8,6 +8,8 @@ RUN groupadd --gid 10001 nexus && useradd --uid 10001 --gid nexus --no-create-ho
 
 COPY apps/api/requirements.txt ./apps/api/requirements.txt
 RUN python -m pip install --no-cache-dir -r apps/api/requirements.txt
+RUN python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")' \
+    && chmod -R a+rX /opt/tiktoken-cache
 COPY packages/models ./packages/models
 COPY apps/api/pyproject.toml apps/api/alembic.ini ./apps/api/
 COPY apps/api/migrations ./apps/api/migrations

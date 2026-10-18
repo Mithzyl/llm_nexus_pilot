@@ -93,6 +93,10 @@ def structured_model_instructions(
             " A task requiring read or tool needs at least 2 max_model_calls: one to request"
             " tools and one to consume results and submit JSON. Discovery followed by reading"
             " needs at least 3; further sequential tool rounds require additional calls."
+            " For v1.1 tool tasks with at least 3 calls, the last call is reserved for"
+            " one JSON/field repair: allocate 4 for discovery, reading, JSON and repair."
+            " Discovery is local to each task; do not split discovery into a separate task"
+            " just to load tools for another task. Combine discovery and reading in its Worker."
             " Respect the remaining total budget including review and final synthesis."
         )
     if not prompted_json:

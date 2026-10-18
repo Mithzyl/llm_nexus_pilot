@@ -354,7 +354,7 @@ async function validateOwnership(
   return null;
 }
 
-/** Determine whether an allow-listed mutation carries JSON; Workflow cancellation is bodyless. */
+/** Determine whether an allow-listed mutation carries JSON; Run/Workflow cancellation is bodyless. */
 function requiresJsonRequestBody(method: string, path: readonly string[]): boolean {
   if (["GET", "HEAD", "DELETE"].includes(method)) return false;
   if (method === "POST" && path[0] === "auth" && ["logout", "revoke-all"].includes(path.at(-1) ?? "")) {
@@ -363,7 +363,7 @@ function requiresJsonRequestBody(method: string, path: readonly string[]): boole
   return !(
     method === "POST"
     && path.length === 3
-    && path[0] === "agent-workflows"
+    && ["agent-workflows", "runs"].includes(path[0])
     && path[2] === "cancel"
   );
 }

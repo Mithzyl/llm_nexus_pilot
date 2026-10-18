@@ -75,6 +75,8 @@ make api-migrate
 make api-run
 ```
 
+`make api-install` 同时安装 Token 分词依赖并预缓存 `cl100k_base` 公开词表；首次准备需网络，正常编码不调用模型。API Docker 镜像在构建期完成相同缓存。升级已有本地环境时也需执行依赖安装与预缓存，不能只更新 Python 源码。输入 Token 为跨供应商估算，实际计费以 Provider usage 为准。
+
 新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
 
 文件上传及新对话正文保存均需启动 MinIO；当前代码要求迁移到 `20261018_0024`（新增对话正文对象引用，兼容旧正文列）。备份并确认目标库后执行 `make api-migrate`，再重启 API；本次只迁移独立测试库，未修改你的开发数据库。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。

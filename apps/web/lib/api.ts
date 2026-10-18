@@ -306,6 +306,11 @@ export function getAgentWorkflowSummary(
   );
 }
 
+/** Cancel a newly created Run when preparation was stopped before model dispatch. */
+export function cancelPreparedRun(runId: string): Promise<Run> {
+  return nexusFetch<Run>(`runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
 /** Durably cancel future nodes for one owned running Agent Workflow. */
 export function cancelAgentWorkflow(
   workflowExecutionId: string,

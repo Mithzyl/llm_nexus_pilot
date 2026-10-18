@@ -24,6 +24,26 @@
 - 本文统一规划模型工具循环、工具发现、代码组合、生成工具、批准交互和外部工具接入；按下面工作项分别验收，不把尚未开始的能力标为可用。通用队列/Worker机制引用阶段10，不重复设计；第一项本地交付不开放网络、外部写入、运行时安装或自动全平台发布。
 - 明确不处理：把任意 Shell 字符串、宿主机目录、环境变量或 Docker Socket 直接暴露给模型。
 
+## 长文件读取与工具历史（2026-10-18）
+
+状态：本地实现及确定性回归已完成；真实供应商验收未执行，未部署。
+
+- 原问题：运行 `678d120e-180e-4059-94dc-483b677aaf23` 依次读取 offset 0、50、100、150、200、250，并非重复读取同一范围。保存的 7 次结果合计 173,977 字节；本地只读复算为 64,415 个代理分词 Token（含 20% 余量，不含完整请求其余部分）。旧工具历史检查直接将字节数与模型窗口比较，导致提前拒绝；基础 Context Builder 也存在相同单位问题。
+- Token 规则由阶段2维护：`cl100k_base_proxy/v1` 是代理分词估算，不假装是任意模型的精确 tokenizer。真实 usage 不被估算覆盖。模型目录的窗口仍生效，取消不依赖生成超时。工具历史检查重新计算当前基础消息，避免继续使用历史 Context 的字节估算，并包含工具定义、结构化输出要求、续接状态及原生附件预留。
+- 文件完整解析结果和工具原始结果继续保存到对象存储；MySQL 保存引用和结构化记录。上传文件不会自动整份注入模型消息。
+- `search_file_content` 默认提供给快速回复和 Agent 文件工具循环，检索完整的已解析文档，包括尚未读取的尾部；offset 是匹配结果位置，不是 PDF 页码。支持字面关键词，不是语义检索；零结果不能证明图片或未解析范围中不存在答案。目录工具继续通过已有发现/加载机制获取。
+- `read_file_content` / `read_file_table` / 搜索结果在原有块数和字节安全限制内，按约 4,096 估算 Token 分页，只在完整块之间缩小一页。`next_offset` 依实际返回块数前进，不按请求 limit 跳过正文；范围、解析遗漏、文件快照和 `evidence_ref` 保留。单个超大块仍不截断，无法装入窗口时明确失败。这是工具输入分页，不是模型输出上限。
+- 两种模式共享工具历史投影：能装入窗口时保留全部；超出时按时间顺序移出较早的文件工具正文，保留文件/解析哈希、原调用和结果引用、读取范围、分页和遗漏信息，并明确标注正文已从工作上下文省略、需要时重新读取。最近一组 Assistant 工具调用和对应的全部 Tool 结果保留，Assistant 的私有续接状态不改写。原始消息列表、持久工具结果、Worker/Handoff/Reviewer 证据校验不删除或替换成摘要。
+- 相同文件参数允许在其他调用之后补读一次；连续相同读取、超过两次的循环，以及重复的非文件工具仍拒绝。补读仍重新核对归属、文件状态、快照及工具版本，不缓存权限判断。
+- 快速回复最后一个调用名额不再提供工具，留给模型生成回答；若尚未读取足够内容，应说明范围限制，而不是声称通读全文。Agent 继续保留现有最终结构化输出和有限修正名额。
+- 限制：不是无限上下文、全文自动总结或无损压缩。旧正文移出后，模型必须补读才能重新核对原文；没有引入额外付费总结调用。整批最近结果、不可压缩消息或单个块仍可能超过小模型窗口，届时明确拒绝；OCR、语义搜索和章节摘要另行实施。
+
+设计参考：[Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) 的按需检索、保留轻量引用、清理旧工具结果；[OpenAI Compaction](https://developers.openai.com/api/docs/guides/compaction) 的工作上下文管理。这里只采用设计原则，没有把 OpenAI 专属的加密压缩接口用于 Strata/DeepSeek，也没有声称完全复现 Claude Code 或 Codex。
+
+环境准备：`make api-install` 安装分词依赖并预缓存公开词表；API 镜像构建同样预缓存，运行用户可读。不要只复制业务代码而不更新依赖。历史模型目录不需要迁移；历史记录保持原样。
+
+本地验证：`apps/api/.venv/bin/pytest` 运行 `apps/api/tests/` 下 `test_tool_context.py`、`test_context_builds.py`、`test_response_file_tools.py`、`test_agent_file_tools.py`、`test_agent_tool_discovery.py`、`test_responses.py`、`test_agent_output_repair.py`、`test_worker_evidence.py`、`test_claim_sources.py`、`test_evidence_output_repair.py`、`test_file_parsing.py`、`test_parsed_file_ranges.py`、`test_conversation_file_context.py`，及 `packages/models/tests/test_transport_cancellation.py`：194 项通过。覆盖代理分词、旧 Context 字节估算重算、旧结果正文省略、最新并行工具结果与私有续接保留、末尾块搜索与分页、有限补读、最终回答名额、引用/归属和取消。测试使用 SQLite/内存对象存储及脚本化 Provider；另已只读核对上述真实运行的 MySQL/MinIO 记录。未把这些结果解释为 Strata/DeepSeek 实测通过；API Docker 镜像本轮未构建。
+
 ## 当前事实
 
 - `packages/models` 已有 Provider 无关的 `ToolDefinition`、`ToolCall` 和 Tool Message 合同；它们只表达“模型请求调用什么”，不负责执行、权限和审计。
@@ -88,7 +108,7 @@
 已实现的文件工具是 `list_run_files`、`get_file_outline`、`read_file_content`、`read_file_table`、`search_file_content`。输入类型同时生成模型 Schema 和服务端参数检查；当前采用下节说明的静态 `RegisteredTool`，不等同完整动态工具发布能力。列文件读取当前已保存回合允许的附件；其余工具接收 `file_id`，分段工具接受块偏移/数量，搜索额外接收字面关键词。结果复用已经持久保存的解析内容，返回来源哈希、解析版本、遗漏警告和读取数据；不重新执行上传文件内的代码，不补造 OCR、PDF 表格或目录。未来目录中设计的高级页范围、列文件游标等不能当作当前参数使用。
 
 - 权限：从 Attempt → Run → 用户/会话及固定消息附件关系取权限，不接受模型提供 owner、存储地址、绝对路径或命令。每次执行及再次发送历史工具结果前校验文件归属、当前回合附件、删除状态和来源哈希。已知其他用户或其他会话的文件 ID 也不能读取。
-- 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正，加载集合未变化时，重复同名同参数调用停止。一个模型响应最多 8 个调用，第一版顺序执行；每次读取最长 15 秒，单次结果最多 65,536 字节，过大返回错误要求缩小读取范围，不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
+- 多轮：先保存工具请求和结果，再按调用 ID 回填 Assistant Tool Call 与 Tool Message。每轮有独立 Attempt，累计现有模型调用/费用预算；拒绝、参数错误、超时等返回结构化错误供模型修正。重复请求、按完整块分页和工具历史处理以[长文件读取与工具历史](#长文件读取与工具历史2026-10-18)为准。一个模型响应最多 8 个调用，第一版顺序执行；不静默截断原文件。任务模型调用数由 Controller 计划和现有工作流预算共同校验，没有新增低输出 token 上限。
 - 持久记录：迁移 `20261008_0023` 在原 `llm_tool_calls` 增加四个可空字段和唯一约束，旧记录保留。重复逻辑调用拒绝再次执行，不以旧缓存绕过撤销检查。节点证据聚合全部轮次及工具状态，Handoff 的 `files_read` 来自成功读取记录。工具结果提交后发出 `agent.node.progress`，运行中和刷新后的详情均可查看调用状态；浏览器不接收原始工具结果、私有续接内容或对象存储地址。
 - 上下文：每轮保留原 Context 构建 ID，在私有 Attempt 请求记录保存包含工具消息的 `effective_messages`；模型收到原有消息加本次完整工具历史。当前 Context 抽屉仍展示基础构建快照，尚未逐条展开工具消息；工具调用详情以节点证据及内部审计记录为准。未提供工具定义的最终／修正轮也已保存 `effective_messages`，本地回归通过，真实 Provider 审计复验未执行；具体规则见[阶段2](phase-2-llm-core-capabilities.md#基础上下文与最终有效请求)。工具消息过大时明确失败，不虚构完整上下文或自动摘要替换文件。
 - Provider：本地协议测试覆盖 OpenAI、OpenAI-compatible/DeepSeek、Anthropic、Gemini 的调用/结果配对；有签名或私有推理续接时按原序保留在后端。中间工具轮不同时强制最终 JSON Schema，最终结果仍必须通过类型校验。真实 DeepSeek 的本地 HTTP/SSE 文件工具验证已通过上述四个场景；其他真实 Provider 与真实浏览器 Provider 矩阵未执行。

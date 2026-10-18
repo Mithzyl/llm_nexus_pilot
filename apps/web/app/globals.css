@@ -232,6 +232,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .new-chat:hover { transform: translateY(-1px); box-shadow: 0 9px 24px var(--shadow); }
 
 .eyebrow { margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.file-drop-overlay { position: fixed; inset: 16px; z-index: 100; display: grid; place-items: center; pointer-events: none; border: 1px dashed var(--muted); border-radius: 16px; background: color-mix(in srgb, var(--page) 94%, transparent); color: var(--text); font-size: 18px; padding: 24px; text-align: center; }
 .session-group { flex: 1; min-height: 0; margin-top: 27px; overflow-y: auto; }
 .session-group .eyebrow { padding: 0 9px 9px; }
 .session-item {

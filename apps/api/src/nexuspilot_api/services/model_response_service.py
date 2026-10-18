@@ -64,6 +64,11 @@ from nexuspilot_api.services.model_reasoning_service import (
     record_model_response_event,
 )
 from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
+from nexuspilot_api.services.tool_context import (
+    estimate_messages_tokens,
+    estimate_text_tokens,
+    project_tool_history,
+)
 
 
 def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
@@ -221,26 +226,35 @@ class ModelInvocationService:
         context_build_id: str | None,
         tool_messages: list[Message] | None,
     ) -> ModelRequest:
-        """Append trusted tool history with the same context-window check in both HTTP modes."""
+        """Project reloadable file history using tokens, preserving durable original results."""
         if tool_messages:
             if context_build_id:
                 context = await self.db_session.get(LlmContextBuild, context_build_id)
-                # The existing Context policy bounds model input, not model output.
-                # Count the additional native history conservatively as UTF-8 bytes.
-                history_estimate = len(
-                    json.dumps(
-                        [message.model_dump(mode="json") for message in tool_messages],
+                if context:
+                    # Recount actual messages, including old builds recorded in bytes.
+                    base = estimate_messages_tokens(request.messages)
+                    base += estimate_text_tokens(json.dumps(
+                        [tool.model_dump(mode="json") for tool in request.tools],
                         ensure_ascii=False,
-                    ).encode()
-                )
-                if (
-                    context
-                    and context.input_token_estimate + history_estimate
-                    > context.token_budget - context.reserved_output_tokens
-                ):
-                    raise InvalidRequestError(
-                        "Tool history exceeds the registered model context window"
-                    )
+                    ))
+                    if request.system_instruction:
+                        base += estimate_text_tokens(request.system_instruction)
+                    if request.output_schema:
+                        base += estimate_text_tokens(json.dumps(request.output_schema))
+                    if request.provider_continuation_state:
+                        base += estimate_text_tokens(
+                            request.provider_continuation_state.model_dump_json()
+                        )
+                    if request.native_input_capabilities:
+                        base += (
+                            request.native_input_capabilities.input_token_reserve_per_file
+                            * sum(len(message.attachments) for message in request.messages)
+                        )
+                    available = context.token_budget - context.reserved_output_tokens - base
+                    try:
+                        tool_messages = project_tool_history(tool_messages, token_budget=available)
+                    except ValueError as error:
+                        raise InvalidRequestError(str(error)) from error
             request = request.model_copy(update={"messages": [*request.messages, *tool_messages]})
         return request
 
@@ -463,9 +477,9 @@ class ModelInvocationService:
         provider: Any,
         request: ModelRequest,
         *,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> AsyncIterator[StreamEvent]:
-        """Enforce one total stream deadline and normalize expiry as a retryable error."""
+        """Apply the optional total deadline; cancellation still closes an unbounded stream."""
 
         try:
             async with asyncio.timeout(timeout_seconds):

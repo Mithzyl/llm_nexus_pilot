@@ -206,18 +206,21 @@ class ToolRepairProvider(RepairProvider):
                     latency_ms=1,
                     raw_response={"fixture": "list-once"},
                 )
+            else:
+                # With three calls available, the second must submit JSON and leave one repair.
+                assert not request.tools
         return await super().generate(request)
 
 
 async def test_repair_does_not_repeat_committed_tool_call(client, test_database_session_factory):
-    """Count all three rounds but execute the persisted file-list operation only once."""
+    """Reserve v1.1 repair capacity and execute the persisted file-list operation only once."""
     run = await create_test_run(client)
     provider = ToolRepairProvider("worker_execution")
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
     result = (
         await client.post(
             f"/api/v1/runs/{run['run_id']}/agent-workflows",
-            json=workflow_payload(execution_profile="tool_enabled_v1"),
+            json=workflow_payload(execution_profile="tool_enabled_v1", workflow_version="1.1.0"),
         )
     ).json()
     assert result["status"] == "completed", result.get("error")

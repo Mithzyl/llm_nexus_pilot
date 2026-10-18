@@ -25,6 +25,7 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 from nexuspilot_api.services.model_reasoning_service import record_model_response_event
 from nexuspilot_api.services.model_response_service import ModelInvocationService
+from nexuspilot_api.services.tool_context import allow_tool_request
 
 MAX_MODEL_ROUNDS = 8
 MAX_TOOL_CALLS = 32
@@ -68,7 +69,7 @@ class ResponseFileToolService:
         self.tools = AgentFileToolService(invocation.db_session, invocation.storage)
         self.history: list[Message] = []
         self.records = []
-        self.seen = set()
+        self.seen = {}
         self.root_attempt_id: str | None = None
         self.sequence = 0
         self.results: list[ResponsesResult] = []
@@ -133,15 +134,18 @@ class ResponseFileToolService:
         return public
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
-        """Continue until an answer, bounded failure or cancellation with durable SSE replay."""
-        deadline = monotonic() + payload.timeout_seconds
+        """Continue within the call budget and optional deadline; propagate cancellation."""
+        deadline = (
+            monotonic() + payload.timeout_seconds if payload.timeout_seconds is not None else None
+        )
         try:
             for index in range(MAX_MODEL_ROUNDS):
                 await self.tools.validate_history(payload.run_id, self.records)
-                remaining = deadline - monotonic()
-                if remaining < 1:
+                remaining = deadline - monotonic() if deadline is not None else None
+                if remaining is not None and remaining < 1:
                     raise InvalidRequestError("文件读取已超时，请缩小问题范围后重试。")
-                definitions = self.tools.definitions()
+                # Reserve the final round for an answer stating any unread scope.
+                definitions = self.tools.definitions() if index < MAX_MODEL_ROUNDS - 1 else []
                 versions = {
                     tool.name: self.tools.loaded_versions[tool.name] for tool in definitions
                 }
@@ -223,12 +227,13 @@ class ResponseFileToolService:
                 self.history.append(assistant)
                 for call in calls:
                     fingerprint = json.dumps([call.name, call.arguments, versions], sort_keys=True)
-                    if fingerprint in self.seen:
+                    if not allow_tool_request(self.seen, call.name, fingerprint, len(self.records)):
                         raise InvalidRequestError(
                             "模型重复读取相同文件位置且没有进展，请调整问题后重试。"
                         )
-                    self.seen.add(fingerprint)
-                    async with asyncio.timeout(max(0, deadline - monotonic())):
+                    async with asyncio.timeout(
+                        max(0, deadline - monotonic()) if deadline is not None else None
+                    ):
                         record = await self.tools.execute(
                             attempt_id=response.id, call=call, offered_versions=versions
                         )

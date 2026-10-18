@@ -1,5 +1,15 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
+## 2026-10-18 附件快速回复超时诊断
+
+本地历史 Run `e22e5586-0ef4-4b1f-8dc9-631bf0740249` 的 Strata 附件工具循环在北京时间 12:03:46 开始，前五次模型调用已完成，第六次从 12:04:44 到 12:04:46 即超时。前端将 60 秒传入整轮流程，`ResponseFileToolService` 每轮使用剩余时间，因此该错误不能解释为上传解析失败或供应商单次响应等待了 60 秒。最后一次的用量未知，不能推断未计费。
+
+按用户后续要求，取消曾设置的 300 秒上限：Web 快速回复显式传入 `timeout_seconds: null`，API、模型请求、普通生成、SSE 和附件工具循环均不设置模型生成整轮截止时间。省略字段仍默认 60 秒，显式有限值仍接受 1–600 秒，以兼容其他调用方。HTTP 模型响应读取不限时，但连接等待保留 10 秒、请求写入和连接池等待保留 30 秒；工具自身资源限制、最多 8 次模型轮次和 32 个工具调用保持不变。本次不改变 Agent 的任务/工作流时间与调用预算，也不承诺消除供应商或代理自身超时。
+
+显式取消仍传播到供应商响应读取与工具执行；取消不重试、不启动下一模型轮次，Run 保存 cancelled，供应商未确认的结果与费用仍保持未知。同一标签页内切走再切回保留原执行控制器；若停止发生在准备阶段而 Run 随后才创建，则通过已有 Run 取消接口结束未发起模型请求的 Run。BFF 此入口检查当前用户归属与 CSRF，不用 Run 状态修改代替已发出请求的连接取消。快速回复恢复时持续只读跟进非终态，处理断开与服务端取消提交的时间差。关闭标签页、进程重启后仍不具备跨进程执行控制器恢复。
+
+验证：API/附件/Run 状态/供应商及独立 JSON/SSE 传输取消共 126 项测试通过，确认无限读取可取消、关闭响应体且不重试；前端 151 项测试通过，包括 BFF 传递 null 和 AbortSignal、响应体取消及跨用户拒绝。Playwright 固定响应验证发送 null、切走返回仍能停止、取消后可继续发送且只有一次模型请求，截图 `output/playwright/unbounded-stop-after-return.png`；准备阶段停止后只调用一次 Run 取消、零模型请求，截图 `output/playwright/prepared-run-stop.png`。没有重新调用 Strata/DeepSeek，真实文件解读与供应商远端停止计费未验证。未部署。
+
 ## 2026-10-18 快速回复整轮状态修复
 
 `ConversationResponseService` 在 HTTP Responses 入口管理绑定用户消息的快速回复 Run。校验消息属于该 Run 和会话后，条件更新 pending → running，拒绝重复执行或已由 Task/Workflow 管理的 Run。普通模型服务仍只管理 Attempt；自动文件工具的多个模型轮次结束前，不将整个 Run 标为完成。整轮响应完成、失败、客户端取消及无终止事件退出，分别保存 Run 终态；终态先提交，再发送 SSE 终止事件。无当前用户消息、带 Task 或外部 tools 的通用调用保持原有职责，不擅自结束其 Run。
@@ -677,7 +687,7 @@ candidate | active | rejected | superseded -> deleted
 - Retriever 先按 `user_id`、已提供的 Session/Run/Task 链路、`active`、未过期和可选 `memory_type` 过滤，再使用查询词哈希与当前 Memory 版本的词哈希计算匹配。已删除、拒绝、已替代或过期内容绝不进入排序。
 - 查询与正文使用同一确定性分词规则。`memory_ranker_v1` 使用整数基点计算：60% 词集 Jaccard 相关度、15% scope 精确度、10% importance、10% confidence 和 5% recency；各分量与总分都保存在检索结果证据中。
 - 最终稳定排序使用 `total_score DESC, updated_at DESC, memory_id ASC`。同一 User 下同一幂等键重试直接返回原检索记录和排序结果，不重算分数。
-- token 估算第一版使用 `utf8_bytes_upper_bound_v1`，按每个 UTF-8 字节最多预算一个 token，作为保守且可复现的上界；它不伪装成目标模型的精确 tokenizer，Context Builder 必须重新核算。单项超出剩余预算时记录 `token_budget_exceeded` 并继续检查后续项，不截断正文。
+- 当前新建 Context 使用 `context_policy.v3` 与 `cl100k_base_proxy/v1`：由 `tiktoken==0.11.0` 的 `cl100k_base` 分词，加 20% 跨供应商估算余量及消息框架余量，不再把 UTF-8 字节数登记为 Token。它是输入选择估算，不是 DeepSeek/Strata 原生分词结果，也不是可保证的上界；费用和实际用量仍来自供应商 usage。旧 `utf8_bytes_upper_bound/v1` 模型目录仍兼容，历史 Context 不重写，新 Context 记录实际使用的估算器。单项超出剩余预算时记录 `token_budget_exceeded` 并继续检查后续项，不截断正文。工具历史使用同一分词函数；完整来源保存和按需读取规则见[阶段7长文件读取与工具历史](phase-7-tool-runtime-plan.md#长文件读取与工具历史2026-10-18)。
 - 每次检索都写入请求哈希、查询文本/哈希、类型条件、候选/排序策略版本及有界结果的各分量。响应可返回同一 User 下被 token 预算排除的有界候选及原因，但不得返回跨 User、状态不可用、过期或已擦除的正文。
 
 #### 为什么第一版不引入向量存储（Vector Store）
@@ -1274,7 +1284,7 @@ metadata
 - `provider` 使用受控枚举，不允许将任意 URL 当作供应商地址。
 - HTTP `model` 最长 128 个字符，与 `llm_attempts.model` 的 MySQL 列宽一致；超长名称在创建 Attempt 前返回 `422`。
 - `messages`、工具结构和输出结构在进入适配器前完成 Pydantic 校验。
-- `timeout_seconds` 受平台最小值和最大值限制，调用方不能无限延长请求。
+- `timeout_seconds` 省略时为 60 秒，有限值限制为 1–600 秒；显式 null 表示不设置模型生成截止时间，但保留显式取消、调用次数和工具资源限制。
 - `metadata` 只保存可检索的非敏感标识，不保存 API Key、完整私人文件或未脱敏凭据。
 - `max_output_tokens` 保留为可选 Provider 参数，统一允许范围为 1～65536。调用方省略时，OpenAI、DeepSeek/OpenAI-Compatible 和 Gemini 适配器不发送该限制字段，避免平台主动缩短模型输出；Anthropic Messages 协议要求请求包含 `max_tokens`，因此省略时使用 65536 作为协议兼容值。后续若需要按模型细分上限，应通过 Model Catalog 能力合同设计，不在各业务入口散落不同阈值。
 - `output_schema` 只表示期望的 JSON Schema；适配器必须根据供应商能力决定原生结构化输出或返回明确的“不支持”错误，不得静默忽略。

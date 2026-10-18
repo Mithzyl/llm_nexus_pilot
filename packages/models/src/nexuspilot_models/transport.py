@@ -49,15 +49,22 @@ class HttpTransport:
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
 
+    @staticmethod
+    def _request_timeout(timeout_seconds: float | None) -> httpx.Timeout:
+        """Remove only the model read deadline; keep connection, write and pool waits bounded."""
+        if timeout_seconds is None:
+            return httpx.Timeout(connect=10, read=None, write=30, pool=30)
+        return httpx.Timeout(timeout_seconds)
+
     async def post_json(
         self,
         url: str,
         *,
         headers: dict[str, str],
         payload: dict[str, Any],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> JsonHttpResult:
-        """POST JSON, retry temporary failures, and decode a JSON object response."""
+        """POST JSON with optional unlimited read time; cancellation never triggers a retry."""
 
         attempts: list[TransportAttempt] = []
         for attempt_index in range(1, self.max_retries + 2):
@@ -67,7 +74,7 @@ class HttpTransport:
                     url,
                     headers=headers,
                     json=payload,
-                    timeout=timeout_seconds,
+                    timeout=self._request_timeout(timeout_seconds),
                 )
             except httpx.TimeoutException as exc:
                 attempts.append(
@@ -143,11 +150,11 @@ class HttpTransport:
         *,
         headers: dict[str, str],
         payload: dict[str, Any],
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> AsyncIterator[
         tuple[AsyncIterator[SSEMessage], httpx.Headers, list[TransportAttempt]]
     ]:
-        """Retry pre-stream connection failures; classify read failures without replaying output."""
+        """Allow unlimited stream reads on request while closing transport on cancellation."""
 
         attempts: list[TransportAttempt] = []
         for attempt_index in range(1, self.max_retries + 2):
@@ -158,7 +165,7 @@ class HttpTransport:
                     url,
                     headers=headers,
                     json=payload,
-                    timeout=timeout_seconds,
+                    timeout=self._request_timeout(timeout_seconds),
                 )
                 response = await stream_context.__aenter__()
             except httpx.TimeoutException as exc:

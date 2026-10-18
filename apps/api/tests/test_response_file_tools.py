@@ -27,7 +27,8 @@ class QuickFileProvider(ScriptedAgentProvider):
     async def generate(self, request):
         """Exercise native tool continuation without a Controller or paid model."""
         self.requests.append(request)
-        assert "list_run_files" in {tool.name for tool in request.tools}
+        if request.tools:
+            assert "list_run_files" in {tool.name for tool in request.tools}
         results = [message for message in request.messages if message.role.value == "tool"]
         for message in request.messages:
             if message.role.value == "assistant" and message.tool_calls:
@@ -92,11 +93,13 @@ class QuickFileProvider(ScriptedAgentProvider):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("followup", [False, True])
+@pytest.mark.parametrize("timeout_seconds", [60, None])
 async def test_quick_reply_automatically_reads_files_and_replays_one_final_answer(
     client,
     test_database_session_factory,
     stream,
     followup,
+    timeout_seconds,
 ):
     """Both HTTP modes retain tool rounds and only finish on the final answer."""
     owner, session, _, turn = await prepare_conversation_file(client)
@@ -117,6 +120,7 @@ async def test_quick_reply_automatically_reads_files_and_replays_one_final_answe
             "provider": "openai",
             "model": "test-model",
             "input": "Read the attachment",
+            "timeout_seconds": timeout_seconds,
             "stream": stream,
             "idempotency_key": "quick-file-tools-test",
         },
@@ -150,6 +154,24 @@ async def test_quick_reply_automatically_reads_files_and_replays_one_final_answe
         assert all(a.request_type == "file_tool_round" for a in attempts)
         assert len(calls) == 2 and all(c.status == "completed" for c in calls)
         assert any("UNIQUE_FILE_TEXT_2718" in str(c.output_json) for c in calls)
+
+
+async def test_quick_tools_reserve_last_round_for_answer(client, monkeypatch):
+    """The final budgeted call cannot spend its slot requesting another file read."""
+    monkeypatch.setattr(
+        "nexuspilot_api.services.response_file_tool_service.MAX_MODEL_ROUNDS", 3
+    )
+    _, _, _, turn = await prepare_conversation_file(client)
+    provider = QuickFileProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    reply = await client.post("/api/v1/responses", json={
+        "run_id": turn["run"]["run_id"],
+        "current_user_message_id": turn["message"]["message_id"],
+        "provider": "openai", "model": "test-model", "input": "Read attachment",
+    })
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["output_text"] == "File answer: UNIQUE_FILE_TEXT_2718"
+    assert provider.requests[-1].tools == []
 
 
 @pytest.mark.parametrize("behavior", ["answer", "repeat", "forbidden"])
@@ -249,8 +271,10 @@ async def test_quick_file_history_is_not_resent_after_deletion(client, monkeypat
     assert len(provider.requests) == 2
 
 
+@pytest.mark.parametrize("timeout_seconds", [60, None])
+@pytest.mark.parametrize("stream", [False, True])
 async def test_cancelling_quick_tool_execution_does_not_launch_another_model_round(
-    client, monkeypatch
+    client, monkeypatch, timeout_seconds, stream
 ):
     """Propagate cancellation during a tool read without continuing to a paid model round."""
     from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
@@ -280,6 +304,8 @@ async def test_cancelling_quick_tool_execution_does_not_launch_another_model_rou
                 "provider": "openai",
                 "model": "test-model",
                 "input": "Read",
+                "timeout_seconds": timeout_seconds,
+                "stream": stream,
             },
         )
     )

@@ -383,7 +383,10 @@ class ModelRequest(ContractModel):
         ge=1,
         le=MAX_PROVIDER_OUTPUT_TOKENS,
     )
-    timeout_seconds: float = Field(default=60, ge=1, le=600)
+    timeout_seconds: float | None = Field(
+        default=60, ge=1, le=600,
+        description="Null disables the generation deadline, not explicit cancellation.",
+    )
     metadata: dict[str, str] = Field(default_factory=dict)
     provider_continuation_state: ProviderContinuationState | None = Field(
         default=None,

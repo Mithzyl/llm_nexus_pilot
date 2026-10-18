@@ -47,7 +47,10 @@ class ResponsesRequest(BaseModel):
         ge=1,
         le=MAX_PROVIDER_OUTPUT_TOKENS,
     )
-    timeout_seconds: float = Field(default=60, ge=1, le=600)
+    timeout_seconds: float | None = Field(
+        default=60, ge=1, le=600,
+        description="Null disables the overall generation deadline; cancellation remains active.",
+    )
     metadata: dict[str, str] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
     stream: bool = False

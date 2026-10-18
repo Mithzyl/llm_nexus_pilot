@@ -1,5 +1,7 @@
 "use client";
 
+import { guardViewUpdate } from "../lib/view-updates";
+import { useFileDrop } from "../components/composer/useFileDrop";
 import { FileLibrary } from "../components/composer/FileLibrary";
 import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
 import { selectClaimEntries } from "../lib/claim-evidence";
@@ -8,6 +10,7 @@ import { messageFiles, uploadUserFile, validateUploadFiles, type UserFile } from
 import {
   browserCsrfHeaders,
   cancelAgentWorkflow,
+  cancelPreparedRun,
   createMessage,
   createConversationTurn,
   createSession,
@@ -364,16 +367,16 @@ export default function Home() {
   );
   const [composerClearancePx, setComposerClearancePx] = useState(180);
   const [isComposerMinimized, setIsComposerMinimized] = useState(false);
-  const latestAssistantText = useRef("");
-  const latestReasoningBlocks = useRef<ReasoningPresentation[]>([]);
-  const assistantProjectionFrame = useRef<number | null>(null);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const composerWrap = useRef<HTMLDivElement | null>(null);
   const composerTextarea = useRef<HTMLTextAreaElement | null>(null);
   const shouldAutoFollowConversation = useRef(true);
-  const activeResponseAttemptId = useRef<string | null>(null);
-  const lastResponseSequence = useRef(0);
   const activeRequestController = useRef<AbortController | null>(null);
+  const localExecutions = useRef(new Map<string, {
+    current: AbortController | null;
+    mode: ExecutionMode;
+    preparing: boolean;
+  }>());
   const restoredRouteKey = useRef<string | null>(null);
   const sessionRestoreRequestId = useRef(0);
   const workflowRestoreRequestId = useRef(0);
@@ -381,6 +384,7 @@ export default function Home() {
 
   /** Release recovery reads on unmount; this never cancels server-side execution. */
   useEffect(() => () => {
+    sessionRestoreRequestId.current += 1;
     workflowRestoreRequestId.current += 1;
     workflowRecoveryController.current?.abort();
   }, []);
@@ -470,26 +474,6 @@ export default function Home() {
           ? "ready"
           : "empty"
     : contextEvidenceState;
-
-  /** Batch text and reasoning token projections into one browser animation frame. */
-  function scheduleAssistantProjection(assistantLocalId: string) {
-    if (assistantProjectionFrame.current !== null) return;
-    assistantProjectionFrame.current = window.requestAnimationFrame(() => {
-      assistantProjectionFrame.current = null;
-      setMessages((current) =>
-        current.map((message) =>
-          message.local_id === assistantLocalId
-            ? {
-                ...message,
-                content: latestAssistantText.current,
-                content_preview: latestAssistantText.current,
-                reasoningBlocks: latestReasoningBlocks.current,
-              }
-            : message,
-        ),
-      );
-    });
-  }
 
   useEffect(() => {
     let isMounted = true;
@@ -660,15 +644,6 @@ export default function Home() {
   }, [authenticationState]);
 
   useEffect(() => {
-    /** Cancel an uncommitted visual projection when the workspace unmounts. */
-    return () => {
-      if (assistantProjectionFrame.current !== null) {
-        window.cancelAnimationFrame(assistantProjectionFrame.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     const mobileQuery = window.matchMedia("(max-width: 880px)");
     /** Keep the detail overlay closed on narrow screens while preserving desktop visibility. */
     const syncInspectorVisibility = () => setIsInspectorOpen(!mobileQuery.matches);
@@ -796,6 +771,11 @@ export default function Home() {
 
   /** Add newly selected files without duplicating the same browser-local file identity. */
   function handlePendingFilesSelected(files: File[]) {
+    try { validateUploadFiles([...pendingUploadFiles, ...files]); }
+    catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "文件不符合要求。");
+      return;
+    }
     setPendingUploadFiles((currentFiles) => {
       const currentFileKeys = new Set(currentFiles.map(pendingUploadFileKey));
       const nextFiles = [...currentFiles];
@@ -809,6 +789,8 @@ export default function Home() {
     });
     setErrorMessage(null);
   }
+
+  const fileDrop = useFileDrop(handlePendingFilesSelected, isSending);
 
   /** Remove a pending selection; persisted leftovers remain explicitly manageable in My Files. */
   function handlePendingFileRemove(fileKey: string) {
@@ -996,6 +978,32 @@ export default function Home() {
       if (workflowRestoreRequestId.current !== requestId) return;
       if (error instanceof NexusApiError && error.status === 404) {
         setWorkflowAbsentForRunId(runId);
+        // Quick-response cleanup may commit after an abort is observed in the browser.
+        // Restoring a running Run must keep observing it instead of freezing on that read.
+        const quickRun = await getRun(runId);
+        if (workflowRestoreRequestId.current !== requestId) return;
+        setRun(quickRun);
+        if (["pending", "running", "cancel_requested"].includes(quickRun.status)) {
+          const recovery = new AbortController();
+          workflowRecoveryController.current = recovery;
+          void followWorkflowResult({
+            signal: recovery.signal,
+            read: (signal) => getRun(runId, signal),
+            apply: (updatedRun) => {
+              if (workflowRestoreRequestId.current !== requestId) return;
+              setRun(updatedRun);
+              if (!["pending", "running", "cancel_requested"].includes(updatedRun.status) &&
+                  updatedRun.session_id && activeSessionIdValue.current === updatedRun.session_id) {
+                void restoreSessionHandler.current(updatedRun.session_id);
+              }
+            },
+            onError: () => {
+              if (workflowRestoreRequestId.current === requestId) {
+                setErrorMessage("暂时无法确认执行是否结束，正在重试读取状态；请勿重复提交。");
+              }
+            },
+          });
+        }
         return;
       }
       setErrorMessage(error instanceof Error ? error.message : "无法读取 Agent Workflow。");
@@ -1094,8 +1102,10 @@ export default function Home() {
   async function executeAgentWorkflow(
     createdRun: Run,
     assistantMessage: LocalMessage,
+    isCurrent: () => boolean,
+    executionRequest: { current: AbortController | null },
   ): Promise<AgentWorkflowResult> {
-    resetAgentWorkflowFacts();
+    if (isCurrent()) resetAgentWorkflowFacts();
     const binding = {
       provider: selectedProvider as ProviderName,
       model: selectedModel,
@@ -1103,7 +1113,8 @@ export default function Home() {
       timeout_seconds: 60,
     };
     const controller = new AbortController();
-    activeRequestController.current = controller;
+    executionRequest.current = controller;
+    if (isCurrent()) activeRequestController.current = controller;
     const response = await openAgentWorkflowStream(
       createdRun.run_id,
       {
@@ -1130,12 +1141,14 @@ export default function Home() {
     await readAgentWorkflowEventStream(
       response,
       async (event: AgentWorkflowEvent) => {
+        if (!isCurrent()) return;
         setAgentEventState((current) => appendAgentWorkflowEvent(current, event));
         if (event.event_type === "agent.workflow.started") {
           try {
-            setAgentWorkflow(await getAgentWorkflowSummary(event.workflow_execution_id));
+            const summary = await getAgentWorkflowSummary(event.workflow_execution_id);
+            if (isCurrent()) setAgentWorkflow(summary);
           } catch (error) {
-            setErrorMessage(
+            if (isCurrent()) setErrorMessage(
               `工作流已启动，但摘要暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
             );
           }
@@ -1159,14 +1172,13 @@ export default function Home() {
           event.event_type !== "agent.node.started"
         ) {
           try {
-            mergeAgentWorkflowNode(
-              await getAgentWorkflowNode(
+            const node = await getAgentWorkflowNode(
                 event.workflow_execution_id,
                 event.node_execution_id,
-              ),
-            );
+              );
+            if (isCurrent()) mergeAgentWorkflowNode(node);
           } catch (error) {
-            setErrorMessage(
+            if (isCurrent()) setErrorMessage(
               `工作流仍在运行，但节点证据暂不可用：${error instanceof Error ? error.message : "未知错误"}`,
             );
           }
@@ -1177,8 +1189,11 @@ export default function Home() {
 
     const summary = await getRunAgentWorkflow(createdRun.run_id);
     const result = await getAgentWorkflowResult(summary.workflow_execution_id);
-    applyAgentWorkflowResult(result, assistantMessage.local_id);
-    setRun(await getRun(createdRun.run_id));
+    const updatedRun = await getRun(createdRun.run_id);
+    if (isCurrent()) {
+      applyAgentWorkflowResult(result, assistantMessage.local_id);
+      setRun(updatedRun);
+    }
     return result;
   }
 
@@ -1189,6 +1204,7 @@ export default function Home() {
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
     const requestId = ++sessionRestoreRequestId.current;
+    detachSubmissionView();
     const nextDraftStorageKey = conversationDraftStorageKey(sessionId, workspacePrincipal?.user_id);
     if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
@@ -1236,6 +1252,13 @@ export default function Home() {
       const hasPersistedAssistant = hasSavedAssistantForLatestTurn(page.items);
       setResponseCompleted(hasPersistedAssistant);
       setAssistantSaved(hasPersistedAssistant);
+      const localExecution = localExecutions.current.get(sessionId);
+      if (localExecution) {
+        // Returning to an in-tab execution must restore Stop, not only the busy label.
+        activeRequestController.current = localExecution.current;
+        setExecutionMode(localExecution.mode);
+        setIsSending(true);
+      }
     } catch (error) {
       if (sessionRestoreRequestId.current !== requestId) return;
       setErrorMessage(error instanceof Error ? error.message : "无法读取会话消息");
@@ -1244,6 +1267,15 @@ export default function Home() {
       setHasMoreMessages(false);
       if (requestedRun !== undefined) restoreRunFacts(requestedRun);
     }
+  }
+
+  /** Leave the running request alive while releasing controls for another conversation. */
+  function detachSubmissionView() {
+    activeRequestController.current = null;
+    submissionInProgress.current = false;
+    setIsSending(false);
+    setIsCancellingWorkflow(false);
+    setUploadProgress("");
   }
 
   /** Return the inspector to live workbench facts without changing any execution state. */
@@ -1318,6 +1350,7 @@ export default function Home() {
    */
   function resetConversationView() {
     sessionRestoreRequestId.current += 1;
+    detachSubmissionView();
     showCurrentRunEvidence();
     setActiveSessionId(null);
     setMessages([]);
@@ -1579,10 +1612,13 @@ export default function Home() {
   async function handleCancelAgentWorkflow() {
     if (!run || isCancellingWorkflow) return;
     const workflowRunId = run.run_id;
+    const viewId = sessionRestoreRequestId.current;
+    const isCurrent = () => sessionRestoreRequestId.current === viewId;
     setIsCancellingWorkflow(true);
     setErrorMessage(null);
     try {
       const currentWorkflow = agentWorkflow ?? await getRunAgentWorkflow(workflowRunId);
+      if (!isCurrent()) return;
       setAgentWorkflow((current) =>
         current?.run_id && current.run_id !== workflowRunId ? current : currentWorkflow,
       );
@@ -1591,6 +1627,7 @@ export default function Home() {
       const cancelledWorkflow = await cancelAgentWorkflow(
         currentWorkflow.workflow_execution_id,
       );
+      if (!isCurrent()) return;
       setAgentWorkflow((current) =>
         current?.run_id && current.run_id !== workflowRunId ? current : cancelledWorkflow,
       );
@@ -1609,20 +1646,24 @@ export default function Home() {
         ),
       );
       const refreshedRun = await getRun(workflowRunId);
+      if (!isCurrent()) return;
       setRun((current) =>
         current?.run_id === workflowRunId ? refreshedRun : current,
       );
     } catch (error) {
-      setErrorMessage(
-        error instanceof Error ? error.message : "无法取消 Agent Workflow。",
-      );
+      if (isCurrent()) setErrorMessage(error instanceof Error ? error.message : "无法取消 Agent Workflow。");
     } finally {
-      setIsCancellingWorkflow(false);
+      if (isCurrent()) setIsCancellingWorkflow(false);
     }
   }
 
   /** Abort file preparation before any workflow exists; otherwise cancel the active execution. */
   function handleStop() {
+    const localExecution = activeSessionId ? localExecutions.current.get(activeSessionId) : null;
+    if (localExecution && (localExecution.preparing || localExecution.mode === "response")) {
+      localExecution.current?.abort();
+      return;
+    }
     if (uploadProgress) {
       activeRequestController.current?.abort();
       return;
@@ -1661,6 +1702,44 @@ export default function Home() {
     sessionRestoreRequestId.current += 1;
     const submittedMode = executionMode;
     const submissionRestoreRequestId = sessionRestoreRequestId.current;
+    const isCurrent = () => sessionRestoreRequestId.current === submissionRestoreRequestId;
+    const view = {
+      setErrorMessage: guardViewUpdate(isCurrent, setErrorMessage),
+      setIsSending: guardViewUpdate(isCurrent, setIsSending),
+      setUploadProgress: guardViewUpdate(isCurrent, setUploadProgress),
+      setMessages: guardViewUpdate(isCurrent, setMessages),
+      setActiveSessionId: guardViewUpdate(isCurrent, setActiveSessionId),
+      setResponseCompleted: guardViewUpdate(isCurrent, setResponseCompleted),
+      setAssistantSaved: guardViewUpdate(isCurrent, setAssistantSaved),
+      setAssistantSaveFailed: guardViewUpdate(isCurrent, setAssistantSaveFailed),
+      setPendingUploadFiles: guardViewUpdate(isCurrent, setPendingUploadFiles),
+      setRun: guardViewUpdate(isCurrent, setRun),
+      setRunModelFacts: guardViewUpdate(isCurrent, setRunModelFacts),
+      setAttemptId: guardViewUpdate(isCurrent, setAttemptId),
+      setRunUsage: guardViewUpdate(isCurrent, setRunUsage),
+      resetAgentWorkflowFacts: guardViewUpdate(isCurrent, resetAgentWorkflowFacts),
+      clearCommittedDraft: guardViewUpdate(isCurrent, clearCommittedDraft),
+    };
+    const savedDraftKey = draftStorageKey.current;
+    const executionRequest = {
+      current: null as AbortController | null, mode: submittedMode, preparing: true,
+    };
+    if (activeSessionId) localExecutions.current.set(activeSessionId, executionRequest);
+    const latestAssistantText = { current: "" };
+    const latestReasoningBlocks = { current: [] as ReasoningPresentation[] };
+    const activeResponseAttemptId = { current: null as string | null };
+    const lastResponseSequence = { current: 0 };
+    const assistantProjectionFrame = { current: null as number | null };
+    const uploadCache = new Map(uploadedFileCache.current);
+    /** Project only this request's private buffers into its still-visible message. */
+    function scheduleAssistantProjection(assistantLocalId: string) {
+      if (!isCurrent() || assistantProjectionFrame.current !== null) return;
+      assistantProjectionFrame.current = window.requestAnimationFrame(() => {
+        assistantProjectionFrame.current = null;
+        view.setMessages(current => current.map(message => message.local_id === assistantLocalId
+          ? { ...message, content: latestAssistantText.current, content_preview: latestAssistantText.current, reasoningBlocks: latestReasoningBlocks.current } : message));
+      });
+    }
     let submittedRunId: string | null = null;
     let submittedAssistantLocalId: string | null = null;
     let submittedSessionId: string | null = null;
@@ -1671,36 +1750,39 @@ export default function Home() {
       publishConversationSyncEvent("submission-started", syncNotificationSessionId);
     }
 
-    setIsSending(true);
-    setErrorMessage(null);
+    view.setIsSending(true);
+    view.setErrorMessage(null);
     const userMessage = createLocalMessage("user", input);
 
     try {
       const uploadController = new AbortController();
-      activeRequestController.current = uploadController;
+      executionRequest.current = uploadController;
+      if (isCurrent()) activeRequestController.current = uploadController;
       const fileIds: string[] = [];
       for (const file of pendingUploadFiles) {
-        setUploadProgress(`正在上传并解析：${file.name}`);
+        view.setUploadProgress(`正在上传并解析：${file.name}`);
         const key = pendingUploadFileKey(file);
-        let uploaded = uploadedFileCache.current.get(key);
+        let uploaded = uploadCache.get(key);
         if (!uploaded) {
           uploaded = await uploadUserFile(file, crypto.randomUUID(), uploadController.signal);
-          uploadedFileCache.current.set(key, uploaded);
+          uploadCache.set(key, uploaded);
+          if (isCurrent()) uploadedFileCache.current.set(key, uploaded);
         }
         fileIds.push(uploaded.file_id);
       }
       if (uploadController.signal.aborted) return;
-      setUploadProgress("");
-      setMessages((current) => [...current, userMessage]);
+      view.setUploadProgress("");
+      view.setMessages((current) => [...current, userMessage]);
       let session = activeSession;
       if (!session) {
         session = await createSession(input.slice(0, 42));
         setSessions((current) => [session as Session, ...current]);
-        setActiveSessionId(session.session_id);
+        view.setActiveSessionId(session.session_id);
         syncNotificationSessionId = session.session_id;
         publishConversationSyncEvent("submission-started", session.session_id);
       }
       submittedSessionId = session.session_id;
+      localExecutions.current.set(submittedSessionId, executionRequest);
 
       const createdTurn = await createConversationTurn(session.session_id, {
         content_text: input,
@@ -1708,10 +1790,10 @@ export default function Home() {
       });
       // Upload failure must preserve the previous saved response and its no-workflow proof.
       // Replace execution facts only after the server has created the new conversation turn.
-      setResponseCompleted(false);
-      setAssistantSaved(false);
-      setAssistantSaveFailed(false);
-      resetAgentWorkflowFacts();
+      view.setResponseCompleted(false);
+      view.setAssistantSaved(false);
+      view.setAssistantSaveFailed(false);
+      view.resetAgentWorkflowFacts();
       latestAssistantText.current = "";
       latestReasoningBlocks.current = [];
       activeResponseAttemptId.current = null;
@@ -1720,33 +1802,41 @@ export default function Home() {
         window.cancelAnimationFrame(assistantProjectionFrame.current);
         assistantProjectionFrame.current = null;
       }
-      setPendingUploadFiles([]);
-      uploadedFileCache.current.clear();
-      clearCommittedDraft();
+      view.setPendingUploadFiles([]);
+      if (isCurrent()) uploadedFileCache.current.clear();
+      if (isCurrent()) view.clearCommittedDraft();
+      else clearConversationDraft(window.sessionStorage, savedDraftKey);
       const createdRun = createdTurn.run;
-      setMessages((current) => current.map((message) =>
+      view.setMessages((current) => current.map((message) =>
         message.local_id === userMessage.local_id
           ? { ...messageFromMessage(createdTurn.message), local_id: userMessage.local_id }
           : message,
       ));
       submittedRunId = createdRun.run_id;
-      setRun(createdRun);
-      setRunModelFacts({ provider: selectedProvider, model: selectedModel });
+      view.setRun(createdRun);
+      if (uploadController.signal.aborted) {
+        await cancelPreparedRun(createdRun.run_id);
+        throw new DOMException("Preparation cancelled", "AbortError");
+      }
+      view.setRunModelFacts({ provider: selectedProvider, model: selectedModel });
 
       const assistantMessage = createLocalMessage("assistant", "", createdRun.run_id);
       submittedAssistantLocalId = assistantMessage.local_id;
       assistantMessage.pending = true;
       assistantMessage.agentWorkflow = submittedMode === "agent";
-      setMessages((current) => [...current, assistantMessage]);
+      view.setMessages((current) => [...current, assistantMessage]);
 
       if (submittedMode === "agent") {
-        const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage);
+        executionRequest.preparing = false;
+        const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage, isCurrent, executionRequest);
         hasRestorableTerminalFacts = Boolean(workflowResult.final_output?.assistant_message_id);
         return;
       }
 
       const responseController = new AbortController();
-      activeRequestController.current = responseController;
+      executionRequest.preparing = false;
+      executionRequest.current = responseController;
+      if (isCurrent()) activeRequestController.current = responseController;
       const response = await fetch("/api/nexus/responses", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...browserCsrfHeaders() },
@@ -1757,7 +1847,7 @@ export default function Home() {
           provider: selectedProvider,
           model: selectedModel,
           input,
-          timeout_seconds: 60,
+          timeout_seconds: null,
           reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
           reasoning_display_policy: reasoningDisplayPolicy,
           idempotency_key: crypto.randomUUID(),
@@ -1776,7 +1866,7 @@ export default function Home() {
         const eventAttemptId = data.attempt_id ?? event.response_id;
         if (eventAttemptId) {
           activeResponseAttemptId.current = eventAttemptId;
-          setAttemptId(eventAttemptId);
+          view.setAttemptId(eventAttemptId);
         }
         const nextReasoningBlocks = applyReasoningStreamEvent(
           latestReasoningBlocks.current,
@@ -1791,14 +1881,14 @@ export default function Home() {
           scheduleAssistantProjection(assistantMessage.local_id);
         }
         if (event.type === "response.usage" && data.usage) {
-          setRunUsage({
+          view.setRunUsage({
             input: data.usage.input_tokens ?? null,
             output: data.usage.output_tokens ?? null,
             cost: data.usage.estimated_cost ?? "—",
           });
         }
         if (event.type === "response.completed") {
-          setResponseCompleted(true);
+          view.setResponseCompleted(true);
           const responseResult = data.response;
           const completedText = responseResult?.output_text ?? latestAssistantText.current;
           const isTruncated = isResponseOutputTruncated(responseResult?.finish_reason);
@@ -1808,8 +1898,8 @@ export default function Home() {
             window.cancelAnimationFrame(assistantProjectionFrame.current);
             assistantProjectionFrame.current = null;
           }
-          setAttemptId(responseResult?.id ?? data.attempt_id ?? null);
-          setMessages((current) =>
+          view.setAttemptId(responseResult?.id ?? data.attempt_id ?? null);
+          view.setMessages((current) =>
             current.map((message) =>
               message.local_id === assistantMessage.local_id
                 ? {
@@ -1824,7 +1914,7 @@ export default function Home() {
                 : message,
             ),
           );
-          setRunUsage({
+          view.setRunUsage({
             input: responseResult?.usage.input_tokens ?? null,
             output: responseResult?.usage.output_tokens ?? null,
             cost: responseResult?.usage.estimated_cost ?? "—",
@@ -1839,8 +1929,8 @@ export default function Home() {
               metadata_json: responseMessageMetadata(responseResult?.finish_reason),
             });
             hasRestorableTerminalFacts = true;
-            setAssistantSaved(true);
-            setMessages((current) =>
+            view.setAssistantSaved(true);
+            view.setMessages((current) =>
               current.map((message) =>
                 message.local_id === assistantMessage.local_id
                   ? { ...message, ...messageFromMessage(savedMessage), local_id: message.local_id, saving: false }
@@ -1848,11 +1938,11 @@ export default function Home() {
               ),
             );
           } catch (error) {
-            setAssistantSaveFailed(true);
-            setErrorMessage(
+            view.setAssistantSaveFailed(true);
+            view.setErrorMessage(
               `响应已生成，但会话保存失败：${error instanceof Error ? error.message : "请稍后重试。"}`,
             );
-            setMessages((current) =>
+            view.setMessages((current) =>
               current.map((message) =>
                 message.local_id === assistantMessage.local_id
                   ? { ...message, saving: false, saveFailed: true }
@@ -1860,16 +1950,16 @@ export default function Home() {
               ),
             );
           }
-          setRun(await getRun(createdRun.run_id));
-          await restoreAgentWorkflowForRun(createdRun.run_id);
+          view.setRun(await getRun(createdRun.run_id));
+          if (isCurrent()) await restoreAgentWorkflowForRun(createdRun.run_id);
         }
         if (event.type === "response.failed") {
           const message = data.error?.message ?? "模型生成失败，已保留已收到的部分文本。";
-          setErrorMessage(message);
-          setResponseCompleted(false);
-          setAssistantSaved(false);
-          setAssistantSaveFailed(false);
-          setMessages((current) =>
+          view.setErrorMessage(message);
+          view.setResponseCompleted(false);
+          view.setAssistantSaved(false);
+          view.setAssistantSaveFailed(false);
+          view.setMessages((current) =>
             current.map((item) =>
               item.local_id === assistantMessage.local_id
                 ? { ...item, pending: false, saving: false, failed: true }
@@ -1892,26 +1982,26 @@ export default function Home() {
         );
       }
     } catch (error) {
-      if (activeRequestController.current?.signal.aborted) {
-        setErrorMessage("已请求停止，运行详情仍以服务端最终状态为准。");
+      if (executionRequest.current?.signal.aborted) {
+        view.setErrorMessage("已请求停止，运行详情仍以服务端最终状态为准。");
       } else {
-        setErrorMessage(error instanceof Error ? error.message : "发送失败，请稍后重试。");
+        view.setErrorMessage(error instanceof Error ? error.message : "发送失败，请稍后重试。");
       }
-      setMessages((current) =>
+      view.setMessages((current) =>
         current.map((item) =>
           item.pending
             ? {
                 ...item,
                 pending: false,
-                failed: !(activeRequestController.current?.signal.aborted),
-                cancelled: Boolean(activeRequestController.current?.signal.aborted),
+                failed: !(executionRequest.current?.signal.aborted),
+                cancelled: Boolean(executionRequest.current?.signal.aborted),
               }
             : item.saving
               ? { ...item, saving: false, saveFailed: true, failed: true }
             : item,
         ),
       );
-      if (submittedMode === "agent" && submittedRunId) {
+      if (isCurrent() && submittedMode === "agent" && submittedRunId) {
         await restoreAgentWorkflowForRun(
           submittedRunId,
           submittedAssistantLocalId ?? undefined,
@@ -1930,26 +2020,34 @@ export default function Home() {
           signal: recovery.signal,
           read: (signal) => getRun(runId, signal),
           apply: (updatedRun) => {
-            setRun((current) => current?.run_id === runId ? updatedRun : current);
+            view.setRun((current) => current?.run_id === runId ? updatedRun : current);
             if (updatedRun.status === "cancelled") {
-              setMessages((current) => current.map((message) =>
+              view.setMessages((current) => current.map((message) =>
                 message.run_id === runId && message.cancelled
                   ? { ...message, cancellationConfirmed: true } : message,
               ));
             }
           },
           onError: () => {
-            setErrorMessage("暂时无法确认执行是否结束，正在重试读取状态；请勿重复提交。");
+            view.setErrorMessage("暂时无法确认执行是否结束，正在重试读取状态；请勿重复提交。");
           },
         });
       }
-      setUploadProgress("");
-      activeRequestController.current = null;
-      setIsSending(false);
+      view.setUploadProgress("");
+      if (isCurrent()) activeRequestController.current = null;
+      if (assistantProjectionFrame.current !== null) window.cancelAnimationFrame(assistantProjectionFrame.current);
+      view.setIsSending(false);
+      const ownedSessionId = submittedSessionId ?? syncNotificationSessionId;
+      const ownsExecution = Boolean(ownedSessionId &&
+        localExecutions.current.get(ownedSessionId) === executionRequest);
+      if (ownsExecution && ownedSessionId) localExecutions.current.delete(ownedSessionId);
       if (syncNotificationSessionId) {
         publishConversationSyncEvent("submission-finished", syncNotificationSessionId);
       }
-      if (submittedSessionId) {
+      if (ownsExecution && !isCurrent() && submittedSessionId === activeSessionIdValue.current) {
+        void restoreSessionHandler.current(submittedSessionId!);
+      }
+      if (isCurrent() && submittedSessionId) {
         const navigationTarget = terminalConversationNavigationTarget(
           workspaceRoute,
           submittedSessionId,
@@ -1978,6 +2076,7 @@ export default function Home() {
       return;
     }
     submissionInProgress.current = true;
+    const viewId = sessionRestoreRequestId.current + 1;
     try {
       const lockManager = "locks" in navigator ? navigator.locks : null;
       const result = await runWithConversationSubmissionLock(
@@ -1989,7 +2088,7 @@ export default function Home() {
         setErrorMessage("此会话正在另一个标签页生成回复，请等待完成后再发送。");
       }
     } finally {
-      submissionInProgress.current = false;
+      if ([viewId - 1, viewId].includes(sessionRestoreRequestId.current)) submissionInProgress.current = false;
     }
   }
 
@@ -2031,7 +2130,10 @@ export default function Home() {
   }
 
   return (
-    <main className={`app-shell ${isDark ? "theme-dark" : ""}`}>
+    <main className={`app-shell ${isDark ? "theme-dark" : ""}`} {...fileDrop.handlers}>
+      {fileDrop.active && <div className="file-drop-overlay" role="status">
+        {isSending ? "当前对话正在运行，请切换到其他对话添加文件" : "松开以添加文件，发送消息时上传"}
+      </div>}
       <aside className={`sidebar ${isSidebarOpen ? "is-open" : ""}`} aria-label="会话导航">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true"><span /></div>
