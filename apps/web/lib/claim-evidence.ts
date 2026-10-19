@@ -4,11 +4,34 @@ export type ClaimEntry = {
   nodeId: string;
   taskId: string;
   claim: WorkerClaim;
-  assessment?: ClaimAssessment;
+  assessment?: Omit<ClaimAssessment, "verdict"> & {
+    verdict: ClaimAssessment["verdict"] | "revise" | "unconfirmed";
+  };
 };
 
-/** Associate committed claims with assessments by task and claim, never by list position. */
+/** Adapt legacy claims and the latest located candidate, binding review to its exact node. */
 export function selectClaimEntries(nodes: AgentWorkflowNodeResult[]): ClaimEntry[] {
+  const ordered = [...nodes].sort((a, b) => a.node_sequence - b.node_sequence);
+  const candidates = ordered.filter((node) => node.output_type === "general_candidate" && node.status === "completed");
+  const latest = candidates[candidates.length - 1];
+  if (latest?.output_type === "general_candidate" && latest.output && latest.task_id) {
+    const candidate = latest.output;
+    const review = ordered.filter((node) => node.output_type === "general_review" && node.status === "completed" && node.output?.candidate_node_id === latest.node_execution_id).at(-1);
+    const decisions = review?.output_type === "general_review" ? review.output?.decisions ?? [] : [];
+    const reviewSources = review?.output_type === "general_review" ? review.output?.sources ?? {} : {};
+    return (candidate.units ?? []).filter((unit) => unit.citation_status === "present").map((unit) => {
+      const decision = decisions.find((item) => item.unit_id === unit.unit_id);
+      return {
+        nodeId: latest.node_execution_id, taskId: latest.task_id!,
+        claim: {claim_key: unit.unit_id, text: unit.text, source_type: "file", kind: "assertion", scope: "read_blocks",
+          evidence_refs: unit.source_aliases.map((alias) => candidate.sources[alias])},
+        assessment: decision ? {
+          task_id: latest.task_id!, claim_key: unit.unit_id, verdict: decision.verdict,
+          explanation: decision.feedback, evidence_refs: decision.source_aliases.map((alias) => reviewSources[alias]),
+        } : undefined,
+      };
+    });
+  }
   const assessments = new Map<string, ClaimAssessment>();
   for (const node of [...nodes].sort((a, b) => a.node_sequence - b.node_sequence)) {
     if (node.output_type === "independent_review" && node.status === "completed") {
@@ -42,6 +65,8 @@ export function sourceBlockLocation(block: ClaimSources["sources"][number]["bloc
 /** Label semantic review separately from source integrity and general-knowledge evaluation. */
 export function claimVerdictLabel(entry: ClaimEntry): string {
   if (!entry.assessment) return "尚未审核";
+  if (entry.assessment.verdict === "revise") return "审核有异议";
+  if (entry.assessment.verdict === "unconfirmed") return "证据不足";
   if (entry.assessment.verdict === "contradicted") return entry.claim.source_type === "file" ? "与原文矛盾" : "审核有异议";
   if (entry.assessment.verdict === "insufficient_evidence") return "证据不足";
   return entry.claim.source_type === "file" ? "原文支持" : "审核认可";

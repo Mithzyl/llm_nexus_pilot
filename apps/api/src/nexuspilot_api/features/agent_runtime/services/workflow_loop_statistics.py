@@ -15,7 +15,8 @@ async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
     """Rebuild repair calls and outcomes; overlapping usage subtotals must not be added.
 
     Business rounds are distinct workflow_round values on legacy plans or general
-    candidates, never tool-call counts. Plan repair usage includes nested format repairs.
+    candidates, never tool-call counts. Each node/batch repair is counted separately;
+    historical events without a repair_index retain index 1. Subtotals may overlap.
     """
     events = list(
         await db.scalars(
@@ -38,13 +39,19 @@ async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
         )
     )
     requests = {
-        e.node_execution_id for e in events if e.event_type == "agent.node.output_repair.requested"
+        (e.node_execution_id, e.public_payload_json.get("repair_index", 1))
+        for e in events
+        if e.event_type == "agent.node.output_repair.requested"
     }
     completed = {
-        e.node_execution_id for e in events if e.event_type == "agent.node.output_repair.completed"
-    }
-    terminal = {n.node_execution_id for n in nodes if n.status.value in {"failed", "cancelled"}}
-    unknown = {n.node_execution_id for n in nodes if n.status.value == "outcome_unknown"}
+        (e.node_execution_id, e.public_payload_json.get("repair_index", 1))
+        for e in events
+        if e.event_type == "agent.node.output_repair.completed"
+    } & requests
+    terminal_ids = {n.node_execution_id for n in nodes if n.status.value in {"failed", "cancelled"}}
+    unknown_ids = {n.node_execution_id for n in nodes if n.status.value == "outcome_unknown"}
+    terminal = {key for key in requests if key[0] in terminal_ids}
+    unknown = {key for key in requests if key[0] in unknown_ids}
     attempts = list(
         await db.scalars(
             select(LlmModelAttempt)

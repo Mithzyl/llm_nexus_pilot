@@ -488,8 +488,17 @@ export type AgentWorkflowNodeOutputMap = {
     }>;
   };
   general_review: {
+    schema_version?: "general_review.v1" | "general_review.v2";
     verdict: "supported" | "revise" | "unconfirmed";
     feedback: string;
+    candidate_node_id?: string | null;
+    decisions?: Array<{
+      unit_id: string;
+      verdict: "supported" | "revise" | "unconfirmed";
+      feedback: string;
+      source_aliases: string[];
+    }>;
+    sources?: Record<string, FileEvidenceReference>;
   };
   request_intake: {
     normalized_objective: string;

@@ -633,11 +633,45 @@ class GeneralCandidateOutput(StrictContract):
         return self
 
 
-class GeneralReviewOutput(StrictContract):
-    """A small explicit decision tied by the node input to one candidate version."""
+class GeneralUnitReview(StrictContract):
+    """Record one model content judgment; source identity is separately checked by the backend."""
 
+    unit_id: str = Field(pattern=r"^u[1-9][0-9]*$")
     verdict: Literal["supported", "revise", "unconfirmed"]
-    feedback: str = Field(min_length=1, max_length=4000)
+    feedback: str = Field(min_length=1, max_length=512)
+    source_aliases: list[str] = Field(default_factory=list, max_length=20)
+
+
+class GeneralReviewOutput(StrictContract):
+    """Read legacy overall reviews and new backend-aggregated, candidate-scoped unit reviews."""
+
+    schema_version: Literal["general_review.v1", "general_review.v2"] = "general_review.v1"
+    verdict: Literal["supported", "revise", "unconfirmed"]
+    feedback: str = Field(min_length=1, max_length=64_000)
+    candidate_node_id: str | None = None
+    decisions: list[GeneralUnitReview] = Field(default_factory=list)
+    sources: dict[str, FileEvidenceReference] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_review_aggregate(self):
+        """Reject inconsistent v2 aggregates while keeping historical overall decisions readable."""
+        if self.schema_version == "general_review.v1":
+            return self
+        identities = [item.unit_id for item in self.decisions]
+        if not self.candidate_node_id or not identities or len(identities) != len(set(identities)):
+            raise ValueError("Unit reviews require a candidate and distinct decisions")
+        verdicts = {item.verdict for item in self.decisions}
+        expected = (
+            "revise" if "revise" in verdicts
+            else "unconfirmed" if "unconfirmed" in verdicts else "supported"
+        )
+        if self.verdict != expected:
+            raise ValueError("Aggregate verdict differs from unit decisions")
+        if any(
+            alias not in self.sources for item in self.decisions for alias in item.source_aliases
+        ):
+            raise ValueError("Review source alias has no persisted mapping")
+        return self
 
 
 NODE_OUTPUT_MODELS: dict[str, type[BaseModel]] = {

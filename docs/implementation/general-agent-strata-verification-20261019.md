@@ -29,6 +29,8 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 | 在途取消 | 已取消；上游结果未知 | 6.367 | 1 | 未知 | 未知 | 未知 |
 | 浏览器恢复/取消 | 已完成结果与取消终态恢复；浏览器发起/停止未执行 | — | 0 | — | — | — |
 | v2 段落/读取范围，不审核 | 已完成并恢复正文及来源记录 | 58.531 | 3 | 36,582 | 1,644 | 12,951 |
+| v2 逐单元审核，首次 | 失败；批次范围及枚举不符 | 423.391 | 5 | 78,325 | 21,045 | 13,003 |
+| v2 审核输入修复，条件审核 | 已完成；13 单元、3 批格式修正 | 410.409 | 11 | 198,012 | 16,303 | 51,715 |
 
 缓存是输入的子集，不额外相加。reasoning Token 未报告，货币费用配置/真实账单尚不可用，
 不得将 Node 汇总的默认 0 当作实际免费。耗时包含本地执行和轮询确认，不是纯模型解码时间。
@@ -86,7 +88,7 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - Run：1e940e11-6683-43e7-a2d0-90afb01d04f1；Workflow：5f700c18-5b5a-4e61-bc5e-a2beb994dfbd。
   报告 /tmp/general-agent-units-20261019.json。使用同一 PDF、问题、模型，策略 never；没有增加用于重写结构的模型请求。
 - 后端产生 14 个标题/段落/条目单元，保存原始正文位置和短来源关联；5 个正文单元没有直接引用，
-  如实标记 missing，不自动继承邻段引用，也不直接判断其内容错误。Reviewer 目前仍整篇审核，逐单元审核尚未完成。
+  如实标记 missing，不自动继承邻段引用，也不直接判断其内容错误。该次验证时 Reviewer 仍整篇审核；后续逐单元实现见下节。
 - 文件共 1542 个解析块，实际工具返回去重后 90 个，未返回 1452 个；
   all_parsed_blocks_returned=false、model_understanding_verified=false。保留无 OCR、图形/表格未解释等解析警告。
   这是实际返回范围，不是当前模型窗口包含范围或全文理解证明。
@@ -99,9 +101,50 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   最终 general_candidate + general_agent 为 25 通过。两组重叠，不相加作为测试数量。
 - Ruff 与 git diff --check 通过，Web 类型检查通过；没有新迁移或对历史对象重写。
 
+### 逐单元审核真实失败及修复依据
+
+- Run：0069517c-a2c4-4f54-b0e2-6d237328bfce；Workflow：22f90982-7a50-4655-b791-3bc0fb1cbe27。
+  报告 /tmp/general-agent-unit-review-20261019.json。主 Agent 三次调用完成，Reviewer 首次及一次修正后仍失败。
+- 只读 MinIO 检查证明两次审核正文均为合法 JSON，finish_reason=stop；不是 JSON 语法错误或正文丢失。
+  首次正文 2400 字符，SHA-256 bcb9c06b72e33521025acd449fb04475fb4853c39f44f67c813f00d7fc570a56，
+  返回全部16个单元，超过请求的 u1–u6。修正正文 872 字符，SHA-256
+  7891103fdeeccece4b4b59a66372aba7623389e3a98ce9f39c945e64db4036bb，范围改为6个，
+  但 u2/u4 使用 not_applicable 而不是允许的 supported/revise/unconfirmed。
+- 原输入同时列出全部 candidate_units 和当前 review_units，还携带 citation_status=not_applicable。
+  这些是可消除的输入歧义，不能简单归因模型能力。已改为完整候选正文 + 本批单元的编号/类型/正文/来源；
+  不再向模型给出其他批次编号及平台引用状态。对纯结构标题明确解释适用决定，不扩大合法 verdict 或猜成通过。
+- 确定性测试还先发现同一节点第二批复用模型请求 key，以及多个格式修正被按节点合并统计。
+  现已保持工具循环请求序号，并使用节点+批次区分修正；测试包含两批各修正一次、保留已校验决定、对象恢复。
+- 修复后的 Run：de861fd3-827f-42c8-ba49-943748d7bb54；Workflow：9cc6caa1-f1b7-4aa5-aa95-d21657a57013。
+  报告 /tmp/general-agent-unit-review-corrected-20261019.json；最终 completed，共13个单元全部保存审核决定，
+  总体 supported。5个无引用段落实际触发 on_verification_failure；没有发生内容 refine，不能计作内容修正验收。
+- 三个批次的初次回复均带有解释性前导正文或代码围栏，严格解析拒绝；每批一次局部格式修正后通过。
+  output_repair_requested_count/succeeded_count 均为3，repair_usage 为输入59,918、输出1,541 Token。
+  首次通过率为 0/3，修正成功为 3/3；不因最终成功隐瞒额外耗时与用量。后续应减少首轮输出格式偏差。
+- 共7次工具操作：主 Agent 的5次首部/搜索/定点读取，加 Reviewer 的 list_run_files、再次搜索 Prompt Chaining。
+  Reviewer 没有追加连续分页或原文段落补读，不能把目录查询和搜索算成已验证定点补读。
+- 结果/消息再次读取一致；原始 SQL 正文为空，MinIO 哈希全部通过。格式修正是模型调用，按实际 Attempt 计数，不作为内容轮次。
+- Playwright 已验证失败会话恢复为“工作流失败”；输入草稿后按钮状态见
+  output/playwright/general-agent-unit-review-failed-input.yml；没有重新发送该问题。
+- 在该成功运行执行中刷新浏览器，随后没有再次刷新，页面自动变为“工作流已完成”并呈现最终正文：
+  output/playwright/general-agent-unit-review-reloaded.yml、general-agent-unit-review-completed.yml/png。
+- 浏览器揭示旧来源面板只认识 worker_evidence.v2，虽然新后端有记录仍显示没有来源。
+  已作必要接口适配：仅选择最新候选，按 candidate_node_id + unit_id 匹配审核；revise 不假称原文矛盾。
+  原 claim-sources 路由增加新单元读取，仍重查授权/文件快照，按真正读取的 Attempt 角色标注来源。
+  没有改 CSS、布局或现有页面文案。
+- 真实浏览器展开方法段落，可见 Reviewer 说明、FULLTEXT03.pdf 第24页20个原文块、分页和解析警告，
+  证据 output/playwright/general-agent-unit-originals.yml、general-agent-unit-originals-visible.png。
+  单元/来源后端回归包含跨用户拒绝、删除后拒绝、Reviewer 旧读取在修正候选中的准确归属；
+  前端相关29项通过，类型与 ESLint 通过。
+- 最终后端相关检查122项通过（62.37秒）：PYTHONPATH=apps/api/src:packages/models/src，
+  apps/api/.venv/bin/python -m pytest -q 后跟 apps/api/tests/ 下的 test_general_review.py、
+  test_general_agent.py、test_general_candidate.py、test_workflow_execution_tasks.py、test_agent_file_tools.py、
+  test_agent_output_repair.py、test_evidence_output_repair.py、test_claim_sources.py、
+  test_workflow_refinement.py、test_plan_repair_statistics.py。Ruff、git diff --check 通过。
+
 ## 尚未验收的完整目标
 
-继续完成触发式审核、内容修正后的交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
-后续仍需补齐规划中的逐结论审核、工作记录/模型输入覆盖、按需委派及 Handoff、
+继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
+逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；仍需补齐工作记录/模型输入覆盖、按需委派及 Handoff、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

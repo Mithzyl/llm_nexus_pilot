@@ -10,7 +10,6 @@ import hashlib
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
-from pydantic import ValidationError
 
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
@@ -18,7 +17,6 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     FinalSynthesisModelOutput,
     FinalSynthesisOutput,
     GeneralCandidateOutput,
-    GeneralReviewOutput,
     NodeEvidenceRead,
     NodeTransitionRead,
     NodeUsageRead,
@@ -30,6 +28,13 @@ from nexuspilot_api.features.agent_runtime.services.agent_tool_loop import (
 from nexuspilot_api.features.agent_runtime.services.general_candidate_service import (
     build_candidate_units,
     build_read_coverage,
+)
+from nexuspilot_api.features.agent_runtime.services.general_review_service import (
+    REVIEW_BATCH_SIZE,
+    REVIEW_INSTRUCTIONS,
+    ReviewDecisionError,
+    assemble_review,
+    parse_review_decisions,
 )
 from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestrator import (
     ModelOnlyWorkflowOrchestrator,
@@ -113,8 +118,14 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     units=units,
                     read_coverage=build_read_coverage(originals),
                 )
+                # Missing paragraph references need a content judgment, not mandatory
+                # fabricated citations on general advice or connective prose.
+                uncited_unit_ids = [
+                    unit.unit_id for unit in units if unit.citation_status == "missing"
+                ]
                 should_review = payload.review_policy == "always" or (
-                    payload.review_policy == "on_verification_failure" and bool(issues)
+                    payload.review_policy == "on_verification_failure"
+                    and bool(issues or uncited_unit_ids)
                 )
                 await self._finish_general_node(
                     workflow,
@@ -141,6 +152,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                             scope.model_dump(mode="json") for scope in candidate.read_coverage
                         ],
                         "validation_issues": issues,
+                        "units_needing_citation_judgment": uncited_unit_ids,
                         "original_sources": {
                             alias: originals[alias] for alias in aliases if alias in originals
                         },
@@ -152,28 +164,12 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         review_input,
                         source_node_ids=[candidate_node_id],
                     )
-                    review_state = ToolLoopState()
-                    review_response = await self._turn(
+                    review, review_response = await self._review_candidate(
                         workflow,
                         current_node,
                         payload,
                         reviewer_task,
-                        review_state,
-                        "Compare the candidate with original sources, not just its summary. "
-                        "You may read more. Return only a small JSON object with verdict "
-                        '"supported", "revise", or "unconfirmed", and a nonempty feedback string. '
-                        "Do not reproduce evidence IDs or claim platform authorization.",
                         review_input,
-                    )
-                    review = await self._review_decision(
-                        workflow,
-                        current_node,
-                        payload,
-                        reviewer_task,
-                        review_response,
-                        deadline=review_state.deadline,
-                        review_input=review_input,
-                        review_history=review_state.history,
                     )
                     await self._resolve_sources(workflow)
                     supplementary_aliases.update(set(self.sources) - before_review)
@@ -417,17 +413,25 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         deadline,
         review_input,
         review_history,
+        batch_index,
     ):
-        """Repair once with the same candidate/originals and reviewer deadline, without tools."""
+        """Repair missing/invalid decisions once, retaining accepted units and original evidence."""
+        expected = [unit["unit_id"] for unit in review_input["review_units"]]
+        pending = expected
+        accepted = {}
         for attempt in range(2):
             self.model_node_service._require_complete_response(response)
             try:
-                review = GeneralReviewOutput.model_validate_json(response.output_text or "")
-            except ValidationError as error:
+                decisions = parse_review_decisions(
+                    response.output_text or "", pending, self.sources
+                )
+            except ReviewDecisionError as error:
                 if attempt:
                     raise InvalidRequestError(
                         "Reviewer decision is invalid after one repair"
                     ) from error
+                accepted.update(error.accepted)
+                pending = error.pending_unit_ids
                 await self._resolve_sources(workflow)
                 remaining = deadline - monotonic()
                 if remaining < 1:
@@ -438,7 +442,11 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     workflow,
                     event_type="agent.node.output_repair.requested",
                     public_summary="审核决定格式无效，正在进行一次格式修正",
-                    public_payload={"repair_index": 1, "source_attempt_id": response.id},
+                    public_payload={
+                        "repair_index": batch_index,
+                        "source_attempt_id": response.id,
+                        "unit_ids": pending,
+                    },
                     node=node,
                 )
                 response = await self.model_node_service._call_model_round(
@@ -446,17 +454,26 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     node,
                     binding=payload.role_bindings[task.assigned_role],
                     role=task.assigned_role,
-                    purpose="Return JSON with verdict (supported/revise/unconfirmed) and feedback. "
-                    "Repair formatting without inventing a different review decision.",
+                    purpose=REVIEW_INSTRUCTIONS + " Repair only the requested pending units; "
+                    "do not repeat accepted decisions or invent a different judgment.",
                     model_output=None,
                     model_input={
-                        "candidate_context": review_input,
+                        "candidate_context": {
+                            **review_input,
+                            "review_units": [
+                                unit
+                                for unit in review_input["review_units"]
+                                if unit["unit_id"] in pending
+                            ],
+                        },
+                        "validation_error": str(error),
                         "original_output": response.output_text,
                     },
                     tool_messages=review_history,
                     reasoning=payload.reasoning,
                     timeout_seconds=remaining,
                     output_repair=True,
+                    round_index=batch_index,
                 )
                 continue
             if attempt:
@@ -464,11 +481,52 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     workflow,
                     event_type="agent.node.output_repair.completed",
                     public_summary="审核决定格式修正已通过校验",
-                    public_payload={"repair_index": 1, "model_attempt_id": response.id},
+                    public_payload={"repair_index": batch_index, "model_attempt_id": response.id},
                     node=node,
                 )
-            return review
+            accepted.update({decision.unit_id: decision for decision in decisions})
+            return [accepted[identity] for identity in expected], response
         raise AssertionError("unreachable")
+
+    async def _review_candidate(self, workflow, node, payload, task, review_input):
+        """Review all located units in small batches under one deadline and durable node."""
+        state = ToolLoopState()
+        decisions = []
+        units = review_input["candidate_units"]
+        for offset in range(0, len(units), REVIEW_BATCH_SIZE):
+            batch_index = offset // REVIEW_BATCH_SIZE + 1
+            values = {
+                # Whole prose supplies context, but only this batch exposes unit IDs.
+                # Platform citation_status is not a valid model review verdict.
+                **{key: value for key, value in review_input.items() if key != "candidate_units"},
+                "review_units": [
+                    {key: unit[key] for key in ("unit_id", "kind", "text", "source_aliases")}
+                    for unit in units[offset : offset + REVIEW_BATCH_SIZE]
+                ],
+            }
+            response = await self._turn(
+                workflow,
+                node,
+                payload,
+                task,
+                state,
+                REVIEW_INSTRUCTIONS,
+                values,
+            )
+            reviewed, response = await self._review_decision(
+                workflow,
+                node,
+                payload,
+                task,
+                response,
+                deadline=state.deadline,
+                review_input=values,
+                review_history=state.history,
+                batch_index=batch_index,
+            )
+            await self._resolve_sources(workflow)
+            decisions.extend(reviewed)
+        return assemble_review(review_input["candidate_node_id"], decisions, self.sources), response
 
     async def _finish_general_node(self, workflow, node, output, next_node, attempt_id):
         """Use shared node persistence to aggregate every actual model/tool round once."""

@@ -16,6 +16,32 @@ function nodes(): AgentWorkflowNodeResult[] {
   ] as unknown as AgentWorkflowNodeResult[];
 }
 
+/** Use candidate identity, not the reused task and unit ID, when adapting new Agent results. */
+test("general sources show latest located candidate and only its matching review", () => {
+  const reference = { tool_call_id: "read", block_ids: ["line:1"] };
+  const candidate = { node_execution_id: "new", task_id: "same-task", node_sequence: 3,
+    status: "completed", output_type: "general_candidate", output: {
+      schema_version: "general_candidate.v2", text: "New paragraph [S1]", sources: {S1: reference},
+      units: [{unit_id: "u1", kind: "prose", text: "New paragraph [S1]", citation_status: "present", source_aliases: ["S1"]}],
+    }};
+  const records = [
+    {...candidate, node_execution_id: "old", node_sequence: 1},
+    {node_sequence: 2, status: "completed", output_type: "general_review", output: {
+      candidate_node_id: "old", decisions: [{unit_id: "u1", verdict: "supported", feedback: "Old decision", source_aliases: []}], sources: {},
+    }}, candidate,
+  ] as unknown as AgentWorkflowNodeResult[];
+  let entries = selectClaimEntries(records);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].nodeId, "new");
+  assert.equal(claimVerdictLabel(entries[0]), "尚未审核");
+  records.push({node_sequence: 4, status: "completed", output_type: "general_review", output: {
+    candidate_node_id: "new", decisions: [{unit_id: "u1", verdict: "revise", feedback: "Clarify scope", source_aliases: ["S1"]}], sources: {S1: reference},
+  }} as unknown as AgentWorkflowNodeResult);
+  entries = selectClaimEntries(records);
+  assert.equal(claimVerdictLabel(entries[0]), "审核有异议");
+  assert.equal(entries[0].assessment?.explanation, "Clarify scope");
+});
+
 /** Match claim keys within their task, not globally across workers. */
 test("review matches the task and claim pair, never another worker with the same key", () => {
   const entries = selectClaimEntries(nodes());

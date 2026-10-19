@@ -34,12 +34,14 @@ class ToolLoopState:
     progress: ToolProgressTracker = field(default_factory=ToolProgressTracker)
     loaded_versions: dict[str, str] = field(default_factory=dict)
     deadline: float | None = None
+    # Normal loop turns only; format repair uses a separate request-key suffix.
+    model_round_count: int = 0
 
 
 async def run_file_tool_loop(
     service, workflow, node, options, *, state=None, present_result=None, before_model_call=None
 ):
-    """Reuse file execution with optional continuing dialogue and shared-source authorization."""
+    """Reuse authorized execution with continuing dialogue and unique per-batch request rounds."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -55,9 +57,8 @@ async def run_file_tool_loop(
         deadline = min(deadline, state.deadline)
     state.deadline = deadline
     # Native call batches run sequentially: every read observes current ownership.
-    round_index = 0
     while True:
-        round_index += 1
+        state.model_round_count += 1
         await service.workflow_state.ensure_workflow_running(workflow)
         await tools.validate_history(workflow.run_id, records)
         if before_model_call is not None:
@@ -78,7 +79,7 @@ async def run_file_tool_loop(
                     options.get("timeout_seconds") or task.timeout_seconds, remaining
                 ),
             },
-            round_index=round_index,
+            round_index=state.model_round_count,
             tool_messages=history,
             tool_definitions=definitions,
             tool_versions=offered_versions,

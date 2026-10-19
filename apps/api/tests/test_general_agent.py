@@ -51,6 +51,46 @@ def general_payload(policy="never", **overrides):
     return payload
 
 
+def requested_review_units(request):
+    """Read only the explicitly requested batch from the actual serialized model input."""
+    for message in request.messages:
+        try:
+            value = json.loads(message.content or "")
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, dict):
+            value = value.get("candidate_context", value)
+            if "review_units" in value:
+                assert "candidate_units" not in value, "Do not expose other batch IDs to the model"
+                assert all(
+                    set(unit) == {"unit_id", "kind", "text", "source_aliases"}
+                    for unit in value["review_units"]
+                )
+                return value["review_units"]
+    raise AssertionError("Reviewer did not receive an explicit unit batch")
+
+
+def unit_review_text(request, verdict, feedback):
+    """Generate fixture decisions for exactly the requested units, preserving their short refs."""
+    return json.dumps(
+        {
+            "decisions": [
+                {
+                    "unit_id": unit["unit_id"],
+                    "verdict": verdict,
+                    "feedback": feedback,
+                    "source_aliases": [
+                        alias
+                        for alias in unit["source_aliases"]
+                        if alias != "S999"  # Deliberately invalid source in the negative fixture.
+                    ],
+                }
+                for unit in requested_review_units(request)
+            ]
+        }
+    )
+
+
 class GeneralProvider(ScriptedAgentProvider):
     """Return ordinary prose and small reviewer decisions without any Worker JSON."""
 
@@ -72,11 +112,10 @@ class GeneralProvider(ScriptedAgentProvider):
             text = (
                 "not JSON"
                 if self.malformed
-                else json.dumps(
-                    {
-                        "verdict": "revise" if self.reviews <= int(self.revise) else "supported",
-                        "feedback": "Explain limitations" if self.revise else "Checked",
-                    }
+                else unit_review_text(
+                    request,
+                    "revise" if self.reviews <= int(self.revise) else "supported",
+                    "Explain limitations" if self.revise else "Checked",
                 )
             )
         elif self.tool and not any(m.role.value == "tool" for m in request.messages):
@@ -180,6 +219,69 @@ async def test_review_revision_returns_to_agent_and_is_reviewed_again(client):
     assert result["loop_statistics"]["refinement_usage"]["model_call_count"] == 2
 
 
+@pytest.mark.parametrize("repair_second_batch", [False, True])
+async def test_review_batches_repair_only_invalid_units_and_keep_all_decisions(
+    client, monkeypatch, repair_second_batch
+):
+    """Repair invalid units per batch, preserving accepted decisions and actual repair counts."""
+    from nexuspilot_api.features.agent_runtime.services.general_agent_orchestrator import (
+        GeneralAgentOrchestrator,
+    )
+
+    def unexpected_failure(self, error):
+        """Expose the original regression exception instead of a sanitized workflow envelope."""
+        raise error.__cause__ or error
+
+    monkeypatch.setattr(
+        GeneralAgentOrchestrator, "_public_error_from_exception", unexpected_failure
+    )
+    client._transport.raise_app_exceptions = True
+    provider = GeneralProvider()
+    original = provider.generate
+    batches = []
+
+    async def partial_review(request):
+        """Corrupt one source per selected batch without discarding its valid peer decisions."""
+        response = await original(request)
+        if request.metadata["agent_role"] == "reviewer":
+            units = requested_review_units(request)
+            batches.append([unit["unit_id"] for unit in units])
+            if len(batches) == 1 or (repair_second_batch and len(batches) == 3):
+                body = json.loads(response.text)
+                body["decisions"][1]["source_aliases"] = ["S999"]
+                response.text = json.dumps(body)
+        else:
+            response.text = "\n\n".join(f"Paragraph {index}." for index in range(8))
+        return response
+
+    provider.generate = partial_review
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    run = await create_test_run(client)
+    result = (
+        await client.post(
+            f"/api/v1/runs/{run['run_id']}/agent-workflows", json=general_payload("always")
+        )
+    ).json()
+    assert result.get("status") == "completed", result
+    assert batches == [[f"u{i}" for i in range(1, 7)], ["u2"], ["u7", "u8"]] + (
+        [["u8"]] if repair_second_batch else []
+    )
+    reviews = [node for node in result["nodes"] if node["output_type"] == "general_review"]
+    assert len(reviews) == 1
+    review = reviews[0]["output"]
+    assert review["schema_version"] == "general_review.v2"
+    assert [d["unit_id"] for d in review["decisions"]] == [f"u{i}" for i in range(1, 9)]
+    assert review["verdict"] == "supported"
+    assert result["loop_statistics"]["output_repair_succeeded_count"] == 1 + repair_second_batch
+    assert result["aggregate_usage"]["model_call_count"] == 4 + repair_second_batch
+    restored = (
+        await client.get(f"/api/v1/agent-workflows/{result['workflow_execution_id']}/result")
+    ).json()
+    assert [n["output"] for n in restored["nodes"] if n["output_type"] == "general_review"] == [
+        review
+    ]
+
+
 async def test_invalid_review_is_not_silently_accepted(client):
     """One local review-format repair is allowed; persistent invalid decisions fail honestly."""
     provider = GeneralProvider(malformed=True)
@@ -233,11 +335,10 @@ class FileReadingProvider(GeneralProvider):
                     latency_ms=1,
                     raw_response={"fixture": "review-read"},
                 )
-            text = json.dumps(
-                {
-                    "verdict": "revise" if self.reviews == 2 else "supported",
-                    "feedback": "Include the supplementary evidence [S2]",
-                }
+            text = unit_review_text(
+                request,
+                "revise" if self.reviews == 2 else "supported",
+                "Include the supplementary evidence [S2]",
             )
         elif not tools:
             return ModelResponse(
@@ -371,6 +472,16 @@ async def test_file_sources_review_reread_and_object_body_restore(
     assert [n["output"] for n in restored["nodes"] if n["output_type"] == "general_candidate"] == [
         node["output"] for node in candidates
     ]
+    source_path = (
+        f"/api/v1/agent-workflows/{result['workflow_execution_id']}/nodes/"
+        f"{candidates[-1]['node_execution_id']}/claim-sources?claim_key=u1"
+    )
+    originals = await client.get(source_path)
+    assert originals.status_code == 200, originals.text
+    assert {item["read_by"] for item in originals.json()["sources"]} == {"worker", "reviewer"}
+    assert "ORIGINAL_ALPHA" in originals.text and "ORIGINAL_BETA" in originals.text
+    assert "minio://" not in originals.text and "source_hash" not in originals.text
+    assert originals.headers["cache-control"] == "no-store"
     continuation = await client.post(
         f"/api/v1/sessions/{session['session_id']}/turns",
         json={
@@ -379,6 +490,32 @@ async def test_file_sources_review_reread_and_object_body_restore(
         },
     )
     assert continuation.status_code == 201, continuation.text
+    from nexuspilot_api.features.identity.resource_access import authorize_resource_request
+    from nexuspilot_api.features.identity.schemas.authentication import LocalWorkspacePrincipalRead
+    from nexuspilot_api.models import UserFile
+
+    app.dependency_overrides.pop(authorize_resource_request, None)
+    assert (await client.get(source_path)).status_code == 200
+
+    async def foreign_principal(*args):
+        """Represent another user without granting access to the current candidate's source."""
+        return LocalWorkspacePrincipalRead(
+            user_id="foreign-source-reader", display_name="Other", scopes=[]
+        )
+
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            "nexuspilot_api.features.identity.resource_access.get_workspace_principal",
+            foreign_principal,
+        )
+        denied = await client.get(source_path)
+        assert denied.status_code == 404 and "ORIGINAL_ALPHA" not in denied.text
+    async with test_database_session_factory() as db:
+        stored_file = await db.get(UserFile, file["file_id"])
+        stored_file.status = "deleting"
+        await db.commit()
+    revoked = await client.get(source_path)
+    assert revoked.status_code in {404, 409} and "ORIGINAL_ALPHA" not in revoked.text
 
 
 @pytest.mark.parametrize("policy", ["never", "on_verification_failure", "always"])
@@ -405,6 +542,66 @@ async def test_fabricated_source_cannot_be_approved_or_loop_forever(client, poli
     assert result["status"] == "failed" and result["final_output"] is None, result
     assert len(provider.requests) == (2 if policy == "never" else 4)
     assert provider.reviews == (0 if policy == "never" else 2)
+
+
+async def test_uncited_unit_triggers_conditional_review_without_forcing_false_citation(client):
+    """A missing paragraph reference needs content judgment, not mandatory invented evidence."""
+    from test_user_files import reserve_file
+
+    content = b"ORIGINAL_ALPHA\n"
+    owner = (await client.get("/api/v1/auth/me")).json()["user_id"]
+    session = (await client.post("/api/v1/sessions", json={"user_id": owner})).json()
+    file = (await reserve_file(client, content)).json()
+    assert (
+        await client.put(f"/api/v1/files/{file['file_id']}/content", content=content)
+    ).status_code == 200
+    turn = (
+        await client.post(
+            f"/api/v1/sessions/{session['session_id']}/turns",
+            json={
+                "user_id": owner,
+                "content_text": "Explain the material with general advice",
+                "file_ids": [file["file_id"]],
+            },
+        )
+    ).json()
+    provider = FileReadingProvider(file["file_id"])
+    original = provider.generate
+
+    async def uncited_advice(request):
+        """The reviewer accepts an uncited general-advice paragraph without inventing a source."""
+        if request.metadata["agent_role"] == "reviewer":
+            provider.requests.append(request)
+            provider.reviews += 1
+            text = unit_review_text(
+                request, "supported", "File fact supported; general advice needs no file citation"
+            )
+            return ModelResponse(
+                text=text,
+                finish_reason="stop",
+                input_tokens=10,
+                output_tokens=5,
+                latency_ms=1,
+                raw_response={"text": text},
+            )
+        response = await original(request)
+        if not response.tool_calls:
+            response.text += "\n\nGeneral advice about further reading."
+        return response
+
+    provider.generate = uncited_advice
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    result = (
+        await client.post(
+            f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
+            json=general_payload("on_verification_failure"),
+        )
+    ).json()
+    assert result["status"] == "completed", result
+    assert provider.reviews == 1
+    assert result["loop_statistics"]["refinement_count"] == 0
+    review = next(n["output"] for n in result["nodes"] if n["output_type"] == "general_review")
+    assert review["decisions"][1]["source_aliases"] == []
 
 
 @pytest.mark.parametrize(
@@ -481,13 +678,12 @@ async def test_review_uncertainty_or_format_repair_remains_visible(client, decis
             response.text = (
                 "invalid"
                 if decision == "format_repaired" and provider.reviews == 1
-                else json.dumps(
-                    {
-                        "verdict": "unconfirmed" if decision == "unconfirmed" else "supported",
-                        "feedback": "Source cannot establish every claim"
-                        if decision == "unconfirmed"
-                        else "Checked",
-                    }
+                else unit_review_text(
+                    request,
+                    "unconfirmed" if decision == "unconfirmed" else "supported",
+                    "Source cannot establish every claim"
+                    if decision == "unconfirmed"
+                    else "Checked",
                 )
             )
         return response
