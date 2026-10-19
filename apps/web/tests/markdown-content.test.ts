@@ -85,3 +85,15 @@ test("supports code without a language and leaves inline code untouched", () => 
   assert.equal((markup.match(/class="markdown-code-language"[^>]*>代码<\/span>/g) ?? []).length, 2);
   assert.match(markup, /<code>inline<\/code>/);
 });
+
+/** Evidence prose may retain raw HTML as text without entering the HTML execution path. */
+test("can preserve raw HTML as inert text for evidence prose", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MarkdownContent, {
+      content: "<script>alert('unsafe')</script>",
+      preserveHtmlText: true,
+    }),
+  );
+  assert.match(markup, /&lt;script&gt;/);
+  assert.doesNotMatch(markup, /<script>/);
+});

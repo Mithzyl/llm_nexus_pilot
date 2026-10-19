@@ -351,6 +351,7 @@ export default function Home() {
     useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDark, setIsDark] = useState(false);
+  const [isThemeTransitioning, setIsThemeTransitioning] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isCancellingWorkflow, setIsCancellingWorkflow] = useState(false);
   const [responseCompleted, setResponseCompleted] = useState(false);
@@ -367,9 +368,12 @@ export default function Home() {
   );
   const [composerClearancePx, setComposerClearancePx] = useState(180);
   const [isComposerMinimized, setIsComposerMinimized] = useState(false);
+  const [isComposerAnimating, setIsComposerAnimating] = useState(false);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const composerWrap = useRef<HTMLDivElement | null>(null);
   const composerTextarea = useRef<HTMLTextAreaElement | null>(null);
+  const themeTransitionTimer = useRef<number | null>(null);
+  const composerAnimationTimer = useRef<number | null>(null);
   const shouldAutoFollowConversation = useRef(true);
   const activeRequestController = useRef<AbortController | null>(null);
   const localExecutions = useRef(new Map<string, {
@@ -387,6 +391,8 @@ export default function Home() {
     sessionRestoreRequestId.current += 1;
     workflowRestoreRequestId.current += 1;
     workflowRecoveryController.current?.abort();
+    if (themeTransitionTimer.current !== null) window.clearTimeout(themeTransitionTimer.current);
+    if (composerAnimationTimer.current !== null) window.clearTimeout(composerAnimationTimer.current);
   }, []);
   const providerCatalogRequestId = useRef(0);
   const providerCatalogRequestController = useRef<AbortController | null>(null);
@@ -1553,14 +1559,37 @@ export default function Home() {
     expandComposer();
   }
 
+  /** Keep the composer clipped only while its grid rows are moving. */
+  function beginComposerAnimation() {
+    setIsComposerAnimating(true);
+    if (composerAnimationTimer.current !== null) window.clearTimeout(composerAnimationTimer.current);
+    composerAnimationTimer.current = window.setTimeout(() => {
+      setIsComposerAnimating(false);
+      composerAnimationTimer.current = null;
+    }, 340);
+  }
+
+  /** Animate color changes across the whole workspace without leaving transitions behind. */
+  function toggleTheme() {
+    setIsDark((current) => !current);
+    setIsThemeTransitioning(true);
+    if (themeTransitionTimer.current !== null) window.clearTimeout(themeTransitionTimer.current);
+    themeTransitionTimer.current = window.setTimeout(() => {
+      setIsThemeTransitioning(false);
+      themeTransitionTimer.current = null;
+    }, 340);
+  }
+
   /** Reveal the preserved draft and focus it after the hidden input becomes visible. */
   function expandComposer() {
+    beginComposerAnimation();
     setIsComposerMinimized(false);
     window.requestAnimationFrame(() => composerTextarea.current?.focus());
   }
 
   /** Hide editor controls without clearing state and keep keyboard focus on the restore action. */
   function minimizeComposer() {
+    beginComposerAnimation();
     setIsComposerMinimized(true);
     window.requestAnimationFrame(() =>
       composerWrap.current?.querySelector<HTMLButtonElement>(".composer-restore")?.focus(),
@@ -2130,7 +2159,7 @@ export default function Home() {
   }
 
   return (
-    <main className={`app-shell ${isDark ? "theme-dark" : ""}`} {...fileDrop.handlers}>
+    <main className={`app-shell ${isDark ? "theme-dark" : ""} ${isThemeTransitioning ? "is-theme-transitioning" : ""}`} {...fileDrop.handlers}>
       {fileDrop.active && <div className="file-drop-overlay" role="status">
         {isSending ? "当前对话正在运行，请切换到其他对话添加文件" : "松开以添加文件，发送消息时上传"}
       </div>}
@@ -2215,7 +2244,7 @@ export default function Home() {
             )}
           </div>
           <div className="topbar-actions">
-            <button className="icon-button" onClick={() => setIsDark((current) => !current)} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
+            <button className="icon-button" onClick={toggleTheme} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
             <button className={`detail-toggle ${isInspectorOpen ? "active" : ""}`} onClick={() => setIsInspectorOpen((current) => !current)}>
               <span className="status-dot" />运行详情
             </button>
@@ -2327,16 +2356,17 @@ export default function Home() {
           </div>
 
           <div className="composer-wrap" ref={composerWrap}>
-            <div className={`composer ${isComposerMinimized ? "is-minimized" : ""}`}>
-              {isComposerMinimized && <div className="composer-minimized-row">
-                <button type="button" className="composer-restore" aria-expanded={false} aria-controls="composer-editor" onClick={expandComposer}>
+            <div className={`composer ${isComposerMinimized ? "is-minimized" : ""} ${isComposerAnimating ? "is-composer-animating" : ""}`}>
+              <div className="composer-shell">
+              <div className="composer-minimized-row" aria-hidden={!isComposerMinimized} inert={!isComposerMinimized}>
+                <button type="button" className="composer-restore" aria-expanded={!isComposerMinimized} aria-controls="composer-editor" onClick={expandComposer}>
                   展开输入框{draft.trim() ? " · 有草稿" : ""}{pendingUploadFiles.length ? ` · ${pendingUploadFiles.length} 个文件` : ""}
                 </button>
                 {isSending && <button type="button" className="composer-quiet-button" disabled={isCancellingWorkflow} onClick={handleStop}>{executionMode === "agent" ? "取消工作流" : "停止生成"}</button>}
-              </div>}
-              <div id="composer-editor" hidden={isComposerMinimized}>
+              </div>
+              <div id="composer-editor" className="composer-editor" aria-hidden={isComposerMinimized} inert={isComposerMinimized}>
               <span id="composer-keyboard-hint" className="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
-              <button type="button" className="composer-minimize" aria-label="收起输入框" aria-expanded={true} aria-controls="composer-editor" onClick={minimizeComposer}>收起</button>
+              <button type="button" className="composer-minimize" aria-label="收起输入框" aria-expanded={!isComposerMinimized} aria-controls="composer-editor" onClick={minimizeComposer}>收起</button>
               <textarea
                 ref={composerTextarea}
                 value={draft}
@@ -2367,8 +2397,7 @@ export default function Home() {
                   {uploadProgress || "发送时上传并解析 · 每个文件不超过 20 MiB · 暂不支持扫描件与图片"}
                 </p>
               )}
-              {executionMode === "agent" && (
-                <div className="agent-config-shelf" aria-label="Agent 工作流设置">
+              <div className={`agent-config-shelf ${executionMode === "agent" ? "is-visible" : ""}`} aria-label="Agent 工作流设置" aria-hidden={executionMode !== "agent"} inert={executionMode !== "agent"}>
                   <div className="agent-config-item">
                     <span>执行</span>
                     <CompactSelect
@@ -2397,7 +2426,6 @@ export default function Home() {
                     />
                   </div>
                 </div>
-              )}
               <div className="composer-toolbar">
                 <div className="composer-config-controls">
                   <div className="composer-mode-row" aria-label="执行模式">
@@ -2473,6 +2501,7 @@ export default function Home() {
                   />
                   <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
                 </div>
+              </div>
               </div>
               </div>
             </div>

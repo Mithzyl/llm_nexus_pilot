@@ -319,7 +319,7 @@ test("renders delegated candidate role, coverage, tool effect and bounded prose"
     status: "completed", output_type: "general_delegated_candidate",
     output_schema_version: "general_candidate.v2",
     output: {
-      schema_version: "general_candidate.v2", text: "Delegated candidate body",
+      schema_version: "general_candidate.v2", text: "## 委派摘要\n\n**Delegated** candidate body\n\n- 第一点\n- 第二点",
       sources: { S1: { tool_call_id: "read", result_id: "r", file_id: "f", block_ids: ["b1"], source_hash: "s", parsed_hash: "p", parser_version: "1" } },
       validation_issues: [],
       units: [{ unit_id: "u1", kind: "prose", start_char: 0, end_char: 3, text: "body", source_aliases: ["S1"], unknown_source_aliases: [], citation_status: "present", content_verified: false }],
@@ -354,7 +354,9 @@ test("renders delegated candidate role, coverage, tool effect and bounded prose"
   assert.match(markup, /1 个文件 · 2 \/ 100 块/);
   assert.match(markup, /候选单元/);
   assert.match(markup, /agent-node-prose/);
-  assert.match(markup, /Delegated candidate body/);
+  assert.match(markup, /委派摘要/);
+  assert.match(markup, /<strong>Delegated<\/strong> candidate body/);
+  assert.match(markup, /<li>第一点<\/li>/);
   assert.match(markup, /委派 Agent/);
   assert.match(markup, /Handoff/);
 });

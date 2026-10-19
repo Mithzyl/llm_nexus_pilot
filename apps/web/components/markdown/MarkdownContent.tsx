@@ -7,6 +7,8 @@ import { sourceCodeFromRenderedText } from "./code-copy";
 
 type MarkdownContentProps = {
   content: string;
+  /** Render raw HTML as inert text instead of dropping it from evidence prose. */
+  preserveHtmlText?: boolean;
 };
 
 /** Allow only navigation protocols that cannot execute browser script. */
@@ -64,12 +66,12 @@ function MarkdownPre({ children }: ComponentPropsWithoutRef<"pre">) {
 }
 
 /** Render trusted Markdown syntax while keeping model text outside the raw-HTML execution path. */
-export function MarkdownContent({ content }: MarkdownContentProps) {
+export function MarkdownContent({ content, preserveHtmlText = false }: MarkdownContentProps) {
   return (
     <div className="markdown-content">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        skipHtml
+        skipHtml={!preserveHtmlText}
         urlTransform={transformSafeMarkdownUrl}
         components={{
           a: MarkdownLink,

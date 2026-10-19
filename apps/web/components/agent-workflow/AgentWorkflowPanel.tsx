@@ -10,6 +10,7 @@ import type {
   AgentWorkflowSummary,
   ReasoningBlockSnapshot,
 } from "../../lib/types";
+import { MarkdownContent } from "../markdown/MarkdownContent";
 import { ReasoningView } from "../reasoning/ReasoningView";
 import {
   agentCandidateCoverageSummary,
@@ -324,7 +325,7 @@ export function AgentWorkflowPanel({
                   {(node.output_type === "general_candidate"
                     || node.output_type === "general_delegated_candidate") && node.output && (
                     <div className="agent-node-prose" tabIndex={0} aria-label="候选正文">
-                      {node.output.text}
+                      <MarkdownContent content={node.output.text} preserveHtmlText />
                     </div>
                   )}
                   <dl>
