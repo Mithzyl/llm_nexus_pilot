@@ -23,6 +23,8 @@ import {
 } from "../../lib/agent-workflow-view";
 
 const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
+  general_candidate: "模型 Agent",
+  general_review: "独立审核",
   request_intake: "请求归一化",
   context_assembly: "上下文组装",
   controller_plan: "Controller 规划",
@@ -70,11 +72,21 @@ function listValue(values: string[], emptyLabel = "无"): string {
   return values.length > 0 ? values.join("、") : emptyLabel;
 }
 
-/** Select concise, contract-specific facts from one complete node output. */
+/** Map old and general Agent API outputs into the existing read-only detail rows. */
 function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]> {
   if (!node.output) return [["输出", agentNodeMissingOutputLabel(node.status)]];
 
   switch (node.output_type) {
+    case "general_candidate":
+      return [
+        ["输出", node.output.text],
+        ["拒绝原因", listValue(node.output.validation_issues)],
+      ];
+    case "general_review":
+      return [
+        ["结论", node.output.verdict],
+        ["审核摘要", node.output.feedback],
+      ];
     case "request_intake":
       return [
         ["目标", node.output.normalized_objective],
@@ -241,7 +253,7 @@ export function AgentWorkflowPanel({
     <section className="agent-workflow" data-status={workflow.status} aria-label="Agent 工作流证据">
       <div className="agent-workflow-heading">
         <div>
-          <p className="eyebrow">{workflow.execution_profile === "tool_enabled_v1" ? "附件读取工作流" : "纯模型工作流"}</p>
+          <p className="eyebrow">{["tool_enabled_v1", "general_tools_v1"].includes(workflow.execution_profile) ? "附件读取工作流" : "纯模型工作流"}</p>
           <h3>{agentWorkflowStatusLabel(workflow.status)}</h3>
         </div>
         <span>{workflow.current_stage ?? "等待首个节点"}</span>

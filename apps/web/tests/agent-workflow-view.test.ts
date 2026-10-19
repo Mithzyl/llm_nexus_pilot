@@ -25,7 +25,7 @@ test("distinguishes confirmed cancellation from a locally aborted response", () 
   assert.equal(cancelledMessageStatusLabel(undefined), "已停止 · 等待服务端最终状态");
 });
 
-/** Persisted reads and discovery remain visible even when the worker has no final output. */
+/** Render saved tool facts and both new API node outputs without breaking legacy records. */
 test("renders committed tool results for a running or failed worker after reload", () => {
   const workflow: AgentWorkflowSummary = {
     workflow_execution_id: "wf", run_id: "run", workflow_name: "model_only",
@@ -72,6 +72,20 @@ test("renders committed tool results for a running or failed worker after reload
     assert.match(markup, /读取结果已保存/);
     assert.match(markup, /3 次工具调用/);
     assert.doesNotMatch(markup, /output_json|provider_continuation/);
+  }
+  // New API node types must render through the existing drawer without dropping facts.
+  for (const [output_type, output, expected] of [
+    ["general_candidate", { text: "Candidate <script>text</script>", sources: {}, validation_issues: [] }, "Candidate &lt;script&gt;text&lt;/script&gt;"],
+    ["general_review", { verdict: "unconfirmed", feedback: "Review needs evidence" }, "Review needs evidence"],
+  ] as const) {
+    const markup = renderToStaticMarkup(createElement(AgentWorkflowPanel, {
+      workflow: { ...workflow, execution_profile: "general_tools_v1" },
+      nodes: [{ ...node, status: "completed", output_type, output } as unknown as AgentWorkflowNodeResult],
+      events: [], hasEventGap: false,
+    }));
+    assert.ok(markup.includes(expected));
+    assert.match(markup, /附件读取工作流/);
+    assert.doesNotMatch(markup, /<script>/);
   }
 });
 

@@ -439,6 +439,8 @@ export type AgentWorkflowSummary = {
 };
 
 export type AgentWorkflowNodeOutputType =
+  | "general_candidate"
+  | "general_review"
   | "request_intake"
   | "context_assembly"
   | "controller_plan"
@@ -452,6 +454,16 @@ export type AgentWorkflowNodeOutputType =
   | "workflow_completion";
 
 export type AgentWorkflowNodeOutputMap = {
+  general_candidate: {
+    schema_version: "general_candidate.v1";
+    text: string;
+    sources: Record<string, FileEvidenceReference>;
+    validation_issues: string[];
+  };
+  general_review: {
+    verdict: "supported" | "revise" | "unconfirmed";
+    feedback: string;
+  };
   request_intake: {
     normalized_objective: string;
     request_type: string;
