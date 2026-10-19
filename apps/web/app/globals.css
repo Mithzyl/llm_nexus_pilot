@@ -601,6 +601,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .agent-node-list summary small { color: var(--muted); font-size: 8px; line-height: 1.45; }
 .agent-node-list summary time { color: var(--muted); font: 500 8px var(--font-geist-mono); }
 .agent-node-details { padding: 0 0 13px 19px; animation: riseIn 180ms both ease-out; }
+.agent-node-prose { max-height: 220px; margin: 0 0 10px; padding: 9px 10px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-strong); color: var(--text); font-size: 9px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin; }
+.agent-node-prose:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .agent-node-details dl { margin: 0; }
 .agent-node-details ul { margin: 10px 0; padding-left: 18px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .agent-node-details li + li { margin-top: 6px; }

@@ -42,6 +42,24 @@ test("general sources show latest located candidate and only its matching review
   assert.equal(entries[0].assessment?.explanation, "Clarify scope");
 });
 
+/** Delegated prose is provisional process evidence, not a reviewed source claim. */
+test("keeps delegated candidates out of reviewed claim sources", () => {
+  const records = nodes();
+  records.push({
+    node_execution_id: "delegated", task_id: "delegated-task", node_sequence: 4,
+    status: "completed", output_type: "general_delegated_candidate",
+    output: {
+      schema_version: "general_candidate.v2", text: "Delegated prose", sources: {},
+      validation_issues: [],
+      units: [{ unit_id: "delegated-unit", kind: "prose", text: "Delegated prose",
+        citation_status: "present", source_aliases: [] }],
+    },
+  } as unknown as AgentWorkflowNodeResult);
+  const entries = selectClaimEntries(records);
+  assert.equal(entries.length, 2);
+  assert.equal(entries.some((entry) => entry.nodeId === "delegated"), false);
+});
+
 /** Match claim keys within their task, not globally across workers. */
 test("review matches the task and claim pair, never another worker with the same key", () => {
   const entries = selectClaimEntries(nodes());

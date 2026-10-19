@@ -12,10 +12,14 @@ import type {
 } from "../../lib/types";
 import { ReasoningView } from "../reasoning/ReasoningView";
 import {
+  agentCandidateCoverageSummary,
+  agentDelegationRoleLabel,
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
+  agentToolLabel,
+  agentToolStatusLabel,
   agentWorkflowEventActivity,
   isAgentWorkflowCancellable,
   selectAgentWorkflowActivityTimeline,
@@ -37,21 +41,6 @@ const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   independent_review: "独立审核",
   final_synthesis: "最终汇总",
   workflow_completion: "工作流完成",
-};
-
-const FILE_TOOL_LABELS: Record<string, string> = {
-  search_tools: "查找可用工具",
-  describe_tools: "查看工具说明",
-  list_run_files: "列出附件",
-  get_file_outline: "查看文件结构",
-  search_file_content: "搜索文件文字",
-  read_file_content: "读取文件文字",
-  read_file_table: "读取表格",
-};
-const TOOL_STATUS_LABELS: Record<string, string> = {
-  completed: "读取结果已保存", permission_denied: "未获授权或文件不可用",
-  failed: "读取失败", timed_out: "读取超时", cancelled: "已取消",
-  requested: "等待执行", running: "正在读取", outcome_unknown: "结果待确认",
 };
 
 /** Convert workflow status values into stable user-facing labels without inventing actions. */
@@ -79,11 +68,27 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
 
   switch (node.output_type) {
     case "general_candidate":
-    case "general_delegated_candidate":
-      return [
-        ["输出", node.output.text],
-        ["拒绝原因", listValue(node.output.validation_issues)],
+    case "general_delegated_candidate": {
+      const delegated = node.output_type === "general_delegated_candidate";
+      const facts: Array<[string, string]> = [
+        [
+          "角色",
+          delegated
+            ? agentDelegationRoleLabel(node.agent_role, node.node_key) ?? "委派"
+            : "主 Agent",
+        ],
+        ["来源", Object.keys(node.output.sources).length > 0
+          ? `${Object.keys(node.output.sources).length} 个`
+          : "无"],
       ];
+      const coverage = agentCandidateCoverageSummary(node.output);
+      if (coverage) facts.push(["返回范围", coverage]);
+      if (Array.isArray(node.output.units)) {
+        facts.push(["候选单元", `${node.output.units.length} 个`]);
+      }
+      facts.push(["拒绝原因", listValue(node.output.validation_issues)]);
+      return facts;
+    }
     case "general_review":
       return [
         ["结论", node.output.verdict],
@@ -152,13 +157,19 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
         ["审核摘要", node.output.review_summary],
         ["缺失证据", listValue(node.output.missing_evidence)],
       ];
-    case "final_synthesis":
-      return [
+    case "final_synthesis": {
+      const facts: Array<[string, string]> = [
         ["已完成目标", listValue(node.output.completed_objectives)],
         ["未解决事项", listValue(node.output.unresolved_items)],
         ["警告", listValue(node.output.warnings)],
         ["消息记录", node.output.assistant_message_id ? "已关联" : "未关联"],
       ];
+      const delegatedAgentCount = node.output.source_agent_run_ids?.length ?? 0;
+      const handoffCount = node.output.source_handoff_ids?.length ?? 0;
+      if (delegatedAgentCount > 0) facts.push(["委派 Agent", String(delegatedAgentCount)]);
+      if (handoffCount > 0) facts.push(["Handoff", String(handoffCount)]);
+      return facts;
+    }
     case "workflow_completion":
       return [
         ["节点", String(node.output.node_count)],
@@ -303,11 +314,19 @@ export function AgentWorkflowPanel({
                 <summary title={agentNodePublicActivityText(node.public_view)}>
                   <i aria-hidden="true" />
                   <span>
-                    <strong>{NODE_LABELS[node.output_type]}</strong>
+                    <strong>{node.output_type === "general_delegated_candidate"
+                      ? `模型 Agent · ${agentDelegationRoleLabel(node.agent_role, node.node_key) ?? "委派"}`
+                      : NODE_LABELS[node.output_type]}</strong>
                   </span>
                   <time>{node.timing.duration_ms} ms</time>
                 </summary>
                 <div className="agent-node-details">
+                  {(node.output_type === "general_candidate"
+                    || node.output_type === "general_delegated_candidate") && node.output && (
+                    <div className="agent-node-prose" tabIndex={0} aria-label="候选正文">
+                      {node.output.text}
+                    </div>
+                  )}
                   <dl>
                     {nodeOutputFacts(node).map(([label, value], index) => (
                       <div key={`${label}-${index}`}><dt>{label}</dt><dd>{value}</dd></div>
@@ -320,8 +339,8 @@ export function AgentWorkflowPanel({
                     <ul aria-label="工具调用">
                       {node.evidence.tool_results?.map((call) => (
                         <li key={call.tool_call_id}>
-                          {FILE_TOOL_LABELS[call.tool_name] ?? "未授权工具"}
-                          {" · "}{TOOL_STATUS_LABELS[call.status] ?? "状态待确认"}
+                          {agentToolLabel(call.tool_name)}
+                          {" · "}{agentToolStatusLabel(call.tool_name, call.status)}
                         </li>
                       ))}
                     </ul>

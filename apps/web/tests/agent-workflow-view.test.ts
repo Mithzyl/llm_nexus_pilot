@@ -6,10 +6,15 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import { AgentWorkflowActivityFeed, AgentWorkflowPanel } from "../components/agent-workflow/AgentWorkflowPanel";
 import {
+  agentCandidateCoverageSummary,
+  agentDelegationRoleLabel,
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
+  agentToolLabel,
+  agentToolStatusLabel,
+  agentWorkflowEventActivity,
   selectAgentWorkflowActivityTimeline,
   selectVisibleAgentWorkflowActivities,
   isAgentWorkflowAssistantMessage,
@@ -231,6 +236,127 @@ test("renders an accessible collapsed activity disclosure with only the newest s
   assert.match(markup, /aria-expanded="false"/);
   assert.match(markup, /Agent 正在执行最新任务/);
   assert.doesNotMatch(markup, /Controller 已规划旧摘要/);
+});
+
+test("names delegated roles and task tools without claiming unauthorized access", () => {
+  assert.equal(agentDelegationRoleLabel("planner", "general_delegate.task"), "Planner");
+  assert.equal(agentDelegationRoleLabel("researcher", "general_delegate.task"), "Researcher");
+  assert.equal(agentDelegationRoleLabel(null, "general_delegate.task"), "委派");
+  assert.equal(agentDelegationRoleLabel(null, "general_agent"), null);
+
+  assert.equal(agentToolLabel("delegate_task"), "委派子任务");
+  assert.equal(agentToolLabel("save_task_note"), "保存任务笔记");
+  assert.equal(agentToolLabel("read_task_note"), "读取任务笔记");
+  assert.equal(agentToolLabel("list_task_notes"), "列出任务笔记");
+  assert.equal(agentToolLabel("get_task_read_coverage"), "查看阅读进度");
+  assert.equal(agentToolLabel("unknown_tool"), "未知工具");
+
+  assert.equal(agentToolStatusLabel("delegate_task", "completed"), "委派完成");
+  assert.equal(agentToolStatusLabel("delegate_task", "permission_denied"), "未获准委派");
+  assert.equal(agentToolStatusLabel("save_task_note", "completed"), "已保存");
+  assert.equal(agentToolStatusLabel("get_task_read_coverage", "completed"), "已返回范围");
+  assert.equal(agentToolStatusLabel("read_file_content", "completed"), "读取结果已保存");
+  assert.equal(agentToolStatusLabel("unknown_tool", "completed"), "状态待确认");
+});
+
+test("summarizes returned blocks without claiming full understanding", () => {
+  const base = {
+    schema_version: "general_candidate.v2" as const,
+    text: "",
+    sources: {},
+    validation_issues: [],
+  };
+  const partial = {
+    ...base,
+    read_coverage: [{
+      file_id: "file", filename: "paper.pdf", source_hash: "s", parsed_hash: "p",
+      parser_version: "1", source_aliases: ["S1"], total_parsed_blocks: 100,
+      returned_block_ids: ["b1", "b2"], unreturned_block_count: 98,
+      all_parsed_blocks_returned: false, extraction_status: "complete",
+      warnings: [], model_understanding_verified: false as const,
+    }],
+  };
+  assert.equal(agentCandidateCoverageSummary(partial), "1 个文件 · 2 / 100 块");
+  assert.equal(
+    agentCandidateCoverageSummary({
+      ...partial,
+      read_coverage: [{ ...partial.read_coverage[0], returned_block_ids: Array.from({ length: 100 }, (_, i) => `b${i}`), all_parsed_blocks_returned: true }],
+    }),
+    "1 个文件 · 全部返回",
+  );
+  assert.equal(agentCandidateCoverageSummary(base), null);
+});
+
+test("surfaces delegation revisions without inventing a node activity payload", () => {
+  const event = {
+    event_id: "event-delegation", event_sequence: 9, workflow_execution_id: "workflow",
+    run_id: "run", node_execution_id: "delegated-node",
+    event_type: "agent.delegation.revision.requested", workflow_status: "running",
+    node_status: "running", occurred_at: "2026-10-19T00:00:00Z",
+    public_summary: "候选回答需要修订，继续由原 Agent 处理", public_payload: {}, trace_id: null,
+  } as const;
+  const activity = agentWorkflowEventActivity(event as AgentWorkflowEvent);
+  assert.equal(activity?.text, "候选回答需要修订，继续由原 Agent 处理");
+  assert.equal(activity?.phase, "running");
+  assert.equal(selectAgentWorkflowActivityTimeline([event as AgentWorkflowEvent]).length, 1);
+});
+
+test("renders delegated candidate role, coverage, tool effect and bounded prose", () => {
+  const workflow: AgentWorkflowSummary = {
+    workflow_execution_id: "wf", run_id: "run", workflow_name: "model_only",
+    workflow_version: "1.0.0", execution_profile: "general_tools_v1", status: "completed",
+    version: 1, snapshot_version: 2, current_stage: "workflow_completion",
+    primary_node_execution_id: "delegated", active_node_execution_ids: [],
+    model_call_count: 2, max_model_calls: 16, node_count: 2, max_nodes: 24,
+    started_at: null, completed_at: null, created_at: "", updated_at: "", error: null,
+  };
+  const node = {
+    schema_version: "agent_workflow_node_result.v1", workflow_execution_id: "wf",
+    workflow_name: "model_only", workflow_version: "1.0.0", node_execution_id: "delegated",
+    node_key: "general_delegate.task-1", node_type: "model", node_version: "1.0.0",
+    node_sequence: 1, node_attempt: 1, parent_node_execution_id: "parent", run_id: "run",
+    task_id: "task", agent_run_id: "agent", agent_turn_id: null, agent_role: "planner",
+    status: "completed", output_type: "general_delegated_candidate",
+    output_schema_version: "general_candidate.v2",
+    output: {
+      schema_version: "general_candidate.v2", text: "Delegated candidate body",
+      sources: { S1: { tool_call_id: "read", result_id: "r", file_id: "f", block_ids: ["b1"], source_hash: "s", parsed_hash: "p", parser_version: "1" } },
+      validation_issues: [],
+      units: [{ unit_id: "u1", kind: "prose", start_char: 0, end_char: 3, text: "body", source_aliases: ["S1"], unknown_source_aliases: [], citation_status: "present", content_verified: false }],
+      read_coverage: [{ file_id: "f", filename: "paper.pdf", source_hash: "s", parsed_hash: "p", parser_version: "1", source_aliases: ["S1"], total_parsed_blocks: 100, returned_block_ids: ["b1", "b2"], unreturned_block_count: 98, all_parsed_blocks_returned: false, extraction_status: "complete", warnings: [], model_understanding_verified: false }],
+    },
+    input: { schema_version: "1", input_hash: "", source_node_execution_ids: [], message_ids: [], artifact_ids: [], handoff_ids: [], context_build_id: null, prompt_release_id: null },
+    transition: { selected_transition: null, next_node_keys: [], skipped_node_keys: [], condition_summary: "" },
+    evidence: { model_attempt_ids: [], tool_call_ids: ["delegate"], evaluation_ids: [], artifact_ids: [], handoff_ids: [], tool_results: [{ tool_call_id: "delegate", tool_name: "delegate_task", version: "1.0.0", status: "completed", error_code: null, file_id: null }] },
+    usage: { input_tokens: 10, output_tokens: 5, cached_tokens: 0, estimated_cost: "0", model_call_count: 1, tool_call_count: 1 },
+    budget: { cost_limit: null, cost_used_before: "0", cost_used_after: "0", reserved_estimated_cost: "0", remaining_model_calls: 15, remaining_nodes: 23, remaining_wall_time_ms: 10000, remaining_cost: null },
+    timing: { started_at: "", completed_at: "", duration_ms: 18 },
+    public_view: { status_label: "completed", summary: "Delegated work", progress_current: 1, progress_total: 1 },
+    observability: { trace_id: null, span_id: null }, warnings: [], error: null, created_at: "",
+  } as unknown as AgentWorkflowNodeResult;
+  const finalNode = {
+    ...node,
+    node_execution_id: "final", node_key: "final_synthesis", node_sequence: 2,
+    agent_role: "controller", output_type: "final_synthesis",
+    output: {
+      answer_type: "text", final_text: "answer", completed_objectives: [], unresolved_items: [],
+      warnings: [], recommended_next_actions: [], source_agent_run_ids: ["agent"], source_handoff_ids: ["handoff"],
+      source_artifact_ids: [], source_evaluation_ids: [], assistant_message_id: "message",
+    },
+  } as unknown as AgentWorkflowNodeResult;
+  const markup = renderToStaticMarkup(createElement(AgentWorkflowPanel, {
+    workflow, nodes: [node, finalNode], events: [], hasEventGap: false,
+  }));
+  assert.match(markup, /模型 Agent · Planner/);
+  assert.match(markup, /委派子任务/);
+  assert.match(markup, /委派完成/);
+  assert.match(markup, /返回范围/);
+  assert.match(markup, /1 个文件 · 2 \/ 100 块/);
+  assert.match(markup, /候选单元/);
+  assert.match(markup, /agent-node-prose/);
+  assert.match(markup, /Delegated candidate body/);
+  assert.match(markup, /委派 Agent/);
+  assert.match(markup, /Handoff/);
 });
 
 test("restores workflow presentation on the persisted assistant message for the same run", () => {
