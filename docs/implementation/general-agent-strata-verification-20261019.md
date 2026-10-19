@@ -142,6 +142,32 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   test_agent_output_repair.py、test_evidence_output_repair.py、test_claim_sources.py、
   test_workflow_refinement.py、test_plan_repair_statistics.py。Ruff、git diff --check 通过。
 
+### 实际请求的文件工具输入清单
+
+本批新增 `services/model_input_manifest.py`，在 `ModelInvocationService` 保存请求时记录
+历史裁剪之后的原生文件 Tool 消息。清单和公开消息序列都存入原有 MinIO 请求对象，SQL 仍只保存 URI；
+不增加表或改写旧对象，不向供应商额外发送清单，不改变前端或启动新的付费模型请求。
+
+- 新增4个测试先因模块尚不存在失败，随后实现通过。测试区分搜索范围与真正出现的块、原文与
+  已省略正文、用户伪造 JSON、失败/损坏历史、不同文件快照和完整块哈希。
+- 现有文件工具集成测试核对持久清单与脚本 Provider 实际收到的消息完全一致，并检查联调脚本能区分
+  `verified`、`historical_manifest_absent`、`mismatch`，且不重写旧对象。
+- 文件工具/输入清单/历史投影检查命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_agent_file_tools.py apps/api/tests/test_model_input_manifest.py apps/api/tests/test_tool_context.py --tb=short`，最终28通过（11.14秒）；Ruff 和 `git diff --check` 通过。
+- 新通用 Agent、模型请求和正文对象存储回归：同一 PYTHONPATH 和 pytest 命令，文件为
+  `test_general_agent.py test_responses.py test_conversation_body_storage.py`，82通过（28.53秒）。
+- 本地只读复验调用联调脚本 `model_input_evidence('de861fd3-827f-42c8-ba49-943748d7bb54')`，
+  从 MySQL 现有 Attempt 引用打开11份真实 Strata MinIO 请求。历史对象均无新清单，正确标记缺失而不是通过。
+  主 Agent 的3份请求分别有0、33、93个原生文件块出现次数；后者包含重复块，不能说读了93个不同块。
+  Reviewer 的8份请求分别为0、0、0、0、5、5、5、5；Reviewer 输入还带独立原文集合，**不在此项统计中**，
+  因此不能将前四份的0解释为 Reviewer 没有拿到原文。
+- 此次只读脚本最初使用错误表名/时间字段及异步遍历同步对象流，检查失败；核对实际 ORM 和
+  ObjectContent 类型后改为模型字段查询与线程内同步读取，复验成功，并纳入上述集成回归。
+- 无新模型请求，新增供应商 token 消耗为0。没有声称已用新代码完成真实供应商写入验收；
+  后续真实调测自动附带 `model_input_evidence`，检验新请求是否有与实际消息一致的清单。
+
+这项实现只提供逐请求的原生工具输入事实，不等于任务级完整阅读覆盖。Reviewer 原文集合、
+工作笔记、最终完整请求参数审计与后续覆盖汇总仍须继续实现。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。

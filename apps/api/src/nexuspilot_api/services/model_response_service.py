@@ -55,6 +55,7 @@ from nexuspilot_api.schemas.context_builds import (
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
 from nexuspilot_api.services.context_builder_service import build_runtime_context
 from nexuspilot_api.services.lookups import require_run, require_task
+from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
 from nexuspilot_api.services.model_reasoning_policy_service import (
     resolve_registered_model_reasoning,
 )
@@ -521,7 +522,12 @@ class ModelInvocationService:
         prompt_prefix_fingerprint: str | None,
         request_type: str | None = None,
     ) -> LlmModelAttempt:
-        """Persist actual messages for every attempt without serializing private continuation."""
+        """Save projected messages and native file-input hashes before provider dispatch.
+
+        Bodies and the input manifest stay in object storage; SQL retains the URI.
+        Private continuation is omitted. This record proves prepared input, not
+        provider receipt or comprehension, including attempts cancelled before dispatch.
+        """
 
         await require_run(self.db_session, payload.run_id)
         if payload.task_id:
@@ -592,6 +598,7 @@ class ModelInvocationService:
             raw_request["effective_messages"] = [
                 message.model_dump(mode="json") for message in request.messages
             ]
+            raw_request["tool_input_manifest"] = build_tool_input_manifest(request.messages)
             stored_raw_request = await self.storage.put_bytes(
                 f"{payload.run_id}/{model_attempt.attempt_id}/raw-request.json",
                 json.dumps(raw_request, ensure_ascii=False).encode(),

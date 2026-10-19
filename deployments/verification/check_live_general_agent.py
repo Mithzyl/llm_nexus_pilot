@@ -22,12 +22,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from sqlalchemy import text
+from nexuspilot_models.contracts import Message
+from sqlalchemy import select, text
 
 from check_live_strata_long_files import MODEL, inspect, request
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
+from nexuspilot_api.models import LlmModelAttempt
+from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
 
 QUESTION = (
     "请实际用附件工具回答，不凭文件名猜测。用少量首部原文确认论文研究对象，"
@@ -80,6 +83,58 @@ async def storage_evidence(run_id):
                         else False,
                     }
                 )
+    return records
+
+
+async def model_input_evidence(run_id):
+    """Read only local SQL/MinIO requests; distinguish old absent manifests from mismatches.
+
+    Recomputed occurrence counts describe native tool messages, not reviewer input
+    bundles or comprehension. Never write reconstructed manifests into old objects.
+    """
+    settings = get_settings()
+    if urlsplit(settings.database_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise RuntimeError("Input audit requires local MySQL")
+    if urlsplit("http://" + settings.minio_endpoint).hostname not in {
+        "localhost", "127.0.0.1", "::1",
+    }:
+        raise RuntimeError("Input audit requires local MinIO")
+    storage = ObjectStorage()
+    records = []
+    async with database_session_factory() as db:
+        rows = (await db.execute(select(
+            LlmModelAttempt.attempt_id, LlmModelAttempt.agent_role,
+            LlmModelAttempt.raw_request_uri,
+        ).where(LlmModelAttempt.run_id == run_id).order_by(
+            LlmModelAttempt.started_at, LlmModelAttempt.attempt_id,
+        ))).mappings()
+        for row in rows:
+            entry = {"attempt_id": row["attempt_id"], "role": row["agent_role"],
+                     "manifest_status": "request_missing"}
+            records.append(entry)
+            if not row["raw_request_uri"]:
+                continue
+            content = await storage.open_object(row["raw_request_uri"])
+            raw = await asyncio.to_thread(b"".join, content.chunks)
+            request_data = json.loads(raw)
+            entry["request_sha256"] = hashlib.sha256(raw).hexdigest()
+            if "effective_messages" not in request_data:
+                entry["manifest_status"] = "effective_messages_missing"
+                continue
+            manifest = build_tool_input_manifest([
+                Message.model_validate(message) for message in request_data["effective_messages"]
+            ])
+            saved = request_data.get("tool_input_manifest")
+            entry["manifest_status"] = (
+                "historical_manifest_absent" if saved is None
+                else "verified" if saved == manifest else "mismatch"
+            )
+            entry["native_file_block_occurrences"] = sum(
+                len(item["included_block_ids"]) for item in manifest["file_inputs"]
+            )
+            entry["omitted_file_results"] = sum(
+                item["body_status"] == "omitted" for item in manifest["file_inputs"]
+            )
     return records
 
 
@@ -252,6 +307,7 @@ async def observe(client, args, report):
         )
         report.update(after)
     report["storage"] = await storage_evidence(report["run_id"])
+    report["model_input_evidence"] = await model_input_evidence(report["run_id"])
     checkpoint(args.report, report)
     print(
         json.dumps({k: report[k] for k in ["status", "elapsed_seconds", "usage"]}),

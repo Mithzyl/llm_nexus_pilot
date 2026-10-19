@@ -249,9 +249,9 @@ async def test_repeated_tool_request_stops_without_unbounded_calls(client):
     "tool_name", ["read_file_content", "get_file_outline", "search_file_content", "read_file_table"]
 )
 async def test_file_tools_read_real_uploaded_parse_and_preserve_context(
-    client, test_database_session_factory, tool_name
+    client, test_database_session_factory, tool_name, monkeypatch
 ):
-    """Read persisted extraction and retain base Context plus exact tool request history."""
+    """Read persisted extraction; audit projected file input against dispatched messages."""
     from test_conversation_file_context import prepare_conversation_file
 
     from nexuspilot_api.infrastructure.object_storage import get_object_storage
@@ -303,6 +303,58 @@ async def test_file_tools_read_real_uploaded_parse_and_preserve_context(
             any(m.get("tool_call_id") == "read-1" for m in a.get("effective_messages", []))
             for a in audits
         )
+        from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
+
+        assert all("tool_input_manifest" in audit for audit in audits)
+        for request in provider.requests:
+            expected_messages = [message.model_dump(mode="json") for message in request.messages]
+            matching = [
+                audit for audit in audits if audit["effective_messages"] == expected_messages
+            ]
+            assert matching, "Provider input must have a saved request audit"
+            assert matching[0]["tool_input_manifest"] == build_tool_input_manifest(request.messages)
+        file_inputs = [entry for audit in audits
+                       for entry in audit["tool_input_manifest"]["file_inputs"]]
+        if tool_name != "get_file_outline":
+            assert file_inputs
+            assert all(entry["body_status"] == "included" for entry in file_inputs)
+            assert all(entry["file_id"] == file["file_id"] for entry in file_inputs)
+            assert all(entry["source_hash"] == hashlib.sha256(content).hexdigest()
+                       for entry in file_inputs)
+    if tool_name == "read_file_content":
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]
+                                       / "deployments" / "verification"))
+        import check_live_general_agent as verification
+
+        monkeypatch.setattr(verification, "database_session_factory", test_database_session_factory)
+        monkeypatch.setattr(verification, "ObjectStorage", lambda: storage)
+        monkeypatch.setattr(verification, "get_settings", lambda: SimpleNamespace(
+            database_url="mysql+aiomysql://localhost/test", minio_endpoint="localhost:9000",
+        ))
+        evidence = await verification.model_input_evidence(turn["run"]["run_id"])
+        assert evidence and all(item["manifest_status"] == "verified" for item in evidence)
+        assert any(item["native_file_block_occurrences"] > 0 for item in evidence)
+        # A historical absence is not a successful check or a reconstructed persisted record.
+        uri = attempts[0].raw_request_uri
+        raw, mime = storage.objects[uri]
+        historical = json.loads(raw)
+        historical.pop("tool_input_manifest")
+        historical_bytes = json.dumps(historical).encode()
+        storage.objects[uri] = (historical_bytes, mime)
+        evidence = await verification.model_input_evidence(turn["run"]["run_id"])
+        assert next(item for item in evidence if item["attempt_id"] == attempts[0].attempt_id)[
+            "manifest_status"
+        ] == "historical_manifest_absent"
+        assert storage.objects[uri][0] == historical_bytes
+        historical["tool_input_manifest"] = {"invalid": True}
+        storage.objects[uri] = (json.dumps(historical).encode(), mime)
+        evidence = await verification.model_input_evidence(turn["run"]["run_id"])
+        assert next(item for item in evidence if item["attempt_id"] == attempts[0].attempt_id)[
+            "manifest_status"
+        ] == "mismatch"
 
 
 @pytest.mark.parametrize("same_owner", [True, False])
