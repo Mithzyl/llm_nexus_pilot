@@ -140,6 +140,28 @@ async def test_general_agent_continues_tools_and_finishes_plain_text(client):
     assert result["aggregate_usage"]["tool_call_count"] == 1
 
 
+async def test_located_candidate_does_not_reject_previously_allowed_chinese_answer(client):
+    """Backend unit metadata must not make a previously valid long prose answer fail to save."""
+    provider = GeneralProvider()
+    original = provider.generate
+    answer = "说明" * 6000
+
+    async def long_answer(request):
+        """Return the same valid Unicode answer without making external model requests."""
+        response = await original(request)
+        response.text = answer
+        return response
+
+    provider.generate = long_answer
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    run = await create_test_run(client)
+    result = (
+        await client.post(f"/api/v1/runs/{run['run_id']}/agent-workflows", json=general_payload())
+    ).json()
+    assert result["status"] == "completed", result.get("error")
+    assert result["final_output"]["final_text"] == answer
+
+
 async def test_review_revision_returns_to_agent_and_is_reviewed_again(client):
     """A revised candidate cannot inherit the prior review and must retain its feedback."""
     provider = GeneralProvider(revise=True)
@@ -323,6 +345,12 @@ async def test_file_sources_review_reread_and_object_body_restore(
     candidates = [n for n in result["nodes"] if n["output_type"] == "general_candidate"]
     assert len(candidates) == 2
     assert set(candidates[-1]["output"]["sources"]) == {"S1", "S2"}
+    assert candidates[0]["output"]["schema_version"] == "general_candidate.v2"
+    assert candidates[0]["output"]["units"][0]["source_aliases"] == ["S1"]
+    assert candidates[-1]["output"]["units"][0]["source_aliases"] == ["S1", "S2"]
+    assert candidates[0]["output"]["read_coverage"][0]["unreturned_block_count"] == 1
+    assert candidates[-1]["output"]["read_coverage"][0]["all_parsed_blocks_returned"]
+    assert not candidates[-1]["output"]["read_coverage"][0]["model_understanding_verified"]
     assert result["aggregate_usage"]["tool_call_count"] == 2
     assert result["aggregate_usage"]["model_call_count"] == 6
     async with test_database_session_factory() as db:
@@ -340,6 +368,9 @@ async def test_file_sources_review_reread_and_object_body_restore(
         await client.get(f"/api/v1/agent-workflows/{result['workflow_execution_id']}/result")
     ).json()
     assert restored["final_output"] == result["final_output"]
+    assert [n["output"] for n in restored["nodes"] if n["output_type"] == "general_candidate"] == [
+        node["output"] for node in candidates
+    ]
     continuation = await client.post(
         f"/api/v1/sessions/{session['session_id']}/turns",
         json={

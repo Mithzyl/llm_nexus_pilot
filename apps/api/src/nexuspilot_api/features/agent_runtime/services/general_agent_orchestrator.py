@@ -7,7 +7,6 @@ and typed Worker generation are never called. No extra model call synthesizes fi
 import asyncio
 import copy
 import hashlib
-import re
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
@@ -27,6 +26,10 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
 from nexuspilot_api.features.agent_runtime.services.agent_tool_loop import (
     ToolLoopState,
     run_file_tool_loop,
+)
+from nexuspilot_api.features.agent_runtime.services.general_candidate_service import (
+    build_candidate_units,
+    build_read_coverage,
 )
 from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestrator import (
     ModelOnlyWorkflowOrchestrator,
@@ -48,7 +51,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
     async def execute(self, workflow, payload):
-        """Persist candidates and reviews using shared terminal-state and usage rules."""
+        """Persist located candidate units, read coverage and reviews without replacing history."""
         execution_id = workflow.workflow_execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node = None
@@ -92,7 +95,8 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 )
                 text = candidate_response.output_text or ""
                 self.model_node_service._require_complete_response(candidate_response)
-                aliases = set(re.findall(r"\[(S[0-9]+)\]", text))
+                units = build_candidate_units(text, set(self.sources))
+                aliases = {alias for unit in units for alias in unit.source_aliases}
                 originals = await self._resolve_sources(workflow)
                 issues = [
                     f"Unknown source [{alias}]" for alias in sorted(aliases - self.sources.keys())
@@ -102,7 +106,12 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         "Read file evidence is available but the candidate has no source references"
                     )
                 candidate = GeneralCandidateOutput(
-                    text=text, sources=copy.deepcopy(self.sources), validation_issues=issues
+                    schema_version="general_candidate.v2",
+                    text=text,
+                    sources=copy.deepcopy(self.sources),
+                    validation_issues=issues,
+                    units=units,
+                    read_coverage=build_read_coverage(originals),
                 )
                 should_review = payload.review_policy == "always" or (
                     payload.review_policy == "on_verification_failure" and bool(issues)
@@ -127,6 +136,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     review_input = {
                         "candidate": text,
                         "candidate_node_id": candidate_node_id,
+                        "candidate_units": [unit.model_dump(mode="json") for unit in units],
+                        "returned_file_scope": [
+                            scope.model_dump(mode="json") for scope in candidate.read_coverage
+                        ],
                         "validation_issues": issues,
                         "original_sources": {
                             alias: originals[alias] for alias in aliases if alias in originals
@@ -389,7 +402,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 self.general_task_ids,
                 FileEvidenceReference.model_validate(reference),
             )
-            source.pop("all_parsed_block_ids", None)
+            source["parsed_document_block_count"] = len(source.pop("all_parsed_block_ids"))
             resolved[alias] = source
         return resolved
 

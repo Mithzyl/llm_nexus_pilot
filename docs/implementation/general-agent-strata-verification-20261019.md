@@ -28,6 +28,7 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 | 内容修正后交付 | 未执行真实样本 | — | — | — | — | — |
 | 在途取消 | 已取消；上游结果未知 | 6.367 | 1 | 未知 | 未知 | 未知 |
 | 浏览器恢复/取消 | 已完成结果与取消终态恢复；浏览器发起/停止未执行 | — | 0 | — | — | — |
+| v2 段落/读取范围，不审核 | 已完成并恢复正文及来源记录 | 58.531 | 3 | 36,582 | 1,644 | 12,951 |
 
 缓存是输入的子集，不额外相加。reasoning Token 未报告，货币费用配置/真实账单尚不可用，
 不得将 Node 汇总的默认 0 当作实际免费。耗时包含本地执行和轮询确认，不是纯模型解码时间。
@@ -77,9 +78,30 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 前端检查：npx tsx --test tests/agent-workflow-view.test.ts tests/agent-workflow.test.ts tests/claim-evidence.test.ts tests/workflow-recovery.test.ts，
   28 通过；npm run typecheck、修改文件 ESLint 通过。脚本 Ruff、git diff --check 通过。
 
+### 候选段落与实际返回范围（后续本地修改）
+
+此前验证与必要节点映射已提交 c465ce4。本项在该提交之上新增 general_candidate.v2，
+验证脚本记录工作区是否有修改及 Agent Runtime 各源码 SHA-256，不能仅用报告的 HEAD 指代未提交代码。
+
+- Run：1e940e11-6683-43e7-a2d0-90afb01d04f1；Workflow：5f700c18-5b5a-4e61-bc5e-a2beb994dfbd。
+  报告 /tmp/general-agent-units-20261019.json。使用同一 PDF、问题、模型，策略 never；没有增加用于重写结构的模型请求。
+- 后端产生 14 个标题/段落/条目单元，保存原始正文位置和短来源关联；5 个正文单元没有直接引用，
+  如实标记 missing，不自动继承邻段引用，也不直接判断其内容错误。Reviewer 目前仍整篇审核，逐单元审核尚未完成。
+- 文件共 1542 个解析块，实际工具返回去重后 90 个，未返回 1452 个；
+  all_parsed_blocks_returned=false、model_understanding_verified=false。保留无 OCR、图形/表格未解释等解析警告。
+  这是实际返回范围，不是当前模型窗口包含范围或全文理解证明。
+- 2 条消息、3 个节点原始 SQL 正文为空；5 个 MinIO 对象引用、内容哈希均通过。API 再读最终正文一致。
+- Playwright 打开该会话恢复为“工作流已完成”，正文可读；快照 output/playwright/general-agent-units-restored.yml。
+- 测试先行：新增纯组装测试先因实现模块不存在失败；新增 12,000 字符中文答案在附带单元记录后
+  复现旧 64 KiB 节点保存限制导致失败，随后仅为新节点增加有界对象记录容量，旧节点限制未变。
+- 相关回归：general_candidate、general_agent、workflow_execution_tasks、agent_workflows、worker_evidence、
+  conversation_body_storage 共 127 通过。之后增加历史 v1、损坏偏移/遗漏正文和对象恢复断言，
+  最终 general_candidate + general_agent 为 25 通过。两组重叠，不相加作为测试数量。
+- Ruff 与 git diff --check 通过，Web 类型检查通过；没有新迁移或对历史对象重写。
+
 ## 尚未验收的完整目标
 
 继续完成触发式审核、内容修正后的交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
-后续仍需补齐规划中的逐结论审核、工作记录/读取范围、按需委派及 Handoff、
+后续仍需补齐规划中的逐结论审核、工作记录/模型输入覆盖、按需委派及 Handoff、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

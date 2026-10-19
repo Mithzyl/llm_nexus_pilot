@@ -561,13 +561,76 @@ class WorkflowCompletionOutput(StrictContract):
     errors: list[WorkflowErrorRead]
 
 
+class GeneralCandidateUnit(StrictContract):
+    """Locate a backend-selected paragraph/list item, not a semantic atomic or verified claim."""
+
+    unit_id: str = Field(pattern=r"^u[1-9][0-9]*$")
+    kind: Literal["heading", "prose", "code"]
+    start_char: int = Field(
+        ge=0, description="Zero-based Unicode code-point offset in candidate text"
+    )
+    end_char: int = Field(gt=0, description="Exclusive Unicode code-point offset")
+    text: str = Field(min_length=1, max_length=16_000)
+    source_aliases: list[str] = Field(default_factory=list)
+    unknown_source_aliases: list[str] = Field(default_factory=list)
+    citation_status: Literal["present", "missing", "unknown", "not_applicable"]
+    content_verified: Literal[False] = False
+
+
+class GeneralReadCoverage(StrictContract):
+    """Describe tool-returned blocks, never claim that a model understood an entire file."""
+
+    file_id: str
+    filename: str
+    source_hash: str
+    parsed_hash: str
+    parser_version: str
+    source_aliases: list[str]
+    total_parsed_blocks: int = Field(ge=0)
+    returned_block_ids: list[str]
+    unreturned_block_count: int = Field(ge=0)
+    all_parsed_blocks_returned: bool
+    extraction_status: str
+    warnings: list[str]
+    model_understanding_verified: Literal[False] = False
+
+
 class GeneralCandidateOutput(StrictContract):
     """Persist backend-assembled prose and stable source aliases, never model-generated IDs."""
 
-    schema_version: Literal["general_candidate.v1"] = "general_candidate.v1"
+    schema_version: Literal["general_candidate.v1", "general_candidate.v2"] = "general_candidate.v1"
     text: str = Field(min_length=1, max_length=16_000)
     sources: dict[str, FileEvidenceReference] = Field(default_factory=dict)
     validation_issues: list[str] = Field(default_factory=list)
+    units: list[GeneralCandidateUnit] = Field(default_factory=list)
+    read_coverage: list[GeneralReadCoverage] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_located_units(self):
+        """Reject corrupted v2 spans; historical v1 records do not gain invented units."""
+        if self.schema_version == "general_candidate.v1":
+            return self
+        previous_end = 0
+        if not self.units:
+            raise ValueError("Located candidate requires nonempty units")
+        for index, unit in enumerate(self.units, start=1):
+            if (
+                unit.unit_id != f"u{index}"
+                or unit.start_char < previous_end
+                or unit.end_char <= unit.start_char
+                or unit.end_char > len(self.text)
+                or self.text[unit.start_char:unit.end_char] != unit.text
+                or self.text[previous_end:unit.start_char].strip()
+            ):
+                raise ValueError("Candidate unit does not match the original text span")
+            if unit.unknown_source_aliases != [
+                alias for alias in unit.source_aliases if alias not in self.sources
+            ]:
+                raise ValueError("Candidate unit source validity differs from its mapping")
+            previous_end = unit.end_char
+        if self.text[previous_end:].strip():
+            raise ValueError("Candidate units omit trailing content")
+        return self
 
 
 class GeneralReviewOutput(StrictContract):

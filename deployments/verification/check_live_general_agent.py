@@ -283,6 +283,17 @@ async def main(args):
             "commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
+            "working_tree_dirty": bool(
+                subprocess.check_output(
+                    ["git", "status", "--porcelain"], text=True
+                ).strip()
+            ),
+            "general_agent_source_sha256": {
+                str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in Path(
+                    "apps/api/src/nexuspilot_api/features/agent_runtime"
+                ).rglob("*.py")
+            },
         }
     try:
         async with httpx.AsyncClient(

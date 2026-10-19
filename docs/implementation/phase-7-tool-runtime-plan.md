@@ -45,15 +45,18 @@
 实际流程：主 Agent 普通正文/原生工具循环 → 后端候选记录 → 按策略审核或修正 → 保存正文及限制 → 完成记录。最终保存没有额外模型调用，也不要求模型包装复杂 JSON。Reviewer 仅返回 verdict（supported、revise、unconfirmed）和 feedback；不要求 Provider JSON 模式，后端严格检查结构，非法格式最多修正一次。内容修正回到原 Agent，保留工具消息、加载版本、无进展检测及原截止时间；修订后按原策略重新审核。
 
 - always：每版候选均审核。on_verification_failure：未知来源编号、读取后缺少引用等可修正问题触发审核。never：不调用 Reviewer，但引用错误仍须修正。权限撤销、损坏对象和快照不符直接失败，不能由审核批准。
-- 后端为成功读取结果分配 [S1] 等运行内编号，保存真实调用、文件、原件/解析哈希及块范围。候选类型为 general_candidate.v1，审核输出类型为 general_review。Reviewer 获得被引用原文、读取范围和解析限制，并可补读；补读原文随反馈返回主 Agent。每次调用前核查共享来源权限，交付前重新核对引用。
-- supported 是审核模型的判断，不是确定性真值；unconfirmed 可以带明确的未确认说明交付。非法格式、引用持续无效、重复无进展及取消不能冒充成功。逐段候选单元、逐条审核、全文覆盖账本尚未实现，不宣称完整通读或逐结论审核。
+- 后端为成功读取结果分配 [S1] 等运行内编号，保存真实调用、文件、原件/解析哈希及块范围。新候选正文版本为 general_candidate.v2，历史 general_candidate.v1 仍可读但不补造分段；审核输出类型仍为 general_review。Reviewer 获得被引用原文、候选段落、工具返回范围和解析限制，并可补读；补读原文随反馈返回主 Agent。每次调用前核查共享来源权限，交付前重新核对引用。
+- supported 是审核模型的判断，不是确定性真值；unconfirmed 可以带明确的未确认说明交付。非法格式、引用持续无效、重复无进展及取消不能冒充成功。v2 已加入后端段落/条目位置和短引用关联；代码示例不当引用，未引用段落不自动继承附近来源。unit_id 仅在当前候选节点内有效，偏移按 Unicode 码点而非字节或 JS UTF-16 计数；读取时校验原文位置、不重叠和内容没有遗漏。
+- v2 同时按 file_id/原件哈希/解析哈希/parser_version 保存去重的实际返回块、总块数、未返回数量及解析警告。搜索范围不计为返回范围，工具返回不等于所有内容进入模型当前输入，更不等于已理解。未被任何工具返回的文件不在该集合内，不能据此宣称完成所有附件。逐条审核、模型输入覆盖和工作笔记仍待实现。
 - 内容修正用 workflow_round 和 refinement 事件统计；格式修正用 output_repair 事件及实际 Attempt 统计。工具调用不是业务轮次。新流程不继承旧“两轮”限制，max_model_calls=0 仍表示无调用计数上限；现有节点数、运行/角色时间、窗口、工具批量及正文保存限制继续适用。旧 max_workflow_rounds 字段只作用于旧流程。
 - 复用 Run、Task、Workflow、Node、Attempt、ModelToolCall 和事件表。正文、来源映射使用已有 ConversationBodySession、body_ref_json 和 MinIO 路径规则；无新增 SQL 表、迁移、桶或旧对象改写。新结果需由支持新类型的 API 代码读取，不能交给旧 API 解析。
 - 不创建虚构的 Agent Run/Handoff/Evaluation。按需委派及角色组合后续再接。SSE 观察断开不取消执行；显式停止和迟到用量沿用既有规则。终态结果可查询，重复请求不会重新调用模型；没有跨进程续跑。
 
 实现入口为 features/agent_runtime/services/general_agent_orchestrator.py。为控制修改范围，仅继承旧协调器的持久化/记账辅助方法，不调用其固定 execute 流程。快速回复独立循环本批未合并，公共 Gateway、文件执行及历史投影继续共用。
 
-测试位于 apps/api/tests/test_general_agent.py 和 test_workflow_execution_tasks.py，覆盖正文、三策略、修正统计、文件读取/补读、对象恢复/续聊、撤权、跨用户拒绝、观察断开、取消和迟到用量。使用 SQLite、测试对象存储及脚本化 Provider；真实 MySQL/MinIO、Strata、浏览器未执行，不以离线通过宣布部署可用。
+v2 组装由 general_candidate_service.py 完成，不新增模型调用。新候选/审核的 MinIO 节点正文上限为 1 MiB（对象正文服务已有 16 MiB 上限）；旧节点仍为 64 KiB。原因是后端补充原文位置及来源范围后，合法的长中文正文不能因元数据使旧 64 KiB 限制溢出；12,000 字符中文测试先复现失败再修复。此限制是保存记录大小，不是模型 Token 上限。没有 SQL 新表、迁移或历史对象改写。
+
+首批确定性测试位于 apps/api/tests/test_general_agent.py 和 test_workflow_execution_tasks.py，覆盖正文、三策略、修正统计、文件读取/补读、对象恢复/续聊、撤权、跨用户拒绝、观察断开、取消和迟到用量。使用 SQLite、测试对象存储及脚本化 Provider。后续 v2 另有 test_general_candidate.py；真实 MySQL/MinIO、Strata 和浏览器进展见[本地验收记录](general-agent-strata-verification-20261019.md)，不以离线通过宣布部署可用。
 
 本批验证记录（2026-10-19，未部署、未调用真实模型）：
 

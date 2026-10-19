@@ -455,10 +455,37 @@ export type AgentWorkflowNodeOutputType =
 
 export type AgentWorkflowNodeOutputMap = {
   general_candidate: {
-    schema_version: "general_candidate.v1";
+    schema_version: "general_candidate.v1" | "general_candidate.v2";
     text: string;
     sources: Record<string, FileEvidenceReference>;
     validation_issues: string[];
+    units?: Array<{
+      unit_id: string;
+      kind: "heading" | "prose" | "code";
+      // Unicode code-point offsets, not JavaScript UTF-16 indices.
+      start_char: number;
+      end_char: number;
+      text: string;
+      source_aliases: string[];
+      unknown_source_aliases: string[];
+      citation_status: "present" | "missing" | "unknown" | "not_applicable";
+      content_verified: false;
+    }>;
+    read_coverage?: Array<{
+      file_id: string;
+      filename: string;
+      source_hash: string;
+      parsed_hash: string;
+      parser_version: string;
+      source_aliases: string[];
+      total_parsed_blocks: number;
+      returned_block_ids: string[];
+      unreturned_block_count: number;
+      all_parsed_blocks_returned: boolean;
+      extraction_status: string;
+      warnings: string[];
+      model_understanding_verified: false;
+    }>;
   };
   general_review: {
     verdict: "supported" | "revise" | "unconfirmed";

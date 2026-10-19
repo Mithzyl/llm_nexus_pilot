@@ -73,6 +73,9 @@ from nexuspilot_api.services.session_service import create_message
 EventSink = Callable[[AgentWorkflowEventRead], Awaitable[None]]
 logger = logging.getLogger(__name__)
 MAX_NODE_RESULT_BYTES = 65_536
+# General candidates also contain exact paragraph spans and source/read inventories.
+# Their immutable MinIO envelope remains bounded below the storage client's 16 MiB cap.
+MAX_GENERAL_NODE_RESULT_BYTES = 1024 * 1024
 _TERMINAL_WORKFLOW_STATUSES = frozenset(
     {
         AgentWorkflowStatus.COMPLETED,
@@ -373,7 +376,7 @@ class WorkflowExecutionStateService:
         activity_context: dict | None = None,
         commit_event: bool = True,
     ) -> LlmAgentWorkflowEvent:
-        """Validate and persist a completed node with its typed public activity."""
+        """Persist validated outputs with explicit size bounds for legacy and source-rich nodes."""
 
         await self.ensure_workflow_running(workflow)
         definition = self._require_workflow_definition(workflow)
@@ -384,8 +387,15 @@ class WorkflowExecutionStateService:
         )
         output_json = validate_node_output(node.output_type, output.model_dump(mode="json"))
         serialized = json.dumps(output_json, ensure_ascii=False, separators=(",", ":"))
-        if len(serialized.encode()) > MAX_NODE_RESULT_BYTES:
-            raise InvalidRequestError("Agent node output exceeds the 64 KiB envelope limit")
+        result_limit = (
+            MAX_GENERAL_NODE_RESULT_BYTES
+            if node.output_type in {"general_candidate", "general_review"}
+            else MAX_NODE_RESULT_BYTES
+        )
+        if len(serialized.encode()) > result_limit:
+            raise InvalidRequestError(
+                f"Agent node output exceeds the {result_limit // 1024} KiB envelope limit"
+            )
         now = utc_now()
         activity = build_completed_node_activity(
             output_type=node.output_type,
