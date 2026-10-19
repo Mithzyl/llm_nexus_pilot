@@ -24,9 +24,11 @@ class RegisteredTool:
     keywords: tuple[str, ...] = ()
     initially_loaded: bool = False
     risk_level: str = "read_only"
+    timeout_seconds: float | None = 15
+    max_result_bytes: int = 65536
 
     def __post_init__(self) -> None:
-        """Reject ambiguous identities and missing schemas before any tool is advertised."""
+        """Validate trusted schemas and execution bounds before advertising a built-in tool."""
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", self.name):
             raise ValueError("Invalid tool name")
         if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.version):
@@ -37,6 +39,10 @@ class RegisteredTool:
             raise ValueError("Tool input and output require typed schemas")
         if self.risk_level not in {"read_only", "task_write"}:
             raise ValueError("Unsupported built-in tool risk level")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError("Tool timeout must be positive or inherited from its caller")
+        if not 1 <= self.max_result_bytes <= 16 * 1024 * 1024:
+            raise ValueError("Tool result limit exceeds object body capacity")
 
     def definition(self) -> ToolDefinition:
         """Publish callable input metadata without internal execution references or secrets."""

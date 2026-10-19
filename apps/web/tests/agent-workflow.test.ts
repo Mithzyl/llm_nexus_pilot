@@ -35,6 +35,7 @@ test("accepts repair and refinement events without losing the event cursor", () 
   const types = [
     "agent.node.output_repair.requested", "agent.node.output_repair.completed",
     "agent.workflow.refinement.requested", "agent.workflow.refinement.skipped",
+    "agent.delegation.revision.requested",
     "agent.controller.plan_repair.requested", "agent.controller.plan_repair.completed",
     "agent.controller.plan_repair.skipped",
   ] as AgentWorkflowEvent["event_type"][];

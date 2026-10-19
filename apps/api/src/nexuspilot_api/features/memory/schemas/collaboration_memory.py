@@ -49,6 +49,16 @@ PACKET_V1_SECTIONS = {
 }
 
 
+class GeneralHandoffContent(BaseModel):
+    """Identify an actual delegated candidate without relabeling prose as confirmed facts."""
+
+    model_config = ConfigDict(extra="forbid")
+    objective: str = Field(min_length=1)
+    status: Literal["completed"]
+    candidate_node_execution_id: str = Field(min_length=36, max_length=36)
+    candidate: dict
+
+
 class AgentHandoffCreate(BaseModel):
     """Validate one immutable Handoff fact submitted by an Agent coordinator."""
 
@@ -64,7 +74,13 @@ class AgentHandoffCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_handoff_contract(self) -> "AgentHandoffCreate":
-        """Validate legacy v1 or an explicitly versioned v2 evidence-preserving Handoff."""
+        """Keep legacy records unchanged and validate a node-backed general prose handoff."""
+
+        if self.schema_version == "agent_handoff.v3":
+            GeneralHandoffContent.model_validate(self.handoff_json)
+            if self.status != HandoffStatus.COMPLETED:
+                raise ValueError("General delegated handoff must match completed status")
+            return self
 
         if self.schema_version not in {"agent_handoff.v1", "agent_handoff.v2"}:
             raise ValueError("Unsupported Handoff version")

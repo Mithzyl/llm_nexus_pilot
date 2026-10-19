@@ -24,6 +24,7 @@ import {
 
 const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   general_candidate: "模型 Agent",
+  general_delegated_candidate: "模型 Agent",
   general_review: "独立审核",
   request_intake: "请求归一化",
   context_assembly: "上下文组装",
@@ -72,12 +73,13 @@ function listValue(values: string[], emptyLabel = "无"): string {
   return values.length > 0 ? values.join("、") : emptyLabel;
 }
 
-/** Map old and general Agent API outputs into the existing read-only detail rows. */
+/** Map legacy, main and delegated API outputs into the existing read-only detail rows. */
 function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]> {
   if (!node.output) return [["输出", agentNodeMissingOutputLabel(node.status)]];
 
   switch (node.output_type) {
     case "general_candidate":
+    case "general_delegated_candidate":
       return [
         ["输出", node.output.text],
         ["拒绝原因", listValue(node.output.validation_issues)],

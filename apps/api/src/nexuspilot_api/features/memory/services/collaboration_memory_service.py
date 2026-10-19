@@ -76,7 +76,7 @@ async def submit_handoff(
     run_id: str,
     payload: AgentHandoffCreate,
 ) -> HandoffWriteResult:
-    """Persist an immutable Handoff; v2 evidence must match an authorized completed Worker."""
+    """Persist immutable handoffs; versioned evidence must match actual completed role outputs."""
 
     run = await db_session.get(LlmRun, run_id)
     if run is None:
@@ -126,6 +126,35 @@ async def submit_handoff(
             await allowed_evidence_tasks(db_session, worker),
             WorkerEvidenceBundle.model_validate(expected),
         )
+    if payload.schema_version == "agent_handoff.v3":
+        from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+            GeneralCandidateOutput,
+        )
+        from nexuspilot_api.models import AgentWorkflowNodeStatus, LlmAgentWorkflowNodeExecution
+        from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
+        from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceService
+
+        child = await db_session.get(
+            LlmAgentWorkflowNodeExecution, payload.handoff_json["candidate_node_execution_id"]
+        )
+        candidate = GeneralCandidateOutput.model_validate(payload.handoff_json["candidate"])
+        task = await db_session.get(LlmTask, task_id)
+        if (child is None or task is None or child.run_id != run_id
+                or child.task_id != task_id or child.agent_run_id != agent_run.agent_run_id
+                or child.workflow_execution_id != agent_run.workflow_execution_id
+                or child.output_type != "general_delegated_candidate"
+                or child.status != AgentWorkflowNodeStatus.COMPLETED
+                or child.output_json != candidate.model_dump(mode="json")
+                or payload.handoff_json["objective"] != task.objective):
+            raise ResourceConflictError("Handoff does not match the completed delegated task")
+        task_ids = set(await db_session.scalars(select(LlmAgentWorkflowNodeExecution.task_id).where(
+            LlmAgentWorkflowNodeExecution.workflow_execution_id == child.workflow_execution_id,
+            LlmAgentWorkflowNodeExecution.run_id == run_id,
+        )))
+        for reference in candidate.sources.values():
+            await WorkerEvidenceService(db_session, storage).resolve(
+                run_id, task_ids, FileEvidenceReference.model_validate(reference),
+            )
     request_hash = hash_memory_request(payload.model_dump(mode="json"))
     replay = await db_session.scalar(
         select(LlmAgentHandoff).where(

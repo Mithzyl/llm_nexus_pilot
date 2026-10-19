@@ -76,6 +76,7 @@ test("renders committed tool results for a running or failed worker after reload
   // New API node types must render through the existing drawer without dropping facts.
   for (const [output_type, output, expected] of [
     ["general_candidate", { text: "Candidate <script>text</script>", sources: {}, validation_issues: [] }, "Candidate &lt;script&gt;text&lt;/script&gt;"],
+    ["general_delegated_candidate", { text: "Delegated prose", sources: {}, validation_issues: [] }, "Delegated prose"],
     ["general_review", { verdict: "unconfirmed", feedback: "Review needs evidence" }, "Review needs evidence"],
   ] as const) {
     const markup = renderToStaticMarkup(createElement(AgentWorkflowPanel, {

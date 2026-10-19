@@ -46,6 +46,16 @@ class ReadTaskNoteArguments(EmptyArguments):
     note_id: str = Field(min_length=36, max_length=36)
 
 
+class DelegateTaskArguments(EmptyArguments):
+    """Request a bounded task objective, not a new identity, provider or permission grant."""
+
+    role: Literal["planner", "researcher"]
+    objective: str = Field(min_length=1, max_length=4000)
+    source_aliases: list[Annotated[str, Field(pattern=r"^S[0-9]+$")]] = Field(
+        default_factory=list, max_length=20,
+    )
+
+
 class ListTaskNotesArguments(EmptyArguments):
     """Page note metadata for this task without injecting every note into model input."""
 
@@ -103,27 +113,44 @@ READ_COVERAGE_TOOL = RegisteredTool(
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("阅读", "未读", "进度", "coverage", "reading", "progress"),
 )
-GENERAL_TOOL_CATALOG = ToolCatalog((*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, READ_COVERAGE_TOOL))
+DELEGATE_TOOL = RegisteredTool(
+    name="delegate_task", version="1.0.0",
+    description="Delegate a focused task to a configured planner or researcher and receive its "
+    "full prose result and source references. Choose source_aliases to supply original excerpts. "
+    "The child can read authorized attachments but cannot delegate again "
+    "or approve the final answer. "
+    "Use only when a separate analysis is useful; ordinary steps need no delegation.",
+    arguments=DelegateTaskArguments, output=FileToolResult,
+    required_capabilities=frozenset({"delegate"}), initially_loaded=True,
+    keywords=("委派", "planner", "researcher", "delegate"), risk_level="task_write",
+    timeout_seconds=None, max_result_bytes=2 * 1024 * 1024,
+)
+GENERAL_TOOL_CATALOG = ToolCatalog(
+    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, READ_COVERAGE_TOOL, DELEGATE_TOOL)
+)
 
 
 class GeneralAgentToolService(AgentFileToolService):
     """Add private notes and reading progress to file tools without enabling host writes."""
 
-    def __init__(self, db, storage, *, task_id, sources, allowed_task_ids):
+    def __init__(self, db, storage, *, task_id, sources, allowed_task_ids, delegate=None):
         """Bind server-owned task and source mappings; models cannot expand this scope."""
         super().__init__(db, storage)
         self.task_id = task_id
         self.sources = sources
         self.allowed_task_ids = allowed_task_ids
+        self.delegate = delegate
         self.catalog = GENERAL_TOOL_CATALOG
-        self.capabilities = frozenset({"read", "task_notes"})
+        self.capabilities = frozenset(
+            {"read", "task_notes"} | ({"delegate"} if delegate else set())
+        )
         self.loaded_versions = {
             tool.name: tool.version for tool in self.catalog.entries if tool.initially_loaded
         }
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Check task state before notes or reading progress, with shared audited persistence."""
-        if name not in NOTE_NAMES and name != READ_COVERAGE_TOOL.name:
+        """Check task state before notes, progress or delegated work; retain shared persistence."""
+        if name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name, DELEGATE_TOOL.name}:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
         run = await self.db.get(LlmRun, attempt.run_id, populate_existing=True)
@@ -131,6 +158,10 @@ class GeneralAgentToolService(AgentFileToolService):
                 or run is None or task.status != TaskStatus.RUNNING
                 or run.status.value not in {"pending", "running"}):
             raise ToolOperationError("task_not_running", status="permission_denied")
+        if name == DELEGATE_TOOL.name:
+            if self.delegate is None:
+                raise ToolOperationError("delegation_not_allowed", status="permission_denied")
+            return await self.delegate(arguments)
         if name == READ_COVERAGE_TOOL.name:
             return await task_read_coverage(
                 self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
@@ -191,7 +222,7 @@ class GeneralAgentToolService(AgentFileToolService):
         """Recheck source grants and ownership before sending note or coverage history."""
         await super().validate_history(run_id, records)
         for record in records:
-            if (record.tool_name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name}
+            if (record.tool_name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name, DELEGATE_TOOL.name}
                     or record.status != "completed"):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)

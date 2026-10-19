@@ -186,6 +186,10 @@ def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
             execution_profile="general_tools_v1",
             node_definitions=(
                 AgentWorkflowNodeDefinition(
+                    "general_delegate.{task_key}", "model", "general_delegated_candidate",
+                    ("general_agent",),
+                ),
+                AgentWorkflowNodeDefinition(
                     "general_agent",
                     "model",
                     "general_candidate",

@@ -389,7 +389,9 @@ class WorkflowExecutionStateService:
         serialized = json.dumps(output_json, ensure_ascii=False, separators=(",", ":"))
         result_limit = (
             MAX_GENERAL_NODE_RESULT_BYTES
-            if node.output_type in {"general_candidate", "general_review"}
+            if node.output_type in {
+                "general_candidate", "general_delegated_candidate", "general_review",
+            }
             else MAX_NODE_RESULT_BYTES
         )
         if len(serialized.encode()) > result_limit:

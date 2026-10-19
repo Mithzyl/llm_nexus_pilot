@@ -365,6 +365,7 @@ export type AgentWorkflowEventType =
   | "agent.node.output_repair.requested"
   | "agent.node.output_repair.completed"
   | "agent.workflow.refinement.requested"
+  | "agent.delegation.revision.requested"
   | "agent.workflow.refinement.skipped"
   | "agent.controller.plan_repair.requested"
   | "agent.controller.plan_repair.completed"
@@ -440,6 +441,7 @@ export type AgentWorkflowSummary = {
 
 export type AgentWorkflowNodeOutputType =
   | "general_candidate"
+  | "general_delegated_candidate"
   | "general_review"
   | "request_intake"
   | "context_assembly"
@@ -454,6 +456,7 @@ export type AgentWorkflowNodeOutputType =
   | "workflow_completion";
 
 export type AgentWorkflowNodeOutputMap = {
+  general_delegated_candidate: AgentWorkflowNodeOutputMap["general_candidate"];
   general_candidate: {
     schema_version: "general_candidate.v1" | "general_candidate.v2";
     text: string;

@@ -10,6 +10,7 @@ import hashlib
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
+from sqlalchemy import func, select
 
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
@@ -29,6 +30,9 @@ from nexuspilot_api.features.agent_runtime.services.general_candidate_service im
     build_candidate_units,
     build_read_coverage,
 )
+from nexuspilot_api.features.agent_runtime.services.general_delegation_service import (
+    execute_general_delegation,
+)
 from nexuspilot_api.features.agent_runtime.services.general_review_service import (
     REVIEW_BATCH_SIZE,
     REVIEW_INSTRUCTIONS,
@@ -42,6 +46,7 @@ from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestr
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
 from nexuspilot_api.models import (
     LlmAgentWorkflowExecution,
+    LlmAgentWorkflowNodeExecution,
     LlmModelToolCall,
     LlmTask,
     TaskStatus,
@@ -57,13 +62,15 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
     async def execute(self, workflow, payload):
-        """Persist located candidate units, read coverage and reviews without replacing history."""
+        """Persist delegation, candidate units and policy-selected reviews without replacement."""
         execution_id = workflow.workflow_execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node = None
         self.sources = {}
         self.source_by_call = {}
         self.general_task_ids = set()
+        self.delegated_agent_run_ids = []
+        self.delegated_handoff_ids = []
         try:
             run = await self._require_run(workflow.run_id)
             main_task = await self._new_task(run, "controller", payload.role_bindings["controller"])
@@ -226,7 +233,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     continue
                 # The final answer and completion are two persisted nodes. Refuse
                 # before saving a message if the explicit node allowance cannot fit both.
-                if current_node.node_sequence + 2 > workflow.max_nodes:
+                node_count = await self.db_session.scalar(select(func.count()).select_from(
+                    LlmAgentWorkflowNodeExecution,
+                ).where(LlmAgentWorkflowNodeExecution.workflow_execution_id == execution_id))
+                if node_count + 2 > workflow.max_nodes:
                     raise InvalidRequestError("Agent node limit cannot fit final answer completion")
                 main_task.status = TaskStatus.COMPLETED
                 main_task.completed_at = utc_now()
@@ -251,8 +261,8 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     output=FinalSynthesisOutput(
                         **final.model_dump(),
                         assistant_message_id=message_id,
-                        source_agent_run_ids=[],
-                        source_handoff_ids=[],
+                        source_agent_run_ids=list(self.delegated_agent_run_ids),
+                        source_handoff_ids=list(self.delegated_handoff_ids),
                         source_artifact_ids=[],
                         source_evaluation_ids=[],
                     ),
@@ -271,8 +281,8 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     run,
                     final_node_id=current_node.node_execution_id,
                     task_ids=list(self.general_task_ids),
-                    agent_run_ids=[],
-                    handoff_ids=[],
+                    agent_run_ids=list(self.delegated_agent_run_ids),
+                    handoff_ids=list(self.delegated_handoff_ids),
                     evaluation_ids=[],
                 )
                 break
@@ -336,7 +346,16 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Compose tools and audit explicitly resolved originals in this role's actual input."""
+        """Compose task tools; only the main role may delegate to explicitly configured roles."""
+        delegated_roles = sorted({"planner", "researcher"} & payload.role_bindings.keys())
+        can_delegate = task.assigned_role == "controller" and bool(delegated_roles)
+
+        async def delegate(arguments):
+            """Keep child execution within the parent's current deadline and fixed policy."""
+            return await execute_general_delegation(
+                self, workflow, node, payload, task, state, arguments,
+            )
+
         loop = await run_file_tool_loop(
             self.model_node_service,
             workflow,
@@ -356,6 +375,8 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     "Search/describe list_task_notes if you need to find earlier note IDs. "
                     "Search/describe get_task_read_coverage to inspect this task's returned "
                     "and unread blocks; it reports tool delivery, not model understanding."
+                    + (" delegate_task is loaded for these configured roles only: "
+                       + ", ".join(delegated_roles) if can_delegate else "")
                 ),
                 model_output=None,
                 model_input=values,
@@ -370,6 +391,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             tool_service=GeneralAgentToolService(
                 self.db_session, self.storage, task_id=task.task_id,
                 sources=self.sources, allowed_task_ids=self.general_task_ids,
+                delegate=delegate if can_delegate else None,
             ),
         )
         return loop.response

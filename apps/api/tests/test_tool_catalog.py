@@ -93,6 +93,26 @@ def test_catalog_rejects_duplicate_active_names():
         ToolCatalog((catalog_entry(), catalog_entry(version="2.0.0")))
 
 
+@pytest.mark.parametrize("changes", [
+    {"timeout_seconds": 0}, {"timeout_seconds": -1},
+    {"max_result_bytes": 0}, {"max_result_bytes": 16 * 1024 * 1024 + 1},
+])
+def test_catalog_rejects_invalid_execution_bounds(changes):
+    """Trusted tool settings cannot disable storage bounds or specify a nonpositive deadline."""
+    with pytest.raises(ValueError):
+        catalog_entry(**changes)
+
+
+def test_file_defaults_remain_bounded_while_delegation_inherits_its_caller_deadline():
+    """A model cannot supply these settings; only the registered delegate uses the parent deadline."""
+    from nexuspilot_api.features.agent_runtime.services.task_note_tools import DELEGATE_TOOL
+
+    assert catalog_entry().timeout_seconds == 15
+    assert catalog_entry().max_result_bytes == 65536
+    assert DELEGATE_TOOL.timeout_seconds is None
+    assert DELEGATE_TOOL.max_result_bytes == 2 * 1024 * 1024
+
+
 def test_loaded_tools_are_local_to_one_worker_and_recheck_capabilities():
     """Loading cannot change another Worker's schemas or override revoked server policy."""
     from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService

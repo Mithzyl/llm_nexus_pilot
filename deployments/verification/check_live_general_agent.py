@@ -161,7 +161,7 @@ async def model_input_evidence(run_id):
 
 
 async def start(client, args, report):
-    """Upload once and disconnect the observing SSE after receiving a durable workflow ID."""
+    """Upload once, bind optional requested child role, then detach after a durable workflow ID."""
     owner = (await request(client, "GET", "auth/me"))["user_id"]
     content = args.file.read_bytes()
     started = time.monotonic()
@@ -226,6 +226,8 @@ async def start(client, args, report):
         "idempotency_key": str(uuid.uuid4()),
         "stream": True,
     }
+    if args.delegate_role:
+        payload["role_bindings"][args.delegate_role] = binding
     report["request"] = payload
     checkpoint(args.report, report)
     async with client.stream(
@@ -391,6 +393,8 @@ if __name__ == "__main__":
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--provider", choices=["strata", "deepseek"], default="strata")
     parser.add_argument("--model", help="Exact registered model; required when selecting DeepSeek")
+    parser.add_argument("--delegate-role", choices=["planner", "researcher"],
+                        help="Explicitly bind one optional child role to the chosen model")
     parser.add_argument(
         "--policy",
         choices=["always", "never", "on_verification_failure"],

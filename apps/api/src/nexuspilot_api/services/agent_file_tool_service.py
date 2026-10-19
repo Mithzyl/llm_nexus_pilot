@@ -234,8 +234,9 @@ class AgentFileToolService:
     ) -> LlmModelToolCall:
         """Claim once and check policy before dispatching a pinned registered operation.
 
-        File operations remain read-only; a task-scoped subclass may advertise
-        explicit task writes. Both use the same durable call/result and cancellation.
+        File operations remain read-only; task writes use trusted catalog bounds.
+        A delegated model task inherits its enclosing workflow deadline instead
+        of the short file-read timeout. Both retain durable results and cancellation.
         """
         if len(call.id) > 255:
             raise ResourceConflictError("Provider tool call identifier exceeds supported length")
@@ -289,9 +290,9 @@ class AgentFileToolService:
             record.permission_decision = "allowed"
             record.status = "running"
             await self.db.commit()
-            async with asyncio.timeout(15):
+            async with asyncio.timeout(tool.timeout_seconds):
                 result = await self._execute_registered_tool(attempt, record, tool.name, arguments)
-            if len(json.dumps(result, ensure_ascii=False).encode()) > 65536:
+            if len(json.dumps(result, ensure_ascii=False).encode()) > tool.max_result_bytes:
                 return await self._finish(
                     record, "failed", error="result_too_large_use_smaller_page"
                 )

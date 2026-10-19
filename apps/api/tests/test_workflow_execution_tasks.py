@@ -15,14 +15,14 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks imp
 
 
 @pytest.mark.parametrize("action", ["finish", "cancel", "cancel_error", "shutdown"])
-@pytest.mark.parametrize("workflow_mode", ["legacy", "general"])
+@pytest.mark.parametrize("workflow_mode", ["legacy", "general", "general_delegated"])
 async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     client,
     test_database_session_factory,
     action,
     workflow_mode,
 ):
-    """Both runners survive observer loss and count late usage without reviving cancelled work."""
+    """Legacy, main and delegated execution survive observer loss and retain cancellation usage."""
     from test_agent_workflows import ReleasableWorkerProvider, scripted_registry, workflow_payload
     from test_api import create_test_run
 
@@ -41,23 +41,33 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     provider = ReleasableWorkerProvider()
     worker_key = "worker_execution."
     request_payload = workflow_payload(stream=True)
-    if workflow_mode == "general":
+    if workflow_mode in {"general", "general_delegated"}:
         from test_general_agent import GeneralProvider, general_payload
+        from test_general_delegation import DelegatingProvider
 
-        provider = GeneralProvider()
+        provider = (
+            DelegatingProvider() if workflow_mode == "general_delegated" else GeneralProvider()
+        )
         provider.worker_request_started = asyncio.Event()
         provider.release_worker_request = asyncio.Event()
         original_generate = provider.generate
 
         async def delayed_general(request):
-            """Hold the ordinary answer in flight until disconnect/cancellation has occurred."""
-            provider.worker_request_started.set()
-            await provider.release_worker_request.wait()
+            """Hold the main or child answer until disconnect/cancellation has occurred."""
+            if workflow_mode != "general_delegated" or request.metadata["agent_role"] == "planner":
+                provider.worker_request_started.set()
+                await provider.release_worker_request.wait()
             return await original_generate(request)
 
         provider.generate = delayed_general
         request_payload = general_payload(stream=True)
-        worker_key = "general_agent"
+        if workflow_mode == "general_delegated":
+            request_payload["role_bindings"]["planner"] = dict(
+                request_payload["role_bindings"]["controller"]
+            )
+        worker_key = (
+            "general_delegate." if workflow_mode == "general_delegated" else "general_agent"
+        )
     if action == "cancel_error":
         from nexuspilot_models.errors import ModelProviderError
 
@@ -119,7 +129,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     if action in {"cancel", "cancel_error"}:
         run_result = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
         attempts = run_result["attempts"]
-        assert len(attempts) == (2 if workflow_mode == "legacy" else 1)
+        assert len(attempts) == (1 if workflow_mode == "general" else 2)
         assert all(a["status"] in {"completed", "failed"} for a in attempts)
         for field in ("input_tokens", "output_tokens", "cached_tokens"):
             assert result["aggregate_usage"][field] == sum(a[field] or 0 for a in attempts)

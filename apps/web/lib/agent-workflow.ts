@@ -25,6 +25,7 @@ const WORKFLOW_EVENT_TYPES = new Set([
   "agent.node.output_repair.requested",
   "agent.node.output_repair.completed",
   "agent.workflow.refinement.requested",
+  "agent.delegation.revision.requested",
   "agent.workflow.refinement.skipped",
   "agent.controller.plan_repair.requested",
   "agent.controller.plan_repair.completed",

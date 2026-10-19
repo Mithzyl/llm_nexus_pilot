@@ -570,7 +570,7 @@ class GeneralCandidateUnit(StrictContract):
         ge=0, description="Zero-based Unicode code-point offset in candidate text"
     )
     end_char: int = Field(gt=0, description="Exclusive Unicode code-point offset")
-    text: str = Field(min_length=1, max_length=16_000)
+    text: str = Field(min_length=1)
     source_aliases: list[str] = Field(default_factory=list)
     unknown_source_aliases: list[str] = Field(default_factory=list)
     citation_status: Literal["present", "missing", "unknown", "not_applicable"]
@@ -596,10 +596,10 @@ class GeneralReadCoverage(StrictContract):
 
 
 class GeneralCandidateOutput(StrictContract):
-    """Persist backend-assembled prose and stable source aliases, never model-generated IDs."""
+    """Persist full prose and sources; the node/object byte envelope bounds storage size."""
 
     schema_version: Literal["general_candidate.v1", "general_candidate.v2"] = "general_candidate.v1"
-    text: str = Field(min_length=1, max_length=16_000)
+    text: str = Field(min_length=1)
     sources: dict[str, FileEvidenceReference] = Field(default_factory=dict)
     validation_issues: list[str] = Field(default_factory=list)
     units: list[GeneralCandidateUnit] = Field(default_factory=list)
@@ -676,6 +676,7 @@ class GeneralReviewOutput(StrictContract):
 
 NODE_OUTPUT_MODELS: dict[str, type[BaseModel]] = {
     "general_candidate": GeneralCandidateOutput,
+    "general_delegated_candidate": GeneralCandidateOutput,
     "general_review": GeneralReviewOutput,
     "request_intake": RequestIntakeOutput,
     "context_assembly": ContextAssemblyOutput,
