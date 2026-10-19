@@ -15,12 +15,14 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks imp
 
 
 @pytest.mark.parametrize("action", ["finish", "cancel", "cancel_error", "shutdown"])
+@pytest.mark.parametrize("workflow_mode", ["legacy", "general"])
 async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     client,
     test_database_session_factory,
     action,
+    workflow_mode,
 ):
-    """Keep disconnected work alive and count late usage without reviving cancelled nodes."""
+    """Both runners survive observer loss and count late usage without reviving cancelled work."""
     from test_agent_workflows import ReleasableWorkerProvider, scripted_registry, workflow_payload
     from test_api import create_test_run
 
@@ -37,6 +39,25 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
 
     run = await create_test_run(client)
     provider = ReleasableWorkerProvider()
+    worker_key = "worker_execution."
+    request_payload = workflow_payload(stream=True)
+    if workflow_mode == "general":
+        from test_general_agent import GeneralProvider, general_payload
+
+        provider = GeneralProvider()
+        provider.worker_request_started = asyncio.Event()
+        provider.release_worker_request = asyncio.Event()
+        original_generate = provider.generate
+
+        async def delayed_general(request):
+            """Hold the ordinary answer in flight until disconnect/cancellation has occurred."""
+            provider.worker_request_started.set()
+            await provider.release_worker_request.wait()
+            return await original_generate(request)
+
+        provider.generate = delayed_general
+        request_payload = general_payload(stream=True)
+        worker_key = "general_agent"
     if action == "cancel_error":
         from nexuspilot_models.errors import ModelProviderError
 
@@ -45,7 +66,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
         async def late_failure(request):
             """Return known billable usage on a provider failure after explicit cancellation."""
             response = await generate(request)
-            if request.metadata["agent_node_execution_key"].startswith("worker_execution."):
+            if request.metadata["agent_node_execution_key"].startswith(worker_key):
                 raise ModelProviderError(
                     "invalid_json", "Synthetic late failure", response=response
                 )
@@ -54,7 +75,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
         provider.generate = late_failure
     registry = scripted_registry(provider)
     app.dependency_overrides[get_provider_registry] = lambda: registry
-    payload = AgentWorkflowCreate.model_validate(workflow_payload(stream=True))
+    payload = AgentWorkflowCreate.model_validate(request_payload)
     async with test_database_session_factory() as db:
         service = AgentWorkflowExecutionService(
             registry=registry,
@@ -98,18 +119,18 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     if action in {"cancel", "cancel_error"}:
         run_result = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
         attempts = run_result["attempts"]
-        assert len(attempts) == 2
+        assert len(attempts) == (2 if workflow_mode == "legacy" else 1)
         assert all(a["status"] in {"completed", "failed"} for a in attempts)
         for field in ("input_tokens", "output_tokens", "cached_tokens"):
             assert result["aggregate_usage"][field] == sum(a[field] or 0 for a in attempts)
         assert Decimal(result["aggregate_usage"]["estimated_cost"]) == sum(
             Decimal(a["estimated_cost"] or "0") for a in attempts
         )
-        worker = next(n for n in result["nodes"] if n["node_key"].startswith("worker_execution."))
+        worker = next(n for n in result["nodes"] if n["node_key"].startswith(worker_key))
         assert worker["status"] == "cancelled"
         assert worker["output"] is None
         async with test_database_session_factory() as accounting_db:
-            accounting = service._create_model_only_workflow_orchestrator(
+            accounting = service._create_workflow_orchestrator(
                 accounting_db
             ).workflow_state
             await accounting.reconcile_terminal_usage(workflow_id)

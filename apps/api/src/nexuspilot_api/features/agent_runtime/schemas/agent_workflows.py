@@ -12,7 +12,11 @@ from nexuspilot_models.contracts import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from nexuspilot_api.models import AgentWorkflowNodeStatus, AgentWorkflowStatus
-from nexuspilot_api.schemas.worker_evidence import ClaimAssessment, WorkerEvidenceBundle
+from nexuspilot_api.schemas.worker_evidence import (
+    ClaimAssessment,
+    FileEvidenceReference,
+    WorkerEvidenceBundle,
+)
 
 
 class StrictContract(BaseModel):
@@ -38,9 +42,11 @@ class AgentModelBinding(StrictContract):
 class AgentWorkflowCreate(StrictContract):
     """Validate synchronous workflows with explicit model-only or file-read permissions."""
 
-    workflow_name: Literal["model_only"] = "model_only"
+    workflow_name: Literal["model_only", "general_agent"] = "model_only"
     workflow_version: Literal["1.0.0", "1.1.0"] = "1.1.0"
-    execution_profile: Literal["model_only_v1", "tool_enabled_v1"] = "model_only_v1"
+    execution_profile: Literal[
+        "model_only_v1", "tool_enabled_v1", "general_tools_v1"
+    ] = "model_only_v1"
     idempotency_key: str = Field(min_length=8, max_length=128)
     role_bindings: dict[
         Literal["controller", "planner", "researcher", "reviewer", "verifier"],
@@ -52,13 +58,26 @@ class AgentWorkflowCreate(StrictContract):
     max_model_calls: int = Field(default=0, ge=0,
         description="Zero means no call-count limit; positive values are explicit caller budgets.")
     max_parallel_agents: int = Field(default=1, ge=1, le=2)
-    max_workflow_rounds: int = Field(default=2, ge=1, le=2)
+    max_workflow_rounds: int = Field(
+        default=2, ge=1, le=2,
+        description="Legacy model_only refinement limit; unused by general_agent.",
+    )
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
     stream: bool = False
 
     @model_validator(mode="after")
     def validate_required_role_bindings(self) -> "AgentWorkflowCreate":
-        """Require roles needed before a model-generated plan can be evaluated."""
+        """Validate an explicit general definition separately without changing legacy defaults."""
+
+        if self.workflow_name == "general_agent":
+            if self.workflow_version != "1.0.0" or self.execution_profile != "general_tools_v1":
+                raise ValueError("general_agent requires 1.0.0 / general_tools_v1")
+            required = {"controller"} | ({"reviewer"} if self.review_policy != "never" else set())
+            if not required.issubset(self.role_bindings):
+                raise ValueError("General agent requires controller and selected reviewer bindings")
+            return self
+        if self.execution_profile == "general_tools_v1":
+            raise ValueError("general_tools_v1 requires general_agent")
 
         required_roles = {"controller"}
         if not {"planner", "researcher"}.intersection(self.role_bindings):
@@ -100,10 +119,10 @@ class WorkflowErrorRead(StrictContract):
 
 
 class NodeInputRead(StrictContract):
-    """Identify exact persisted inputs without copying prompts or private contents."""
+    """Read round metadata; each execution definition enforces its own round policy."""
 
     schema_version: str
-    workflow_round: int = Field(default=1, ge=1, le=2)
+    workflow_round: int = Field(default=1, ge=1)
     candidate_task_ids: list[str] = Field(default_factory=list)
     input_hash: str
     source_node_execution_ids: list[str] = Field(default_factory=list)
@@ -542,7 +561,25 @@ class WorkflowCompletionOutput(StrictContract):
     errors: list[WorkflowErrorRead]
 
 
+class GeneralCandidateOutput(StrictContract):
+    """Persist backend-assembled prose and stable source aliases, never model-generated IDs."""
+
+    schema_version: Literal["general_candidate.v1"] = "general_candidate.v1"
+    text: str = Field(min_length=1, max_length=16_000)
+    sources: dict[str, FileEvidenceReference] = Field(default_factory=dict)
+    validation_issues: list[str] = Field(default_factory=list)
+
+
+class GeneralReviewOutput(StrictContract):
+    """A small explicit decision tied by the node input to one candidate version."""
+
+    verdict: Literal["supported", "revise", "unconfirmed"]
+    feedback: str = Field(min_length=1, max_length=4000)
+
+
 NODE_OUTPUT_MODELS: dict[str, type[BaseModel]] = {
+    "general_candidate": GeneralCandidateOutput,
+    "general_review": GeneralReviewOutput,
     "request_intake": RequestIntakeOutput,
     "context_assembly": ContextAssemblyOutput,
     "controller_plan": ControllerPlanOutput,
@@ -557,7 +594,9 @@ NODE_OUTPUT_MODELS: dict[str, type[BaseModel]] = {
 }
 
 AgentWorkflowNodeOutput = (
-    RequestIntakeOutput
+    GeneralCandidateOutput
+    | GeneralReviewOutput
+    | RequestIntakeOutput
     | ContextAssemblyOutput
     | ControllerPlanOutput
     | PlanValidationOutput

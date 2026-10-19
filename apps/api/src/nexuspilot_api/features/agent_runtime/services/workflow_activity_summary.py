@@ -67,7 +67,7 @@ def build_running_node_activity(
     input_values: Mapping[str, Any],
     agent_role: str | None,
 ) -> NodeActivitySummaryRead:
-    """Describe work that has durably started using only safe pre-call input facts."""
+    """Describe actual legacy/general activities using only safe, committed input facts."""
 
     task_title = _bounded_plain_text(input_values.get("task_title"), fallback="当前任务")
     agent_label = _public_agent_label(agent_role)
@@ -82,7 +82,11 @@ def build_running_node_activity(
         "agent_handoff": f"正在整理“{task_title}”的交接结果",
         "deterministic_verification": "正在核对交接结构、引用与完成状态",
         "independent_review": "正在独立审核候选结果与证据",
-        "final_synthesis": "正在规划最终答案",
+        "general_candidate": "Agent 正在处理目标并按需使用工具",
+        "general_review": "正在对照原文审核候选回答",
+        "final_synthesis": (
+            "正在保存最终答案" if input_values.get("candidate_node_id") else "正在规划最终答案"
+        ),
         "workflow_completion": "正在提交工作流完成事实",
     }
     return _activity(
@@ -99,7 +103,7 @@ def build_completed_node_activity(
     activity_context: Mapping[str, Any],
     agent_role: str | None,
 ) -> NodeActivitySummaryRead:
-    """Describe a completed node after its typed output has passed validation."""
+    """Describe committed results without equating a candidate or valid reference with truth."""
 
     text: str
     if output_type == "request_intake":
@@ -169,6 +173,16 @@ def build_completed_node_activity(
             text = f"审核建议修订，发现{finding_count}项问题"
         else:
             text = f"审核未通过，发现{error_count}项错误"
+    elif output_type == "general_candidate":
+        text = "Agent 已提交候选回答"
+        if output.get("validation_issues"):
+            text += "，引用仍需修正"
+    elif output_type == "general_review":
+        text = {
+            "supported": "审核者认为当前候选回答有依据",
+            "revise": "审核者要求修正候选回答",
+            "unconfirmed": "审核者无法确认全部内容",
+        }.get(output.get("verdict"), "审核决定已记录")
     elif output_type == "final_synthesis":
         text = (
             f"最终答案已生成：覆盖{_list_count(output, 'completed_objectives')}项目标，"

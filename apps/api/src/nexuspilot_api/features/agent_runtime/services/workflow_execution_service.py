@@ -12,6 +12,9 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowSummaryRead,
     WorkflowErrorRead,
 )
+from nexuspilot_api.features.agent_runtime.services.general_agent_orchestrator import (
+    GeneralAgentOrchestrator,
+)
 from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestrator import (
     ModelOnlyWorkflowOrchestrator,
 )
@@ -49,7 +52,7 @@ class AgentWorkflowExecutionService:
         storage: ObjectStorage,
         workflow_definitions: WorkflowDefinitionRegistry | None = None,
     ) -> None:
-        """Bind request dependencies and create the model-only workflow runner."""
+        """Bind shared dependencies; the persisted definition selects the runner."""
 
         self.registry = registry
         self.prices = prices
@@ -57,7 +60,7 @@ class AgentWorkflowExecutionService:
         self.db_session_factory = db_session_factory
         self.storage = storage
         self.workflow_definitions = workflow_definitions or DEFAULT_WORKFLOW_DEFINITION_REGISTRY
-        self.workflow_orchestrator = self._create_model_only_workflow_orchestrator(db_session)
+        self.workflow_orchestrator = self._create_workflow_orchestrator(db_session)
         self.workflow_state: WorkflowExecutionStateService = (
             self.workflow_orchestrator.workflow_state
         )
@@ -92,7 +95,7 @@ class AgentWorkflowExecutionService:
         *,
         event_sink: EventSink | None = None,
     ) -> tuple[LlmAgentWorkflowExecution, bool]:
-        """Offer read-only tools automatically for conversation attachments, then persist/replay."""
+        """Derive legacy attachment policy without replacing an explicitly selected general loop."""
 
         existing = await self.db_session.scalar(
             select(LlmAgentWorkflowExecution).where(
@@ -105,7 +108,11 @@ class AgentWorkflowExecutionService:
         exact_replay = existing is not None and existing.request_hash == hash_workflow_request(
             payload
         )
-        if not exact_replay and await conversation_file_ids(self.db_session, run_id):
+        if (
+            payload.workflow_name == "model_only"
+            and not exact_replay
+            and await conversation_file_ids(self.db_session, run_id)
+        ):
             payload = payload.model_copy(update={"execution_profile": "tool_enabled_v1"})
         self.workflow_state.set_event_sink(event_sink)
         return await self.workflow_state.create_workflow(
@@ -136,9 +143,14 @@ class AgentWorkflowExecutionService:
         workflow: LlmAgentWorkflowExecution,
         payload: AgentWorkflowCreate,
     ) -> AgentWorkflowResultRead:
-        """Run a prepared model-only workflow and return its durable result."""
+        """Choose the runner from the durable definition, not the caller's mutable request."""
 
-        await self.workflow_orchestrator.execute(workflow, payload)
+        orchestrator = self._create_workflow_orchestrator(
+            self.db_session,
+            workflow_name=workflow.workflow_name,
+        )
+        orchestrator.workflow_state.set_event_sink(self.workflow_state.event_sink)
+        await orchestrator.execute(workflow, payload)
         return await get_workflow_result(
             self.db_session,
             workflow.workflow_execution_id,
@@ -154,14 +166,17 @@ class AgentWorkflowExecutionService:
         """Execute work in its own session, independently of the observing response body."""
 
         async with self.db_session_factory() as db_session:
-            workflow_orchestrator = self._create_model_only_workflow_orchestrator(db_session)
-            workflow_orchestrator.workflow_state.set_event_sink(event_sink)
             workflow = await db_session.get(
                 LlmAgentWorkflowExecution,
                 workflow_execution_id,
             )
             if workflow is None:
                 raise ResourceNotFoundError("Agent Workflow")
+            workflow_orchestrator = self._create_workflow_orchestrator(
+                db_session,
+                workflow_name=workflow.workflow_name,
+            )
+            workflow_orchestrator.workflow_state.set_event_sink(event_sink)
             await workflow_orchestrator.execute(workflow, payload)
             return await get_workflow_result(db_session, workflow_execution_id)
 
@@ -201,13 +216,20 @@ class AgentWorkflowExecutionService:
         )
         return await get_workflow_summary(self.db_session, workflow_execution_id)
 
-    def _create_model_only_workflow_orchestrator(
+    def _create_workflow_orchestrator(
         self,
         db_session: AsyncSession,
+        *,
+        workflow_name: str = "model_only",
     ) -> ModelOnlyWorkflowOrchestrator:
-        """Create a model-only workflow runner bound to the supplied database session."""
+        """Reuse execution dependencies while preserving the default legacy runner."""
 
-        return ModelOnlyWorkflowOrchestrator(
+        runner = (
+            GeneralAgentOrchestrator
+            if workflow_name == "general_agent"
+            else ModelOnlyWorkflowOrchestrator
+        )
+        return runner(
             registry=self.registry,
             prices=self.prices,
             db_session=db_session,

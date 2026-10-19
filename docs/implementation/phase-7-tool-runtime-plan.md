@@ -26,13 +26,52 @@
 
 ## 通用 Agent 工具循环目标设计
 
-**状态：未开始（新执行方式尚未实现）；本次已统一规划，不代表已替换运行代码。** 这是工具与执行循环的当前目标定义。下文带日期的固定工作流、`worker_evidence.v2`、JSON 修正记录描述现有兼容实现，不再是新通用循环必须照搬的流程。角色与审核规则由[阶段3](phase-3-agent-workflow-plan.md#可组合节点职责与审核策略)维护。
+**状态：进行中（2026-10-19）。** 首批显式启用的后端循环已实现，确定性验收见下节；尚未切换 Web 默认、进行真实 Provider 验收或部署。旧固定工作流、worker_evidence.v2 和 JSON 修正记录保留为兼容实现，不是新循环必须照搬的顺序。角色与审核由[阶段3](phase-3-agent-workflow-plan.md#可组合节点职责与审核策略)维护。
+
+### 首批实现与调用方式（2026-10-19）
+
+原修改和统一规划已提交为 00fe580；新工作位于 codex/general-agent-tool-loop。本批只开放已有授权只读文件工具，不接 Shell/Python、联网、写操作或自主创建工具。
+
+现有 POST /api/v1/runs/{run_id}/agent-workflows 显式接受：
+
+- workflow_name = general_agent
+- workflow_version = 1.0.0
+- execution_profile = general_tools_v1
+- review_policy = always / on_verification_failure / never
+- idempotency_key、stream 和实际已登记模型的 role_bindings 沿用原接口。
+
+必须提供 controller 模型绑定，非 never 时还需 reviewer 绑定。Controller 绑定在此表示主 Agent 的模型，不表示已调用独立规划节点。旧 model_only 版本和默认请求不变；附件自动启用旧工具配置的逻辑不覆盖新定义。运行从持久请求恢复固定配置，不接受途中改审核策略。
+
+实际流程：主 Agent 普通正文/原生工具循环 → 后端候选记录 → 按策略审核或修正 → 保存正文及限制 → 完成记录。最终保存没有额外模型调用，也不要求模型包装复杂 JSON。Reviewer 仅返回 verdict（supported、revise、unconfirmed）和 feedback；不要求 Provider JSON 模式，后端严格检查结构，非法格式最多修正一次。内容修正回到原 Agent，保留工具消息、加载版本、无进展检测及原截止时间；修订后按原策略重新审核。
+
+- always：每版候选均审核。on_verification_failure：未知来源编号、读取后缺少引用等可修正问题触发审核。never：不调用 Reviewer，但引用错误仍须修正。权限撤销、损坏对象和快照不符直接失败，不能由审核批准。
+- 后端为成功读取结果分配 [S1] 等运行内编号，保存真实调用、文件、原件/解析哈希及块范围。候选类型为 general_candidate.v1，审核输出类型为 general_review。Reviewer 获得被引用原文、读取范围和解析限制，并可补读；补读原文随反馈返回主 Agent。每次调用前核查共享来源权限，交付前重新核对引用。
+- supported 是审核模型的判断，不是确定性真值；unconfirmed 可以带明确的未确认说明交付。非法格式、引用持续无效、重复无进展及取消不能冒充成功。逐段候选单元、逐条审核、全文覆盖账本尚未实现，不宣称完整通读或逐结论审核。
+- 内容修正用 workflow_round 和 refinement 事件统计；格式修正用 output_repair 事件及实际 Attempt 统计。工具调用不是业务轮次。新流程不继承旧“两轮”限制，max_model_calls=0 仍表示无调用计数上限；现有节点数、运行/角色时间、窗口、工具批量及正文保存限制继续适用。旧 max_workflow_rounds 字段只作用于旧流程。
+- 复用 Run、Task、Workflow、Node、Attempt、ModelToolCall 和事件表。正文、来源映射使用已有 ConversationBodySession、body_ref_json 和 MinIO 路径规则；无新增 SQL 表、迁移、桶或旧对象改写。新结果需由支持新类型的 API 代码读取，不能交给旧 API 解析。
+- 不创建虚构的 Agent Run/Handoff/Evaluation。按需委派及角色组合后续再接。SSE 观察断开不取消执行；显式停止和迟到用量沿用既有规则。终态结果可查询，重复请求不会重新调用模型；没有跨进程续跑。
+
+实现入口为 features/agent_runtime/services/general_agent_orchestrator.py。为控制修改范围，仅继承旧协调器的持久化/记账辅助方法，不调用其固定 execute 流程。快速回复独立循环本批未合并，公共 Gateway、文件执行及历史投影继续共用。
+
+测试位于 apps/api/tests/test_general_agent.py 和 test_workflow_execution_tasks.py，覆盖正文、三策略、修正统计、文件读取/补读、对象恢复/续聊、撤权、跨用户拒绝、观察断开、取消和迟到用量。使用 SQLite、测试对象存储及脚本化 Provider；真实 MySQL/MinIO、Strata、浏览器未执行，不以离线通过宣布部署可用。
+
+本批验证记录（2026-10-19，未部署、未调用真实模型）：
+
+- 测试先行：新定义初始 6 个 API 用例因旧 Schema 拒绝请求而失败。后续测试又发现审核格式修正丢候选上下文、公开节点类型仍把业务轮次限制为 2，以及节点额度耗尽时先保存最终回答的问题；均先观察失败，再修改实现并通过对应测试。
+- 相关回归 181 通过：general_agent、workflow_execution_tasks、agent_workflows、agent_file_tools、agent_tool_discovery、worker_evidence、conversation_body_storage、tool_context、agent_output_repair、evidence_output_repair、targeted_file_reads。命令为根目录 PYTHONPATH=apps/api/src:packages/models/src，使用 apps/api/.venv/bin/python -m pytest -q 加这些 apps/api/tests/test_*.py 文件。
+- 全后端命令：同一 PYTHONPATH 下执行 apps/api/.venv/bin/python -m pytest -q apps/api/tests --tb=short。结果 819 通过、1 失败、32 跳过，耗时 139.80 秒。首次沙箱内的 10 项 Unix socket 权限失败在获准本地 socket 权限后消失；Office/PDF 专项重跑 24 通过、2 跳过。跳过项是现有条件测试，不能计为通过。
+- 唯一全量失败是 test_parsed_file_context.py:280：先收到整份读取的 range 错误，再对同一 Run 请求局部范围时得到 409（Run 已执行/结束），测试期望 200。在只读导出的 00fe580 原提交上独立复现相同错误，当前树单独重跑也相同；没有为本批降低断言或修改无关状态逻辑。
+- 全量检查后增加了“最终答案与完成记录必须同时有剩余节点额度”的防护。最新命令 apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_general_agent.py apps/api/tests/test_workflow_execution_tasks.py：30 通过（含新定义 19 项与旧/新生命周期 11 项），耗时 7.51 秒。不将前述全量结果称为包含这一最后新增用例。
+- 模型适配器：PYTHONPATH=packages/models/src apps/api/.venv/bin/python -m pytest -q -o asyncio_mode=auto packages/models/tests，127 通过。首次未指定 asyncio_mode 的命令不能执行异步用例，已使用正确配置重跑，未改变测试标准。
+- Ruff 检查 Agent Runtime 和这两个修改的测试文件通过；git diff --check 通过。测试生成的旧跨用户审计文件已恢复原样，不用新随机 ID 覆盖历史证据。
+
+因此首批后端实现及针对性离线验证已完成，但全库仍有上述既有失败；整项通用 Agent、真实 Provider 与部署验收未完成。下一步先获授权进行真实模型/存储联调，再继续逐结论、工作记录、委派和 UI，不提前切换默认。
 
 ### 用户结果与当前证据
 
 同一个 Agent 能根据用户目标选择检索、连续阅读、计算、写文件、验证或委派，不为每种任务单独建立一条必经节点链。先实现已有授权只读工具上的连续任务，再接通用执行器；不以本规划自动开放命令、网络或写操作。
 
-当前已有两种文件工具循环，但 Agent 外层仍依次规划、分派、交接、验证、审核和汇总，并要求模型输出复杂节点 JSON。2026-10-18 Strata 完整 PDF 联调在 Worker 首次输出及一次修正后失败；7 次调用的原始 SSE 独立拼接、适配器与 MinIO 正文一致，最后修正是正文中间 JSON 非法而非保存丢字。说明必须减少业务内容与平台记录格式的耦合；不能推断长上下文是唯一原因或所有模型均不可靠。完整证据见[联调记录](strata-long-files-verification-20261018.md#完整-agent-工作流逐调用-sse-与保存结果对照)。
+默认兼容入口仍有两种文件工具循环，旧 Agent 外层依次规划、分派、交接、验证、审核和汇总，并要求复杂节点 JSON；首批新方式仅显式启用。2026-10-18 Strata 完整 PDF 联调在旧 Worker 首次输出及一次修正后失败；7 次调用的原始 SSE 独立拼接、适配器与 MinIO 正文一致，最后修正是正文中间 JSON 非法而非保存丢字。说明必须减少业务内容与平台记录格式的耦合；不能推断长上下文是唯一原因或所有模型均不可靠。完整证据见[联调记录](strata-long-files-verification-20261018.md#完整-agent-工作流逐调用-sse-与保存结果对照)。
 
 ### 执行流程与职责
 
@@ -87,7 +126,7 @@ Reviewer 只提交结论标识、审核决定、必要理由和短来源等小�
 
 ### 实施顺序与完成条件
 
-以下是同一能力下的工作项，不新增 Phase 编号；本轮只完成规划，代码工作项均未开始。
+以下是同一能力下的工作项，不新增 Phase 编号。首批已实现第1项及第2/3项的只读循环、来源和整篇候选审核部分；其余范围仍按表中验收条件继续，不以首批测试替代整项验收。
 
 | 顺序 | 实施范围 | 必需验证 |
 |---|---|---|

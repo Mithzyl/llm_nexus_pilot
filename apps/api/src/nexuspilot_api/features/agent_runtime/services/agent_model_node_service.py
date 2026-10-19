@@ -403,17 +403,18 @@ class AgentModelNodeService:
         continuation_attempt_id: str | None = None,
         output_repair: bool = False,
     ) -> ResponsesResult:
-        """Persist tools; validate prompted repair text locally with its instruction placed last."""
+        """Allow opt-in prose with no output model; preserve legacy structured requests."""
 
-        prompted_json = binding.structured_output_mode == "prompted_json"
+        plain_output = model_output is None
+        prompted_json = not plain_output and binding.structured_output_mode == "prompted_json"
         tool_round = round_index is not None
-        instructions = structured_model_instructions(
+        instructions = purpose if plain_output else structured_model_instructions(
             role=role,
             purpose=purpose,
             output_model=model_output,
             prompted_json=prompted_json or tool_round,
         )
-        if tool_round:
+        if tool_round and not plain_output:
             instructions += (
                 " For ALL file citations copy exact returned evidence_ref identities, selecting "
                 "only a subset of THAT result's block_ids. Never combine blocks from separate "
@@ -491,7 +492,10 @@ class AgentModelNodeService:
                 self.model_invocation_service.db_session, self.model_invocation_service.storage
             ).for_node(node)
         serialized_model_input = serialize_agent_generated_json(provider_model_input)
-        output_schema = None if prompted_json or tool_round else model_output.model_json_schema()
+        output_schema = (
+            None if plain_output or prompted_json or tool_round
+            else model_output.model_json_schema()
+        )
         serialized_output_schema = (
             "" if output_schema is None else serialize_agent_generated_json(output_schema)
         )

@@ -176,9 +176,36 @@ class WorkflowDefinitionRegistry:
 
 
 def create_default_workflow_definition_registry() -> WorkflowDefinitionRegistry:
-    """Preserve v1.0 graphs; allow v1.1 Controller returns from review and plan validation."""
+    """Register the opt-in general loop alongside unchanged legacy graphs."""
 
     registry = WorkflowDefinitionRegistry()
+    registry.register(
+        AgentWorkflowDefinition(
+            workflow_name="general_agent",
+            workflow_version="1.0.0",
+            execution_profile="general_tools_v1",
+            node_definitions=(
+                AgentWorkflowNodeDefinition(
+                    "general_agent",
+                    "model",
+                    "general_candidate",
+                    ("general_review", "general_agent", "final_synthesis"),
+                ),
+                AgentWorkflowNodeDefinition(
+                    "general_review",
+                    "model",
+                    "general_review",
+                    ("general_agent", "final_synthesis"),
+                ),
+                AgentWorkflowNodeDefinition(
+                    "final_synthesis", "deterministic", "final_synthesis", ("workflow_completion",)
+                ),
+                AgentWorkflowNodeDefinition(
+                    "workflow_completion", "aggregation", "workflow_completion", ()
+                ),
+            ),
+        )
+    )
     registry.register(
         AgentWorkflowDefinition(
             workflow_name="model_only",

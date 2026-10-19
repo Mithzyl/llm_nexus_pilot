@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
@@ -24,26 +24,44 @@ class ToolLoopResult:
     records: list[LlmModelToolCall]
 
 
-async def run_file_tool_loop(service, workflow, node, options):
-    """Continue useful reads until final output; honor cancellation, time and no-progress checks."""
+@dataclass
+class ToolLoopState:
+    """Keep one Agent's dialogue and progress across candidate revisions in this execution."""
+
+    history: list[Message] = field(default_factory=list)
+    records: list[LlmModelToolCall] = field(default_factory=list)
+    seen: dict = field(default_factory=dict)
+    progress: ToolProgressTracker = field(default_factory=ToolProgressTracker)
+    loaded_versions: dict[str, str] = field(default_factory=dict)
+    deadline: float | None = None
+
+
+async def run_file_tool_loop(
+    service, workflow, node, options, *, state=None, present_result=None, before_model_call=None
+):
+    """Reuse file execution with optional continuing dialogue and shared-source authorization."""
     db = service.model_invocation_service.db_session
     tools = AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
     if task is None:
         raise InvalidRequestError("Tool execution requires a persisted Task")
-    history = []
-    records = []
-    seen = {}
-    progress = ToolProgressTracker()
+    state = state or ToolLoopState()
+    tools.loaded_versions.update(state.loaded_versions)
+    history, records, seen, progress = state.history, state.records, state.seen, state.progress
     deadline = monotonic() + min(
         task.timeout_seconds, service.workflow_state.remaining_wall_time_ms(workflow) / 1000
     )
+    if state.deadline is not None:
+        deadline = min(deadline, state.deadline)
+    state.deadline = deadline
     # Native call batches run sequentially: every read observes current ownership.
     round_index = 0
     while True:
         round_index += 1
         await service.workflow_state.ensure_workflow_running(workflow)
         await tools.validate_history(workflow.run_id, records)
+        if before_model_call is not None:
+            await before_model_call(workflow)
         remaining = deadline - monotonic()
         if remaining < 1:
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
@@ -109,14 +127,16 @@ async def run_file_tool_loop(service, workflow, node, options):
                     offered_versions=offered_versions,
                 )
             records.append(record)
+            state.loaded_versions = dict(tools.loaded_versions)
             await service.workflow_state.record_tool_progress(workflow, node)
             if not progress.observe(call.name, call.arguments, record.output_json):
                 raise InvalidRequestError("Agent file tools repeated evidence without progress")
+            visible_result = present_result(record) if present_result else record.output_json
             history.append(
                 Message(
                     role=MessageRole.TOOL,
                     tool_call_id=call.id,
                     tool_name=call.name,
-                    content=json.dumps(record.output_json, ensure_ascii=False),
+                    content=json.dumps(visible_result, ensure_ascii=False),
                 )
             )

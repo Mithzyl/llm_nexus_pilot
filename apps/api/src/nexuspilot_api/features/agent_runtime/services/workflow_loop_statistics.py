@@ -14,8 +14,8 @@ from nexuspilot_api.models import LlmAgentWorkflowEvent, LlmModelAttempt
 async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
     """Rebuild repair calls and outcomes; overlapping usage subtotals must not be added.
 
-    Business rounds are distinct workflow_round values, never the count of
-    Controller nodes. Plan repair usage includes nested output-format repairs.
+    Business rounds are distinct workflow_round values on legacy plans or general
+    candidates, never tool-call counts. Plan repair usage includes nested format repairs.
     """
     events = list(
         await db.scalars(
@@ -64,7 +64,10 @@ async def read_loop_statistics(db, workflow, nodes) -> WorkflowLoopStatistics:
         and n.output_type not in {"final_synthesis", "workflow_completion"}
     ]
     refined_usages = [NodeUsageRead.model_validate(n.usage_json or {}) for n in refined]
-    plans = [n for n in nodes if n.node_key == "controller_planning"]
+    round_key = (
+        "general_agent" if workflow.workflow_name == "general_agent" else "controller_planning"
+    )
+    plans = [n for n in nodes if n.node_key == round_key]
     plan_rounds = {(n.input_json or {}).get("workflow_round", 1) for n in plans}
     return WorkflowLoopStatistics(
         **await read_plan_repair_statistics(db, workflow, nodes, events),
