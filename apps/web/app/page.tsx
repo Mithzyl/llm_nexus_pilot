@@ -369,9 +369,12 @@ export default function Home() {
   const [composerClearancePx, setComposerClearancePx] = useState(180);
   const [isComposerMinimized, setIsComposerMinimized] = useState(false);
   const [isComposerAnimating, setIsComposerAnimating] = useState(false);
+  const [composerHeight, setComposerHeight] = useState<number | null>(null);
   const conversationScroll = useRef<HTMLDivElement | null>(null);
   const composerWrap = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const composerTextarea = useRef<HTMLTextAreaElement | null>(null);
+  const expandedComposerHeight = useRef<number | null>(null);
   const themeTransitionTimer = useRef<number | null>(null);
   const composerAnimationTimer = useRef<number | null>(null);
   const shouldAutoFollowConversation = useRef(true);
@@ -1559,12 +1562,13 @@ export default function Home() {
     expandComposer();
   }
 
-  /** Keep the composer clipped only while its grid rows are moving. */
-  function beginComposerAnimation() {
+  /** Lock the measured Composer height, animate to the target, then release it. */
+  function startComposerAnimation() {
     setIsComposerAnimating(true);
     if (composerAnimationTimer.current !== null) window.clearTimeout(composerAnimationTimer.current);
     composerAnimationTimer.current = window.setTimeout(() => {
       setIsComposerAnimating(false);
+      setComposerHeight(null);
       composerAnimationTimer.current = null;
     }, 340);
   }
@@ -1580,20 +1584,43 @@ export default function Home() {
     }, 340);
   }
 
-  /** Reveal the preserved draft and focus it after the hidden input becomes visible. */
+  /** Reveal the preserved draft and focus it after the measured height starts growing. */
   function expandComposer() {
-    beginComposerAnimation();
+    const composer = composerRef.current;
+    if (!composer) {
+      setIsComposerMinimized(false);
+      return;
+    }
+    setComposerHeight(composer.getBoundingClientRect().height);
     setIsComposerMinimized(false);
-    window.requestAnimationFrame(() => composerTextarea.current?.focus());
+    startComposerAnimation();
+    const targetHeight = expandedComposerHeight.current;
+    window.requestAnimationFrame(() => {
+      setComposerHeight(Math.ceil(targetHeight ?? composer.scrollHeight));
+      composerTextarea.current?.focus();
+    });
   }
 
-  /** Hide editor controls without clearing state and keep keyboard focus on the restore action. */
+  /** Collapse to the restore row while keeping the measured height transition intact. */
   function minimizeComposer() {
-    beginComposerAnimation();
+    const composer = composerRef.current;
+    if (!composer) {
+      setIsComposerMinimized(true);
+      return;
+    }
+    const expandedHeight = composer.getBoundingClientRect().height;
+    expandedComposerHeight.current = expandedHeight;
+    setComposerHeight(expandedHeight);
     setIsComposerMinimized(true);
-    window.requestAnimationFrame(() =>
-      composerWrap.current?.querySelector<HTMLButtonElement>(".composer-restore")?.focus(),
-    );
+    startComposerAnimation();
+    window.requestAnimationFrame(() => {
+      const row = composer.querySelector<HTMLElement>(".composer-minimized-row");
+      const style = window.getComputedStyle(composer);
+      const verticalPadding =
+        Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      setComposerHeight(Math.ceil((row?.getBoundingClientRect().height ?? 40) + verticalPadding));
+      composerWrap.current?.querySelector<HTMLButtonElement>(".composer-restore")?.focus();
+    });
   }
 
   /** Scope Enter submission to the input itself, leaving IME and Shift+Enter untouched. */
@@ -2356,7 +2383,7 @@ export default function Home() {
           </div>
 
           <div className="composer-wrap" ref={composerWrap}>
-            <div className={`composer ${isComposerMinimized ? "is-minimized" : ""} ${isComposerAnimating ? "is-composer-animating" : ""}`}>
+            <div ref={composerRef} className={`composer ${isComposerMinimized ? "is-minimized" : ""} ${isComposerAnimating ? "is-composer-animating" : ""}`} style={composerHeight === null ? undefined : { height: composerHeight }}>
               <div className="composer-shell">
               <div className="composer-minimized-row" aria-hidden={!isComposerMinimized} inert={!isComposerMinimized}>
                 <button type="button" className="composer-restore" aria-expanded={!isComposerMinimized} aria-controls="composer-editor" onClick={expandComposer}>

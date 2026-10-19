@@ -378,22 +378,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .suggestion-row button:hover { background: var(--soft); transform: translateY(-1px); }
 
 .composer-wrap { position: absolute; inset: auto 0 0; width: 100%; padding: 26px 0 15px; background: linear-gradient(transparent, var(--page) 24%); z-index: 10; }
-.composer { position: relative; container-type: inline-size; width: min(calc(100% - 40px), 820px); margin: 0 auto; padding: 18px 18px 14px; border: 0; border-radius: 20px; background: var(--panel-strong); box-shadow: 0 0 0 1px var(--line), 0 18px 45px color-mix(in srgb, var(--text) 8%, transparent), 0 2px 8px var(--shadow); transition: box-shadow 160ms var(--ease-out-soft), padding 320ms var(--ease-out-soft), background-color 320ms var(--ease-out-soft), border-color 320ms var(--ease-out-soft); }
+.composer { position: relative; container-type: inline-size; width: min(calc(100% - 40px), 820px); margin: 0 auto; padding: 18px 18px 14px; border: 0; border-radius: 20px; background: var(--panel-strong); box-shadow: 0 0 0 1px var(--line), 0 18px 45px color-mix(in srgb, var(--text) 8%, transparent), 0 2px 8px var(--shadow); transition: box-shadow 160ms var(--ease-out-soft), height 320ms var(--ease-out-soft), background-color 320ms var(--ease-out-soft), border-color 320ms var(--ease-out-soft); }
 .composer:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 48%, transparent), 0 20px 50px color-mix(in srgb, var(--text) 10%, transparent), 0 2px 8px var(--shadow); }
-.composer-shell { display: grid; grid-template-rows: 0fr 1fr; transition: grid-template-rows 320ms var(--ease-out-soft); }
-.composer.is-minimized .composer-shell { grid-template-rows: 1fr 0fr; }
-.composer-shell > * { min-height: 0; }
-.composer-minimized-row { overflow: hidden; }
+.composer-shell { min-height: 0; }
+.composer.is-composer-animating { overflow: hidden; }
 .composer-editor { min-height: 0; }
-.composer.is-minimized .composer-editor,
-.composer.is-composer-animating .composer-editor { overflow: hidden; }
+.composer-minimized-row { display: none; align-items: center; justify-content: space-between; gap: 12px; opacity: 0; transition: opacity 140ms var(--ease-out-soft) 80ms; }
+.composer.is-minimized .composer-minimized-row { display: flex; opacity: 1; }
+.composer.is-minimized .composer-editor { display: none; }
+.composer.is-minimized .composer-minimize { display: none; }
 .composer textarea { display: block; width: 100%; min-height: 48px; max-height: 320px; padding: 5px 64px 9px 2px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.55; transition: height 180ms var(--ease-out-soft); }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-keyboard-hint { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .composer-minimize { position: absolute; z-index: 3; top: 11px; right: 13px; min-width: 42px; min-height: 24px; padding: 2px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .composer-minimize:hover { background: var(--soft); color: var(--text); }
 .composer.is-minimized { padding: 8px 16px; }
-.composer-minimized-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-restore { min-width: 0; min-height: 40px; flex: 1; border: 0; background: none; color: var(--text); text-align: left; font-size: 14px; cursor: pointer; overflow-wrap: anywhere; }
 .composer-sync-note { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
 .composer-file-notice { margin: 7px 0 0; color: var(--muted); font-size: var(--ui-caption-size); line-height: 1.45; }
