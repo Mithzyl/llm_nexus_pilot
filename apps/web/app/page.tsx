@@ -629,9 +629,16 @@ export default function Home() {
   useEffect(() => {
     const textarea = composerTextarea.current;
     if (!textarea) return;
+    const previousHeight = textarea.getBoundingClientRect().height;
+    const previousTransition = textarea.style.transition;
+    // Measure the content without letting the outgoing height animate it larger.
+    textarea.style.transition = "none";
     textarea.style.overflowY = "hidden";
     textarea.style.height = "0px";
     const nextHeight = composerTextareaHeight(textarea.scrollHeight);
+    textarea.style.height = `${previousHeight}px`;
+    void textarea.offsetHeight;
+    textarea.style.transition = previousTransition;
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
   }, [draft, authenticationState, isComposerMinimized]);
