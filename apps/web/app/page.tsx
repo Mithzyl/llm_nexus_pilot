@@ -634,7 +634,7 @@ export default function Home() {
     // Measure the content without letting the outgoing height animate it larger.
     textarea.style.transition = "none";
     textarea.style.overflowY = "hidden";
-    textarea.style.height = "0px";
+    textarea.style.height = "auto";
     const nextHeight = composerTextareaHeight(textarea.scrollHeight);
     textarea.style.height = `${previousHeight}px`;
     void textarea.offsetHeight;
@@ -642,6 +642,14 @@ export default function Home() {
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
   }, [draft, authenticationState, isComposerMinimized]);
+
+  useEffect(() => {
+    if (composerAnimationTimer.current === null) return;
+    window.clearTimeout(composerAnimationTimer.current);
+    composerAnimationTimer.current = null;
+    setIsComposerAnimating(false);
+    setComposerHeight(null);
+  }, [draft]);
 
   useEffect(() => {
     const composerElement = composerWrap.current;
