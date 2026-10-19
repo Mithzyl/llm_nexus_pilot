@@ -353,7 +353,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     + " save_task_note and read_task_note are also already loaded. "
                     "Use private notes for task progress, unresolved items and next actions; "
                     "they are not verified claims, shared memory or a final answer. "
-                    "Search/describe list_task_notes if you need to find earlier note IDs."
+                    "Search/describe list_task_notes if you need to find earlier note IDs. "
+                    "Search/describe get_task_read_coverage to inspect this task's returned "
+                    "and unread blocks; it reports tool delivery, not model understanding."
                 ),
                 model_output=None,
                 model_input=values,

@@ -270,6 +270,32 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   快照 `output/playwright/general-agent-deepseek-notes-restored.yml`。没有从浏览器再次发送问题。
   npm启动快照命令曾延迟返回，最终成功；浏览器控制台仅开发模式提示，未出现error。
 
+### 执行中读取进度工具真实验证
+
+- 新工具 get_task_read_coverage 已按目录加载，仅读取当前任务的持久读取记录及授权解析清单；不加载全文到模型输入。
+  初始集成测试先因工具未注册失败；实现后复现“新增读取之后相同进度参数仍被重复检查拒绝”，
+  已将对应文件新增的实际块集合纳入该工具重复判断。未新增块的重复查询仍拒绝。
+- 确定性测试覆盖未读/已读、空解析、重复读取去重、搜索范围不冒充已读、未读位置分页、伪造块/快照变化、
+  当前任务隔离、无权访问的Run、撤销后不再发送历史、SQL正文为空及对象化恢复。
+  一次测试误用了真实 ObjectStorage 而非测试依赖，被URI校验拒绝；已改用测试客户端同一存储，不计为业务缺陷。
+- 回归命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_read_coverage.py apps/api/tests/test_general_agent.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_tool_context.py apps/api/tests/test_workflow_execution_tasks.py --tb=short`。
+  58通过（11.42秒），修改范围Ruff和git diff --check通过。
+- 按用户后续“暂时用deepseek替代strata完成请求测试”的授权，使用 deepseek-v4-flash、never、FULLTEXT03.pdf。
+  Run `cf8668bb-222f-4bc4-a941-aeab8de240ce`；Workflow `4ad2d9dc-bdc3-4c88-ac2d-c05039d6c780`；
+  Session `bf2caabd-d127-467e-b20c-e1fdbbdffb0c`；报告 `/tmp/general-agent-read-coverage-deepseek-20261019.json`。
+- completed，9.440秒，5次模型请求；输入27,463、输出691、合计28,154 Token，缓存输入17,920、推理52为对应子集。
+  费用未报告。没有调用Strata或部署，不将此样本计为Strata可用性验证。
+- 工具顺序 describe_tools → get_task_read_coverage → read_file_content → get_task_read_coverage；全部成功。
+  第一次查询0/1,542块已返回；read_file_content使用返回的block_id=page:1:line:1、before=0、limit=20；
+  第二次查询20块已返回、1,522块未返回。没有继续顺序读取，没有从查询结果获得正文。
+- 另用本地只读SQL/ORM及ObjectStorage.verify_object核对4条实际工具记录：SQL input/output正文均为空，
+  body_ref_json存在，4个MinIO对象哈希通过；两个保存的进度结果分别为0/1,542与20/1,522，model_understanding_verified=false。
+  5条消息/节点正文对象哈希也通过；重复GET的消息/工作流最终结果一致。
+- Playwright打开会话、刷新、读取快照并查看截图；“工作流已完成”、研究对象、20/1,542/1,522及未通读说明均恢复。
+  `output/playwright/general-agent-read-coverage-restored.yml`、同名png；控制台仅开发模式信息，无error。
+  模型答案超过要求的两三句话并提到内部字段名，已记录为回答质量限制；本批未改前端文案/样式或强行删改模型正文。
+  本次不是运行中刷新、用户主动取消、Reviewer审核或全文阅读的复测。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。

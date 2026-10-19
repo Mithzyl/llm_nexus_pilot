@@ -12,6 +12,7 @@ from pydantic import Field
 from sqlalchemy import select
 
 from nexuspilot_api.core.errors import ResourceConflictError
+from nexuspilot_api.features.agent_runtime.services.task_read_coverage import task_read_coverage
 from nexuspilot_api.models import LlmModelAttempt, LlmModelToolCall, LlmRun, LlmTask, TaskStatus
 from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
 from nexuspilot_api.services.agent_file_tool_service import (
@@ -19,6 +20,7 @@ from nexuspilot_api.services.agent_file_tool_service import (
     AgentFileToolService,
     EmptyArguments,
     FileToolResult,
+    PageArguments,
     ToolOperationError,
 )
 from nexuspilot_api.services.tool_catalog import RegisteredTool, ToolCatalog
@@ -91,11 +93,21 @@ NOTE_TOOLS = (
     ),
 )
 NOTE_NAMES = {tool.name for tool in NOTE_TOOLS}
-GENERAL_TOOL_CATALOG = ToolCatalog((*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS))
+READ_COVERAGE_TOOL = RegisteredTool(
+    name="get_task_read_coverage", version="1.0.0",
+    description="Inspect this task's actual returned blocks and remaining unread locations for "
+    "one attached file. offset/limit page the unread list, NOT source blocks. This does not read "
+    "source text, prove model understanding, or count a full-document search as full reading. "
+    "Use returned read_arguments for targeted continuation when your objective needs more reading.",
+    arguments=PageArguments, output=FileToolResult,
+    required_capabilities=frozenset({"task_notes", "read"}),
+    keywords=("阅读", "未读", "进度", "coverage", "reading", "progress"),
+)
+GENERAL_TOOL_CATALOG = ToolCatalog((*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, READ_COVERAGE_TOOL))
 
 
 class GeneralAgentToolService(AgentFileToolService):
-    """Add task-private notes to authorized file tools without enabling host writes."""
+    """Add private notes and reading progress to file tools without enabling host writes."""
 
     def __init__(self, db, storage, *, task_id, sources, allowed_task_ids):
         """Bind server-owned task and source mappings; models cannot expand this scope."""
@@ -110,8 +122,8 @@ class GeneralAgentToolService(AgentFileToolService):
         }
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Check task state, then commit notes through the existing tool-result transaction."""
-        if name not in NOTE_NAMES:
+        """Check task state before notes or reading progress, with shared audited persistence."""
+        if name not in NOTE_NAMES and name != READ_COVERAGE_TOOL.name:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
         run = await self.db.get(LlmRun, attempt.run_id, populate_existing=True)
@@ -119,6 +131,11 @@ class GeneralAgentToolService(AgentFileToolService):
                 or run is None or task.status != TaskStatus.RUNNING
                 or run.status.value not in {"pending", "running"}):
             raise ToolOperationError("task_not_running", status="permission_denied")
+        if name == READ_COVERAGE_TOOL.name:
+            return await task_read_coverage(
+                self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
+                arguments=arguments,
+            )
         if name == "save_task_note":
             unknown = set(arguments.source_aliases) - self.sources.keys()
             if unknown:
@@ -171,10 +188,11 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck source grants and task ownership before sending note history to the model."""
+        """Recheck source grants and ownership before sending note or coverage history."""
         await super().validate_history(run_id, records)
         for record in records:
-            if record.tool_name not in NOTE_NAMES or record.status != "completed":
+            if (record.tool_name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name}
+                    or record.status != "completed"):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:

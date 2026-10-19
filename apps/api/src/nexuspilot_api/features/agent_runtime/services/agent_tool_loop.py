@@ -42,7 +42,7 @@ async def run_file_tool_loop(
     service, workflow, node, options, *, state=None, present_result=None, before_model_call=None,
     tool_service=None,
 ):
-    """Reuse dialogue with private-state parent references and an optional scoped catalog."""
+    """Reuse dialogue and reject repeats, allowing progress queries after new file evidence."""
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -119,6 +119,12 @@ async def run_file_tool_loop(
             await service.workflow_state.ensure_workflow_running(workflow)
             # A call previously denied as unloaded can legitimately succeed after describing it.
             fingerprint = json.dumps([call.name, call.arguments, offered_versions], sort_keys=True)
+            if call.name == "get_task_read_coverage":
+                # Identical progress arguments have a new meaning only when this
+                # file gained actual returned blocks, not just another model turn.
+                file_blocks = sorted(identity for identity in progress.blocks
+                                     if identity[0] == call.arguments.get("file_id"))
+                fingerprint += json.dumps(file_blocks)
             if not allow_tool_request(seen, call.name, fingerprint, len(records)):
                 raise InvalidRequestError(
                     "Agent repeated an unchanged tool request without progress"
