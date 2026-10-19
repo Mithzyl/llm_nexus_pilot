@@ -55,7 +55,12 @@ from nexuspilot_api.schemas.context_builds import (
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
 from nexuspilot_api.services.context_builder_service import build_runtime_context
 from nexuspilot_api.services.lookups import require_run, require_task
-from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
+from nexuspilot_api.services.model_input_manifest import (
+    RuntimeSourceInput,
+    build_effective_request_audit,
+    build_runtime_source_manifest,
+    build_tool_input_manifest,
+)
 from nexuspilot_api.services.model_reasoning_policy_service import (
     resolve_registered_model_reasoning,
 )
@@ -146,11 +151,13 @@ class ModelInvocationService:
         request_type: str | None = None,
         defer_structured_validation: bool = False,
         tool_history_before_input: bool = False,
+        runtime_source_input: RuntimeSourceInput | None = None,
     ) -> ResponsesResult:
         """Execute a response; append server-owned tool history after persisted base Context.
 
         Tool history is internal. For corrections it precedes the final user instruction.
-        The exact effective messages are stored in the private attempt request audit.
+        Effective messages/options and explicitly supplied runtime source paths are
+        stored in the private request audit; arbitrary HTTP input cannot set those paths.
         Workflow-only deferred JSON validation preserves generation usage before node repair.
         """
 
@@ -176,6 +183,7 @@ class ModelInvocationService:
             context_build_id=context_build_id,
             prompt_prefix_fingerprint=calculate_prompt_prefix_fingerprint(request),
             request_type=request_type,
+            runtime_source_input=runtime_source_input,
         )
         provider_dispatch_may_have_started = False
         try:
@@ -521,8 +529,9 @@ class ModelInvocationService:
         context_build_id: str | None,
         prompt_prefix_fingerprint: str | None,
         request_type: str | None = None,
+        runtime_source_input: RuntimeSourceInput | None = None,
     ) -> LlmModelAttempt:
-        """Save projected messages and native file-input hashes before provider dispatch.
+        """Save projected messages, public options and file-input hashes before dispatch.
 
         Bodies and the input manifest stay in object storage; SQL retains the URI.
         Private continuation is omitted. This record proves prepared input, not
@@ -599,6 +608,12 @@ class ModelInvocationService:
                 message.model_dump(mode="json") for message in request.messages
             ]
             raw_request["tool_input_manifest"] = build_tool_input_manifest(request.messages)
+            raw_request["effective_request"] = build_effective_request_audit(
+                request, continuation_parent_attempt_id=payload.continuation_from_attempt_id,
+            )
+            raw_request["runtime_source_manifest"] = build_runtime_source_manifest(
+                request.messages, runtime_source_input,
+            )
             stored_raw_request = await self.storage.put_bytes(
                 f"{payload.run_id}/{model_attempt.attempt_id}/raw-request.json",
                 json.dumps(raw_request, ensure_ascii=False).encode(),

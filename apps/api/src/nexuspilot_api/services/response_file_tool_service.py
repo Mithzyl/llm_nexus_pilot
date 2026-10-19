@@ -132,7 +132,7 @@ class ResponseFileToolService:
         return public
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
-        """Continue while tools make progress, honoring cancellation and optional deadline."""
+        """Continue useful tools with cancellation and protected continuation parent references."""
         deadline = (
             monotonic() + payload.timeout_seconds if payload.timeout_seconds is not None else None
         )
@@ -224,6 +224,7 @@ class ResponseFileToolService:
                             model=response.model,
                         )
                     )
+                    assistant._provider_continuation_parent_attempt_id = continuation
                 self.history.append(assistant)
                 for call in calls:
                     fingerprint = json.dumps([call.name, call.arguments, versions], sort_keys=True)

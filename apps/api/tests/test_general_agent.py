@@ -4,6 +4,7 @@ import json
 
 import pytest
 from nexuspilot_models.contracts import ModelResponse, ToolCall
+from sqlalchemy import select
 from test_agent_workflows import (
     ScriptedAgentProvider,
     register_default_agent_test_model,  # noqa: F401
@@ -465,6 +466,30 @@ async def test_file_sources_review_reread_and_object_body_restore(
             )
         ).one()
         assert row.body_ref_json and "ORIGINAL_ALPHA" not in str(row.output_json)
+        from nexuspilot_api.infrastructure.object_storage import get_object_storage
+        from nexuspilot_api.models import LlmModelAttempt
+
+        storage = app.dependency_overrides[get_object_storage]()
+        attempts = list(await db.scalars(select(LlmModelAttempt).where(
+            LlmModelAttempt.run_id == turn["run"]["run_id"],
+        )))
+        audits = [json.loads(storage.objects[attempt.raw_request_uri][0]) for attempt in attempts]
+        assert any(
+            source["input_path"] == ["original_sources", "S1"]
+            for audit in audits for source in audit["runtime_source_manifest"]["sources"]
+        )
+        assert any(
+            source["input_path"] == ["review_sources", "S2"]
+            for audit in audits for source in audit["runtime_source_manifest"]["sources"]
+        )
+        for request in provider.requests:
+            matching = [audit for audit in audits if audit["effective_messages"] == [
+                message.model_dump(mode="json") for message in request.messages
+            ]]
+            assert matching
+            assert matching[0]["effective_request"]["options"]["system_instruction"] == (
+                request.system_instruction
+            )
     restored = (
         await client.get(f"/api/v1/agent-workflows/{result['workflow_execution_id']}/result")
     ).json()

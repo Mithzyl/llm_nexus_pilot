@@ -3,9 +3,15 @@
 import hashlib
 import json
 
-from nexuspilot_models.contracts import Message, MessageRole
+import pytest
+from nexuspilot_models.contracts import Message, MessageRole, ModelRequest, ProviderName
 
-from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
+from nexuspilot_api.services.model_input_manifest import (
+    RuntimeSourceInput,
+    build_effective_request_audit,
+    build_runtime_source_manifest,
+    build_tool_input_manifest,
+)
 from nexuspilot_api.services.tool_context import project_tool_history
 
 
@@ -89,3 +95,77 @@ def test_exact_snapshot_and_table_content_are_hashed_without_deduplicating_calls
     assert [entry["parsed_hash"] for entry in manifest["file_inputs"]] == ["parsed", "new"]
     assert manifest["file_inputs"][0]["blocks"][0]["block_sha256"] != (
         manifest["file_inputs"][1]["blocks"][0]["block_sha256"])
+
+
+def runtime_sources():
+    """Represent a server-resolved original, not a model-authored reference claim."""
+    return {"original_sources": {"S1": {
+        "reference": {"file_id": "f", "source_hash": "raw", "parsed_hash": "parsed",
+                      "parser_version": "p", "tool_call_id": "read", "block_ids": ["p1"]},
+        "blocks": [{"block_id": "p1", "text": "Actual original"}],
+    }}}
+
+
+def test_runtime_source_manifest_requires_explicit_server_input_and_exact_message_match():
+    """Do not infer source provenance from arbitrary user JSON or a replaced runtime input."""
+    values = runtime_sources()
+    source_input = RuntimeSourceInput(values, (("original_sources",),))
+    message = Message(role=MessageRole.USER, content=source_input.serialized_input)
+    assert build_runtime_source_manifest([message], None) is None
+    manifest = build_runtime_source_manifest([message], source_input)
+    assert manifest["message_index"] == 0
+    assert manifest["sources"][0]["input_path"] == ["original_sources", "S1"]
+    assert manifest["sources"][0]["included_block_ids"] == ["p1"]
+    assert manifest["model_understanding_verified"] is False
+    assert "Actual original" not in json.dumps(manifest)
+    with pytest.raises(ValueError, match="runtime input"):
+        build_runtime_source_manifest([
+            Message(role=MessageRole.USER, content="different current input"),
+        ], source_input)
+    with_feedback = [message, Message(role=MessageRole.USER, content="Review: correct the answer")]
+    assert build_runtime_source_manifest(with_feedback, source_input)["message_index"] == 0
+
+
+def test_repair_context_and_review_supplement_are_audited_without_counting_other_prose():
+    """Follow only named server paths, including nested repair context and supplemental reads."""
+    values = {"candidate_context": runtime_sources(),
+              "original_output": "Model prose: not a source"}
+    source_input = RuntimeSourceInput(values, (("candidate_context", "original_sources"),))
+    manifest = build_runtime_source_manifest([
+        Message(role=MessageRole.USER, content=source_input.serialized_input),
+    ], source_input)
+    assert len(manifest["sources"]) == 1
+    assert manifest["sources"][0]["input_path"] == ["candidate_context", "original_sources", "S1"]
+    assert manifest["sources"][0]["tool_call_id"] == "read"
+    invalid = runtime_sources()
+    invalid["original_sources"]["S1"]["blocks"][0]["block_id"] = "not-read"
+    bad_input = RuntimeSourceInput(invalid, (("original_sources",),))
+    with pytest.raises(ValueError, match="reference"):
+        build_runtime_source_manifest([
+            Message(role=MessageRole.USER, content=bad_input.serialized_input),
+        ], bad_input)
+
+
+def test_effective_request_audit_retains_system_options_without_private_continuation():
+    """Record resolved public parameters without duplicating messages or private state."""
+    from nexuspilot_models.contracts import ProviderContinuationKind, ProviderContinuationState
+
+    private = ProviderContinuationState(kind=ProviderContinuationKind.OPENAI_ENCRYPTED_ITEMS,
+                                       encrypted_reasoning_items=[{"secret": "DO_NOT_SAVE"}])
+    message = Message(role=MessageRole.ASSISTANT, content="Tool work")
+    message._provider_continuation_state = private
+    message._provider_continuation_parent_attempt_id = "parent-message"
+    request = ModelRequest(provider=ProviderName.OPENAI, model="example", messages=[message],
+                           system_instruction="Actual assembled system",
+                           temperature=0.2, max_output_tokens=100,
+                           provider_continuation_state=private)
+    audit = build_effective_request_audit(request, continuation_parent_attempt_id="parent-top")
+    assert audit["options"]["system_instruction"] == "Actual assembled system"
+    assert audit["options"]["temperature"] == 0.2
+    assert "messages" not in audit["options"]
+    assert "DO_NOT_SAVE" not in json.dumps(audit)
+    assert "_provider_continuation_parent_attempt_id" not in message.model_dump()
+    assert audit["continuation_inputs"]["requested_parent_attempt_id"] == "parent-top"
+    assert audit["continuation_inputs"]["messages"] == [{
+        "message_index": 0, "parent_attempt_id": "parent-message", "state_present": True,
+    }]

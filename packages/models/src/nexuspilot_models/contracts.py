@@ -314,6 +314,7 @@ class Message(ContractModel):
     _provider_continuation_state: ProviderContinuationState | None = PrivateAttr(
         default=None
     )
+    _provider_continuation_parent_attempt_id: str | None = PrivateAttr(default=None)
     attachments: list[NativeFileContent] = Field(default_factory=list, max_length=10)
     tool_call_id: str | None = Field(default=None, max_length=256)
     tool_name: str | None = Field(default=None, max_length=128)

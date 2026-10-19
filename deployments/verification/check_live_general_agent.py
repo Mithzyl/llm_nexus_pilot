@@ -1,10 +1,11 @@
-"""Authorized local Strata/MySQL/MinIO acceptance with resumable observation.
+"""Authorized local provider/MySQL/MinIO acceptance with resumable observation.
 
 Run from repo root with PYTHONPATH=apps/api/src:packages/models/src and API venv:
   python deployments/verification/check_live_general_agent.py --report NEW.json --policy never
   python deployments/verification/check_live_general_agent.py --report EXISTING.json --observe
-Requires local API :8000, local configured MySQL/MinIO, enabled Strata and PDF executor.
-Creates one private session/upload/Run. Never retries generation or calls DeepSeek.
+Requires local API :8000, configured MySQL/MinIO, enabled provider and PDF executor.
+Creates one private session/upload/Run. Never resubmits generation automatically.
+Strata remains the default; DeepSeek requires explicit --provider and --model selection.
 Observation expiry leaves the Run intact; --observe never starts another model request.
 --cancel tests only this report's Run, after observing its in-flight model attempt.
 Reports contain test answers and identifiers, never credentials or private model reasoning.
@@ -30,7 +31,9 @@ from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import LlmModelAttempt
-from nexuspilot_api.services.model_input_manifest import build_tool_input_manifest
+from nexuspilot_api.services.model_input_manifest import (
+    RuntimeSourceInput, build_runtime_source_manifest, build_tool_input_manifest,
+)
 
 QUESTION = (
     "请实际用附件工具回答，不凭文件名猜测。用少量首部原文确认论文研究对象，"
@@ -89,8 +92,8 @@ async def storage_evidence(run_id):
 async def model_input_evidence(run_id):
     """Read only local SQL/MinIO requests; distinguish old absent manifests from mismatches.
 
-    Recomputed occurrence counts describe native tool messages, not reviewer input
-    bundles or comprehension. Never write reconstructed manifests into old objects.
+    Count native tools and explicit runtime source bundles separately, never
+    comprehension. Never write reconstructed manifests into old objects.
     """
     settings = get_settings()
     if urlsplit(settings.database_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
@@ -121,9 +124,10 @@ async def model_input_evidence(run_id):
             if "effective_messages" not in request_data:
                 entry["manifest_status"] = "effective_messages_missing"
                 continue
-            manifest = build_tool_input_manifest([
+            messages = [
                 Message.model_validate(message) for message in request_data["effective_messages"]
-            ])
+            ]
+            manifest = build_tool_input_manifest(messages)
             saved = request_data.get("tool_input_manifest")
             entry["manifest_status"] = (
                 "historical_manifest_absent" if saved is None
@@ -135,6 +139,24 @@ async def model_input_evidence(run_id):
             entry["omitted_file_results"] = sum(
                 item["body_status"] == "omitted" for item in manifest["file_inputs"]
             )
+            runtime = request_data.get("runtime_source_manifest")
+            entry["runtime_sources_status"] = "not_recorded"
+            if runtime is not None:
+                try:
+                    source_input = RuntimeSourceInput(
+                        json.loads(messages[runtime["message_index"]].content),
+                        tuple(tuple(path) for path in runtime["source_paths"]),
+                    )
+                    rebuilt = build_runtime_source_manifest(messages, source_input)
+                    entry["runtime_sources_status"] = (
+                        "verified" if rebuilt == runtime else "mismatch"
+                    )
+                    entry["runtime_source_block_occurrences"] = sum(
+                        len(source["included_block_ids"]) for source in rebuilt["sources"]
+                    )
+                except (KeyError, IndexError, ValueError, TypeError):
+                    entry["runtime_sources_status"] = "invalid"
+            entry["effective_options_present"] = "effective_request" in request_data
     return records
 
 
@@ -172,7 +194,7 @@ async def start(client, args, report):
         "sessions",
         json={
             "user_id": owner,
-            "title": f"General Agent Strata {args.policy}",
+            "title": f"General Agent {args.provider} {args.policy}",
         },
     )
     turn = await request(
@@ -194,7 +216,7 @@ async def start(client, args, report):
         started_at=datetime.now(UTC).isoformat(),
     )
     checkpoint(args.report, report)
-    binding = {"provider": "strata", "model": MODEL, "timeout_seconds": 600}
+    binding = {"provider": args.provider, "model": args.model, "timeout_seconds": 600}
     payload = {
         "workflow_name": "general_agent",
         "workflow_version": "1.0.0",
@@ -325,16 +347,16 @@ async def main(args):
         raise RuntimeError("Local MySQL/MinIO are required")
     if args.observe:
         report = json.loads(args.report.read_text())
-        if report.get("provider") != "strata":
-            raise RuntimeError("Not a Strata verification report")
+        if report.get("provider") not in {"strata", "deepseek"}:
+            raise RuntimeError("Not a supported general Agent verification report")
     else:
         if args.report.exists():
             raise RuntimeError(
                 "Report exists: use --observe, never resubmit automatically"
             )
         report = {
-            "provider": "strata",
-            "model": MODEL,
+            "provider": args.provider,
+            "model": args.model,
             "policy": args.policy,
             "commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
@@ -367,6 +389,8 @@ async def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--provider", choices=["strata", "deepseek"], default="strata")
+    parser.add_argument("--model", help="Exact registered model; required when selecting DeepSeek")
     parser.add_argument(
         "--policy",
         choices=["always", "never", "on_verification_failure"],
@@ -380,4 +404,8 @@ if __name__ == "__main__":
     parser.add_argument("--cancel", action="store_true")
     parser.add_argument("--question", default=QUESTION,
                         help="Explicit test objective saved verbatim in the local report")
-    asyncio.run(main(parser.parse_args()))
+    args = parser.parse_args()
+    if not args.observe and args.provider == "deepseek" and not args.model:
+        parser.error("DeepSeek generation requires explicit --model")
+    args.model = args.model or MODEL
+    asyncio.run(main(args))

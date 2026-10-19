@@ -42,7 +42,7 @@ async def run_file_tool_loop(
     service, workflow, node, options, *, state=None, present_result=None, before_model_call=None,
     tool_service=None,
 ):
-    """Reuse authorized execution and dialogue; an explicit catalog may add scoped note tools."""
+    """Reuse dialogue with private-state parent references and an optional scoped catalog."""
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -113,6 +113,7 @@ async def run_file_tool_loop(
                     model=response.model,
                 )
             )
+            assistant._provider_continuation_parent_attempt_id = continuation
         history.append(assistant)
         for call in response.tool_calls:
             await service.workflow_state.ensure_workflow_running(workflow)

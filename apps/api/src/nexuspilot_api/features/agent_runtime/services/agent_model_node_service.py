@@ -35,6 +35,7 @@ from nexuspilot_api.models import (
 from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.schemas.context_builds import RuntimeContextSourceReferences
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult
+from nexuspilot_api.services.model_input_manifest import RuntimeSourceInput
 from nexuspilot_api.services.model_response_service import ModelInvocationService
 from nexuspilot_api.services.worker_evidence_service import EvidenceOutputError
 
@@ -402,8 +403,9 @@ class AgentModelNodeService:
         tool_versions: dict[str, str] | None = None,
         continuation_attempt_id: str | None = None,
         output_repair: bool = False,
+        runtime_source_paths: tuple[tuple[str, ...], ...] | None = None,
     ) -> ResponsesResult:
-        """Allow opt-in prose with no output model; preserve legacy structured requests."""
+        """Build node input and audit trusted source paths; retain legacy structured requests."""
 
         plain_output = model_output is None
         prompted_json = not plain_output and binding.structured_output_mode == "prompted_json"
@@ -586,6 +588,9 @@ class AgentModelNodeService:
                 context_source_references=context_source_references,
                 defer_structured_validation=True,
                 tool_history_before_input=output_repair,
+                **({"runtime_source_input": RuntimeSourceInput(
+                    provider_model_input, runtime_source_paths,
+                )} if runtime_source_paths is not None else {}),
                 **({"tool_messages": tool_messages} if tool_messages is not None else {}),
             )
             await self._bind_context_evidence(node, response.id, provider_model_input)

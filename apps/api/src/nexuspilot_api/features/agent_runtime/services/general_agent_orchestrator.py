@@ -336,7 +336,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Compose file and private-note tools with the existing cancellation/accounting loop."""
+        """Compose tools and audit explicitly resolved originals in this role's actual input."""
         loop = await run_file_tool_loop(
             self.model_node_service,
             workflow,
@@ -357,6 +357,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 ),
                 model_output=None,
                 model_input=values,
+                runtime_source_paths=tuple(
+                    (key,) for key in ("original_sources", "review_sources") if key in values
+                ),
                 reasoning=payload.reasoning,
             ),
             state=state,
@@ -424,7 +427,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         review_history,
         batch_index,
     ):
-        """Repair missing/invalid decisions once, retaining accepted units and original evidence."""
+        """Repair decisions once, retaining accepted units and auditing nested original evidence."""
         expected = [unit["unit_id"] for unit in review_input["review_units"]]
         pending = expected
         accepted = {}
@@ -479,6 +482,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         "original_output": response.output_text,
                     },
                     tool_messages=review_history,
+                    runtime_source_paths=(("candidate_context", "original_sources"),),
                     reasoning=payload.reasoning,
                     timeout_seconds=remaining,
                     output_repair=True,

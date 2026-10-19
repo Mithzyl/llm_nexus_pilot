@@ -3,7 +3,8 @@
 ## 范围和执行约束
 
 实现、测试与规划先提交为 376a7d4（codex/general-agent-tool-loop）。
-本次用户授权真实 Strata 调用及阶段验证后提交；不使用 DeepSeek、不推送、不部署。
+初始用户授权真实 Strata 调用及阶段验证后提交；最初不使用 DeepSeek、不推送、不部署。
+2026-10-19 后续明确授权“暂时用deepseek替代strata完成请求测试”，以下 DeepSeek 测试据此执行；不部署限制保持。
 前端仅允许必要 API 对接，不更改样式、文案或布局。
 
 - API：127.0.0.1:8000；MySQL：localhost:3306/nexuspilot；MinIO：localhost:9000。
@@ -197,6 +198,41 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   快照 `output/playwright/general-agent-task-notes-failed.yml`、`general-agent-task-notes-failed-draft.yml`。
   截图 `output/playwright/general-agent-task-notes-failed.png` 已查看；测试草稿已清除。
   没有点击发送，没有改变页面样式/文案。真实笔记保存/读回成功及内容修正交付仍待服务恢复后验证。
+
+### 独立原文输入与实际参数记录
+
+- 新增 `effective_request.v1` 保存适配器实际收到的公开配置，包含已组装 system、模型参数、工具和推理映射；
+  私有续接只记录父 Attempt 引用，不写入私有正文。不是 HTTP wire 抓包或上游收件证明。
+- `runtime_source_manifest.v1` 记录后端显式 original_sources/review_sources 及格式修正嵌套原文。
+  要求完整输入在实际消息中出现，块集合与引用一致；不能通过用户伪造 JSON 生成来源记录。
+  先编写新增测试，观察因缺少实现而失败；实现过程中又复现修正历史在输入之后含有 User 反馈，
+  因而不能假设运行输入永远是最后一条 User 消息。已改为完整输入精确匹配，未取消匹配检查。
+- 集成测试对照脚本 Provider 收到的实际 system 与持久记录，并验证 Reviewer 的 S1 原文、
+  内容修正返回主 Agent 的 S2 原文都被单独记录。
+- 回归：model_input_manifest/general_agent/responses/agent_file_tools/tool_context，101通过（18.97秒）；
+  response_file_tools/provider_continuation_store/agent_task_notes，29通过（6.29秒）；
+  `PYTHONPATH=packages/models/src apps/api/.venv/bin/python -m pytest -q -o asyncio_mode=auto packages/models/tests --tb=short`，127通过（0.25秒）。
+  Ruff 与 git diff --check 通过。没有前端改动或数据库迁移。
+
+### 临时切换 DeepSeek 的首轮测试
+
+- 用户允许暂时用 DeepSeek 后，核对本地目录与凭据：deepseek-v4-flash 已启用、Key 存在，地址为
+  https://api.deepseek.com。没有修改目录、默认思考设置或线上服务器。
+- 使用与 Strata 笔记样本相同的 PDF/问题/never 策略；报告 `/tmp/general-agent-task-notes-deepseek-20261019.json`。
+  Run `1faccbcd-bd67-44f1-8425-827e8edd4793`；Workflow `8e2d29c8-73ef-4493-aac1-6e0bd1847538`；
+  Session `634f01d1-fd87-4656-a2fe-35578e5c401c`。
+- 结果失败，3.294秒：首轮成功生成 read_file_content，实际从1,542个解析块中返回28块，
+  首轮已报告输入2,682、输出106、缓存0、推理0 Token，费用未提供。笔记工具尚未执行。
+- 第二个逻辑 Attempt 在 HTTP 派发前被本地适配器拒绝：
+  `DeepSeek tool continuation requires backend-preserved reasoning state.`
+  两轮实际思考配置均为 enabled=true、medium 映射 high；首轮保存的原始消息字段只有 role/content/tool_calls，
+  没有 reasoning_content，因此没有产生私有续接记录。这是观察到的协议差异，不是证明模型丢失了推理。
+- 两份实际请求的原生工具清单、运行原文集合清单均校验一致；第二份记录实际包含28个文件块。
+  联调脚本的总用量因失败 Attempt 缺少 usage 仍为 null；已报告首轮用量应单独保留，不能写成全部0或全部未知。
+- [DeepSeek 官方思考文档](https://api-docs.deepseek.com/guides/thinking_mode/) 要求工具请求保留历史思考字段；
+  当前证据尚不能判断官方端点是否接受这一条没有返回思考字段的消息续接，不能直接放宽校验或补造推理正文。
+- 准备进行一次历史第二轮完整请求直连诊断，但执行审批拒绝：需要明确授权外发已保存的 PDF 原文/工具结果与系统提示，
+  并产生一次新的模型费用。已向用户请求批准；诊断请求未发送、没有继续自动重试，默认思考行为未改动。
 
 ## 尚未验收的完整目标
 
