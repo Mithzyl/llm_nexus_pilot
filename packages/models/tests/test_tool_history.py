@@ -158,13 +158,11 @@ async def test_deepseek_message_states_pass_public_request_validation(stream, ro
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("invalid_round", [0, 1])
-@pytest.mark.parametrize("state_kind", ["missing", "wrong_provider"])
 async def test_deepseek_rejects_invalid_message_state_even_with_legacy_state(
     stream,
     invalid_round,
-    state_kind,
 ):
-    """A valid top-level state cannot hide a missing/wrong state on any assistant tool round."""
+    """A valid top-level state cannot hide another provider's state on an explicit tool turn."""
     request = tool_history(ProviderName.DEEPSEEK)
     valid = ProviderContinuationState(
         kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
@@ -173,13 +171,11 @@ async def test_deepseek_rejects_invalid_message_state_even_with_legacy_state(
     request.provider_continuation_state = valid
     for message in request.messages[1::2]:
         message._provider_continuation_state = valid
-    request.messages[1 + invalid_round * 2]._provider_continuation_state = (
-        None
-        if state_kind == "missing"
-        else ProviderContinuationState(
-            kind=ProviderContinuationKind.OPENAI_RESPONSE_ID,
-            provider_response_id="other-provider",
-        )
+    request.messages[
+        1 + invalid_round * 2
+    ]._provider_continuation_state = ProviderContinuationState(
+        kind=ProviderContinuationKind.OPENAI_RESPONSE_ID,
+        provider_response_id="other-provider",
     )
     sent = []
 
@@ -200,6 +196,71 @@ async def test_deepseek_rejects_invalid_message_state_even_with_legacy_state(
             else:
                 await provider.generate(request)
     assert sent == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_deepseek_rejects_missing_state_with_persisted_parent(stream):
+    """A known private-state reference must not silently become an absent-reasoning turn."""
+    request = tool_history(ProviderName.DEEPSEEK)
+    request.messages[1]._provider_continuation_parent_attempt_id = "persisted-parent"
+    provider = DeepSeekChatProvider(
+        None, base_url="https://example.invalid", api_key="test"
+    )
+    with pytest.raises(ModelProviderError, match="continuation"):
+        if stream:
+            _ = [event async for event in provider.stream(request)]
+        else:
+            await provider.generate(request)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_deepseek_accepts_tool_turn_without_returned_reasoning(stream):
+    """Allow an explicit no-reasoning turn while preserving the next turn's real private text."""
+    request = tool_history(ProviderName.DEEPSEEK)
+    request.messages[3]._provider_continuation_state = ProviderContinuationState(
+        kind=ProviderContinuationKind.DEEPSEEK_RAW_REASONING,
+        raw_reasoning_for_tool_continuation="actual second-round reasoning",
+    )
+    sent = []
+
+    async def handler(http_request):
+        """Verify omitted reasoning is not invented, copied from another turn, or dropped when present."""
+        payload = json.loads(http_request.content)
+        sent.append(payload)
+        assert "reasoning_content" not in payload["messages"][1]
+        assert (
+            payload["messages"][3]["reasoning_content"]
+            == "actual second-round reasoning"
+        )
+        if stream:
+            return httpx.Response(
+                200,
+                text=(
+                    'data: {"choices":[{"delta":{"content":"Finished"},"finish_reason":"stop"}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "Finished"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = DeepSeekChatProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://example.invalid",
+            api_key="test",
+        )
+        if stream:
+            events = [event async for event in provider.stream(request)]
+            assert events[-1].data["response"]["text"] == "Finished"
+        else:
+            assert (await provider.generate(request)).text == "Finished"
+    assert len(sent) == 1
 
 
 @pytest.mark.parametrize("provider_name", [ProviderName.ANTHROPIC, ProviderName.GEMINI])

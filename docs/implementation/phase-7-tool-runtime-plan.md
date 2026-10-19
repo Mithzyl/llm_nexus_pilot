@@ -107,7 +107,7 @@ v2 组装由 general_candidate_service.py 完成，不新增模型调用。新�
 
 #### 当前任务笔记工具（2026-10-19）
 
-代码与确定性测试已完成；真实 Strata 本批在首次模型请求遇到 HTTP 502，尚未验证模型实际保存/读回笔记。
+代码与确定性测试已完成；真实 Strata 本批首次请求 HTTP 502。随后按用户授权改用 DeepSeek，修复上游未返回思考字段时的本地续接误拒绝后，读取28块、保存/读回笔记及最终回答通过，12.470秒、5次模型请求。包含一次来源格式修正，未证明 Reviewer 内容纠错通过。
 这不是阶段2旧 L0 检查点的自动接入，也不是跨进程续跑。具体执行记录见[本地验证文档](general-agent-strata-verification-20261019.md#任务内笔记与真实请求失败记录)。
 
 - `save_task_note`、`read_task_note` 在新 general_tools_v1 中初始加载；`list_task_notes` 通过现有目录发现和固定版本加载。

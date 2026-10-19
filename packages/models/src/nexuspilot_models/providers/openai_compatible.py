@@ -497,7 +497,7 @@ class OpenAICompatibleChatProvider:
         return headers
 
     def _validate_request(self, request: ModelRequest) -> None:
-        """Validate routing and thinking tool state; disabled thinking needs no private state."""
+        """Validate routing and supplied continuation state without inventing absent reasoning."""
 
         if any(message.attachments for message in request.messages):
             raise ModelProviderError(
@@ -532,11 +532,21 @@ class OpenAICompatibleChatProvider:
             # Match _build_payload: explicit assistant tool turns carry their own
             # state. The legacy request-level state is used only when the payload
             # builder must reconstruct an absent assistant tool-call message.
-            continuation_states = [
-                message._provider_continuation_state
-                for message in request.messages
-                if message.tool_calls
-            ] or [request.provider_continuation_state]
+            tool_turns = [message for message in request.messages if message.tool_calls]
+            # DeepSeek can return tool_calls without reasoning_content even with
+            # thinking enabled. Such explicit turns need no fabricated state.
+            # Legacy orphan Tool messages still need state to reconstruct their
+            # missing assistant call, and supplied states must match the provider.
+            continuation_states = (
+                [
+                    message._provider_continuation_state
+                    for message in tool_turns
+                    if message._provider_continuation_state is not None
+                    or message._provider_continuation_parent_attempt_id is not None
+                ]
+                if tool_turns
+                else [request.provider_continuation_state]
+            )
             if any(
                 state is None
                 or state.kind is not ProviderContinuationKind.DEEPSEEK_RAW_REASONING
