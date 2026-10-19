@@ -9,7 +9,7 @@ import json
 from typing import Literal
 
 from nexuspilot_models.contracts import ToolCall, ToolDefinition
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,6 +56,42 @@ class SearchArguments(PageArguments):
     """Search literal text, never regular expressions or executable queries."""
 
     query: str = Field(min_length=1, max_length=256)
+
+
+class ContentArguments(PageArguments):
+    """Read by source offset or directly around an exact original block ID."""
+
+    block_id: str | None = Field(default=None, min_length=1, max_length=256)
+    before: int = Field(default=5, ge=0, le=20)
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @model_validator(mode="after")
+    def validate_location(self):
+        """Reject contradictory anchors and offsets rather than silently choosing one."""
+        if self.block_id is not None and self.offset != 0:
+            raise ValueError("Use block_id or offset, not both")
+        if self.block_id is not None and self.before >= self.limit:
+            raise ValueError("limit must include the anchor after before blocks")
+        return self
+
+
+def content_start_offset(document, arguments: ContentArguments) -> int:
+    """Resolve a validated anchor in the authorized immutable document, preserving source order."""
+    if arguments.block_id is None:
+        return arguments.offset
+    for index, block in enumerate(document.blocks):
+        if block.block_id == arguments.block_id:
+            return max(0, index - arguments.before)
+    raise ValueError("Unknown block_id in this file snapshot")
+
+
+def search_read_targets(document, page, file_id: str) -> list[dict]:
+    """Return exact source positions and bounded reread arguments only for delivered matches."""
+    positions = {block.block_id: index for index, block in enumerate(document.blocks)}
+    return [{"block_id": block.block_id, "source_offset": positions[block.block_id],
+             "read_arguments": {"file_id": file_id, "block_id": block.block_id,
+                                "before": 5, "limit": 20}}
+            for block in page.blocks]
 
 
 class FileToolResult(BaseModel):
@@ -115,11 +151,14 @@ FILE_TOOLS = tuple(
         register_file_tool(
             "read_file_content",
             "Read saved text from uploaded text, Word/DOCX, Excel/XLSX, PowerPoint/PPTX or PDF. "
-            "Use zero-based BLOCK offset (not page number) and limit; follow next_offset, "
+            "For a search hit, use its block_id with before=5 limit=20 to read nearby text "
+            "directly; do NOT scan preceding pages. Otherwise use zero-based BLOCK offset "
+            "(not page number) and limit; next_offset is optional continuation, NOT an instruction "
+            "to read the whole file. Follow it only when the question needs that next range; "
             "which may advance less than limit to keep results small. "
             "For specific questions search_file_content first instead of reading every block. "
             "Reads cached extraction, not images or arbitrary local paths.",
-            PageArguments,
+            ContentArguments,
             keywords=("正文", "文字", "读取", "Office", "文档", "电子表格", "幻灯片"),
             initially_loaded=True,
         ),
@@ -134,6 +173,7 @@ FILE_TOOLS = tuple(
             "search_file_content",
             "Search ALL extracted blocks, including unread document end, for literal text. "
             "Offset paginates MATCHES, not source pages. Try alternative keywords if no match; "
+            "Use returned read_targets read_arguments with read_file_content for nearby text. "
             "no match does not prove absence from images or unextracted content.",
             SearchArguments,
             keywords=("搜索", "查找", "文字"),
@@ -274,7 +314,7 @@ class AgentFileToolService:
             raise
 
     async def _read(self, run_id: str, name: str, arguments: EmptyArguments) -> dict:
-        """Recheck access, read saved extraction and return whole-block token-bounded pages."""
+        """Authorize the snapshot and return bounded reads or located search matches."""
         run = await self.db.get(LlmRun, run_id, populate_existing=True)
         if run is None:
             raise ResourceNotFoundError("Run")
@@ -321,6 +361,7 @@ class AgentFileToolService:
         ):
             raise ResourceNotFoundError("File")
         document = await read_parsed_file(self.storage, file)
+        source_offset = getattr(arguments, "offset", None)
         if name == "get_file_outline":
             data = get_file_outline(document)
         else:
@@ -331,10 +372,28 @@ class AgentFileToolService:
                     document, arguments.query, offset=arguments.offset, limit=arguments.limit
                 )
             else:
+                if name == "read_file_content":
+                    source_offset = content_start_offset(document, arguments)
                 reader = read_file_table if name == "read_file_table" else read_file_content
-                page = reader(document, offset=arguments.offset, limit=arguments.limit)
-            page = bound_file_page(page, offset=arguments.offset)
+                page = reader(document, offset=source_offset, limit=arguments.limit)
+            page = bound_file_page(page, offset=source_offset)
+            if (isinstance(arguments, ContentArguments) and arguments.block_id is not None
+                    and arguments.block_id not in {block.block_id for block in page.blocks}):
+                # Large preceding blocks must not displace the requested anchor.
+                source_offset = content_start_offset(
+                    document, arguments.model_copy(update={"before": 0})
+                )
+                page = bound_file_page(
+                    read_file_content(document, offset=source_offset, limit=arguments.limit),
+                    offset=source_offset,
+                )
             data = page.model_dump(mode="json")
+            if name == "search_file_content":
+                data["read_targets"] = search_read_targets(document, page, file.file_id)
+            data["continuation_note"] = (
+                "has_more describes remaining data, not required work. Answer once the requested "
+                "facts are supported. Search and read around hits instead of scanning sequentially."
+            )
         return {
             "file_id": file.file_id,
             "source_hash": file.content_hash,
@@ -345,7 +404,8 @@ class AgentFileToolService:
             "data": data,
             "read_scope": {
                 "kind": name,
-                "offset": getattr(arguments, "offset", None),
+                "offset": source_offset,
+                "anchor_block_id": getattr(arguments, "block_id", None),
                 "limit": getattr(arguments, "limit", None),
                 "query": getattr(arguments, "query", None),
                 "has_more": data.get("has_more"),
@@ -420,15 +480,19 @@ class AgentFileToolService:
         return record
 
 
-def file_tool_guidance() -> str:
+def file_tool_guidance(*, final_format: str = "final JSON") -> str:
     """Derive planning guidance from the same catalog that supplies initial tool definitions."""
     loaded = sorted(entry.name for entry in FILE_TOOL_CATALOG.entries if entry.initially_loaded)
     return (
         "Already loaded tools: " + ", ".join(loaded) + ". Call these directly; "
         "do NOT search or describe them first. Only discover/describe tools not in this list. "
-        "Continue useful reads until evidence supports the task, then submit final JSON. "
+        f"Continue useful reads until evidence supports the task, then submit {final_format}. "
         "For pagination pass the returned next_offset as the next request's offset parameter. "
         "Search matches may be incomplete lines; read surrounding source before inferring meaning."
+        " Search results contain read_targets: pass read_arguments directly to read_file_content. "
+        "has_more/next_offset indicate available data, not a requirement to read all of it. "
+        "Stop reading when each requested point has supporting text; submit the answer with "
+        "citations and honest limitations. Do not scan unrelated sections to achieve full coverage."
     )
 
 

@@ -27,7 +27,7 @@ class IncorrectCitationProvider(ClaimReviewProvider):
         self.repair_seen = False
 
     async def generate_checked(self, request):
-        """Verify that repair still sees the supplementary original, not merely its summary."""
+        """Verify original evidence precedes the final correction instruction in actual requests."""
         response = await super().generate_checked(request)
         if request.metadata["agent_node_key"] != "independent_review" or response.tool_calls:
             return response
@@ -38,6 +38,8 @@ class IncorrectCitationProvider(ClaimReviewProvider):
             assert "Device model X200" in str(request.messages)
             assert any(m.role.value == "tool" for m in request.messages)
             assert request.tools == []
+            assert request.messages[-1].role.value == "user"
+            assert "output_repair" in request.messages[-1].content
         if not repair or self.persistent:
             output = response.structured_output
             ref = output["claim_assessments"][0]["evidence_refs"][0]

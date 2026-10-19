@@ -21,7 +21,7 @@ from sqlalchemy import select
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.models import LlmProviderContinuationState
 from nexuspilot_api.schemas.responses import ResponsesRequest, ResponsesResult, ResponseUsage
-from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
+from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService, file_tool_guidance
 from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 from nexuspilot_api.services.model_reasoning_service import record_model_response_event
 from nexuspilot_api.services.model_response_service import ModelInvocationService
@@ -157,6 +157,10 @@ class ResponseFileToolService:
                         "tools": definitions,
                         "timeout_seconds": remaining,
                         "idempotency_key": key,
+                        "instructions": "\n".join(filter(None, [payload.instructions,
+                            file_tool_guidance(final_format="a user-facing answer"),
+                            "For quick replies submit a user-facing answer, not node JSON. "
+                            "Cite actual blocks; state unread/unsupported points explicitly."])),
                     }
                 )
                 response = None

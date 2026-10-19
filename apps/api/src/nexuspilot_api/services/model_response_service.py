@@ -144,10 +144,11 @@ class ModelInvocationService:
         tool_messages: list[Message] | None = None,
         request_type: str | None = None,
         defer_structured_validation: bool = False,
+        tool_history_before_input: bool = False,
     ) -> ResponsesResult:
         """Execute a response; append server-owned tool history after persisted base Context.
 
-        Tool history is an internal runtime argument, never an HTTP request field.
+        Tool history is internal. For corrections it precedes the final user instruction.
         The exact effective messages are stored in the private attempt request audit.
         Workflow-only deferred JSON validation preserves generation usage before node repair.
         """
@@ -161,7 +162,10 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
-        request = await self._append_tool_history(request, context_build_id, tool_messages)
+        request = await self._append_tool_history(
+            request, context_build_id, tool_messages,
+            tool_history_before_input=tool_history_before_input,
+        )
         request = await resolve_registered_model_reasoning(self.db_session, request)
         request._defer_structured_validation = defer_structured_validation
         model_attempt = await self._start_model_attempt(
@@ -228,8 +232,10 @@ class ModelInvocationService:
         request: ModelRequest,
         context_build_id: str | None,
         tool_messages: list[Message] | None,
+        *,
+        tool_history_before_input: bool = False,
     ) -> ModelRequest:
-        """Project reloadable file history using tokens, preserving durable original results."""
+        """Project history without mutation; keep correction instructions after old tool results."""
         if tool_messages:
             if context_build_id:
                 context = await self.db_session.get(LlmContextBuild, context_build_id)
@@ -258,7 +264,13 @@ class ModelInvocationService:
                         tool_messages = project_tool_history(tool_messages, token_budget=available)
                     except ValueError as error:
                         raise InvalidRequestError(str(error)) from error
-            request = request.model_copy(update={"messages": [*request.messages, *tool_messages]})
+            if tool_history_before_input:
+                if not request.messages or request.messages[-1].role is not MessageRole.USER:
+                    raise InvalidRequestError("Output repair requires a final user instruction")
+                messages = [*request.messages[:-1], *tool_messages, request.messages[-1]]
+            else:
+                messages = [*request.messages, *tool_messages]
+            request = request.model_copy(update={"messages": messages})
         return request
 
     async def stream(

@@ -1,6 +1,6 @@
 # Strata 两份长 PDF 本地联调（2026-10-18）
 
-> 前面的两份文件测试记录保留为历史证据；本轮取消固定调用次数后的单文件结果见文末。旧记录中的修复建议不再作为当前规则，当前调用策略由阶段7文档维护。
+> 历史测试保留为证据；最新结果见文末“定点补读与最终回答验收”。旧记录中的修复建议不再作为当前规则，当前调用策略由阶段7文档维护。
 
 ## 范围与执行条件
 
@@ -116,3 +116,127 @@
 - 最终按相同扩大集合重新运行 17 个测试文件：**271 项通过，65.09 秒**（`/tmp/unlimited-final-tests.txt`）。Ruff 与 `git diff --check` 通过；前述失败未被忽略或删除断言。
 - 新取消测试覆盖独立事务写入取消、闲置 Provider 的 JSON/SSE 传播、取消后没有第二次模型调用、正常完成不遗留监听任务。使用隔离数据库和脚本化 Provider；未冒充外部供应商计费取消证明。
 - Web `npm test` 151 项通过，`npm run typecheck`、`npm run lint` 通过。实际浏览器检查范围仅为本轮 Agent 取消记录恢复与调用数显示；未生成最终答案，不存在最终回答浏览器验收。
+
+## 定点补读与最终回答验收
+
+适用代码：先提交上一轮修改 `37c9b2f`，再实施本轮定点补读，修改尚未提交。仅本地开发与验证，不部署、不推送、不调用 DeepSeek。使用同一 `FULLTEXT03.pdf` 和原单文件验证问题，不向提示词提供文档答案。PDF 第 3 页摘要和第 24 页方法正文另用 Poppler 渲染人工核对。
+
+当前状态：快速回复两次完成；两模式的本地在途取消通过；Agent 五次完整尝试均失败，最终回答验收未通过，已停止追加付费调用。正常完成和取消采用不同 Run，不能把取消当作成功回答。
+
+### 快速回复：已完成
+
+- Run `19657360-286d-4811-b3f1-1d92a67d6c3b`，Session `85cabc6b-6fb1-4344-b54b-6dfa5107bfc4`。
+- 上传后执行、保存及接口恢复共 91.084 秒；6 次模型请求；输入 95,560，输出 2,797，总 Token 98,357，缓存输入 67,303（已包含在输入内）。reasoning token 和实际货币费用未知。
+- 8 次工具调用，7 次成功、1 次错误：模型把搜索的 query/offset 参数交给正文工具，后端拒绝，下一轮自行改回搜索工具成功。没有脚本代改模型参数或隐式重放失败模型请求。
+- 搜索分页 offset 0、2 后，模型直接使用 `block_id=page:24:line:26`、`page:16:line:34` 定点读取附近原文，随后补读 `page:24:line:40`。没有为了到达第 24 页连续顺序读取前面的页面。
+- 最终答案正确说明 IKEA 客户支持数据分析主题及 Prompt Chaining 的多步骤销售分析用途，引用题名/摘要和第 16、24 页；承认解析缺失页、OCR 未启用和未通读全文。
+- **保留的内容质量问题**：模型将首部实际读取的 54 块写成“前 60 个块（offset 0→54）”；不能据此宣称每个数字都准确。主题、用途、读取限制的主要事实已核对，块数表述不准确。
+- 正文已写入对象存储并通过消息接口读回。Playwright 打开会话并刷新后正文及已保存状态仍在，截图 `output/playwright/targeted-quick-restored.png`。浏览器存在查询快速回复 Run 的 `/agent-workflow` 返回 404 的现有探测行为，不声称控制台完全无错误。
+- 原始结果 `/tmp/strata-targeted-quick-20261018.json`；对应 MySQL/MinIO 中保存实际工具调用、原文范围、模型请求与正文。
+
+### 确定性检查
+
+最终代码集合回归：18 个测试文件 **280 项通过，65.93 秒**（`/tmp/targeted-final-tests.txt`，含最后增加的 JSON 语法定位反馈）；相关 Python Ruff 和 `git diff --check` 通过。以下分批结果保留作为修复过程，不重复计入 280。此次未改 Web 业务代码，浏览器使用真实本地 API 记录检查恢复。
+
+- 定点读取、两模式工具循环、Worker 引用、证据修正、无固定次数、取消监听：69 项通过（`/tmp/targeted-reads-tests.txt`）。
+- 工具历史、发现、节点输出修正、响应状态、响应接口及传输取消：90 项通过（`/tmp/targeted-additional-tests.txt`）。两组为不同测试文件，共 159 项；不包含真实模型结果。
+- 新增测试先因缺少 `ContentArguments`/定点读取函数失败，再实现。持久化测试中的原文断言随后修正为保留解析器实际换行，没有放宽目标位置、内容或快照断言。相关 Ruff 及差异空白检查通过。
+
+### Agent 首次验收失败与修复
+
+- Run `6a3643d4-acde-412b-91e0-71686c362ec9`，Session `98823a6b-c74e-4195-ba8c-d382cffb31b1`。210.766 秒；7 次已完成模型请求，输入 110,510、输出 10,041、总 Token 120,551、缓存输入 75,721。失败尝试同样计入本轮费用统计。
+- 已完成搜索分页、16/24/33 页原文块定点读取、Worker 的 6 条结论输出、Handoff 与确定性验证。未在到达目标段落前顺序扫描全文。
+- Reviewer 尚未发起模型请求即报 `agent_workflow_internal_error`。只读重建输入并运行字段校验，确认 `additional_user_input` 长 224,866 字符，超过 100,000 上限；原因是每个引用都附带整份文件 1,542 个原文块的内部 ID 清单，并不是 Strata 返回非法 JSON。
+- `model_evidence_bundle` 从给模型的证据中去除重复 `all_parsed_block_ids`，提供 `parsed_document_block_count`；相同证据 JSON 缩至约 35,950 字符。原文、引用、快照、读取范围均保留，内部全文校验仍使用完整 ID 清单。没有提高字符上限或省略有效原文来掩盖问题。
+- 新回归先因缺少投影函数失败；实现后包括定点读取、证据校验/修正、长循环和快速回复在内的 50 项通过（`/tmp/targeted-review-tests.txt`），与前述测试集合重叠，不相加。随后新建独立 Run 复测，不修改失败 Run 的历史状态。
+- 原始结果 `/tmp/strata-targeted-agent-20261018.json`。
+
+### 第二次 Agent 失败：非法正文及修正请求
+
+- Run `c61748e3-488f-4292-9740-183f94270157`，耗时 197.836 秒，8 次请求。前 7 次已知输入 97,917、输出 7,849、缓存输入 69,844；最后一次失败请求未报告用量，合计为下界，不能当成完整账单。
+- Worker 正文先输出解释句，然后输出缺少最终闭合大括号的 JSON。对 MinIO 保存正文离线执行 JSON decoder，确认在正文末尾位置 7,728 报 `Expecting ',' delimiter`，不是平台遗漏已返回的结尾；没有试图猜补括号。
+- 有限修正请求设置了供应商 JSON 模式，Strata 返回 `provider_unavailable / Chat provider returned an error envelope`。不能将该请求当成平台已取得可用修正正文，也未确定 Strata 内部拒绝的全部原因。
+- 改为 `prompted_json` 的输出修正轮不附供应商 JSON 模式：仍给完整字段要求、原输出与校验反馈；无工具；返回后仍执行严格 JSON/字段/引用校验。保留最多一次修正及原始输出/用量，不更改正常生成和原生 schema 修正。
+- 新增四种角色的 prompted 修正断言，修改前 4 项因仍启用 JSON 模式失败；修改后相关 51 项通过（`/tmp/targeted-repair-tests.txt`）。随后仅新增一次完整 Agent 验证，不重新跑已通过的快速回复和取消测试。
+- 原始结果 `/tmp/strata-targeted-agent-fixed-20261018.json`。
+
+### 快速回复复核与真实取消
+
+- 快速回复复核 Run `49276138-afdb-4a1e-8627-607f8f619034`，Session `1ce8297d-7c00-4919-8407-8d8661a2f0a6`：114.331 秒，6 次请求，输入 113,906、输出 3,651、总 Token 117,557、缓存输入 77,989，最终答案已保存并读回。正文解释 IKEA 研究主题、Prompt Chaining 定义/方法/结果，并声明只读取关键块及解析缺页。
+- 取消验证使用独立脚本 `deployments/verification/check_live_strata_cancel.py`：等待本测试自己的模型请求处于 STARTED 两秒后调用公开取消接口，等待本地执行退出并观察三秒无新增调用。不会取消用户其他会话，不会自动重试模型。
+
+| 取消模式 | Run | 取消确认耗时 | 取消后本地请求结束 | 后续观察 | 用量 |
+|---|---|---:|---:|---|---|
+| 快速回复 | `71d7e5df-4230-4698-a12f-3d52bc132eeb` | 0.063 秒 | 0.359 秒 | 3 秒，无新增调用 | 未知 |
+| Agent | `e138dd23-88c8-443f-b9b7-74483ab7ccfb` | 0.105 秒 | 0.190 秒 | 3 秒，无新增调用 | 未知 |
+
+两次 Run 均为 `cancelled`，各只有一个 Attempt，Attempt 保留 `outcome_unknown`；没有把已进入供应商的请求伪装成从未调用。连接在本地已结束，但远端生成及计费是否停止未知。两份 JSON 的 `cancel_verification.passed=true` 仅表示这些本地停止条件通过。
+
+原始结果分别为 `/tmp/strata-targeted-quick-fixed-20261018.json`、`/tmp/strata-targeted-cancel-quick-20261018.json`、`/tmp/strata-targeted-cancel-agent-20261018.json`。所有费用估算仍未知，不把未返回 Token 或价格解释为零。
+
+### 第三次 Agent：修正要求被旧工具历史排在前面
+
+- Run `b11c3893-7358-466d-b761-3450aec928ab`，253.458 秒；已知输入 137,937、输出 11,741、缓存输入 73,565。Worker 的原始 JSON 本次可解析，但将不属于某次读取结果的块放进该次引用，后端正确拒绝。
+- 修正轮不再被供应商 JSON 模式拒绝，返回了完整响应及用量，但它请求继续调用工具而非提交修正 JSON。原错误文案误称 `model_only_v1`，实际上处于文件工作流的输出修正阶段；本轮将文案改为“需要最终节点输出时返回了工具调用”，不伪装成模型模式配置错误。
+- 只读检查 MinIO `effective_messages` 确认：第 3 条用户消息包含 `output_repair`，后面却拼接了第 4–15 条旧 Assistant/Tool 历史，最后一条是工具结果。该排列把纠正要求放在其纠正对象之前。
+- 增加仅内部使用的 `tool_history_before_input`，在修正请求中保留原生工具历史及私有续接，并把修正要求放到最后；普通工具循环的排序不变。新增测试先因不支持该参数失败；修改后 73 项通过，另以实际 Reviewer 引用修正流程检查末条消息，4 项通过。随后新增一次完整 Agent 验证。
+- 原始结果 `/tmp/strata-targeted-agent-repair-20261018.json`。没有执行修正轮未经提供的工具，也未将这次运行改为成功。
+
+### 第四次 Agent：仍返回非法 JSON
+
+- Run `ba5ef339-7a15-4559-98d8-fd99fd138338`，320.260 秒，输入 164,077、输出 16,906、缓存输入 96,232。有限修正已返回正文、不再请求工具，但最终正文仍未通过 JSON 解析。
+- 对保存正文只读解析，长度 7,391 字符，位置 6,270 报 `Expecting ',' delimiter`；平台保持失败，没有自动补逗号或忽略错误。
+- 发现原修正反馈将 JSONDecodeError 丢弃，再以字符串进行对象校验，因而只报告 `model_type`。本轮保留 `json_invalid`、解析错误及行/列/位置，原字段及证据校验不变。新增断言初次因测试缺少 json 导入失败，修正测试后相关 31 项通过（`/tmp/targeted-syntax-tests.txt`）；真实失败记录中的泛化错误提供了该缺陷的直接证据。
+- 原始结果 `/tmp/strata-targeted-agent-ordered-20261018.json`。随后只新增一次完整 Agent 验证；若再次返回非法输出，不用继续重复付费请求凑成功结果。
+
+### 第五次 Agent 与最终状态
+
+- Run `eb60d50b-eb46-456f-9641-b30398d94a61`：267.166 秒，8 次模型请求；输入 120,758、输出 12,797、总 Token 133,555、缓存输入 48,755。
+- 原始输出报 `json_invalid / Expecting value`（行 1、列 1、位置 0）。有限修正后的正文仍报 `Expecting ',' delimiter`（行 1、列 6,406、位置 6,405），正文总长度也是 6,405，无法严格解析。
+- 只读核对保存的修正请求：`effective_messages` 最后一条确为 user 且含 output_repair；`json_object_output=false`。说明修正顺序和请求参数已按本轮设计执行，并非仅代码未重启。节点保持 `node_output_invalid`，未进入审核或最终汇总，没有伪造答案。
+- 原始结果 `/tmp/strata-targeted-agent-syntax-20261018.json`。已停止追加模型请求。平台接收到的正文不合法，但没有 Strata 上游原始生成日志，不能单凭该正文判定一定是模型能力或一定是 Strata 拼接/提取造成。
+- 最终结论：定点搜索补读、快速回复最终答案、两模式本地取消通过；Agent 最终答案 **未通过**。剩余排查需要对 Strata 原始生成与接口正文做对应，或另行验证结构化输出协议；本轮没有提高修正次数、自动补标点、跳过引用校验或部署。
+
+### 本轮全部真实调用汇总（包括失败和取消）
+
+- 9 个 Run：快速回复完成 2 个、Agent 失败 5 个、专用取消验证 2 个。
+- 54 条模型调用 Attempt（按持久化调用记录统计，不等同 HTTP 传输重试次数，也不按预留预算计数推断）；已确认输入 **840,665 Token**、输出 **65,782 Token**，合计已知 **906,447 Token**；缓存输入 **509,409 Token**，是输入子集。
+- 3 次请求未提供输入/输出用量（1 次供应商错误、2 次在途取消），因此已知总量不是最终账单；reasoning token 未报告，货币费用未知。
+- 各 Run 测得耗时之和 **1,460.403 秒**，不含上传，不代表单次延迟或模型纯解码时间。
+- 本节不含本轮开始前已经提交的历史实验用量；每次失败及其修复后的复测独立记录，未只挑成功样本统计。
+
+### 用户追加对照：通过快速回复入口发送完整 Worker 修正提示词
+
+- 用户单独授权后，只调用一次 Strata；没有修改业务代码、重跑整个工作流、调用 DeepSeek 或部署。诊断脚本在本地以 ASGI 调用真实 `/api/v1/responses` 路由，并使用本地 MySQL/MinIO；不是浏览器操作验收。
+- 原调用 Attempt：`03941921-6203-40ee-8b28-7ec89e2af3e6`。从持久化记录读取全部 15 条有效消息，以及经过内容哈希核对的两个已选 system 来源；组合为供应商实际收到的 16 条消息。保留文件工具历史、最后的修正指令及原生成参数，不传 `response_format`，不提供新的工具。
+- 为避免重复追加会话历史，使用新的诊断 Run 和显式消息，不绑定历史 task 或 current_user_message。快速回复使用收集式返回，底层 Strata 仍使用 SSE，与原 Agent 的收集式调用一致。发送前检查快速回复实际 HTTP body 与重建的模型请求完全相等：SHA-256 均为 `0c013fa9865cec621bf30337bd8c8363a5482abf6ef321b496cebb1448d6e1f5`。这不是历史网络抓包哈希；历史请求依据已保存消息和 system 来源重建。
+- 新 Run：`0160d614-09f7-41e9-8f5b-ecd9d2e89872`；新 Attempt：`b62852fb-0751-4cb7-abbb-c3cac56b23a9`。HTTP 200，`finish_reason=stop`，耗时 **52.417 秒**，输入 **34,536**、输出 **3,496**、合计 **38,032 Token**；缓存输入 **34,535**（输入子集）。推理用量和金额未返回，不作为零计。
+- **JSON 解析通过；EvidenceWorkerModelOutput 字段校验通过。** 新正文 6,406 字符，原正文 6,405 字符。只读逐字符比较确认 `new_text == old_text + "}"`，除此之外完全一致；本次没有自动补括号或修改响应。
+- 原调用输入同为 34,536、输出同为 3,496 Token，缓存输入为 0，记录的供应商延迟为 74.854 秒（与新调用整体接口耗时测量范围不同）。两次同 Token 数不能代替原始生成日志，也不能证明它们的解码过程相同。
+- 结论：完整 Agent 提示词经快速回复入口，确实能够返回合法 Worker JSON；原非法正文恰好缺少末尾右花括号。仍不能只凭一次新生成区分上游生成差异、Strata 输出处理或历史收集过程。没有重做引用真实性、原文支持性、Reviewer 或完整 Agent 最终答案验收，因此前述 Agent 未通过状态保持不变。
+- 诊断结果：`/tmp/strata-quick-agent-prompt-20261018.json`；完整公开正文：`/tmp/strata-quick-agent-prompt-body-20261018.txt`；诊断脚本：`/tmp/check_quick_agent_prompt.py`。原始请求和响应继续保留在各 Attempt 的 MinIO 审计对象中。此次新增的一次调用不计入上一节九个 Run 的历史汇总。
+
+### 用户追加对照：同一响应的 SSE、适配器与 MinIO 正文
+
+- 按用户新授权重放一次上述完整 Worker 修正请求，不执行整个工作流、不重试、不调用 DeepSeek、不部署。仍通过本地 ASGI `/api/v1/responses` 收集入口调用与 Agent 相同的 `ModelInvocationService.generate()` / `StrataChatProvider.generate()`；消息不重新组装成普通问答。新 Run `0fb73992-9ac5-4ab3-8102-43568d26f272`，Attempt `74cdefb9-b444-4a5d-a886-13735c271ec2`。
+- 发送前比对实际请求与完整消息重建结果，SHA-256 仍为 `0c013fa9865cec621bf30337bd8c8363a5482abf6ef321b496cebb1448d6e1f5`。不传 response_format。只在临时诊断进程包装 HTTP 响应流：先记录收到的字节，再原样交给适配器；没有修改业务代码。
+- 收到 807,843 字节，独立解析得到 3,512 个 SSE 数据事件（事件数不是 Token 数统计方法）。最后正文片段依次为 `结论`、`可能`、`不完整`、`。`、`"]}`；随后是空 delta 的 `finish_reason=stop` 和 usage，再随后 `[DONE]`。此次最后右花括号明确存在于 Strata 返回的 `delta.content` 中。
+- 独立拼接原始 SSE 正文、适配器返回正文、API 返回正文、从 MinIO 回读的审计正文均为 **6,406 字符**，SHA-256 均为 `e0aeed0befba794134d2b45ff0e4dd577db61b4d02c28eea1e3de7245a45743c`。四者完全一致；JSON 和 Worker 字段结构检查通过。正文仍等于历史失败正文加一个 `}`，没有自动补全字符。
+- HTTP 200，整体接口耗时 **53.845 秒**；供应商报告输入 **34,536**、输出 **3,512**、合计 **38,048 Token**，缓存输入 **34,535**。reasoning token 与金额未返回，保持未知。供应商 timings 报告 predicted_ms=48,593.9，这不等同整体接口耗时。
+- 本地尾部离线检查重新执行：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q /tmp/test_strata_tail_diagnostic.py`，**14 passed in 0.34s**。真实调用仅一次。
+- 结论：**本次没有发生 SSE 接收后丢失右花括号，适配器拼接与 MinIO 保存均一致。历史缺失原因仍未定位**，因为原失败调用没有逐条 SSE 留存。不能把新请求的完整返回当作旧请求原始生成的证据，也没有完成整个 Agent 工作流验收。
+- 证据：`/tmp/strata-sse-tail-replay-20261018.json` 为比较报告；`/tmp/strata-sse-tail-20261018.json` 保留最后八个未经字段修改的 SSE data 内容（JSON 字符串形式，文件权限 0600）；`/tmp/check_quick_agent_prompt.py` 已更新为本次采集脚本。没有保存认证头或完整推理片段。原始 HTTP 字节只在该诊断进程内存中保留；在 `[DONE]` 后不额外读取连接，所以“未观察到终止后内容”不证明供应商永远不会继续发送。
+- 此次用量独立于上面的九个 Run 汇总及前一次快速回复对照，不重复计数。
+
+### 完整 Agent 工作流：逐调用 SSE 与保存结果对照
+
+- 用户授权一次完整 Strata Agent 联调。沿用 FULLTEXT03.pdf 和前述单文件问题，本地 ASGI API、真实 MySQL/MinIO、现有隔离 PDF 解析器；没有 DeepSeek、部署或业务代码修改。首次预检因诊断进程没有设置 file runtime socket，上传返回 503，未产生模型请求。指定已验证可用的 `/tmp/nexuspilot-file-runtime-501/executor.sock` 后继续，未重启执行器。
+- Session `dc44416f-443c-46dc-ac89-c0557d773aef`，Run `4823b961-d271-4b98-b557-1c51321a899a`。**工作流失败，没有最终回答**。Controller、计划校验、分派完成，`worker_execution.read_pages_1_2` 在首次输出及一次有限修正后失败，Reviewer 和最终汇总未执行。没有再次重跑。
+- 共 **7 次模型调用**，整体工作流耗时 **283.919 秒**（不含上传）；输入 **115,353 Token**，输出 **14,215 Token**，合计 **129,568 Token**，缓存输入 **47,033 Token**（输入子集）。各调用用量均返回；推理用量与金额未返回。采集进程关闭供应商传输自动重试，保留业务本身的一次输出修正。
+- 第 6 次调用、Attempt `bfa941fb-90a3-4509-bfe0-f66dd3030a61`，Worker 首次正文 8,871 字符，以 `I now have sufficient evidence ...` 开始；严格 JSON 解析在行 1、列 1、位置 0 报 `Expecting value`。这是 Strata 返回的公开正文，不是从私有推理字段提取。
+- 第 7 次调用、Attempt `5277dff6-92a2-47fc-9027-fd5ce47aa80e`，修正正文 6,484 字符，末尾为 `}`；但行 1、列 2,094、位置 2,093 报 `Expecting ',' delimiter`。错误附近原文为 `"page:17:line:4","page:17:line:5"}}]}`，数组与对象的关闭符号不合法。未自动补符号，也未绕过校验。
+- 修正请求最后正文 SSE 片段含 `"]}`，随后空 delta 的 `finish_reason=stop` 与 usage，再后 `[DONE]`。**这次不是丢失最终右花括号**，而是正文中间已经有非法 JSON。
+- 全部 7 次调用的原始 SSE 独立拼接正文、适配器返回正文、MinIO 回读正文哈希均一致。失败修正调用三处长度均为 6,484，SHA-256 均为 `2117fe0587aaab4a42895d93de2457f1030a648046142fb4fce61f0d94be0d3c`。因此本次非法 JSON 在接收到的 Strata SSE 内容中已经存在，不是平台拼接或对象存储保存改变字符造成；仍不能区分 Strata 上游模型生成与 Strata 自身输出处理。
+- 持久化节点 warnings 与本地解析错误一致，两个错误均记录为 json_invalid。没有把 ModelAttempt completed（供应商请求完成）误计为 Worker 或工作流完成。
+- 证据目录 `/tmp/strata-agent-sse-20261018/`：`workflow.json` 为工作流结果与逐调用用量；`traces.json` 为逐调用长度、哈希、Attempt ID 和保存一致性；`call-6-*`、`call-7-*` 分别保留失败节点首次及修正的 SSE 尾部、SSE 独立拼接正文、适配器正文、MinIO 回读正文。诊断脚本 `/tmp/check_agent_sse_trace.py`。临时证据目录权限 0700，证据文件 0600，不保存认证头；原始 SSE 仅保留尾部，不额外读取 DONE 后连接。
+- 本次用量单列，不计入前面的历史实验总数。完整 Agent 最终回答验收仍为失败。

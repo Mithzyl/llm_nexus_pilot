@@ -1,5 +1,6 @@
 """Exercise bounded node-format repair through persisted workflow API calls."""
 
+import json
 from datetime import timedelta
 
 import pytest
@@ -78,7 +79,7 @@ def test_empty_node_response_cannot_enter_field_repair():
     "target", ["controller_planning", "worker_execution", "independent_review", "final_synthesis"]
 )
 async def test_malformed_json_is_accounted_then_repaired_by_node(client, target):
-    """An internal parse policy retains paid generation before the existing bounded node repair."""
+    """Retain paid generation and exact JSON syntax feedback for the bounded correction."""
     from nexuspilot_models.providers.common import parse_structured_output
 
     class MalformedProvider(ScriptedAgentProvider):
@@ -124,19 +125,28 @@ async def test_malformed_json_is_accounted_then_repaired_by_node(client, target)
     node = next(n for n in result["nodes"] if n["node_key"].split(".")[0] == target)
     assert node["usage"]["model_call_count"] == 2
     assert len(node["evidence"]["model_attempt_ids"]) == 2
+    diagnostic = json.loads(node["warnings"][0])["errors"][0]
+    assert diagnostic["type"] == "json_invalid"
+    assert diagnostic["position"] == len('{"broken":')
+    assert diagnostic["line"] == 1
+    assert diagnostic["column"] == len('{"broken":') + 1
 
 
 @pytest.mark.parametrize(
     "target", ["controller_planning", "worker_execution", "independent_review", "final_synthesis"]
 )
-async def test_invalid_node_is_repaired_once_with_full_usage(client, target):
-    """Repair required fields without tools and retain both paid attempts in node totals."""
+@pytest.mark.parametrize("output_mode", ["native_schema", "prompted_json"])
+async def test_invalid_node_is_repaired_once_with_full_usage(client, target, output_mode):
+    """Repair once; prompted corrections use backend validation, not provider JSON mode."""
     run = await create_test_run(client)
     provider = RepairProvider(target)
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = workflow_payload(execution_profile="tool_enabled_v1")
+    for binding in payload["role_bindings"].values():
+        binding["structured_output_mode"] = output_mode
     response = await client.post(
         f"/api/v1/runs/{run['run_id']}/agent-workflows",
-        json=workflow_payload(execution_profile="tool_enabled_v1"),
+        json=payload,
     )
     result = response.json()
     assert result["status"] == "completed", result.get("error")
@@ -148,6 +158,9 @@ async def test_invalid_node_is_repaired_once_with_full_usage(client, target):
     repair = [r for r in provider.requests if r.metadata.get("node_output_repair") == "1"]
     assert len(repair) == 1
     assert repair[0].tools == []
+    if output_mode == "prompted_json":
+        assert repair[0].json_object_output is False
+        assert repair[0].output_schema is None
     assert "validation_errors" in str(repair[0].messages)
     assert "Do not return the output_repair wrapper" in repair[0].system_instruction
 

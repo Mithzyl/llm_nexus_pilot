@@ -83,7 +83,7 @@ async def main(output, mode, single_small=False):
     """Run the selected mode once with fresh owned PDFs and checkpoint actual results."""
     if output.exists():
         raise RuntimeError('Report already exists')
-    report = {'base_commit': '7ff3ac5', 'working_tree': 'unlimited calls local changes',
+    report = {'base_commit': '37c9b2f', 'working_tree': 'targeted source reads local changes',
               'provider': 'strata', 'model': MODEL, 'files': [], 'cases': []}
     question = ('''请实际用文件工具分析附件 FULLTEXT03.pdf，不凭文件名猜测。
 先读取 offset=0 limit=30，再把结果的 next_offset 作为下一次请求的 offset，读取 limit=30，

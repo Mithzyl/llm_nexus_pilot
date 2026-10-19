@@ -24,6 +24,26 @@ class EvidenceOutputError(InvalidRequestError):
         self.validation_details = details or {}
 
 
+def model_evidence_bundle(bundle: dict) -> dict:
+    """Project verified excerpts without repeating internal full-file inventories per reference.
+
+    Exact originals, citation identities and read scopes remain intact. Full block
+    inventories are still used by resolve_bundle for document-wide scope validation.
+    """
+    projected = dict(bundle)
+    for field in ("claims", "unresolved_items"):
+        projected[field] = [
+            {**item, "sources": [
+                {**{key: value for key, value in source.items()
+                    if key != "all_parsed_block_ids"},
+                 "parsed_document_block_count": len(source["all_parsed_block_ids"])}
+                for source in item["sources"]
+            ]}
+            for item in bundle[field]
+        ]
+    return projected
+
+
 async def allowed_evidence_tasks(db, node) -> set[str]:
     """Grant only this task and committed ancestors in the same persisted workflow graph."""
     tasks = {node.task_id} if node.task_id else set()
@@ -137,7 +157,7 @@ class WorkerEvidenceService:
         return {"claims": claims, "unresolved_items": unresolved, "hypotheses": bundle.hypotheses}
 
     async def for_node(self, node) -> list[dict]:
-        """Reauthorize ancestor excerpts before every model round, including repairs."""
+        """Reauthorize originals without repeating internal full-file inventories."""
         tasks = await allowed_evidence_tasks(self.db, node)
         candidate_tasks = (node.input_json or {}).get("candidate_task_ids")
         sources = list(
@@ -164,6 +184,7 @@ class WorkerEvidenceService:
                 {key: output[key] for key in ("claims", "unresolved_items", "hypotheses")}
             )
             results.append(
-                {"task_id": source.task_id, **await self.resolve_bundle(node.run_id, tasks, bundle)}
+                {"task_id": source.task_id,
+                 **model_evidence_bundle(await self.resolve_bundle(node.run_id, tasks, bundle))}
             )
         return results
