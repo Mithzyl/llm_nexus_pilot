@@ -39,11 +39,12 @@ class ToolLoopState:
 
 
 async def run_file_tool_loop(
-    service, workflow, node, options, *, state=None, present_result=None, before_model_call=None
+    service, workflow, node, options, *, state=None, present_result=None, before_model_call=None,
+    tool_service=None,
 ):
-    """Reuse authorized execution with continuing dialogue and unique per-batch request rounds."""
+    """Reuse authorized execution and dialogue; an explicit catalog may add scoped note tools."""
     db = service.model_invocation_service.db_session
-    tools = AgentFileToolService(db, service.model_invocation_service.storage)
+    tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
     if task is None:
         raise InvalidRequestError("Tool execution requires a persisted Task")

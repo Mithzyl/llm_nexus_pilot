@@ -232,7 +232,11 @@ class AgentFileToolService:
         call: ToolCall,
         offered_versions: dict[str, str] | None = None,
     ) -> LlmModelToolCall:
-        """Claim once and check policy; committed descriptions load next-round tools."""
+        """Claim once and check policy before dispatching a pinned registered operation.
+
+        File operations remain read-only; a task-scoped subclass may advertise
+        explicit task writes. Both use the same durable call/result and cancellation.
+        """
         if len(call.id) > 255:
             raise ResourceConflictError("Provider tool call identifier exceeds supported length")
         attempt = await self.db.get(LlmModelAttempt, attempt_id)
@@ -265,7 +269,7 @@ class AgentFileToolService:
             provider_tool_call_id=call.id,
             tool_name=call.name,
             tool_version=tool.version if tool else None,
-            risk_level="read_only" if tool else "unclassified",
+            risk_level=tool.risk_level if tool else "unclassified",
             input_json=call.arguments,
             status="requested",
             permission_decision=None,
@@ -286,7 +290,7 @@ class AgentFileToolService:
             record.status = "running"
             await self.db.commit()
             async with asyncio.timeout(15):
-                result = await self._read(attempt.run_id, tool.name, arguments)
+                result = await self._execute_registered_tool(attempt, record, tool.name, arguments)
             if len(json.dumps(result, ensure_ascii=False).encode()) > 65536:
                 return await self._finish(
                     record, "failed", error="result_too_large_use_smaller_page"
@@ -297,6 +301,8 @@ class AgentFileToolService:
             return finished
         except ValidationError:
             return await self._finish(record, "failed", error="invalid_arguments")
+        except ToolOperationError as error:
+            return await self._finish(record, error.status, error=error.code)
         except ToolUnavailableError:
             return await self._finish(record, "permission_denied", error="tool_unavailable")
         except (ResourceConflictError, ResourceNotFoundError):
@@ -312,6 +318,10 @@ class AgentFileToolService:
             await self.db.rollback()
             await self._finish(record, "failed", error="tool_execution_failed")
             raise
+
+    async def _execute_registered_tool(self, attempt, record, name, arguments):
+        """Dispatch default file operations; subclasses can use server-owned call/task IDs."""
+        return await self._read(attempt.run_id, name, arguments)
 
     async def _read(self, run_id: str, name: str, arguments: EmptyArguments) -> dict:
         """Authorize the snapshot and return bounded reads or located search matches."""
@@ -498,3 +508,13 @@ def file_tool_guidance(*, final_format: str = "final JSON") -> str:
 
 class ToolUnavailableError(Exception):
     """Represent hidden, absent or incompatible catalog entries without revealing which one."""
+
+
+class ToolOperationError(Exception):
+    """Carry a server-defined tool failure without revealing arbitrary exception text."""
+
+    def __init__(self, code: str, *, status: str = "failed"):
+        """Retain a safe diagnostic code and result state for the shared execution audit."""
+        super().__init__(code)
+        self.code = code
+        self.status = status

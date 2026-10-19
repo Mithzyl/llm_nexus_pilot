@@ -39,6 +39,7 @@ from nexuspilot_api.features.agent_runtime.services.general_review_service impor
 from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestrator import (
     ModelOnlyWorkflowOrchestrator,
 )
+from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
 from nexuspilot_api.models import (
     LlmAgentWorkflowExecution,
     LlmModelToolCall,
@@ -335,7 +336,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Reuse native file calls, history projection, cancellation and accounting."""
+        """Compose file and private-note tools with the existing cancellation/accounting loop."""
         loop = await run_file_tool_loop(
             self.model_node_service,
             workflow,
@@ -349,6 +350,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     + purpose
                     + " "
                     + file_tool_guidance(final_format="the requested result")
+                    + " save_task_note and read_task_note are also already loaded. "
+                    "Use private notes for task progress, unresolved items and next actions; "
+                    "they are not verified claims, shared memory or a final answer. "
+                    "Search/describe list_task_notes if you need to find earlier note IDs."
                 ),
                 model_output=None,
                 model_input=values,
@@ -357,6 +362,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             state=state,
             present_result=self._present_result,
             before_model_call=self._validate_source_history,
+            tool_service=GeneralAgentToolService(
+                self.db_session, self.storage, task_id=task.task_id,
+                sources=self.sources, allowed_task_ids=self.general_task_ids,
+            ),
         )
         return loop.response
 

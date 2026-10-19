@@ -807,6 +807,8 @@ memory/v1/{memory_layer}/{scope_id}/{object_type}/{yyyy}/{mm}/{dd}/
 
 Agent Working Memory 是单个 Agent Run 的可恢复操作状态，不是对话历史，也不是提供给其他 Agent 的交接结果。当前仓库已有最小 `llm_agent_runs`、`llm_agent_turns`、检查点模型和内部接口，用于验证版本、恢复和终止边界；它们不构成 Agent Runtime，实际自动写入、工具状态复核和执行循环仍由阶段3实现。
 
+2026-10-19 新通用循环已增加[任务内笔记工具](phase-7-tool-runtime-plan.md#当前任务笔记工具2026-10-19)，复用 Tool Call 的 MinIO 正文保存模型主动提交的暂定记录，不写入此处 L0 检查点表，也不启用跨会话 Memory。笔记不是自动恢复状态；本节检查点接入与任务事实引用仍需后续实现，跨进程续跑按用户要求在真实 Agent 调测完成后检查。
+
 不能只使用 L1 Session Memory：同一 Session 中可以并行存在 Controller、多个 Researcher、Planner 和 Reviewer，它们具有不同目标、文件读取进度、待处理工具和预算。如果共用一份 Session State，并发检查点会互相覆盖，Reviewer 还可能看到实现 Agent 尚未验证的临时发现。L1 只保存用户会话共享事实；每个 Agent 使用独立 L0，完成后再通过 L2 Handoff 发布可依赖结果。
 
 在计划中的 `llm_agent_runs` 基础上新增：

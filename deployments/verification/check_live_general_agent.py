@@ -181,7 +181,7 @@ async def start(client, args, report):
         f"sessions/{session['session_id']}/turns",
         json={
             "user_id": owner,
-            "content_text": QUESTION,
+            "content_text": args.question,
             "file_ids": [file["file_id"]],
             "idempotency_key": str(uuid.uuid4()),
         },
@@ -190,7 +190,7 @@ async def start(client, args, report):
         session_id=session["session_id"],
         run_id=turn["run"]["run_id"],
         status="prepared",
-        question=QUESTION,
+        question=args.question,
         started_at=datetime.now(UTC).isoformat(),
     )
     checkpoint(args.report, report)
@@ -378,4 +378,6 @@ if __name__ == "__main__":
     parser.add_argument("--observe", action="store_true")
     parser.add_argument("--observe-seconds", type=int, default=720)
     parser.add_argument("--cancel", action="store_true")
+    parser.add_argument("--question", default=QUESTION,
+                        help="Explicit test objective saved verbatim in the local report")
     asyncio.run(main(parser.parse_args()))

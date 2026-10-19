@@ -168,9 +168,40 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 这项实现只提供逐请求的原生工具输入事实，不等于任务级完整阅读覆盖。Reviewer 原文集合、
 工作笔记、最终完整请求参数审计与后续覆盖汇总仍须继续实现。
 
+### 任务内笔记与真实请求失败记录
+
+新增 `task_note_tools.py`，通过共用工具执行记录保存不可变笔记和真实来源引用；当前 Task 读取/分页查询，
+终态/取消中的任务拒绝写入，旧工具目录不变。笔记正文/来源仍使用工具结果的 MinIO 对象存储，MySQL 不保存正文。
+这不代表执行检查点、跨角色共享 Memory 或跨进程续跑已完成。
+
+- 新增9项测试：保存/读回及 SQL 空正文、另一 Task/未知 ID 拒绝、虚构来源/额外身份参数拒绝、
+  实际文件来源和撤销后停止发送历史、目录发现/加载、完成或请求取消后拒绝写入。
+- 测试先行时先遇到测试目录登记 fixture 缺失；补齐后因工具尚未提供失败。后续 fixture 的 ModelResponse
+  缺少必填耗时和 raw_response 已修正，不把测试配置错误记作业务实现缺陷。
+- 最终相关回归63项通过（17.70秒）：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_agent_task_notes.py apps/api/tests/test_general_agent.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_tool_discovery.py apps/api/tests/test_workflow_execution_tasks.py --tb=short`。
+  Ruff 与 `git diff --check` 通过。
+- 本地 API 已重启加载代码。重启前查到的两个 DeepSeek STARTED 记录始于9月1日/4日；当前进程10月19日启动，
+  代码没有跨进程恢复，且无供应商连接。没有修改历史记录，没有调用 DeepSeek。
+- 真实样本：Run `a8aa3781-fdf2-485a-8324-783ca986c197`，Workflow `c2f85d04-d710-497a-a290-87ab8c718a29`，
+  Session `589f38fc-4083-4a5c-aec3-a117a2f4ee18`。报告 `/tmp/general-agent-task-notes-20261019.json`。
+  使用 FULLTEXT03.pdf，仅要求首部读取、保存阶段发现/未读范围、读回笔记及简短最终回答；审核策略 never。
+- 结果 **失败**，耗时6.224秒；1次逻辑模型调用、3次HTTP尝试，全部502，耗时分别1471、492、500毫秒。
+  未执行任何工具，未生成最终回答；输入/输出/缓存/推理 Token 和费用均未报告，保持未知，不能计作0。
+  脱敏诊断为 HTTP502、非JSON错误信封、类别unknown，消息长度6410，
+  SHA-256 `9d3e11a72cc8894c4cca921a7e3d929c6be91708268f25d30f71795a6752f0b1`。
+- 随后只调用登记端点的 GET /models，也返回502、text/html、6410字节；没有再次发送生成请求。
+  这支持当时端点不可用，不能仅凭此断言具体代理/模型服务根因，更不能认定笔记参数导致失败。
+- 该真实请求包含新 `tool_input_manifest`，只读重建比较为 verified；它没有文件 Tool 消息，块数为0符合执行事实。
+  失败节点的 SQL 正文为空且 MinIO 对象哈希通过。此前旧请求缺少清单的状态仍不改写。
+- Playwright 打开并恢复该会话，显示“工作流失败”“未生成最终回答”；输入未发送草稿后发送按钮可用。
+  快照 `output/playwright/general-agent-task-notes-failed.yml`、`general-agent-task-notes-failed-draft.yml`。
+  截图 `output/playwright/general-agent-task-notes-failed.png` 已查看；测试草稿已清除。
+  没有点击发送，没有改变页面样式/文案。真实笔记保存/读回成功及内容修正交付仍待服务恢复后验证。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
-逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；仍需补齐工作记录/模型输入覆盖、按需委派及 Handoff、
+逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有代码和确定性测试，真实调用因502尚未验证；
+仍需补齐执行检查点/完整模型输入覆盖、按需委派及 Handoff、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

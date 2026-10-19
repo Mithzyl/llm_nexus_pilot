@@ -23,6 +23,7 @@ class RegisteredTool:
     required_capabilities: frozenset[str]
     keywords: tuple[str, ...] = ()
     initially_loaded: bool = False
+    risk_level: str = "read_only"
 
     def __post_init__(self) -> None:
         """Reject ambiguous identities and missing schemas before any tool is advertised."""
@@ -34,6 +35,8 @@ class RegisteredTool:
             raise ValueError("Invalid tool description")
         if not issubclass(self.arguments, BaseModel) or not issubclass(self.output, BaseModel):
             raise ValueError("Tool input and output require typed schemas")
+        if self.risk_level not in {"read_only", "task_write"}:
+            raise ValueError("Unsupported built-in tool risk level")
 
     def definition(self) -> ToolDefinition:
         """Publish callable input metadata without internal execution references or secrets."""
