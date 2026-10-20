@@ -468,6 +468,16 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 代码核查：Strata `generate()` 仅提取 COMPLETED；适配器的正文/工具片段在内存聚合。模型服务收到 CancelledError 后记录未知结果，现有 `preserve_stream_usage` 只捕获 ModelProviderError，不覆盖本次取消。缺少持久部分正文与进度，无法确认是长输出、等待或停顿；“无完整返回”不能表述为“没有收到任何 SSE”。
 - 新增[流式进度、中断保存与续接规划](phase-7-tool-runtime-plan.md#流式生成进度中断结果保存与续接2026-10-20)，状态未开始。后续必须区分用户停止和任务到期，未完成正文不能直接视为最终答案；本次没有实现或执行相关新回归测试。
 
+## 流式中断正文保存首步实现（2026-10-20）
+
+- 先提交规划 `4b14c88`，然后补充共享 SSE 与模型服务中断保存。本批只运行离线协议及 API/工作流测试，未调用 Strata/DeepSeek，未重启服务、未推送部署。
+- 适配器通过 `model_stream_progress.v1` 保留正文、不可执行的工具参数片段、正文哈希、接收时间、推理字符数及最新已知用量；不复制私有推理。取消沿用原异常，单请求期限仍正确转换成超时。聚合调用与直接流式消费使用同一包装器。
+- 模型服务将草稿写入私有对象，使用既有 Attempt 响应引用；取消保持 outcome_unknown，超时保持 timed_out。未知输出用量和最终费用仍为空。对象存储失败时不填写 URI，不抹去已知用量。失败原有供应商脱敏诊断继续保留。没有新表或迁移。
+- 测试先行：适配器两种消费方式均在原实现因缺少 progress 失败；API 取消路径因没有响应 URI 失败。第一次包测试未启用 asyncio_mode，只是测试配置失败；启用 auto 后才复现目标缺陷。实现期间发现替换为 CancelledError 子类会破坏 Python 3.11 timeout 的精确类型判断，已改为保留原异常；API 超时预期按现有 504 校正。回归发现原错误诊断被草稿包装覆盖，已修正并保留原断言。
+- 验证命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q -o asyncio_mode=auto packages/models/tests apps/api/tests/test_responses.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_workflow_execution_tasks.py --tb=short`。233通过，24.54秒。包含实际 SSE 解码的取消片段、没有输出/仅推理、API 取消与期限、存储失败、正文哈希、未知用量、既有三策略/委派/停止回归。SQLite与内存对象存储不替代真实MySQL/MinIO验收。相关文件Ruff及git diff --check通过。
+- 最后核查补充保留失败异常携带的供应商请求ID/HTTP尝试信息，重新运行 `apps/api/tests/test_responses.py`，51通过（10.26秒）；Ruff及差异格式检查再次通过。
+- 剩余：生成中分批持久化、原始结束信号记录、已保存草稿的受控续接、真实供应商与存储验收。当前保存发生在可处理的中断路径，不保证进程崩溃恢复；不会因有草稿自动执行工具或产生最终答案。历史第7次正文仍不可恢复。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。

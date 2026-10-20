@@ -28,6 +28,7 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import PriceCatalog
 from nexuspilot_models.providers.common import preserve_stream_usage
 from nexuspilot_models.registry import ProviderRegistry
+from nexuspilot_models.stream_progress import interrupted_stream_progress
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -221,11 +222,14 @@ class ModelInvocationService:
                 "Model provider request timed out.",
                 retryable=True,
             )
+            error.stream_progress = interrupted_stream_progress(exc)
             await self._fail_model_attempt(model_attempt, error)
             raise error from exc
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             if provider_dispatch_may_have_started:
-                await self._mark_model_attempt_outcome_unknown(model_attempt)
+                await self._mark_model_attempt_outcome_unknown(
+                    model_attempt, progress=interrupted_stream_progress(exc),
+                )
             else:
                 await self._cancel_model_attempt(model_attempt)
             raise
@@ -411,9 +415,11 @@ class ModelInvocationService:
                         event=public_event,
                     )
                 yield public_event
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             if provider_dispatch_may_have_started:
-                await self._mark_model_attempt_outcome_unknown(model_attempt)
+                await self._mark_model_attempt_outcome_unknown(
+                    model_attempt, progress=interrupted_stream_progress(exc),
+                )
             else:
                 await self._cancel_model_attempt(model_attempt)
             raise
@@ -1019,6 +1025,22 @@ class ModelInvocationService:
         if model_attempt is None:
             return
 
+        progress = interrupted_stream_progress(error)
+        if progress is not None:
+            if progress.get("first_text_at"):
+                model_attempt.first_visible_token_at = datetime.fromisoformat(
+                    progress["first_text_at"]
+                )
+            if error.response is None:
+                error.response = self._interrupted_response(progress)
+                error.response.provider_request_id = error.provider_request_id
+                error.response.transport_attempts = error.transport_attempts
+                error.response.raw_response = {
+                    **error.raw_error, **error.response.raw_response,
+                }
+            else:
+                error.response.raw_response["stream_progress"] = progress
+
         if error.response is not None:
             response = self._apply_price(
                 error.response, ProviderName(model_attempt.provider), model_attempt.model
@@ -1119,10 +1141,42 @@ class ModelInvocationService:
     async def _mark_model_attempt_outcome_unknown(
         self,
         model_attempt: LlmModelAttempt,
+        *,
+        progress: dict[str, Any] | None = None,
     ) -> None:
-        """Record that provider dispatch cannot be excluded after caller cancellation."""
+        """Keep received drafts/accounting without declaring cancellation a known completion."""
 
         attempt_id = model_attempt.attempt_id
+        if progress is not None:
+            durable_attempt = await self._reload_started_model_attempt(attempt_id)
+            if durable_attempt is None:
+                return
+            response = self._interrupted_response(progress)
+            raw_uri = None
+            try:
+                stored = await self.storage.put_bytes(
+                    f"{durable_attempt.run_id}/{attempt_id}/interrupted-response.json",
+                    json.dumps(response.raw_response, ensure_ascii=False).encode(),
+                    "application/json",
+                )
+                raw_uri = stored.uri
+            except Exception:
+                # Retain known counters even if the draft cannot be saved. A null
+                # URI must never be represented as a successfully persisted draft.
+                pass
+            if progress.get("first_text_at"):
+                durable_attempt.first_visible_token_at = datetime.fromisoformat(
+                    progress["first_text_at"]
+                )
+            await self._persist_provider_response_state(
+                durable_attempt, response, status=AttemptStatus.OUTCOME_UNKNOWN,
+                raw_response_uri=raw_uri, error_code="provider_outcome_unknown",
+                error_message=(
+                    "Model stream was interrupted; received evidence is incomplete "
+                    "and final provider outcome and billing cannot be confirmed."
+                ),
+            )
+            return
         await self.db_session.rollback()
         await self.db_session.execute(
             update(LlmModelAttempt)
@@ -1143,6 +1197,20 @@ class ModelInvocationService:
         )
         await self.db_session.commit()
         await self.db_session.get(LlmModelAttempt, attempt_id, populate_existing=True)
+
+    @staticmethod
+    def _interrupted_response(progress: dict[str, Any]) -> ModelResponse:
+        """Package only known accounting; drafts stay private and cannot become tool calls."""
+        return ModelResponse(
+            finish_reason="interrupted",
+            latency_ms=progress["elapsed_ms"],
+            **progress["usage"],
+            raw_response={
+                "record_kind": "interrupted_stream",
+                "usage_complete": False,
+                "stream_progress": progress,
+            },
+        )
 
     def _add_provider_transport_attempts(
         self,

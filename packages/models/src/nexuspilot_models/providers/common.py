@@ -1,5 +1,6 @@
 """Shared parsing helpers that do not define provider wire formats."""
 
+import asyncio
 import json
 import time
 from functools import wraps
@@ -14,15 +15,20 @@ from nexuspilot_models.contracts import (
     StreamEventType,
 )
 from nexuspilot_models.errors import ModelProviderError
+from nexuspilot_models.stream_progress import (
+    ModelStreamProgress,
+    interrupted_stream_progress,
+)
 
 
 def preserve_stream_usage(stream):
-    """Retain cumulative usage on stream failure, without inventing final billing or output."""
+    """Retain received draft and usage on failure/cancel, never inventing completed output."""
 
     @wraps(stream)
     async def tracked(*args, **kwargs):
         """Copy known nonnegative counters; repeated snapshots replace, never add."""
         usage = {}
+        progress = ModelStreamProgress()
         started = time.perf_counter()
         fields = {
             "input_tokens",
@@ -34,6 +40,7 @@ def preserve_stream_usage(stream):
         }
         try:
             async for event in stream(*args, **kwargs):
+                progress.record(event)
                 if event.type == StreamEventType.USAGE:
                     for key in fields:
                         value = event.data.get(key)
@@ -44,7 +51,13 @@ def preserve_stream_usage(stream):
                         ):
                             usage[key] = value
                 yield event
+        except asyncio.CancelledError as error:
+            # asyncio.timeout on Python 3.11 checks the exact CancelledError
+            # type. Keep the original exception, not a subclass or replacement.
+            error.stream_progress = interrupted_stream_progress(error) or progress.snapshot()
+            raise
         except ModelProviderError as error:
+            error.stream_progress = interrupted_stream_progress(error) or progress.snapshot()
             if usage and error.response is None:
                 error.response = ModelResponse(
                     **usage,
@@ -59,6 +72,10 @@ def preserve_stream_usage(stream):
                     transport_attempts=error.transport_attempts,
                     provider_request_id=error.provider_request_id,
                 )
+            if error.response is not None:
+                error.response.raw_response["stream_progress"] = error.stream_progress
+            else:
+                error.raw_error["stream_progress"] = error.stream_progress
             raise
 
     return tracked

@@ -1,5 +1,6 @@
 """Offline regressions for terminal signals and errors; never contact providers."""
 
+import asyncio
 import json
 
 import httpx
@@ -12,6 +13,88 @@ from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.transport import HttpTransport
 from nexuspilot_models.providers.strata import StrataChatProvider
+from nexuspilot_models.stream_progress import ModelStreamProgress
+
+
+@pytest.mark.parametrize("collected", [False, True])
+async def test_cancelled_strata_retains_partial_text_and_unexecutable_tool_arguments(collected):
+    """Preserve received evidence on cancellation without completing or exposing reasoning."""
+    waiting = asyncio.Event()
+
+    class PausedStream(httpx.AsyncByteStream):
+        """Return partial text, reasoning, arguments and counters before blocking."""
+
+        async def __aiter__(self):
+            """Use the actual SSE decoder and stop only after all fragments were consumed."""
+            chunks = [
+                {"choices": [{"delta": {"content": "已读到的草稿"}}]},
+                {"choices": [{"delta": {"reasoning_content": "PRIVATE_REASONING"}}]},
+                {"choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call-1",
+                    "function": {"name": "read_file_content", "arguments": '{"offset":'},
+                }]}}]},
+                {"choices": [], "usage": {"prompt_tokens": 50, "completion_tokens": 12}},
+            ]
+            for chunk in chunks:
+                yield ("data: " + json.dumps(chunk) + "\n\n").encode()
+            waiting.set()
+            await asyncio.Event().wait()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, stream=PausedStream())
+    )) as client:
+        provider = StrataChatProvider(
+            HttpTransport(client, max_retries=0), base_url="https://offline.invalid", api_key="dummy",
+        )
+        request = ModelRequest(
+            provider=ProviderName.STRATA, model="test",
+            messages=[{"role": "user", "content": "test"}],
+        )
+
+        async def consume():
+            """Exercise collected Agent output and direct quick-reply streaming identically."""
+            if collected:
+                return await provider.generate(request)
+            return [event async for event in provider.stream(request)]
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+    progress = getattr(caught.value, "stream_progress", None)
+    assert progress is not None
+    assert progress["schema_version"] == "model_stream_progress.v1"
+    assert progress["response_complete"] is False
+    assert progress["text"] == "已读到的草稿"
+    assert progress["tool_fragments"][0]["arguments_delta"] == '{"offset":'
+    assert progress["usage"]["input_tokens"] == 50
+    assert progress["usage"]["output_tokens"] == 12
+    assert progress["first_output_at"] is not None
+    assert progress["last_output_at"] is not None
+    assert progress["reasoning_characters"] == len("PRIVATE_REASONING")
+    assert "PRIVATE_REASONING" not in json.dumps(progress)
+    assert "tool_calls" not in progress
+
+
+@pytest.mark.parametrize("reasoning_only", [False, True])
+def test_incomplete_progress_never_invents_body_or_usage(reasoning_only):
+    """Silence or private thinking is not an answer, a token count, or a completed response."""
+    from nexuspilot_models.contracts import StreamEvent, StreamEventType
+
+    progress = ModelStreamProgress()
+    if reasoning_only:
+        progress.record(StreamEvent(
+            type=StreamEventType.REASONING_RAW_DELTA, sequence=1,
+            data={"delta": "PRIVATE_REASONING"},
+        ))
+    result = progress.snapshot()
+    assert result["text"] == ""
+    assert result["usage"] == {}
+    assert result["first_text_at"] is None
+    assert bool(result["first_output_at"]) == reasoning_only
+    assert result["response_complete"] is False
+    assert "PRIVATE_REASONING" not in json.dumps(result)
 
 
 @pytest.mark.parametrize(

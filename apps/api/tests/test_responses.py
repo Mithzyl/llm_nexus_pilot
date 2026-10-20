@@ -20,6 +20,7 @@ from nexuspilot_models.contracts import (
 from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.pricing import ModelPrice, PriceCatalog
 from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
+from nexuspilot_models.providers.common import preserve_stream_usage
 from nexuspilot_models.providers.deepseek import DeepSeekChatProvider
 from nexuspilot_models.providers.openai import OpenAIResponsesProvider
 from nexuspilot_models.registry import ProviderRegistry
@@ -42,6 +43,83 @@ from nexuspilot_api.services.model_response_service import (
     ModelInvocationService,
     calculate_prompt_prefix_fingerprint,
 )
+
+
+@pytest.mark.parametrize("ending", ["cancel", "deadline"])
+@pytest.mark.parametrize("storage_failure", [False, True])
+async def test_collected_stream_interruption_persists_draft_without_completing(
+    client, ending, storage_failure, monkeypatch,
+):
+    """An interrupted collected Agent response retains a private draft and known usage."""
+    waiting = asyncio.Event()
+
+    class CollectedStreamProvider:
+        """Simulate the same stream-to-generate collection used by Strata, without a network."""
+
+        @preserve_stream_usage
+        async def stream(self, request):
+            """Send draft and partial accounting, then wait for cancellation or deadline."""
+            yield StreamEvent(type=StreamEventType.TEXT_DELTA, sequence=1, data={"delta": "草稿"})
+            yield StreamEvent(type=StreamEventType.USAGE, sequence=2, data={"input_tokens": 25})
+            waiting.set()
+            await asyncio.Event().wait()
+
+        async def generate(self, request):
+            """Return only completed responses, so interruption must never return a draft."""
+            async for event in self.stream(request):
+                if event.type == StreamEventType.COMPLETED:
+                    return ModelResponse.model_validate(event.data["response"])
+            raise AssertionError("test stream must be interrupted")
+
+    registry = ProviderRegistry()
+    registry.register(
+        ProviderName.OPENAI, CollectedStreamProvider(), allowed_models=frozenset({"test-model"}),
+    )
+    app.dependency_overrides[get_provider_registry] = lambda: registry
+    storage = app.dependency_overrides[get_object_storage]()
+    if storage_failure:
+        original_put = storage.put_bytes
+
+        async def fail_interrupted_write(name, content, content_type):
+            """Fail only terminal audit writes, preserving requests and unrelated fixture data."""
+            if name.endswith(("/interrupted-response.json", "/raw-error.json")):
+                raise ObjectStorageError("synthetic unavailable storage")
+            return await original_put(name, content, content_type)
+
+        monkeypatch.setattr(storage, "put_bytes", fail_interrupted_write)
+    run = await create_test_run(client)
+    task = asyncio.create_task(client.post("/api/v1/responses", json={
+        "run_id": run["run_id"], "provider": "openai", "model": "test-model",
+        "input": "test interruption", "timeout_seconds": 1,
+    }))
+    await asyncio.wait_for(waiting.wait(), timeout=2)
+    if ending == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        response = await task
+        assert response.status_code == 504
+    detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
+    attempt = detail["attempts"][0]
+    assert attempt["status"] == ("outcome_unknown" if ending == "cancel" else "timed_out")
+    if storage_failure:
+        assert attempt["raw_response_uri"] is None
+    else:
+        import hashlib
+
+        assert attempt["raw_response_uri"] is not None
+        raw = json.loads(storage.objects[attempt["raw_response_uri"]][0])
+        progress = raw["stream_progress"]
+        assert progress["response_complete"] is False
+        assert progress["text"] == "草稿"
+        assert progress["text_sha256"] == hashlib.sha256("草稿".encode()).hexdigest()
+        assert progress["text_characters"] == 2
+    assert attempt["input_tokens"] == 25
+    assert attempt["output_tokens"] is None
+    assert attempt["estimated_cost"] is None
+    assert attempt["first_visible_token_at"] is not None
+    assert len(detail["attempts"]) == 1
 
 
 async def test_platform_stream_deadline_preserves_observed_usage(
