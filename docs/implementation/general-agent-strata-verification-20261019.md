@@ -421,6 +421,20 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 工具输出是请求页，不是全任务完成证明。模型未使用过的新工具真实调用、全任务累计检查点和恢复的一致快照仍待验证/实现。
   本次不改前端，不重启服务、不部署，没有新增付费模型调用。
 
+### 通用循环执行观察快照（2026-10-20）
+
+- 新增 `task_execution_checkpoint.py`，新循环通过可选回调在模型返回及工具返回后自动保存快照；
+  旧工作流未传回调，不额外写快照。复用现有对象登记表及MinIO JSON/Markdown协议，没有数据库迁移。
+  记录实际Attempt/工具/笔记引用、目标、可用工具版本及前一快照，不宣称自动续跑或模型理解。
+- 接入前的集成测试复现“完成模型调用但快照0条”；接入后无工具一条、一次工具调用三条快照，
+  版本链正确。重复同一观察不增加对象，错误Run读取拒绝；损坏对象哈希拒绝。
+  模拟对象校验失败时，工作流失败、无最终答案、只发生一次模型调用，SQL没有成功快照登记。
+- 回归：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_execution_checkpoint.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_task_input_coverage.py --tb=short`，
+  66通过（27.82秒）。之后收紧快照工具版本为实际可用版本，检查点单文件3项再通过。
+  修改范围Ruff及git diff --check通过。
+- 未执行真实模型/本地MySQL-MinIO快照写入、并发竞争或跨进程恢复验收；下一步应先验证真实对象和固定历史集合查询。
+  本次没有新增Provider调用、没有前端修改或部署，Python/Shell与跨进程续跑继续暂缓。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。

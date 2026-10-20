@@ -40,9 +40,9 @@ class ToolLoopState:
 
 async def run_file_tool_loop(
     service, workflow, node, options, *, state=None, present_result=None, before_model_call=None,
-    tool_service=None,
+    tool_service=None, checkpoint=None,
 ):
-    """Reuse dialogue and reject repeats, allowing progress queries after new file evidence."""
+    """Continue tools and optionally checkpoint actual model/tool returns without resuming them."""
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -85,6 +85,8 @@ async def run_file_tool_loop(
             tool_definitions=definitions,
             tool_versions=offered_versions,
         )
+        if checkpoint is not None:
+            await checkpoint("model_response", response.id, records, offered_versions)
         if not response.tool_calls:
             return ToolLoopResult(response, history, records)
         if response.finish_reason not in {"tool_calls", "stop"}:
@@ -137,6 +139,11 @@ async def run_file_tool_loop(
                 )
             records.append(record)
             state.loaded_versions = dict(tools.loaded_versions)
+            if checkpoint is not None:
+                await checkpoint("tool_result", response.id, records, {
+                    definition.name: tools.loaded_versions[definition.name]
+                    for definition in tools.definitions()
+                })
             await service.workflow_state.record_tool_progress(workflow, node)
             if not progress.observe(call.name, call.arguments, record.output_json):
                 raise InvalidRequestError("Agent file tools repeated evidence without progress")

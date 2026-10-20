@@ -42,6 +42,9 @@ from nexuspilot_api.features.agent_runtime.services.general_review_service impor
 from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestrator import (
     ModelOnlyWorkflowOrchestrator,
 )
+from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint import (
+    save_task_execution_checkpoint,
+)
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
 from nexuspilot_api.models import (
     LlmAgentWorkflowExecution,
@@ -355,7 +358,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Compose task tools; only the main role may delegate to explicitly configured roles."""
+        """Compose scoped tools and checkpoint returns; only the main role delegates."""
         delegated_roles = sorted({"planner", "researcher"} & payload.role_bindings.keys())
         can_delegate = task.assigned_role == "controller" and bool(delegated_roles)
 
@@ -363,6 +366,14 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             """Keep child execution within the parent's current deadline and fixed policy."""
             return await execute_general_delegation(
                 self, workflow, node, payload, task, state, arguments,
+            )
+
+        async def checkpoint(phase, attempt_id, records, versions):
+            """Record this task's real returns without copying model-private state."""
+            await save_task_execution_checkpoint(
+                self.db_session, self.storage, run_id=workflow.run_id, task_id=task.task_id,
+                attempt_id=attempt_id, phase=phase, tool_records=records,
+                loaded_versions=versions,
             )
 
         loop = await run_file_tool_loop(
@@ -397,6 +408,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             state=state,
             present_result=self._present_result,
             before_model_call=self._validate_source_history,
+            checkpoint=checkpoint,
             tool_service=GeneralAgentToolService(
                 self.db_session, self.storage, task_id=task.task_id,
                 sources=self.sources, allowed_task_ids=self.general_task_ids,
