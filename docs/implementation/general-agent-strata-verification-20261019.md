@@ -350,6 +350,24 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   `npx tsx --test tests/agent-workflow-view.test.ts tests/agent-workflow.test.ts tests/claim-evidence.test.ts tests/workflow-recovery.test.ts`
   34项通过。没有修改样式、布局或前端文案。
 
+### 委派原文的实际输入记录（2026-10-20）
+
+- 新增独立 `delegated_source_manifest.v1`，在供应商请求前、历史裁剪后与 effective_messages
+  一起保存至原有 MinIO 请求对象。记录消息位置、供应商工具调用ID、Handoff/子任务/Agent Run、
+  原始文件调用ID、快照、块编号及文本和块哈希；不复制原文到MySQL，不变更表或原有两种清单格式。
+- 只统计 delegate_task 的成功原生 Tool 结果中 original_sources，模型候选和用户粘贴JSON不计入。
+  不完整/失败/块引用不一致的历史结果保留 unknown 状态，不伪造零读取或有效来源；重复消息按出现次数记录。
+  这些记录只证明准备发送的内容，不证明供应商接收或模型理解，权限仍由现有工具和来源校验负责。
+- 先添加用例，旧代码因缺少新函数无法收集测试；实现后清单单元用例13项通过。
+  三种审核策略的委派集成测试读取实际保存的请求对象，与测试Provider收到的完整消息逐项比较，
+  确认父请求中已记录子任务原文、真实Handoff ID，且未修改正常调用数。
+- 回归命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_model_input_manifest.py apps/api/tests/test_general_delegation.py apps/api/tests/test_general_agent.py apps/api/tests/test_response_file_tools.py apps/api/tests/test_tool_context.py --tb=short`。
+  72通过（12.55秒）；修改范围Ruff通过。
+- 只读上一轮Strata Run `fcd6742d-346d-47fe-987f-4734645bc4e2` 的真实MinIO请求，
+  两个主Agent请求各重建出28块委派原文，其他4个请求为0。所有6个旧请求如实标为
+  historical_manifest_absent，没有改写旧对象，也没有重复调用模型。
+  新版本随真实请求保存该清单尚未验证；本项未重启服务、未改前端、未部署。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。

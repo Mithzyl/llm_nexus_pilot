@@ -272,8 +272,10 @@ class FileDelegatingProvider(GeneralProvider):
 @pytest.mark.parametrize(
     "policy,reviews", [("never", 0), ("always", 1), ("on_verification_failure", 0)]
 )
-async def test_delegated_originals_reach_parent_review_and_source_query(client, policy, reviews):
-    """Keep actual child provenance available through Handoff, final candidate and source reads."""
+async def test_delegated_originals_reach_parent_review_and_source_query(
+    client, test_database_session_factory, policy, reviews,
+):
+    """Persist child provenance and the exact originals actually sent to the parent model."""
     _, _, file, turn = await prepare_conversation_file(client)
     provider = FileDelegatingProvider(file["file_id"])
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
@@ -295,6 +297,32 @@ async def test_delegated_originals_reach_parent_review_and_source_query(client, 
     )
     assert source.status_code == 200, source.text
     assert "UNIQUE_FILE_TEXT_2718" in source.text
+    from nexuspilot_api.models import LlmModelAttempt
+    from nexuspilot_api.services.model_input_manifest import build_delegated_source_manifest
+
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        attempts = list(await db.scalars(select(LlmModelAttempt).where(
+            LlmModelAttempt.run_id == turn["run"]["run_id"],
+        )))
+        requests = [json.loads(storage.objects[a.raw_request_uri][0]) for a in attempts]
+    delegated_inputs = [raw for raw in requests
+                        if raw["delegated_source_manifest"]["delegations"]]
+    assert len(delegated_inputs) == 1
+    raw = delegated_inputs[0]
+    parent_request = next(request for request in provider.requests if any(
+        message.tool_name == "delegate_task" for message in request.messages
+    ))
+    assert raw["effective_messages"] == [
+        message.model_dump(mode="json") for message in parent_request.messages
+    ]
+    assert raw["delegated_source_manifest"] == build_delegated_source_manifest(
+        parent_request.messages,
+    )
+    entry = raw["delegated_source_manifest"]["delegations"][0]
+    assert entry["handoff_id"] in result["final_output"]["source_handoff_ids"]
+    assert entry["sources"][0]["file_id"] == file["file_id"]
+    assert len(entry["sources"][0]["included_block_ids"]) == 1
 
 
 @pytest.mark.parametrize(

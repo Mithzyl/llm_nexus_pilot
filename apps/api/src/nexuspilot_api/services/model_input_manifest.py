@@ -80,9 +80,21 @@ def build_runtime_source_manifest(
                and message.content == source_input.serialized_input]
     if not indices:
         raise ValueError("Server runtime input differs from effective model messages")
+    return {
+        "schema_version": "runtime_source_manifest.v1",
+        "message_index": indices[-1],
+        "input_sha256": hashlib.sha256(source_input.serialized_input.encode()).hexdigest(),
+        "source_paths": [list(path) for path in source_input.source_paths],
+        "sources": _source_bundle_records(source_input.values, source_input.source_paths),
+        "model_understanding_verified": False,
+    }
+
+
+def _source_bundle_records(values: dict, paths: tuple[tuple[str, ...], ...]) -> list[dict]:
+    """Hash exact originals at trusted paths; reject mismatched reference/block membership."""
     sources = []
-    for path in source_input.source_paths:
-        value = source_input.values
+    for path in paths:
+        value = values
         for field in path:
             if not isinstance(value, dict) or field not in value:
                 raise ValueError("Expected runtime source path is missing")
@@ -106,13 +118,53 @@ def build_runtime_source_manifest(
                     "block_sha256": _json_hash(block),
                 } for block in blocks],
             })
+    return sources
+
+
+def build_delegated_source_manifest(messages: list[Message]) -> dict:
+    """Audit actual delegated Tool originals, not child claims or arbitrary user JSON.
+
+    Run this after history projection. Every occurrence is retained; duplicated
+    blocks are not unique read coverage. Identity and permissions are enforced by
+    the tool runtime, not this audit. Malformed historical results remain unknown.
+    This additive manifest leaves existing native-file and runtime manifests intact.
+    """
+    records = []
+    for index, message in enumerate(messages):
+        if message.role is not MessageRole.TOOL or message.tool_name != "delegate_task":
+            continue
+        entry = {
+            "message_index": index,
+            "provider_tool_call_id": message.tool_call_id,
+            "content_sha256": hashlib.sha256(message.content.encode()).hexdigest(),
+            "body_status": "unrecognized",
+            "sources": [],
+        }
+        records.append(entry)
+        try:
+            envelope = json.loads(message.content)
+            if not isinstance(envelope, dict):
+                continue
+            if envelope.get("status") != "completed":
+                entry["body_status"] = "not_completed"
+                continue
+            result = envelope["result"]
+            identities = {name: result[name] for name in (
+                "handoff_id", "task_id", "agent_run_id",
+            )}
+            if not all(isinstance(value, str) and value for value in identities.values()):
+                continue
+            sources = _source_bundle_records(envelope, (("result", "original_sources"),))
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+        entry.update(identities)
+        entry["sources"] = sources
+        entry["body_status"] = "included" if sources else "empty"
     return {
-        "schema_version": "runtime_source_manifest.v1",
-        "message_index": indices[-1],
-        "input_sha256": hashlib.sha256(source_input.serialized_input.encode()).hexdigest(),
-        "source_paths": [list(path) for path in source_input.source_paths],
-        "sources": sources,
+        "schema_version": "delegated_source_manifest.v1",
+        "scope": "native_delegation_tool_originals",
         "model_understanding_verified": False,
+        "delegations": records,
     }
 
 

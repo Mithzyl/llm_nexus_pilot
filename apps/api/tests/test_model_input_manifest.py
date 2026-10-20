@@ -8,6 +8,7 @@ from nexuspilot_models.contracts import Message, MessageRole, ModelRequest, Prov
 
 from nexuspilot_api.services.model_input_manifest import (
     RuntimeSourceInput,
+    build_delegated_source_manifest,
     build_effective_request_audit,
     build_runtime_source_manifest,
     build_tool_input_manifest,
@@ -104,6 +105,63 @@ def runtime_sources():
                       "parser_version": "p", "tool_call_id": "read", "block_ids": ["p1"]},
         "blocks": [{"block_id": "p1", "text": "Actual original"}],
     }}}
+
+
+def delegated_message(**updates):
+    """Create a server delegation result with originals separate from candidate prose."""
+    result = {"handoff_id": "handoff", "task_id": "child", "agent_run_id": "agent",
+              "candidate": {"text": "Model prose is not original evidence"},
+              **runtime_sources(), **updates}
+    return Message(role=MessageRole.TOOL, tool_name="delegate_task", tool_call_id="delegate",
+                   content=json.dumps({"status": "completed", "result": result}))
+
+
+def test_delegated_manifest_counts_only_exact_originals_from_native_results():
+    """Keep delegated originals distinct from native reads, runtime input and model prose."""
+    message = delegated_message()
+    manifest = build_delegated_source_manifest([
+        message.model_copy(update={"role": MessageRole.USER}), message, message,
+    ])
+    assert manifest["schema_version"] == "delegated_source_manifest.v1"
+    assert manifest["model_understanding_verified"] is False
+    assert len(manifest["delegations"]) == 2
+    first, second = manifest["delegations"]
+    assert (first["message_index"], second["message_index"]) == (1, 2)
+    assert first["handoff_id"] == "handoff"
+    assert first["provider_tool_call_id"] == "delegate"
+    assert first["body_status"] == "included"
+    assert first["sources"][0]["input_path"] == ["result", "original_sources", "S1"]
+    assert first["sources"][0]["tool_call_id"] == "read"
+    assert first["sources"][0]["included_block_ids"] == ["p1"]
+    assert first["sources"][0]["blocks"][0]["text_sha256"] == (
+        hashlib.sha256(b"Actual original").hexdigest()
+    )
+    assert "Actual original" not in json.dumps(manifest)
+    assert "Model prose" not in json.dumps(manifest)
+    assert build_tool_input_manifest([message])["file_inputs"] == []
+
+
+@pytest.mark.parametrize("body", ["not json", "[]", '{"status":"failed"}',
+                                   '{"status":"completed","result":{}}'])
+def test_delegated_manifest_does_not_invent_coverage_for_invalid_results(body):
+    """Malformed and failed historical envelopes do not claim included originals."""
+    manifest = build_delegated_source_manifest([
+        delegated_message().model_copy(update={"content": body}),
+    ])
+    entry = manifest["delegations"][0]
+    assert entry["body_status"] in {"unrecognized", "not_completed"}
+    assert entry["sources"] == []
+
+
+def test_delegated_manifest_rejects_mismatched_blocks_and_retains_empty_state():
+    """A reference alone or mismatched snapshot block cannot count as transmitted text."""
+    empty = build_delegated_source_manifest([delegated_message(original_sources={})])
+    assert empty["delegations"][0]["body_status"] == "empty"
+    values = runtime_sources()["original_sources"]
+    values["S1"]["reference"]["block_ids"] = ["missing"]
+    broken = build_delegated_source_manifest([delegated_message(original_sources=values)])
+    assert broken["delegations"][0]["body_status"] == "unrecognized"
+    assert broken["delegations"][0]["sources"] == []
 
 
 def test_runtime_source_manifest_requires_explicit_server_input_and_exact_message_match():

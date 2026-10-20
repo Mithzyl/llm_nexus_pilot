@@ -32,7 +32,8 @@ from nexuspilot_api.infrastructure.database import database_session_factory, eng
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import LlmModelAttempt
 from nexuspilot_api.services.model_input_manifest import (
-    RuntimeSourceInput, build_runtime_source_manifest, build_tool_input_manifest,
+    RuntimeSourceInput, build_delegated_source_manifest,
+    build_runtime_source_manifest, build_tool_input_manifest,
 )
 
 QUESTION = (
@@ -92,7 +93,7 @@ async def storage_evidence(run_id):
 async def model_input_evidence(run_id):
     """Read only local SQL/MinIO requests; distinguish old absent manifests from mismatches.
 
-    Count native tools and explicit runtime source bundles separately, never
+    Count native tools, delegated originals and runtime source bundles separately, never
     comprehension. Never write reconstructed manifests into old objects.
     """
     settings = get_settings()
@@ -138,6 +139,17 @@ async def model_input_evidence(run_id):
             )
             entry["omitted_file_results"] = sum(
                 item["body_status"] == "omitted" for item in manifest["file_inputs"]
+            )
+            delegated = build_delegated_source_manifest(messages)
+            saved_delegated = request_data.get("delegated_source_manifest")
+            entry["delegated_sources_status"] = (
+                "historical_manifest_absent" if saved_delegated is None
+                else "verified" if saved_delegated == delegated else "mismatch"
+            )
+            # Reconstruction is useful for old inputs, but is not a saved-at-dispatch audit.
+            entry["reconstructed_delegated_block_occurrences"] = sum(
+                len(source["included_block_ids"])
+                for item in delegated["delegations"] for source in item["sources"]
             )
             runtime = request_data.get("runtime_source_manifest")
             entry["runtime_sources_status"] = "not_recorded"

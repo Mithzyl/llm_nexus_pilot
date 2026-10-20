@@ -57,6 +57,7 @@ from nexuspilot_api.services.context_builder_service import build_runtime_contex
 from nexuspilot_api.services.lookups import require_run, require_task
 from nexuspilot_api.services.model_input_manifest import (
     RuntimeSourceInput,
+    build_delegated_source_manifest,
     build_effective_request_audit,
     build_runtime_source_manifest,
     build_tool_input_manifest,
@@ -531,7 +532,7 @@ class ModelInvocationService:
         request_type: str | None = None,
         runtime_source_input: RuntimeSourceInput | None = None,
     ) -> LlmModelAttempt:
-        """Save projected messages, public options and file-input hashes before dispatch.
+        """Save projected messages, options and native/delegated source hashes before dispatch.
 
         Bodies and the input manifest stay in object storage; SQL retains the URI.
         Private continuation is omitted. This record proves prepared input, not
@@ -608,6 +609,9 @@ class ModelInvocationService:
                 message.model_dump(mode="json") for message in request.messages
             ]
             raw_request["tool_input_manifest"] = build_tool_input_manifest(request.messages)
+            raw_request["delegated_source_manifest"] = build_delegated_source_manifest(
+                request.messages,
+            )
             raw_request["effective_request"] = build_effective_request_audit(
                 request, continuation_parent_attempt_id=payload.continuation_from_attempt_id,
             )
