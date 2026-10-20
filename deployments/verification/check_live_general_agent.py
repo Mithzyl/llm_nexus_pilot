@@ -259,7 +259,7 @@ async def execution_checkpoint_evidence(run_id):
 
 
 async def candidate_input_snapshot_evidence(run_id):
-    """Verify frozen candidate requests against real MySQL/MinIO records without exposing bodies."""
+    """Verify frozen requests and report their saved observation time, never a new read time."""
     storage = ObjectStorage()
     records = []
     async with database_session_factory() as db:
@@ -297,6 +297,7 @@ async def candidate_input_snapshot_evidence(run_id):
                 "task_id": manifest["task_id"],
                 "candidate_node_id": manifest["candidate_node_id"],
                 "role": manifest["role"],
+                "request_list_observed_at": manifest.get("request_list_observed_at"),
                 "snapshot_verified": True,
                 "attempts": attempts,
             })

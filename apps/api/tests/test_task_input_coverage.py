@@ -328,7 +328,7 @@ async def test_captured_request_pages_do_not_change_when_more_attempts_arrive(
 async def test_live_snapshot_report_detects_changed_request_bytes(
     client, captured_inputs, test_database_session_factory, monkeypatch,
 ):
-    """The real-verification report checks request bytes, not merely stored snapshot metadata."""
+    """Report the saved observation time and verify request bytes, not only snapshot metadata."""
     from pathlib import Path
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]
@@ -341,6 +341,7 @@ async def test_live_snapshot_report_detects_changed_request_bytes(
     monkeypatch.setattr(verification, "ObjectStorage", lambda: storage)
     records = await verification.candidate_input_snapshot_evidence(run_id)
     assert len(records) == 1 and records[0]["snapshot_id"] == ref["snapshot_id"]
+    assert datetime.fromisoformat(records[0]["request_list_observed_at"]).utcoffset() is not None
     assert len(records[0]["attempts"]) == 2
     assert all(a["scope_matches"] and a["request_hash_matches"] for a in records[0]["attempts"])
     async with test_database_session_factory() as db:
