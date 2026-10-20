@@ -83,8 +83,10 @@ class SubmittingReviewer(GeneralProvider):
     False, "unknown_unit", "unknown_source", "duplicate", "missing",
     "wrong_verdict", "foreign_scope",
 ])
-async def test_native_review_stops_after_persisted_submission_or_repairs_once(client, invalid):
-    """Valid native output ends immediately; a wrong unit uses existing finite repair accounting."""
+async def test_native_review_stops_after_persisted_submission_or_repairs_once(
+    client, invalid, test_database_session_factory, monkeypatch,
+):
+    """Verify immediate submission, finite repair, replay and object-backed tool bodies."""
     provider = SubmittingReviewer(invalid)
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
     run = await create_test_run(client)
@@ -106,6 +108,32 @@ async def test_native_review_stops_after_persisted_submission_or_repairs_once(cl
     )).json()
     assert replay["final_output"] == result["final_output"]
     assert len(provider.requests) == count
+    from pathlib import Path
+
+    from nexuspilot_api.infrastructure.object_storage import get_object_storage
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[3]
+                                   / "deployments" / "verification"))
+    import check_live_general_agent as verification
+
+    monkeypatch.setattr(verification, "database_session_factory", test_database_session_factory)
+    monkeypatch.setattr(verification, "ObjectStorage", app.dependency_overrides[get_object_storage])
+    evidence = await verification.storage_evidence(run["run_id"])
+    saved = [item for item in evidence if item["table"] == "llm_tool_calls"]
+    assert len(saved) == 1
+    assert saved[0]["sql_body_empty"] and saved[0]["sql_input_empty"]
+    assert saved[0]["object_present"] and saved[0]["hash_verified"]
+    if not invalid:
+        from nexuspilot_api.models import LlmModelToolCall
+
+        storage = app.dependency_overrides[get_object_storage]()
+        async with test_database_session_factory() as db:
+            record = await db.get(LlmModelToolCall, saved[0]["id"])
+            uri = record.body_ref_json["uri"]
+        body, mime = storage.objects[uri]
+        storage.objects[uri] = (body + b"\n", mime)
+        changed = await verification.storage_evidence(run["run_id"])
+        assert not next(item for item in changed if item["id"] == saved[0]["id"])["hash_verified"]
 
 
 async def test_mixed_submission_executes_no_tools(client):

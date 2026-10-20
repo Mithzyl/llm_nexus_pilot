@@ -100,7 +100,7 @@ async def stream_progress_evidence(run_id):
 
 
 async def storage_evidence(run_id):
-    """Verify message, node and Handoff objects without printing source bodies."""
+    """Verify message, node, Handoff and tool bodies are object-backed, without printing them."""
     storage = ObjectStorage()
     records = []
     async with database_session_factory() as db:
@@ -108,11 +108,19 @@ async def storage_evidence(run_id):
             ("llm_messages", "message_id", "content_text"),
             ("llm_agent_workflow_node_executions", "node_execution_id", "output_json"),
             ("llm_agent_handoffs", "agent_handoff_id", "handoff_json"),
+            ("llm_tool_calls", "tool_call_id", "output_json"),
         ]:
+            is_tool = table == "llm_tool_calls"
+            predicate = (
+                "attempt_id IN (SELECT attempt_id FROM llm_attempts WHERE run_id=:run)"
+                if is_tool else "run_id=:run"
+            )
+            extra_columns = ", input_json AS input_body" if is_tool else ""
             rows = (
                 await db.execute(
                     text(
-                        f"SELECT {key} AS id, {body} AS body, body_ref_json FROM {table} WHERE run_id=:run"
+                        f"SELECT {key} AS id, {body} AS body, body_ref_json{extra_columns} "
+                        f"FROM {table} WHERE {predicate}"
                     ),
                     {"run": run_id},
                 )
@@ -126,6 +134,8 @@ async def storage_evidence(run_id):
                         "table": table,
                         "id": row["id"],
                         "sql_body_empty": row["body"] in (None, "", "null", "{}"),
+                        **({"sql_input_empty": row["input_body"] in (None, "", "null", "{}")}
+                           if is_tool else {}),
                         "object_present": bool(ref),
                         "hash_verified": await storage.verify_object(
                             ref["uri"], ref["sha256"]

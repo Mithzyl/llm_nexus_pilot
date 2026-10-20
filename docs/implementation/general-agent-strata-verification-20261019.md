@@ -660,7 +660,7 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 原生审核提交首批实现（2026-10-20）
 
-状态：代码与离线回归已完成，Strata真实验证未执行；本地API仍运行前一提交。
+状态：代码与离线回归已完成；随后加载 `c53001e` 做了下节真实验证，审核请求流读取失败，原生提交与最终交付尚未验收。
 
 - 新增 `submit_review` 1.0.0，仅General Agent当前Reviewer批次提供；主Agent、planner和快速回复
   没有该能力。单元ID枚举/决定数量/来源编号由当前服务端数据约束，模型不能提供Task、Run或候选ID。
@@ -687,10 +687,47 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
   `PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_review_submission.py apps/api/tests/test_task_input_coverage.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_task_execution_checkpoint.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_general_candidate.py apps/api/tests/test_general_review.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_task_read_coverage.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_output_repair.py --tb=short`
   ——最终239项通过（59.65秒）。Ruff及diff检查通过。
 
-本轮使用SQLite、内存对象存储和脚本化Provider，未产生Strata或DeepSeek调用。
+上述离线测试使用SQLite、内存对象存储和脚本化Provider，未产生Strata或DeepSeek调用。
 下一步加载已提交代码再验证Strata是否实际使用原生提交、字段修正/内容返工、最终答案及刷新恢复；
 不提前声称格式成本下降，也不将观察时点的语义误判视为已经解决。原始结束信号、受控草稿续接、
 完整后端与真实隔离/恢复验收仍按既有未完成列表推进。
+
+## 原生审核提交的首次 Strata 联调（2026-10-20）
+
+- 本地 API 加载 `c53001e`，使用 Strata、MySQL 和 MinIO；相同附件 FULLTEXT03.pdf、
+  planner 委派和输入查询要求，策略为 `on_verification_failure`。没有调用 DeepSeek、
+  修改前端、推送或部署。Run `bba51c8c-e572-491c-90c1-e08f231c1b4d`，
+  Workflow `debb72b8-15ac-4824-9f79-51dfff6003c4`，
+  Session `1ca49197-495e-4db1-9679-91675146ba47`。
+  报告 `/tmp/general-agent-native-review-strata-20261020.json`；终态后只读 `--observe`
+  增补工具存储检查，没有重新提交请求。
+- **最终交付失败，原生提交未验收**：436.771 秒后为 `outcome_unknown`，
+  9 次模型请求中 8 次完成，末次审核请求因 `network_error` 失败，
+  文案 `Model provider stream read failed.`。该请求耗时 184.566 秒，
+  不是本次任务 600 秒期限到达，也没有进入字段修正；业务轮次 1、内容修正 0、格式修正 0。
+- 已知输入 86,606、输出 13,846，合计 100,452 Token；缓存输入 50,132。
+  最后一次输入/输出/缓存未知，9 次独立推理用量均未知，不能把汇总中的已知推理值 0 当作实际零用量；
+  实际费用未知。不能据此宣称原生提交降低了审核成本。
+- 末次 Attempt `4e808a19-14d1-42d8-8dfb-1e257b70b552` 的私有中断对象记录
+  11,472 个事件、42,217 个推理字符（只计数）、正文 0 字符、工具片段 0、用量为空、
+  `response_complete=false`。没有可续接的正文或有效审核决定，也没有执行 `submit_review`。
+  现有保存信息不足以确定是供应商、代理还是网络哪一层断开；不得断言模型生成了错误 JSON。
+- 已完成附件两次按需读取（offset 0/10，limit 10/20，共30个块），保留文件版本、
+  页/块引用、1542个总块及未提取页限制；planner保存笔记并提交Handoff，
+  主Agent查询实际输入并生成候选。没有把整份PDF自动加入提示词。
+- 存储验证新增 `llm_tool_calls` 输入/输出检查：13条消息、节点、Handoff和工具记录
+  SQL正文为空，MinIO对象存在且内容哈希通过；其中8条工具记录SQL输入也为空。
+  32个执行观察对象和9份实际输入记录随报告保存。这些检查不代替跨用户隔离验收。
+- Playwright运行中刷新后仍跟踪同一工作流，终态自动显示失败，刷新恢复相同结果；
+  输入框填写未发送草稿后发送按钮可用，随后清空草稿，没有新模型调用。
+  证据 `output/playwright/general-agent-native-review-{running,refreshed,terminal,restored,input-ready}.yml`。
+- 验证脚本回归先确认旧报告没有工具记录而失败（预期1条、实际0条），再加入工具检查；
+  另验证内存对象内容被修改时哈希检查失败。命令
+  `PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_review_submission.py -k native_review_stops --tb=short`
+  得到7项通过、14项未选择（2.34秒）；修改文件Ruff与`git diff --check`通过。
+
+下一步继续检查流结束信号和失败诊断的记录、受控草稿续接，并完成真实原生审核、内容修正后的交付。
+本次不因为没有最终答案而缩小整体验收范围，也不在未知原因下自动重放相同付费请求。
 
 ## 尚未验收的完整目标
 
