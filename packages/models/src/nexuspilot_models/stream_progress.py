@@ -5,6 +5,7 @@ Callers may persist it privately on interruption; it must never execute tools.
 """
 
 import hashlib
+import copy
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -31,11 +32,15 @@ class ModelStreamProgress:
         self.reasoning_characters = 0
         self.event_count = 0
         self.started = time.perf_counter()
+        self.claimed = False
+        self.completed = False
 
     def record(self, event: StreamEvent) -> None:
         """Observe normalized events; tool fragments remain unvalidated and non-executable."""
         self.event_count += 1
         data = event.data
+        if event.type == StreamEventType.COMPLETED:
+            self.completed = True
         changed = False
         now = datetime.now(UTC).isoformat()
         if event.type == StreamEventType.TEXT_DELTA:
@@ -85,7 +90,7 @@ class ModelStreamProgress:
             "text": text,
             "text_characters": len(text),
             "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-            "tool_fragments": list(self.tool_fragments.values()),
+            "tool_fragments": copy.deepcopy(list(self.tool_fragments.values())),
             "usage": dict(self.usage),
             "first_output_at": self.first_output_at,
             "first_text_at": self.first_text_at,

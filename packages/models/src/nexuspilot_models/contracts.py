@@ -362,6 +362,8 @@ class ModelRequest(ContractModel):
 
     # Internal workflow policy, never accepted as an HTTP or provider payload field.
     _defer_structured_validation: bool = PrivateAttr(default=False)
+    # Internal per-call observer; excluded from request JSON and provider payloads.
+    _stream_progress_capture: Any = PrivateAttr(default=None)
 
     provider: ProviderName
     model: str = Field(min_length=1, max_length=256)

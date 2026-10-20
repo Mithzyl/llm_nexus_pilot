@@ -29,6 +29,13 @@ def preserve_stream_usage(stream):
         """Copy known nonnegative counters; repeated snapshots replace, never add."""
         usage = {}
         progress = ModelStreamProgress()
+        request = next((arg for arg in args if isinstance(arg, ModelRequest)), kwargs.get("request"))
+        capture = getattr(request, "_stream_progress_capture", None)
+        if isinstance(capture, ModelStreamProgress) and not capture.claimed:
+            # Only one wrapper owns a capture when the API and adapter both wrap
+            # the same iterator; otherwise every delta would be counted twice.
+            capture.claimed = True
+            progress = capture
         started = time.perf_counter()
         fields = {
             "input_tokens",

@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from anyio import CancelScope
 from fastapi import HTTPException, status
 from nexuspilot_models.contracts import (
     Message,
@@ -71,6 +73,7 @@ from nexuspilot_api.services.model_reasoning_service import (
     project_reasoning_stream_event,
     record_model_response_event,
 )
+from nexuspilot_api.services.model_stream_progress_store import persist_stream_progress
 from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
 from nexuspilot_api.services.run_cancellation_watch import watch_run_cancellation
 from nexuspilot_api.services.tool_context import (
@@ -78,6 +81,8 @@ from nexuspilot_api.services.tool_context import (
     estimate_text_tokens,
     project_tool_history,
 )
+
+STREAM_PROGRESS_INTERVAL_SECONDS = 2.0
 
 
 def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
@@ -200,6 +205,10 @@ class ModelInvocationService:
             provider_dispatch_may_have_started = True
             async with watch_run_cancellation(self.db_session, payload.run_id), asyncio.timeout(
                 payload.timeout_seconds
+            ), persist_stream_progress(
+                self.db_session, self.storage, request,
+                attempt_id=model_attempt.attempt_id,
+                interval_seconds=STREAM_PROGRESS_INTERVAL_SECONDS,
             ):
                 response = await provider.generate(request)
             response = self._apply_price(response, request.provider, request.model)
@@ -226,12 +235,15 @@ class ModelInvocationService:
             await self._fail_model_attempt(model_attempt, error)
             raise error from exc
         except asyncio.CancelledError as exc:
-            if provider_dispatch_may_have_started:
-                await self._mark_model_attempt_outcome_unknown(
-                    model_attempt, progress=interrupted_stream_progress(exc),
-                )
-            else:
-                await self._cancel_model_attempt(model_attempt)
+            # ASGI streaming uses level-triggered cancellation: shield only the
+            # terminal persistence, never provider execution or new tool work.
+            with CancelScope(shield=True):
+                if provider_dispatch_may_have_started:
+                    await self._mark_model_attempt_outcome_unknown(
+                        model_attempt, progress=interrupted_stream_progress(exc),
+                    )
+                else:
+                    await self._cancel_model_attempt(model_attempt)
             raise
         except ModelProviderError as error:
             await self._fail_model_attempt(model_attempt, error)
@@ -333,6 +345,7 @@ class ModelInvocationService:
                 request,
                 timeout_seconds=payload.timeout_seconds,
                 run_id=payload.run_id,
+                attempt_id=model_attempt.attempt_id,
             ):
                 event = self._scope_reasoning_event(event, model_attempt.attempt_id)
                 if event.type in {
@@ -416,12 +429,13 @@ class ModelInvocationService:
                     )
                 yield public_event
         except asyncio.CancelledError as exc:
-            if provider_dispatch_may_have_started:
-                await self._mark_model_attempt_outcome_unknown(
-                    model_attempt, progress=interrupted_stream_progress(exc),
-                )
-            else:
-                await self._cancel_model_attempt(model_attempt)
+            with CancelScope(shield=True):
+                if provider_dispatch_may_have_started:
+                    await self._mark_model_attempt_outcome_unknown(
+                        model_attempt, progress=interrupted_stream_progress(exc),
+                    )
+                else:
+                    await self._cancel_model_attempt(model_attempt)
             raise
         except ModelProviderError as error:
             model_attempt_id = model_attempt.attempt_id
@@ -511,13 +525,21 @@ class ModelInvocationService:
         *,
         timeout_seconds: float | None,
         run_id: str,
+        attempt_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Apply an optional deadline and observe explicit cancellation during idle streams."""
+        """Apply deadlines/cancellation and save actual adapter progress during idle streams."""
 
         try:
+            progress_context = (
+                persist_stream_progress(
+                    self.db_session, self.storage, request, attempt_id=attempt_id,
+                    interval_seconds=STREAM_PROGRESS_INTERVAL_SECONDS,
+                )
+                if attempt_id else nullcontext()
+            )
             async with watch_run_cancellation(self.db_session, run_id), asyncio.timeout(
                 timeout_seconds
-            ):
+            ), progress_context:
                 async for event in provider.stream(request):
                     yield event
         except TimeoutError as exc:

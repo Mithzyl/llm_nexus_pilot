@@ -56,6 +56,43 @@ def checkpoint(path, report):
     temporary.replace(path)
 
 
+async def stream_progress_evidence(run_id):
+    """Read private progress objects but report only lengths, hashes and timing, never drafts."""
+    storage = ObjectStorage()
+    async with database_session_factory() as db:
+        rows = (await db.execute(select(
+            LlmModelAttempt.attempt_id, LlmModelAttempt.status, LlmModelAttempt.raw_response_uri,
+        ).where(LlmModelAttempt.run_id == run_id))).all()
+    records = {}
+    for attempt_id, status, uri in rows:
+        if not uri or not uri.endswith((
+            "/stream-progress.json", "/interrupted-response.json", "/raw-error.json",
+        )):
+            continue
+        content = await storage.open_object(uri)
+        body = json.loads(await asyncio.to_thread(b"".join, content.chunks))
+        progress = body.get("stream_progress")
+        if not isinstance(progress, dict):
+            continue
+        text_body = progress["text"]
+        records[attempt_id] = {
+            "attempt_status_when_read": status.value,
+            "record_kind": body["record_kind"],
+            "text_characters": len(text_body),
+            "text_sha256": hashlib.sha256(text_body.encode()).hexdigest(),
+            "text_hash_matches": (
+                hashlib.sha256(text_body.encode()).hexdigest() == progress["text_sha256"]
+            ),
+            "tool_fragment_count": len(progress["tool_fragments"]),
+            "event_count": progress["event_count"],
+            "first_output_at": progress["first_output_at"],
+            "last_output_at": progress["last_output_at"],
+            "usage": progress["usage"],
+            "response_complete": progress["response_complete"],
+        }
+    return records
+
+
 async def storage_evidence(run_id):
     """Verify actual SQL body references and MinIO hashes without printing source bodies."""
     storage = ObjectStorage()
@@ -327,6 +364,9 @@ async def observe(client, args, report):
             summary["current_stage"],
         )
         report.update(status=summary["status"], summary=summary)
+        report.setdefault("stream_progress_observations", {}).update(
+            await stream_progress_evidence(report["run_id"])
+        )
         checkpoint(args.report, report)
         if progress != last_progress:
             print(
