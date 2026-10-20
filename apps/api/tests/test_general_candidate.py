@@ -10,6 +10,27 @@ from nexuspilot_api.features.agent_runtime.services.general_candidate_service im
 )
 
 
+def test_general_saved_answer_does_not_relax_legacy_model_or_public_message_input():
+    """Only backend-generated Assistant prose bypasses the legacy 16k input field cap."""
+    from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+        FinalSynthesisModelOutput,
+        FinalSynthesisOutput,
+    )
+    from nexuspilot_api.schemas.sessions import GeneratedAssistantMessageCreate, MessageCreate
+
+    body = "文" * 40000
+    with pytest.raises(ValidationError):
+        FinalSynthesisModelOutput(final_text=body)
+    with pytest.raises(ValidationError):
+        MessageCreate(role="assistant", content_text=body)
+    with pytest.raises(ValidationError):
+        GeneratedAssistantMessageCreate(role="user", content_text=body)
+    assert GeneratedAssistantMessageCreate(content_text=body).content_text == body
+    result = FinalSynthesisOutput(final_text=body, source_agent_run_ids=[],
+        source_handoff_ids=[], source_artifact_ids=[], source_evaluation_ids=[])
+    assert result.final_text == body
+
+
 def test_units_keep_exact_unicode_positions_and_do_not_parse_code_as_citations():
     """Keep prose/list/code units at original offsets; code examples do not issue references."""
     text = (

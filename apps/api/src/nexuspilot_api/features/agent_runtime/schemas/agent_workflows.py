@@ -527,8 +527,13 @@ class FinalSynthesisModelOutput(StrictContract):
 
 
 class FinalSynthesisOutput(FinalSynthesisModelOutput):
-    """Return final evidence references and an optional persisted Assistant Message."""
+    """Read backend-assembled answers; legacy model generation keeps its separate text cap.
 
+    General prose is bounded by the workflow's serialized object envelope, not
+    the legacy Controller JSON field limit. Existing saved results remain readable.
+    """
+
+    final_text: str = Field(min_length=1)
     source_agent_run_ids: list[str]
     source_handoff_ids: list[str]
     source_artifact_ids: list[str]

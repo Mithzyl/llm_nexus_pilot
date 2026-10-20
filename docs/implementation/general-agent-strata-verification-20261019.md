@@ -368,6 +368,21 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   historical_manifest_absent，没有改写旧对象，也没有重复调用模型。
   新版本随真实请求保存该清单尚未验证；本项未重启服务、未改前端、未部署。
 
+### 通用 Agent 长答案保存（2026-10-20）
+
+- 新增40,000字符中文候选用例，旧实现失败为 agent_workflow_internal_error。
+  核对发现通用循环复用了 FinalSynthesisModelOutput 的16,000字符限制，且后续消息保存还会经过
+  MessageCreate 的相同HTTP输入限制；最终节点原先也按旧64KiB容量检查。
+- 通用循环现直接组装 FinalSynthesisOutput，最终节点按已有通用节点1MiB序列化容量检查；
+  内部生成的Assistant消息使用独立类型，沿用原会话归属检查、序列分配、事务和对象存储。
+  FinalSynthesisModelOutput仍约束旧Controller生成；HTTP MessageCreate和用户消息限制未放宽。
+  读取结果字段未更名，历史v1对象可读，没有数据库迁移、前端修改或全文写回SQL。
+- 测试检查12,000和40,000字符中文答案均完整保存，消息GET和工作流result重新GET内容一致；
+  另断言旧Controller超长JSON与公开超长消息仍拒绝，内部生成类型不能伪装为user角色。
+- 回归：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_general_agent.py apps/api/tests/test_general_candidate.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_conversation_body_storage.py --tb=short`，
+  103通过（22.40秒）。Ruff首次报告新增测试导入排序，修正后复查；本次没有新增模型调用，
+  未执行真实模型长答案生成或浏览器长答案验收。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。

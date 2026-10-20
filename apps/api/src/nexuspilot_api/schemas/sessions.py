@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -71,6 +71,17 @@ class MessageCreate(BaseModel):
         if (self.content_text is None) == (self.content_uri is None):
             raise ValueError("Exactly one of content_text or content_uri must be provided")
         return self
+
+
+class GeneratedAssistantMessageCreate(MessageCreate):
+    """Internal generated prose, bounded by its producer's persisted object envelope.
+
+    HTTP message and user-turn requests continue using MessageCreate and their
+    existing input limits. This type does not grant access or bypass session checks.
+    """
+
+    role: Literal[MessageRole.ASSISTANT] = MessageRole.ASSISTANT
+    content_text: str | None = Field(default=None, min_length=1)
 
 
 class MessageRead(ApiModel):

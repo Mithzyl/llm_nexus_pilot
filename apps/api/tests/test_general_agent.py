@@ -180,11 +180,14 @@ async def test_general_agent_continues_tools_and_finishes_plain_text(client):
     assert result["aggregate_usage"]["tool_call_count"] == 1
 
 
-async def test_located_candidate_does_not_reject_previously_allowed_chinese_answer(client):
-    """Backend unit metadata must not make a previously valid long prose answer fail to save."""
+@pytest.mark.parametrize("characters", [12000, 40000])
+async def test_located_candidate_does_not_reject_previously_allowed_chinese_answer(
+    client, characters,
+):
+    """Save and restore full Unicode prose without legacy 16k-text or 64KiB-node rejection."""
     provider = GeneralProvider()
     original = provider.generate
-    answer = "说明" * 6000
+    answer = "说明" * (characters // 2)
 
     async def long_answer(request):
         """Return the same valid Unicode answer without making external model requests."""
@@ -200,6 +203,14 @@ async def test_located_candidate_does_not_reject_previously_allowed_chinese_answ
     ).json()
     assert result["status"] == "completed", result.get("error")
     assert result["final_output"]["final_text"] == answer
+    restored = (await client.get(
+        f"/api/v1/agent-workflows/{result['workflow_execution_id']}/result",
+    )).json()
+    assert restored["final_output"]["final_text"] == answer
+    message = (await client.get(
+        f"/api/v1/messages/{result['final_output']['assistant_message_id']}",
+    )).json()
+    assert message["content_text"] == answer
 
 
 async def test_review_revision_returns_to_agent_and_is_reviewed_again(client):

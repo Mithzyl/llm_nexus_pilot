@@ -67,7 +67,7 @@ from nexuspilot_api.models import (
     new_id,
 )
 from nexuspilot_api.models.base import utc_now
-from nexuspilot_api.schemas.sessions import MessageCreate
+from nexuspilot_api.schemas.sessions import GeneratedAssistantMessageCreate
 from nexuspilot_api.services.session_service import create_message
 
 EventSink = Callable[[AgentWorkflowEventRead], Awaitable[None]]
@@ -376,7 +376,7 @@ class WorkflowExecutionStateService:
         activity_context: dict | None = None,
         commit_event: bool = True,
     ) -> LlmAgentWorkflowEvent:
-        """Persist validated outputs with explicit size bounds for legacy and source-rich nodes."""
+        """Bound source-rich and general final objects at 1MiB; retain legacy node limits."""
 
         await self.ensure_workflow_running(workflow)
         definition = self._require_workflow_definition(workflow)
@@ -392,6 +392,7 @@ class WorkflowExecutionStateService:
             if node.output_type in {
                 "general_candidate", "general_delegated_candidate", "general_review",
             }
+            or (workflow.workflow_name == "general_agent" and node.output_type == "final_synthesis")
             else MAX_NODE_RESULT_BYTES
         )
         if len(serialized.encode()) > result_limit:
@@ -1066,14 +1067,14 @@ class WorkflowExecutionStateService:
         run: LlmRun,
         output: FinalSynthesisModelOutput,
     ) -> str | None:
-        """Stage a final Assistant Message for the final-node event transaction."""
+        """Stage generated prose without HTTP input caps; final-node bounds still apply."""
 
         if run.session_id is None:
             return None
         message = await create_message(
             self.db_session,
             run.session_id,
-            MessageCreate(
+            GeneratedAssistantMessageCreate(
                 role=MessageRole.ASSISTANT,
                 content_text=output.final_text,
                 run_id=run.run_id,

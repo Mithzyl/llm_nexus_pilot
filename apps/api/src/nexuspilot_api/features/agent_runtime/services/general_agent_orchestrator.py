@@ -15,7 +15,6 @@ from sqlalchemy import func, select
 from nexuspilot_api.core.errors import InvalidRequestError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowCreate,
-    FinalSynthesisModelOutput,
     FinalSynthesisOutput,
     GeneralCandidateOutput,
     NodeEvidenceRead,
@@ -262,19 +261,20 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     summary="Saving the candidate with its review status",
                 )
                 final_text = text + ("\n\n" + "\n".join(warnings) if warnings else "")
-                final = FinalSynthesisModelOutput(final_text=final_text, warnings=warnings)
+                final = FinalSynthesisOutput(
+                    final_text=final_text,
+                    warnings=warnings,
+                    source_agent_run_ids=list(self.delegated_agent_run_ids),
+                    source_handoff_ids=list(self.delegated_handoff_ids),
+                    source_artifact_ids=[],
+                    source_evaluation_ids=[],
+                )
                 message_id = await self._save_final_message(run, final)
+                final.assistant_message_id = message_id
                 await self._complete_node(
                     workflow,
                     current_node,
-                    output=FinalSynthesisOutput(
-                        **final.model_dump(),
-                        assistant_message_id=message_id,
-                        source_agent_run_ids=list(self.delegated_agent_run_ids),
-                        source_handoff_ids=list(self.delegated_handoff_ids),
-                        source_artifact_ids=[],
-                        source_evaluation_ids=[],
-                    ),
+                    output=final,
                     transition=NodeTransitionRead(
                         selected_transition="complete",
                         next_node_keys=["workflow_completion"],
