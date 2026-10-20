@@ -322,11 +322,39 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 开始修复前已 fetch 并确认本地/远端均为 282313c，包含用户更新的前端和 ee0d880 委派实现。
   本次没有修改前端文件，也没有部署。仍需在修复后执行真实委派/审核最终交付和浏览器验证。
 
+### 修复后 Strata 委派、审核与浏览器恢复（2026-10-20）
+
+- 代码提交 8453ddf，工作区干净。重启本地 API 加载修复前核对无近期活动工作流；
+  两条九月历史 RUNNING 记录早于 API 进程启动，未更改其状态。没有部署服务器。
+- 命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/check_live_general_agent.py --provider strata --delegate-role planner --policy always --report /tmp/general-agent-delegation-strata-20261020.json --question '请将附件首部研究对象核对委派给 planner 一次：只读取少量开头原文，给出论文研究对象和真实短来源引用，不要通读全文。主 Agent 收到交接后对照其原文，用两三句话回答论文研究对象及未读范围，使用实际来源 [S1] 等，不把子任务意见当作已验证事实。不要重复委派，也不需要运行代码。'`。
+- Run `fcd6742d-346d-47fe-987f-4734645bc4e2`，Workflow `48643f91-c3c5-47de-bf29-969a16d21e1a`，
+  Session `3c4deed8-a482-4ee4-80cf-f93677cfbcaf`。completed，119.774 秒，6 次模型请求，
+  输入 50,530、输出 5,428、合计 55,958 Token，缓存输入 17,718。推理用量未知，金额未报告。
+  本次没有 DeepSeek 调用，也未重放此前失败请求。
+- 实际工具为一次 delegate_task、Planner 首部 offset=0/limit=30 读取（返回28块）、主 Agent
+  offset=13/limit=10 补读；三个工具完成。没有再次委派、顺序通读或 Python/Shell 执行。
+  Reviewer 收到38个原文块次（可有重叠），一次返回审核决定；未自行补读，未触发内容修正或格式修正。
+  因此该样本证明委派至最终交付，不作为多轮修正真实分支验收。
+- Handoff `021fea60-bf26-42ff-8b4a-62471b8390dc` 为 agent_handoff.v3，保存子候选及 S1 引用。
+  只读 SQL 验证 handoff_json 正文为空，关联 MinIO 快照哈希通过。另7条消息/节点正文为空且对象哈希全部通过。
+  重复 GET 的消息及工作流结果一致。6份实际请求的现有输入清单核对通过；委派工具包内原文未纳入原生文件块统计，
+  该已知缺口仍保留为待做项，不能因清单校验成功宣称计数完整。
+- Playwright 在运行中打开并刷新会话；此后未刷新，页面自动显示“工作流已完成”及最终答案。
+  再次刷新后正文仍在，实际查看截图；用户新增的“模型 Agent · Planner”节点也显示正常。
+  证据：`output/playwright/general-agent-delegation-strata-running.yml`、
+  `general-agent-delegation-strata-completed.yml`、`general-agent-delegation-strata-restored.yml/png`。
+  浏览器控制台仅开发提示，无error；未通过浏览器重发问题，本例未测试主动取消。
+- 回答指出 IKEA 客户支持中的大语言模型自动化分析及未读范围，但同时使用“未作推断”和“仅从标题推断”，
+  并暴露 block 标识等技术细节，存在措辞/可读性问题。Reviewer 的 supported 不代表平台独立确认全文语义准确。
+- 同步后的用户前端未改动：`npm run typecheck` 通过；
+  `npx tsx --test tests/agent-workflow-view.test.ts tests/agent-workflow.test.ts tests/claim-evidence.test.ts tests/workflow-recovery.test.ts`
+  34项通过。没有修改样式、布局或前端文案。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有确定性测试及上述 DeepSeek 保存/读回成功样本；Strata笔记样本仍因502失败；
-按需委派及 Handoff 已有实现与确定性测试，但上述真实最终交付未通过；
-仍需补齐执行检查点/完整模型输入覆盖、委派真实交付、
+按需委派及 Handoff 已有实现、确定性测试及上述 Strata 单轮审核真实最终交付；
+仍需补齐执行检查点/完整模型输入覆盖、多轮审核内容修正真实交付、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。
