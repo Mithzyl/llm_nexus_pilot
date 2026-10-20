@@ -12,6 +12,10 @@ from pydantic import Field
 from sqlalchemy import select
 
 from nexuspilot_api.core.errors import ResourceConflictError
+from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
+    authorize_input_coverage_history,
+    task_input_coverage,
+)
 from nexuspilot_api.features.agent_runtime.services.task_read_coverage import task_read_coverage
 from nexuspilot_api.models import LlmModelAttempt, LlmModelToolCall, LlmRun, LlmTask, TaskStatus
 from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
@@ -113,6 +117,15 @@ READ_COVERAGE_TOOL = RegisteredTool(
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("阅读", "未读", "进度", "coverage", "reading", "progress"),
 )
+INPUT_COVERAGE_TOOL = RegisteredTool(
+    name="get_task_input_coverage", version="1.0.0",
+    description="Page this task's prepared model requests and per-file input counts/hashes. "
+    "This is not tool-read coverage, provider receipt or understanding. Historical missing "
+    "audits remain unknown. No source text is returned; deduplicate attempt IDs across pages.",
+    arguments=ListTaskNotesArguments, output=FileToolResult,
+    required_capabilities=frozenset({"task_notes", "read"}),
+    keywords=("输入", "上下文", "input", "coverage", "context"),
+)
 DELEGATE_TOOL = RegisteredTool(
     name="delegate_task", version="1.0.0",
     description="Delegate a focused task to a configured planner or researcher and receive its "
@@ -126,12 +139,13 @@ DELEGATE_TOOL = RegisteredTool(
     timeout_seconds=None, max_result_bytes=2 * 1024 * 1024,
 )
 GENERAL_TOOL_CATALOG = ToolCatalog(
-    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, READ_COVERAGE_TOOL, DELEGATE_TOOL)
+    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS,
+     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, DELEGATE_TOOL)
 )
 
 
 class GeneralAgentToolService(AgentFileToolService):
-    """Add private notes and reading progress to file tools without enabling host writes."""
+    """Add task notes, read/input audits and delegation without enabling host writes."""
 
     def __init__(self, db, storage, *, task_id, sources, allowed_task_ids, delegate=None):
         """Bind server-owned task and source mappings; models cannot expand this scope."""
@@ -149,8 +163,10 @@ class GeneralAgentToolService(AgentFileToolService):
         }
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Check task state before notes, progress or delegated work; retain shared persistence."""
-        if name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name, DELEGATE_TOOL.name}:
+        """Authorize task notes, read/input queries and delegation before shared persistence."""
+        if name not in NOTE_NAMES | {
+            READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, DELEGATE_TOOL.name,
+        }:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
         run = await self.db.get(LlmRun, attempt.run_id, populate_existing=True)
@@ -164,6 +180,11 @@ class GeneralAgentToolService(AgentFileToolService):
             return await self.delegate(arguments)
         if name == READ_COVERAGE_TOOL.name:
             return await task_read_coverage(
+                self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
+                arguments=arguments,
+            )
+        if name == INPUT_COVERAGE_TOOL.name:
+            return await task_input_coverage(
                 self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
                 arguments=arguments,
             )
@@ -219,15 +240,20 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck source grants and ownership before sending note or coverage history."""
+        """Recheck source grants and ownership before sending note/read/input history."""
         await super().validate_history(run_id, records)
         for record in records:
-            if (record.tool_name not in NOTE_NAMES | {READ_COVERAGE_TOOL.name, DELEGATE_TOOL.name}
+            if (record.tool_name not in NOTE_NAMES | {
+                    READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, DELEGATE_TOOL.name}
                     or record.status != "completed"):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
                 raise ResourceConflictError("Task note history belongs to another task")
+            if record.tool_name == INPUT_COVERAGE_TOOL.name:
+                await authorize_input_coverage_history(
+                    self.db, run_id=run_id, result=record.output_json["result"],
+                )
             if record.tool_name in {"save_task_note", "read_task_note"}:
                 note = TaskNote.model_validate(record.output_json["result"])
                 await self._validate_note_sources(run_id, note)

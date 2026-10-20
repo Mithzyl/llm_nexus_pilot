@@ -408,6 +408,19 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   只验证新字段实际保存，不等同“含委派原文的新清单”真实验收。此前按user_request SQL筛选诊断未命中对象化正文，
   后改为真实Workflow/Run ID查询；未因此修改历史记录。
 
+### 任务实际模型输入分页查询（2026-10-20）
+
+- 新增服务 `task_input_coverage.py` 和目录工具get_task_input_coverage，复用Task/Attempt/工具调用记录及MinIO请求对象。
+  当前任务每页至多20条请求，核对原生、委派、runtime来源清单，输出逐请求状态、是否完整审计、块次数及文件快照汇总。
+  正文与私有推理不返回；无请求、历史未记录、损坏、撤销权限分别处理，不都写成0。
+- 测试先行：新增用例在模块不存在时失败。实现后验证重复块去重及出现次数、三种输入渠道、旧清单缺失、消息被改写、
+  工具目录加载和真实执行路径、请求分页、同Run不同Task隔离、错误Run拒绝、文件删除后历史不再传入模型。
+  测试使用本地测试数据库/对象存储依赖，不调用外部Provider。
+- 相关回归：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_input_coverage.py apps/api/tests/test_task_read_coverage.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_general_delegation.py apps/api/tests/test_general_agent.py apps/api/tests/test_model_input_manifest.py --tb=short`，
+  68通过（16.29秒）。之后扩展runtime渠道和错误Run断言，单文件4项再通过；修改范围Ruff与git diff --check通过。
+- 工具输出是请求页，不是全任务完成证明。模型未使用过的新工具真实调用、全任务累计检查点和恢复的一致快照仍待验证/实现。
+  本次不改前端，不重启服务、不部署，没有新增付费模型调用。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。
