@@ -638,8 +638,15 @@ export default function Home() {
     const nextHeight = composerTextareaHeight(textarea.scrollHeight);
     textarea.style.height = `${previousHeight}px`;
     void textarea.offsetHeight;
-    textarea.style.transition = previousTransition;
+    // Shrinking immediately avoids a tall empty frame while the outgoing height animates.
+    const shouldAnimate = nextHeight > previousHeight;
+    textarea.style.transition = shouldAnimate ? previousTransition : "none";
     textarea.style.height = `${nextHeight}px`;
+    if (!shouldAnimate) {
+      window.requestAnimationFrame(() => {
+        textarea.style.transition = previousTransition;
+      });
+    }
     textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
   }, [draft, authenticationState, isComposerMinimized]);
 
