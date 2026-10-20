@@ -662,7 +662,7 @@ export default function Home() {
       observer.disconnect();
       window.removeEventListener("resize", remeasure);
     };
-  }, []);
+  }, [authenticationState, workspacePrincipal]);
 
   useEffect(() => {
     if (composerAnimationTimer.current === null) return;
