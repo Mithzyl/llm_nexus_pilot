@@ -24,9 +24,10 @@ async def execute_general_delegation(
 ):
     """Execute one nonrecursive child under parent time/cancel limits and fixed role bindings.
 
-    The coordinator supplies all identities. Child prose stays provisional; the
-    main candidate still follows the original review policy. Failures propagate
-    through existing tool/workflow finalization, never become successful handoffs.
+    The coordinator supplies identities and distinguishes the assignment from the parent goal.
+    Child prose stays provisional; the main candidate follows the original review policy.
+    Failures propagate through existing tool/workflow finalization and never become
+    successful handoffs.
     """
     if arguments.role not in payload.role_bindings:
         raise ToolOperationError("delegated_role_not_configured", status="permission_denied")
@@ -64,6 +65,13 @@ async def execute_general_delegation(
     values = {
         "objective": task.objective,
         "run_objective": run.user_request,
+        "execution_assignment": {
+            "role": task.assigned_role,
+            "task_id": task.task_id,
+            "parent_task_id": parent_task.task_id,
+            "delegation_already_started": True,
+            "can_delegate": False,
+        },
         "original_sources": {alias: originals[alias] for alias in initial_aliases},
     }
     node = await owner._start_node(
@@ -88,7 +96,15 @@ async def execute_general_delegation(
             payload,
             task,
             state,
-            "Complete only the delegated objective. Return full useful prose, not JSON. "
+            f"You are already the delegated {task.assigned_role} Agent identified in "
+            "execution_assignment. The parent has already started this delegation. "
+            "Complete only objective; run_objective and the original user conversation "
+            "are background for understanding the parent's goal, not additional assigned steps. "
+            "Keep the user's constraints, but do not take over the parent's steps. "
+            "Do not repeat the parent's delegation or input-audit steps unless objective "
+            "explicitly asks for an input audit. Recursive delegation is unavailable; "
+            "do not search for a tool named after your role or report this delegation as missing. "
+            "Return full useful prose, not JSON. "
             "Cite actual short sources as [S1]; report uncertainty and unread scope. "
             "This is provisional work for the main Agent, not approval or a final user answer.",
             values,

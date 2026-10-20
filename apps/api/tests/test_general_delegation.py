@@ -30,13 +30,29 @@ class DelegatingProvider(GeneralProvider):
     """Have the controller request one real planner and consume its prose handoff."""
 
     async def generate(self, request):
-        """Assert child tool scope and return prose, never a model-authored platform record."""
+        """Assert backend-supplied child identity and tool scope, then return provisional prose."""
         self.requests.append(request)
         role = request.metadata["agent_role"]
         tools = {tool.name for tool in request.tools}
         if role == "planner":
             assert "delegate_task" not in tools
             assert any("Compare two approaches" in m.content for m in request.messages)
+            contexts = []
+            for message in request.messages:
+                try:
+                    value = json.loads(message.content or "")
+                except ValueError:
+                    continue
+                if isinstance(value, dict) and "execution_assignment" in value:
+                    contexts.append(value)
+            assert contexts, "Child needs its actual delegated identity, not only the parent goal"
+            assignment = contexts[-1]["execution_assignment"]
+            self.child_assignment = assignment
+            assert assignment["role"] == "planner"
+            assert assignment["delegation_already_started"] is True
+            assert assignment["can_delegate"] is False
+            assert assignment["task_id"] != assignment["parent_task_id"]
+            assert contexts[-1]["objective"] == "Compare two approaches"
             return ModelResponse(
                 text="Delegated analysis: compare complexity and maintainability.",
                 finish_reason="stop",
@@ -192,6 +208,8 @@ async def test_general_agent_delegates_and_records_real_task_agent_and_handoff(
         parent = next(task for task in tasks if task.assigned_role == "controller")
         child = next(task for task in tasks if task.assigned_role == "planner")
         assert child.parent_task_id == parent.task_id
+        assert provider.child_assignment["task_id"] == child.task_id
+        assert provider.child_assignment["parent_task_id"] == parent.task_id
         assert child.objective == "Compare two approaches"
         assert child.status.value == "completed"
         agent = await db.scalar(select(LlmAgentRun).where(LlmAgentRun.task_id == child.task_id))

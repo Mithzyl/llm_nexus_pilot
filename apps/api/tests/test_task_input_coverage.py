@@ -1,6 +1,7 @@
 """Distinguish prepared model input from tool reads, provider receipt and understanding."""
 
 import json
+from datetime import datetime
 
 import pytest
 from nexuspilot_models.contracts import Message, MessageRole, ModelResponse, ToolCall
@@ -94,7 +95,7 @@ def test_modified_prepared_body_fails_manifest_comparison():
 async def test_input_tool_uses_current_task_requests_and_rechecks_file_access(
     client, test_database_session_factory,
 ):
-    """Exercise discovery, actual request objects, paging, task isolation and revoked history."""
+    """Verify dated query pages remain historical facts after later requests and recheck access."""
     _, _, file, turn = await prepare_conversation_file(client)
     provider = GeneralProvider()
     summaries = []
@@ -123,6 +124,10 @@ async def test_input_tool_uses_current_task_requests_and_rechecks_file_access(
                                  json=general_payload("never"))
     assert response.json()["status"] == "completed", response.text
     result = summaries[0]
+    assert result["request_list_observed_at"]
+    observed = datetime.fromisoformat(result["request_list_observed_at"])
+    assert observed.utcoffset().total_seconds() == 0
+    assert result["observation_kind"] == "live_query_page"
     assert len(result["attempts"]) == 3
     assert sum(a["block_occurrences"] for a in result["attempts"]) == 1
     assert all(a["audit_complete"] for a in result["attempts"])
@@ -133,6 +138,12 @@ async def test_input_tool_uses_current_task_requests_and_rechecks_file_access(
         first = await task_input_coverage(db, storage, run_id=task.run_id, task_id=task.task_id,
                                          arguments=ListTaskNotesArguments(limit=1))
         assert len(first["attempts"]) == 1 and first["next_offset"] == 1
+        # A later call exists now; the earlier recorded tool page is still correct.
+        current = await task_input_coverage(db, storage, run_id=task.run_id, task_id=task.task_id,
+                                           arguments=ListTaskNotesArguments(limit=20))
+        assert len(current["attempts"]) == 4
+        assert len(result["attempts"]) == 3
+        assert current["request_list_observed_at"] >= result["request_list_observed_at"]
         other = LlmTask(task_id=new_id(), run_id=task.run_id, task_type="general_agent",
                         title="Separate", objective="Separate inputs")
         db.add(other)
@@ -249,6 +260,7 @@ async def test_reviewer_reads_candidate_fixed_inputs_not_its_own_requests(
     assert all(page["task_id"] == references[0]["task_id"] for page in pages)
     assert pages[0]["next_offset"] == 1
     assert pages[1]["next_offset"] is None
+    assert [page["offset"] for page in pages] == [0, 1]
     assert len({ref["snapshot_id"] for ref in references}) == 1
 
 
@@ -293,6 +305,8 @@ async def test_captured_request_pages_do_not_change_when_more_attempts_arrive(
                     snapshot_id=ref["snapshot_id"], allowed_snapshot_ids={ref["snapshot_id"]},
                     offset=0, limit=1)
         first = await read_task_input_snapshot(db, storage, **args)
+        assert first["observation_kind"] == "candidate_request_set"
+        assert first["request_list_observed_at"]
         db.add(LlmModelAttempt(
             attempt_id=new_id(), run_id=run_id, task_id=ref["task_id"],
             provider="openai", model="test-model", status=AttemptStatus.COMPLETED,
@@ -336,6 +350,34 @@ async def test_live_snapshot_report_detects_changed_request_bytes(
     changed = await verification.candidate_input_snapshot_evidence(run_id)
     assert changed[0]["snapshot_verified"] is True
     assert changed[0]["attempts"][0]["request_hash_matches"] is False
+
+
+async def test_historical_input_snapshot_does_not_invent_observation_time(
+    client, captured_inputs, test_database_session_factory,
+):
+    """A valid pre-timestamp snapshot remains readable with explicitly unknown observation time."""
+    import hashlib
+
+    run_id, _, ref = captured_inputs
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        row = await db.get(LlmMemorySnapshotObject, ref["snapshot_id"])
+        raw, mime = storage.objects[row.storage_uri]
+        envelope = json.loads(raw)
+        envelope["content"].pop("request_list_observed_at")
+        historical = json.dumps(envelope).encode()
+        storage.objects[row.storage_uri] = (historical, mime)
+        row.content_hash = hashlib.sha256(historical).hexdigest()
+        row.size_bytes = len(historical)
+        await db.commit()
+        page = await read_task_input_snapshot(
+            db, storage, run_id=run_id, requester_task_id=ref["task_id"],
+            snapshot_id=ref["snapshot_id"], allowed_snapshot_ids={ref["snapshot_id"]},
+            offset=0, limit=20,
+        )
+        assert page["request_list_observed_at"] is None
+        assert page["observation_kind"] == "candidate_request_set"
+        assert len(page["attempts"]) == 2
 
 
 @pytest.mark.parametrize("failure", [

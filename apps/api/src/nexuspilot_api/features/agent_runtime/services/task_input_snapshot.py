@@ -19,6 +19,7 @@ from nexuspilot_api.models import (
     LlmRun,
     LlmTask,
 )
+from nexuspilot_api.models.base import utc_now
 
 SCHEMA = "task_input_snapshot.v1"
 
@@ -59,7 +60,7 @@ async def load_task_input_snapshot_manifest(db, storage, *, run_id, snapshot_id)
 
 
 async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_node_id):
-    """Capture one fixed request list per candidate; replay returns the original observation."""
+    """Capture a dated request list per candidate; replay preserves its original observation."""
     task = await db.scalar(select(LlmTask).where(
         LlmTask.task_id == task_id,
     ).with_for_update())
@@ -84,6 +85,7 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
         attempts = list(await db.scalars(select(LlmModelAttempt).where(
             LlmModelAttempt.run_id == run_id, LlmModelAttempt.task_id == task_id,
         ).order_by(LlmModelAttempt.started_at, LlmModelAttempt.attempt_id)))
+        observed_at = utc_now().isoformat()
         records = []
         for attempt in attempts:
             digest = None
@@ -98,6 +100,7 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
         content = {
             "run_id": run_id, "task_id": task_id, "candidate_node_id": candidate_node_id,
             "role": task.assigned_role, "attempts": records,
+            "request_list_observed_at": observed_at,
         }
         if len(json.dumps(content).encode()) > 1024 * 1024:
             raise ResourceConflictError("Task input snapshot exceeds 1 MiB")
@@ -120,7 +123,7 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
 async def read_task_input_snapshot(
     db, storage, *, run_id, requester_task_id, snapshot_id, allowed_snapshot_ids, offset, limit,
 ):
-    """Read a bounded immutable request page granted explicitly by the candidate's coordinator."""
+    """Read an authorized fixed page; old snapshots have unknown observation time, not read time."""
     from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
         summarize_attempt_input,
     )
@@ -147,6 +150,12 @@ async def read_task_input_snapshot(
         "schema_version": SCHEMA, "scope": "fixed_task_request_page", "snapshot_id": snapshot_id,
         "run_id": run_id, "task_id": content["task_id"],
         "candidate_node_id": content["candidate_node_id"], "attempt_count": total,
+        "observation_kind": "candidate_request_set",
+        "offset": offset,
+        "request_list_observed_at": content.get("request_list_observed_at"),
+        "observation_note": "Captured for this candidate, not the time of an earlier input query. "
+        "Later requests can increase this count without invalidating an earlier query result. "
+        "Compare matching attempt IDs. Only offset=0 with next_offset=null covers the full set.",
         "attempts": records, "next_offset": offset + limit if offset + limit < total else None,
         "provider_receipt_verified": False, "model_understanding_verified": False,
         "pagination_note": "Fixed request IDs and statuses at capture, ordered by started_at/ID. "

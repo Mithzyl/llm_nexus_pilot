@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
 from nexuspilot_api.models import LlmModelAttempt, LlmRun, LlmTask, UserFile
+from nexuspilot_api.models.base import utc_now
 from nexuspilot_api.services.conversation_file_service import conversation_file_ids
 from nexuspilot_api.services.model_input_manifest import (
     RuntimeSourceInput,
@@ -116,6 +117,7 @@ async def summarize_attempt_input(db, storage, *, run_id, attempt, expected_requ
 async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
     """Read one bounded live page of the exact task's requests and reauthorize every file.
 
+    Timestamp the selected request list, not the later object reads or model receipt.
     Page totals are not entire-task coverage. Attempts added during pagination can
     change positions; consumers deduplicate by attempt_id. Never load other tasks'
     requests or expose source prose, private reasoning or storage URIs in the result.
@@ -128,6 +130,7 @@ async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
         LlmModelAttempt.run_id == run_id, LlmModelAttempt.task_id == task_id,
     ).order_by(LlmModelAttempt.started_at, LlmModelAttempt.attempt_id)
         .offset(arguments.offset).limit(arguments.limit + 1)))
+    observed_at = utc_now().isoformat()
     records = []
     for attempt in attempts[:arguments.limit]:
         records.append(await summarize_attempt_input(
@@ -135,11 +138,15 @@ async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
         ))
     return {"schema_version": "task_input_coverage.v1", "scope": "current_task_request_page",
             "run_id": run_id, "task_id": task_id,
+            "observation_kind": "live_query_page", "request_list_observed_at": observed_at,
+            "offset": arguments.offset,
             "attempts": records, "next_offset": arguments.offset + arguments.limit
             if len(attempts) > arguments.limit else None,
             "model_understanding_verified": False, "provider_receipt_verified": False,
             "pagination_note": "This is a live request page, not whole-task coverage. "
-            "Deduplicate attempt IDs across pages; statuses and page positions can change."}
+            "Deduplicate attempt IDs across pages; statuses and page positions can change. "
+            "Later requests do not belong to this observation. A larger later candidate "
+            "snapshot does not invalidate this page; compare the same attempt IDs."}
 
 
 async def authorize_input_coverage_history(db, *, run_id, result):
