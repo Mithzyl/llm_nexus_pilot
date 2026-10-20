@@ -290,6 +290,10 @@ Messages分别记录stop_reason和message_stop_received；GenerateContent记录f
 不可把字段测试通过视为真实审核通过。耗时436.771秒，已知100,452 Token，
 末次用量未知。存储与浏览器失败恢复通过，详见
 [首次原生提交联调](general-agent-strata-verification-20261019.md#原生审核提交的首次-strata-联调2026-10-20)。
+随后在`6dd063a`上独立验证“首部读取＋始终审核”：主Agent读取、Reviewer重读原文、
+submit_review保存和最终回答成功，77.445秒/35,771 Token，浏览器刷新恢复通过。
+该样本没有委派或内容修正，不能替代上述失败范围；详见
+[原生审核成功样本](general-agent-strata-verification-20261019.md#原生审核的独立成功样本2026-10-20)。
 
 角色说明修复后的Strata样本不再重复搜索planner工具，但Reviewer输出说明文字、Markdown代码块及
 本批之外的决定，引起高成本格式修正，最终仍在期限内未完成。详见
