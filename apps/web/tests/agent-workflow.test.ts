@@ -3,11 +3,34 @@ import test from "node:test";
 
 import {
   agentStructuredOutputMode,
+  createGeneralAgentWorkflowRequest,
   appendAgentWorkflowEvent,
   parseAgentWorkflowSseBlock,
   readAgentWorkflowEventStream,
 } from "../lib/agent-workflow";
 import type { AgentWorkflowEvent } from "../lib/types";
+
+for (const reviewPolicy of ["always", "on_verification_failure", "never"] as const) {
+  test(`creates the general loop and preserves ${reviewPolicy} review selection`, () => {
+    const binding = { provider: "strata" as const, model: "chosen-model" };
+    const result = createGeneralAgentWorkflowRequest({
+      binding, reviewPolicy, maxParallelAgents: 2, idempotencyKey: "request-once",
+      reasoning: { enabled: true, effort: "medium" },
+    });
+    assert.equal(result.workflow_name, "general_agent");
+    assert.equal(result.workflow_version, "1.0.0");
+    assert.equal(result.execution_profile, "general_tools_v1");
+    assert.deepEqual(result.role_bindings.controller, binding);
+    assert.deepEqual(result.role_bindings.planner, binding);
+    assert.equal("reviewer" in result.role_bindings, reviewPolicy !== "never");
+    assert.equal(result.review_policy, reviewPolicy);
+    assert.equal(result.idempotency_key, "request-once");
+    assert.equal(result.max_model_calls, 0);
+    assert.equal(result.max_parallel_agents, 2);
+    assert.equal("max_workflow_rounds" in result, false);
+    assert.deepEqual(result.reasoning, { enabled: true, effort: "medium" });
+  });
+}
 
 /** Build one complete workflow event for sequence and stream tests. */
 function workflowEvent(

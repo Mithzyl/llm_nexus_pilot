@@ -60,6 +60,7 @@ import {
 } from "../lib/reasoning-stream";
 import {
   agentStructuredOutputMode,
+  createGeneralAgentWorkflowRequest,
   appendAgentWorkflowEvent,
   readAgentWorkflowEventStream,
   type AgentWorkflowEventState,
@@ -1156,7 +1157,7 @@ export default function Home() {
   }
 
   /**
-   * Execute up to two reviewed rounds with backend-derived attachment permissions;
+   * Start the general tool loop with the selected model and review policy;
    * consume the terminal snapshot without duplicating the backend-created final Message.
    */
   async function executeAgentWorkflow(
@@ -1177,24 +1178,13 @@ export default function Home() {
     if (isCurrent()) activeRequestController.current = controller;
     const response = await openAgentWorkflowStream(
       createdRun.run_id,
-      {
-        workflow_name: "model_only",
-        workflow_version: "1.1.0",
-        idempotency_key: crypto.randomUUID(),
-        role_bindings: {
-          controller: binding,
-          planner: binding,
-          ...(reviewPolicy === "never" ? {} : { reviewer: binding }),
-        },
+      createGeneralAgentWorkflowRequest({
+        binding,
+        reviewPolicy,
+        maxParallelAgents,
+        idempotencyKey: crypto.randomUUID(),
         reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
-        review_policy: reviewPolicy,
-        max_nodes: 32,
-        max_model_calls: 0,
-        max_parallel_agents: maxParallelAgents,
-        max_workflow_rounds: 2,
-        wall_time_limit_ms: 600_000,
-        stream: true,
-      },
+      }),
       controller.signal,
     );
 

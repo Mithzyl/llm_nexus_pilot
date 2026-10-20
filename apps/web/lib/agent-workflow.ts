@@ -1,8 +1,38 @@
 import type {
+  AgentModelBinding,
+  AgentWorkflowCreate,
   AgentWorkflowEvent,
   AgentWorkflowNodeActivitySummary,
   ProviderName,
 } from "./types";
+
+/** Create the general loop while retaining selected model, review policy and request identity. */
+export function createGeneralAgentWorkflowRequest(options: {
+  binding: AgentModelBinding;
+  reviewPolicy: AgentWorkflowCreate["review_policy"];
+  maxParallelAgents: 1 | 2;
+  idempotencyKey: string;
+  reasoning?: AgentWorkflowCreate["reasoning"];
+}): AgentWorkflowCreate {
+  return {
+    workflow_name: "general_agent",
+    workflow_version: "1.0.0",
+    execution_profile: "general_tools_v1",
+    idempotency_key: options.idempotencyKey,
+    role_bindings: {
+      controller: options.binding,
+      planner: options.binding,
+      ...(options.reviewPolicy === "never" ? {} : { reviewer: options.binding }),
+    },
+    reasoning: options.reasoning,
+    review_policy: options.reviewPolicy,
+    max_nodes: 32,
+    max_model_calls: 0,
+    max_parallel_agents: options.maxParallelAgents,
+    wall_time_limit_ms: 600_000,
+    stream: true,
+  };
+}
 
 const TERMINAL_WORKFLOW_EVENTS = new Set([
   "agent.workflow.completed",

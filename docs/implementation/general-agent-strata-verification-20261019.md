@@ -383,9 +383,34 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   103通过（22.40秒）。Ruff首次报告新增测试导入排序，修正后复查；本次没有新增模型调用，
   未执行真实模型长答案生成或浏览器长答案验收。
 
+### 浏览器发起通用循环与真实停止（2026-10-20）
+
+- 核对发现页面仍创建 model_only/1.1.0，不能用脚本验收替代普通入口。此次仅修改请求构造和类型，
+  显式选择general_agent/1.0.0/general_tools_v1，保留模型、思考、审核及Planner绑定，
+  不发送旧max_workflow_rounds；服务端保留的缺省字段不用于通用循环限制。旧API和结果读取继续兼容。
+- 三种策略的新增构造测试先因缺少新入口失败，接入后29项工作流/视图/恢复测试通过；
+  `npm run typecheck` 与修改文件ESLint通过。无样式、布局、产品文案修改。
+- Playwright从新对话页面选择Strata模型与Agent模式，只发送一次
+  “浏览器停止验证20261020：请详细分析 Python 列表和元组的设计差异、复杂度与典型应用。不使用工具，不委派任务。”
+  实际持久请求确认上述general定义，所有角色均为strata/tiel-coder-35b-a3b-ud-q4_k_xl，always策略；未调用DeepSeek。
+- Run `26a70718-0b5a-4c01-a25d-09c76f446887`，Workflow `8cad1ecd-d959-4625-8058-606a89eec306`，
+  Session `6f408253-f6f4-4648-9fa0-465e376275ad`。执行进入Reviewer时通过页面停止，取消POST返回200/cancelled。
+  服务端开始至终态49秒（DATETIME秒精度，不是取消确认延迟）；3次模型请求，2次completed、1次outcome_unknown。
+  两次已知调用输入6,497、输出2,729，已知合计9,226 Token，缓存输入4,096；第三次用量及总费用未知，
+  全部推理用量未知，不能把已知子集当总量，也不能宣称远端停止生成或计费。
+- 一分钟后只读核对仍为cancelled，Attempt仍3条、started为0。页面显示已取消/未生成最终回答，
+  输入未发送草稿后发送按钮可用；重新打开持久会话链接仍恢复取消终态，没有重新发送问题。
+- 证据：`output/playwright/general-agent-browser-inflight.yml`、`general-agent-browser-cancelled.yml`、
+  `general-agent-browser-cancelled-input.yml`、`general-agent-browser-cancelled-restored.yml`。
+  第一次点击停止因窄窗口详情遮挡而超时，正常关闭详情后取消成功，未使用强制点击；已在阶段4记录，不修改用户布局。
+  浏览器在取消时记录流连接ERR_INCOMPLETE_CHUNKED_ENCODING，但服务端取消与页面恢复均成功；不隐去该错误。
+- 新输入清单已随这3次真实请求存入MinIO且重建一致。该无附件样本的委派原文数为0，
+  只验证新字段实际保存，不等同“含委派原文的新清单”真实验收。此前按user_request SQL筛选诊断未命中对象化正文，
+  后改为真实Workflow/Run ID查询；未因此修改历史记录。
+
 ## 尚未验收的完整目标
 
-继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
+继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有确定性测试及上述 DeepSeek 保存/读回成功样本；Strata笔记样本仍因502失败；
 按需委派及 Handoff 已有实现、确定性测试及上述 Strata 单轮审核真实最终交付；
 仍需补齐执行检查点/完整模型输入覆盖、多轮审核内容修正真实交付、

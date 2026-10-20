@@ -380,10 +380,10 @@ export type AgentModelBinding = {
 };
 
 export type AgentWorkflowCreate = {
-  workflow_name: "model_only";
+  workflow_name: "model_only" | "general_agent";
   workflow_version: "1.0.0" | "1.1.0";
   // The server automatically enables scoped read tools when the turn has attachments.
-  execution_profile?: "model_only_v1" | "tool_enabled_v1";
+  execution_profile?: "model_only_v1" | "tool_enabled_v1" | "general_tools_v1";
   idempotency_key: string;
   role_bindings: Partial<
     Record<"controller" | "planner" | "researcher" | "reviewer" | "verifier", AgentModelBinding>
