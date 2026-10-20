@@ -296,10 +296,37 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
   模型答案超过要求的两三句话并提到内部字段名，已记录为回答质量限制；本批未改前端文案/样式或强行删改模型正文。
   本次不是运行中刷新、用户主动取消、Reviewer审核或全文阅读的复测。
 
+### 委派真实联调失败及审核原文累积修复（2026-10-20 核对）
+
+- 既有报告 `/tmp/general-agent-delegation-deepseek-20261019.json`，Run
+  `79c8fc71-d377-4b6b-90d1-037666f9db0a`，Workflow
+  `d0f38f15-ced5-4fe7-9d88-1a4b1dd87deb`。该次调用仍依据此前 DeepSeek 替代授权执行，
+  使用 FULLTEXT03.pdf、always 策略和 planner 绑定；本次原因核对没有重发历史请求。
+- 结果 failed，150.220 秒，29 次模型请求完成；输入 533,982、输出 26,175，合计 560,157 Token；
+  缓存输入 236,672、推理 17,014 为对应子集，金额未报告。一次真实委派、子任务读取和 Handoff 已发生，
+  但多轮审核后没有最终回答，不能记为完整委派流程通过。工作流记录 7 轮、6 次修正。
+- 最后 general_agent 节点没有创建新 Attempt。读取本地 MySQL/MinIO 已保存候选、审核与工具原文，
+  重建其 objective、feedback、review_sources 后与节点 input_hash 完全一致：102,006 字符、12 个审核来源。
+  用当前 ContextBuildCreate 实际校验，唯一错误为 additional_user_input / string_too_long，
+  对应 100,000 字符上限。先前把每轮新增审核来源永久累加，导致在供应商请求之前失败；
+  本例不是供应商 JSON 错误或末尾内容丢失。
+- 本次修复仅改变下一次修正的原文选择：当前候选引用、本轮审核决定引用、本轮新增补读的并集。
+  历史候选、全部来源映射、原始工具结果和 MinIO 对象保留；不删除历史证据、不修改旧工作流，
+  不通过新增固定轮数或取消审核来绕过问题。对同一失败输入只读计算后为 44,576 字符、8 个来源。
+  这证明该输入不再因历史审核原文累加超过此字段限制，不代表任意大输入或模型语义修正均已解决。
+- 测试先行：新增三轮审核、两次内容修正用例在旧实现下失败，第三次输入仍为 S2/S3；
+  修复后为当前候选 S1 与本轮 S3，旧 S2 仍从持久结果读回。首轮测试夹具漏填 raw_response，
+  修正夹具后才取得上述业务失败，不将夹具错误计为实现缺陷。
+- 回归命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_general_review.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_worker_evidence.py --tb=short`。
+  76 通过（22.40 秒）；修改文件 Ruff 与 git diff --check 通过。该次使用测试依赖，不是新的真实模型验收。
+- 开始修复前已 fetch 并确认本地/远端均为 282313c，包含用户更新的前端和 ee0d880 委派实现。
+  本次没有修改前端文件，也没有部署。仍需在修复后执行真实委派/审核最终交付和浏览器验证。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付、浏览器发起/在途停止及新后端完整实现，不能把上述样本扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有确定性测试及上述 DeepSeek 保存/读回成功样本；Strata笔记样本仍因502失败；
-仍需补齐执行检查点/完整模型输入覆盖、按需委派及 Handoff、
+按需委派及 Handoff 已有实现与确定性测试，但上述真实最终交付未通过；
+仍需补齐执行检查点/完整模型输入覆盖、委派真实交付、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

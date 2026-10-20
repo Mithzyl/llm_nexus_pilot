@@ -62,7 +62,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
     async def execute(self, workflow, payload):
-        """Persist delegation, candidate units and policy-selected reviews without replacement."""
+        """Persist all evidence; carry only current review originals into each revision."""
         execution_id = workflow.workflow_execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node = None
@@ -84,7 +84,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 main_input = {
                     "objective": run.user_request,
                     "feedback": feedback,
-                    "review_sources": {alias: originals[alias] for alias in supplementary_aliases},
+                    "review_sources": {
+                        alias: originals[alias] for alias in sorted(supplementary_aliases)
+                    },
                 }
                 current_node = await self._general_node(
                     workflow,
@@ -180,7 +182,14 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         review_input,
                     )
                     await self._resolve_sources(workflow)
-                    supplementary_aliases.update(set(self.sources) - before_review)
+                    # Keep all source mappings durable, but do not resend every historical
+                    # reviewer excerpt on every revision. The current candidate, review
+                    # decisions and newly read originals define the next correction input.
+                    supplementary_aliases = (
+                        (aliases & self.sources.keys())
+                        | {alias for item in review.decisions for alias in item.source_aliases}
+                        | (self.sources.keys() - before_review)
+                    )
                     await self._finish_general_node(
                         workflow,
                         current_node,

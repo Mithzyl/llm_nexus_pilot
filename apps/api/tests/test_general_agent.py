@@ -371,6 +371,95 @@ class FileReadingProvider(GeneralProvider):
         )
 
 
+async def test_revision_input_keeps_current_evidence_without_accumulating_old_reads(
+    client, monkeypatch,
+):
+    """Three reviews retain stored originals but send only current revision evidence."""
+    from test_user_files import reserve_file
+
+    from nexuspilot_api.features.agent_runtime.services.general_agent_orchestrator import (
+        GeneralAgentOrchestrator,
+    )
+
+    def expose_failure(self, error):
+        """Let the provider assertion identify unexpected context accumulation directly."""
+        raise error.__cause__ or error
+
+    monkeypatch.setattr(GeneralAgentOrchestrator, "_public_error_from_exception", expose_failure)
+    client._transport.raise_app_exceptions = True
+    owner = (await client.get("/api/v1/auth/me")).json()["user_id"]
+    session = (await client.post("/api/v1/sessions", json={"user_id": owner})).json()
+    content = b"BASE_ORIGINAL\nOLD_REVIEW_ORIGINAL\nCURRENT_REVIEW_ORIGINAL\n"
+    file = (await reserve_file(client, content)).json()
+    assert (await client.put(
+        f"/api/v1/files/{file['file_id']}/content", content=content,
+    )).status_code == 200
+    turn = (await client.post(f"/api/v1/sessions/{session['session_id']}/turns", json={
+        "user_id": owner, "content_text": "Explain the attachment", "file_ids": [file["file_id"]],
+    })).json()
+    provider = GeneralProvider()
+    review_round = 0
+    revision_sources = []
+
+    async def generate(request):
+        """Read different reviewer blocks across revisions, then approve the third candidate."""
+        nonlocal review_round
+        provider.requests.append(request)
+        tools = [m for m in request.messages if m.role.value == "tool"]
+        role = request.metadata["agent_role"]
+        arguments = None
+        if role == "reviewer":
+            if not tools:
+                review_round += 1
+                if review_round < 3:
+                    arguments = {"offset": review_round, "limit": 1}
+            if arguments is None:
+                decision = json.loads(unit_review_text(
+                    request, "revise" if review_round < 3 else "supported",
+                    f"Review round {review_round}",
+                ))
+                for item in decision["decisions"]:
+                    item["source_aliases"] = [f"S{min(review_round + 1, 3)}"]
+                text = json.dumps(decision)
+        elif not tools:
+            arguments = {"offset": 0, "limit": 1}
+        else:
+            for message in request.messages:
+                try:
+                    value = json.loads(message.content or "")
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(value, dict) and "review_sources" in value:
+                    revision_sources.append(set(value["review_sources"]))
+            if review_round == 2:
+                assert revision_sources[-1] == {"S1", "S3"}
+            text = f"Candidate revision {review_round} [S1]"
+        if arguments is not None:
+            return ModelResponse(tool_calls=[ToolCall(
+                id=f"read-{role}-{review_round}", name="read_file_content",
+                arguments={"file_id": file["file_id"], **arguments},
+            )], finish_reason="tool_calls", input_tokens=10, output_tokens=5, latency_ms=1,
+                raw_response={})
+        return ModelResponse(text=text, finish_reason="stop", input_tokens=10,
+                             output_tokens=5, latency_ms=1, raw_response={})
+
+    provider.generate = generate
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    response = await client.post(f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
+                                 json=general_payload("always"))
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result["status"] == "completed", response.text
+    assert revision_sources == [set(), {"S1", "S2"}, {"S1", "S3"}]
+    assert result["loop_statistics"]["refinement_count"] == 2
+    restored = (await client.get(
+        f"/api/v1/agent-workflows/{result['workflow_execution_id']}/result",
+    )).json()
+    candidates = [n for n in restored["nodes"] if n["output_type"] == "general_candidate"]
+    assert set(candidates[-1]["output"]["sources"]) == {"S1", "S2", "S3"}
+    assert candidates[1]["output"]["sources"]["S2"] == candidates[-1]["output"]["sources"]["S2"]
+
+
 @pytest.mark.parametrize("revoke_before_review", [False, True])
 async def test_file_sources_review_reread_and_object_body_restore(
     client,
