@@ -62,7 +62,7 @@ def checkpoint(path, report):
 
 
 async def stream_progress_evidence(run_id):
-    """Read private progress objects but report only lengths, hashes and timing, never drafts."""
+    """Report counts and private terminal facts, keeping absent legacy observations unknown."""
     storage = ObjectStorage()
     async with database_session_factory() as db:
         rows = (await db.execute(select(
@@ -95,6 +95,7 @@ async def stream_progress_evidence(run_id):
             "last_output_at": progress["last_output_at"],
             "usage": progress["usage"],
             "response_complete": progress["response_complete"],
+            "protocol_evidence": progress.get("protocol_evidence"),
         }
     return records
 

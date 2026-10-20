@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from nexuspilot_models.contracts import ProviderName, StreamEvent, StreamEventType
@@ -49,9 +50,9 @@ class IdleProvider:
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_idle_provider_preserves_received_progress_before_cancellation(
-    client, monkeypatch, stream,
+    client, monkeypatch, stream, test_database_session_factory,
 ):
-    """Persist draft and terminal observations while idle, then retain them after cancellation."""
+    """Persist and report cancelled protocol observations, preserving unknown legacy fields."""
     monkeypatch.setattr(
         model_response_service, "STREAM_PROGRESS_INTERVAL_SECONDS", 0.02, raising=False,
     )
@@ -111,6 +112,23 @@ async def test_idle_provider_preserves_received_progress_before_cancellation(
         == raw["stream_progress"]["protocol_evidence"]
     )
     assert provider.closed.is_set()
+    monkeypatch.syspath_prepend(str(
+        Path(__file__).resolve().parents[3] / "deployments" / "verification"
+    ))
+    import check_live_general_agent as verification
+
+    monkeypatch.setattr(verification, "database_session_factory", test_database_session_factory)
+    monkeypatch.setattr(verification, "ObjectStorage", lambda: storage)
+    report = await verification.stream_progress_evidence(run["run_id"])
+    assert report[attempt["attempt_id"]]["protocol_evidence"] == (
+        final_raw["stream_progress"]["protocol_evidence"]
+    )
+    # A historical object without observations must not become "DONE not received".
+    del final_raw["stream_progress"]["protocol_evidence"]
+    _, mime = storage.objects[final_uri]
+    storage.objects[final_uri] = (json.dumps(final_raw).encode(), mime)
+    legacy_report = await verification.stream_progress_evidence(run["run_id"])
+    assert legacy_report[attempt["attempt_id"]]["protocol_evidence"] is None
 
 
 async def test_progress_storage_failure_stops_provider_without_claiming_completion(

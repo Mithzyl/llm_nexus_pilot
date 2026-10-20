@@ -761,6 +761,15 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 协议观察报告兼容检查（2026-10-20）
+
+验证脚本现在把私有进度对象中的protocol_evidence写入本地报告，不复制正文或私有推理。
+旧对象缺少该字段时报告null，不能补成“结束标识未收到”。
+保存层两种消费路径先因报告缺少字段失败，实现后
+`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_stream_progress_persistence.py --tb=short`
+得到4项通过（0.85秒）；修改文件Ruff及diff检查通过。
+该报告改动不影响正在执行的模型请求，也不会自动重试。
+
 ### Chat SSE结束信号的离线补充（2026-10-20）
 
 新增私有协议观察，独立保存finish_reason与DONE是否收到，不改变当前成功/失败规则。
