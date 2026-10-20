@@ -635,34 +635,49 @@ export default function Home() {
   }, [draft, authenticationState, isComposerMinimized]);
 
   useEffect(() => {
-    const composer = composerRef.current;
-    if (!composer) return;
     let active = true;
-    const remeasure = () => {
+    let retryTimer: number | null = null;
+    let cleanup: (() => void) | null = null;
+    const attach = () => {
       if (!active) return;
-      const textarea = composerTextarea.current;
-      if (textarea) resizeComposerTextarea(textarea, document.activeElement === textarea);
+      const composer = composerRef.current;
+      if (!composer) {
+        // The Composer mounts after authentication; retry without changing the
+        // effect dependency shape during development.
+        retryTimer = window.setTimeout(attach, 50);
+        return;
+      }
+      const remeasure = () => {
+        if (!active) return;
+        const textarea = composerTextarea.current;
+        if (textarea) resizeComposerTextarea(textarea, document.activeElement === textarea);
+      };
+      const frame = window.requestAnimationFrame(remeasure);
+      const settleTimer = window.setTimeout(remeasure, 300);
+      let lastWidth = composer.getBoundingClientRect().width;
+      const observer = new ResizeObserver(() => {
+        const width = composer.getBoundingClientRect().width;
+        if (Math.abs(width - lastWidth) < 1) return;
+        lastWidth = width;
+        remeasure();
+      });
+      observer.observe(composer);
+      window.addEventListener("resize", remeasure);
+      if (document.fonts) void document.fonts.ready.then(remeasure);
+      cleanup = () => {
+        window.cancelAnimationFrame(frame);
+        window.clearTimeout(settleTimer);
+        observer.disconnect();
+        window.removeEventListener("resize", remeasure);
+      };
     };
-    const frame = window.requestAnimationFrame(remeasure);
-    const settleTimer = window.setTimeout(remeasure, 300);
-    let lastWidth = composer.getBoundingClientRect().width;
-    const observer = new ResizeObserver(() => {
-      const width = composer.getBoundingClientRect().width;
-      if (Math.abs(width - lastWidth) < 1) return;
-      lastWidth = width;
-      remeasure();
-    });
-    observer.observe(composer);
-    window.addEventListener("resize", remeasure);
-    if (document.fonts) void document.fonts.ready.then(remeasure);
+    attach();
     return () => {
       active = false;
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(settleTimer);
-      observer.disconnect();
-      window.removeEventListener("resize", remeasure);
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      cleanup?.();
     };
-  }, [authenticationState, workspacePrincipal]);
+  }, []);
 
   useEffect(() => {
     if (composerAnimationTimer.current === null) return;
