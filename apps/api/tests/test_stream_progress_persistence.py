@@ -59,6 +59,16 @@ async def test_idle_provider_preserves_received_progress_before_cancellation(
     )
     app.dependency_overrides[get_provider_registry] = lambda: registry
     storage = app.dependency_overrides[get_object_storage]()
+    original_put = storage.put_bytes
+    progress_writes = []
+
+    async def count_progress_writes(name, content, content_type):
+        """Count only periodic batches so idle polling cannot masquerade as new output."""
+        if name.endswith("/stream-progress.json"):
+            progress_writes.append(name)
+        return await original_put(name, content, content_type)
+
+    monkeypatch.setattr(storage, "put_bytes", count_progress_writes)
     run = await create_test_run(client)
     task = asyncio.create_task(client.post("/api/v1/responses", json={
         "run_id": run["run_id"], "provider": "openai", "model": "test-model",
@@ -79,6 +89,8 @@ async def test_idle_provider_preserves_received_progress_before_cancellation(
         assert raw["stream_progress"]["text"] == "已收到的文字"
         assert raw["stream_progress"]["response_complete"] is False
         assert not task.done()
+        await asyncio.sleep(0.06)
+        assert len(progress_writes) == 1
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):

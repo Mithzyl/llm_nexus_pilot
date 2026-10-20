@@ -8,6 +8,7 @@ Creates one private session/upload/Run. Never resubmits generation automatically
 Strata remains the default; DeepSeek requires explicit --provider and --model selection.
 Observation expiry leaves the Run intact; --observe never starts another model request.
 --cancel tests only this report's Run, after observing its in-flight model attempt.
+--cancel-after-progress additionally waits for durably observed output before cancellation.
 Reports contain test answers and identifiers, never credentials or private model reasoning.
 """
 
@@ -85,6 +86,7 @@ async def stream_progress_evidence(run_id):
             ),
             "tool_fragment_count": len(progress["tool_fragments"]),
             "event_count": progress["event_count"],
+            "reasoning_characters": progress["reasoning_characters"],
             "first_output_at": progress["first_output_at"],
             "last_output_at": progress["last_output_at"],
             "usage": progress["usage"],
@@ -94,15 +96,15 @@ async def stream_progress_evidence(run_id):
 
 
 async def storage_evidence(run_id):
-    """Verify actual SQL body references and MinIO hashes without printing source bodies."""
+    """Verify message, node and Handoff objects without printing source bodies."""
     storage = ObjectStorage()
     records = []
     async with database_session_factory() as db:
-        for table, key in [
-            ("llm_messages", "message_id"),
-            ("llm_agent_workflow_node_executions", "node_execution_id"),
+        for table, key, body in [
+            ("llm_messages", "message_id", "content_text"),
+            ("llm_agent_workflow_node_executions", "node_execution_id", "output_json"),
+            ("llm_agent_handoffs", "agent_handoff_id", "handoff_json"),
         ]:
-            body = "content_text" if table == "llm_messages" else "output_json"
             rows = (
                 await db.execute(
                     text(
@@ -378,7 +380,12 @@ async def observe(client, args, report):
             last_progress = progress
         if summary["status"] not in {"running", "pending"}:
             break
-        if args.cancel and "cancel" not in report:
+        observed_output = any(
+            item.get("first_output_at")
+            for item in report.get("stream_progress_observations", {}).values()
+        )
+        if (args.cancel and "cancel" not in report
+                and (not args.cancel_after_progress or observed_output)):
             usage = await inspect(report["run_id"])
             if any(a["status"] == "started" for a in usage["attempts"]):
                 tick = time.monotonic()
@@ -500,9 +507,15 @@ if __name__ == "__main__":
     parser.add_argument("--observe", action="store_true")
     parser.add_argument("--observe-seconds", type=int, default=720)
     parser.add_argument("--cancel", action="store_true")
+    parser.add_argument(
+        "--cancel-after-progress", action="store_true",
+        help="With --cancel, wait for a persisted received-output observation before stopping",
+    )
     parser.add_argument("--question", default=QUESTION,
                         help="Explicit test objective saved verbatim in the local report")
     args = parser.parse_args()
+    if args.cancel_after_progress and not args.cancel:
+        parser.error("--cancel-after-progress requires --cancel")
     if not args.observe and args.provider == "deepseek" and not args.model:
         parser.error("DeepSeek generation requires explicit --model")
     args.model = args.model or MODEL
