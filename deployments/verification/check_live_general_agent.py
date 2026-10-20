@@ -28,9 +28,13 @@ from sqlalchemy import select, text
 
 from check_live_strata_long_files import MODEL, inspect, request
 from nexuspilot_api.core.config import get_settings
+from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint import (
+    SCHEMA as CHECKPOINT_SCHEMA,
+    read_task_execution_checkpoint,
+)
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
-from nexuspilot_api.models import LlmModelAttempt
+from nexuspilot_api.models import LlmMemorySnapshotObject, LlmModelAttempt
 from nexuspilot_api.services.model_input_manifest import (
     RuntimeSourceInput, build_delegated_source_manifest,
     build_runtime_source_manifest, build_tool_input_manifest,
@@ -172,6 +176,45 @@ async def model_input_evidence(run_id):
     return records
 
 
+async def execution_checkpoint_evidence(run_id):
+    """Verify actual registered snapshot objects and per-task chains without printing bodies."""
+    storage = ObjectStorage()
+    records = []
+    previous_by_task = {}
+    async with database_session_factory() as db:
+        snapshots = list(await db.scalars(select(LlmMemorySnapshotObject).where(
+            LlmMemorySnapshotObject.run_id == run_id,
+            LlmMemorySnapshotObject.schema_version == CHECKPOINT_SCHEMA,
+        ).order_by(LlmMemorySnapshotObject.task_id, LlmMemorySnapshotObject.object_version)))
+        for snapshot in snapshots:
+            entry = {"snapshot_id": snapshot.memory_snapshot_object_id,
+                     "task_id": snapshot.task_id, "version": snapshot.object_version,
+                     "mime_type": snapshot.mime_type,
+                     "hash_verified": await storage.verify_object(
+                         snapshot.storage_uri, snapshot.content_hash,
+                     )}
+            if snapshot.mime_type == "application/json":
+                body = await read_task_execution_checkpoint(
+                    db, storage, run_id=run_id, task_id=snapshot.task_id,
+                    snapshot_id=snapshot.memory_snapshot_object_id,
+                )
+                state = body["state"]
+                attempt = await db.get(LlmModelAttempt, state["attempt_id"])
+                entry.update(
+                    previous_snapshot_id=body["previous_snapshot_id"], phase=state["phase"],
+                    attempt_id=state["attempt_id"],
+                    attempt_scope_verified=bool(attempt and attempt.run_id == run_id
+                                                and attempt.task_id == snapshot.task_id),
+                    chain_verified=body["previous_snapshot_id"] == previous_by_task.get(
+                        snapshot.task_id,
+                    ),
+                    automatic_resume_supported=state["automatic_resume_supported"],
+                )
+                previous_by_task[snapshot.task_id] = snapshot.memory_snapshot_object_id
+            records.append(entry)
+    return records
+
+
 async def start(client, args, report):
     """Upload once, bind optional requested child role, then detach after a durable workflow ID."""
     owner = (await request(client, "GET", "auth/me"))["user_id"]
@@ -267,7 +310,7 @@ async def start(client, args, report):
 
 
 async def observe(client, args, report):
-    """Poll existing execution, optionally cancel it, and collect terminal persistence evidence."""
+    """Observe one execution; preserve its first measured duration during later read-only audits."""
     if "workflow_execution_id" not in report:
         summary = await request(
             client, "GET", f"runs/{report['run_id']}/agent-workflow"
@@ -316,12 +359,10 @@ async def observe(client, args, report):
     result = await request(client, "GET", f"agent-workflows/{identity}/result")
     report["result"] = result
     report.update(await inspect(report["run_id"]))
-    report["elapsed_seconds"] = round(
-        (
-            datetime.now(UTC) - datetime.fromisoformat(report["started_at"])
-        ).total_seconds(),
-        3,
-    )
+    if "elapsed_seconds" not in report:
+        report["elapsed_seconds"] = round(
+            (datetime.now(UTC) - datetime.fromisoformat(report["started_at"])).total_seconds(), 3,
+        )
     if result["status"] == "completed":
         final = result["final_output"]
         message = await request(
@@ -344,6 +385,7 @@ async def observe(client, args, report):
         report.update(after)
     report["storage"] = await storage_evidence(report["run_id"])
     report["model_input_evidence"] = await model_input_evidence(report["run_id"])
+    report["execution_checkpoints"] = await execution_checkpoint_evidence(report["run_id"])
     checkpoint(args.report, report)
     print(
         json.dumps({k: report[k] for k in ["status", "elapsed_seconds", "usage"]}),

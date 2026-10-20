@@ -76,6 +76,30 @@ class DelegatingProvider(GeneralProvider):
         )
 
 
+async def test_delegation_deadline_does_not_claim_provider_outcome_is_known(client):
+    """A parent deadline interrupting a child request preserves unknown provider outcome."""
+    run = await create_test_run(client)
+    provider = DelegatingProvider()
+    generate = provider.generate
+
+    async def delayed_child(request):
+        """Hold only the child HTTP-equivalent request until the enclosing deadline expires."""
+        if request.metadata["agent_role"] == "planner":
+            await asyncio.sleep(3)
+        return await generate(request)
+
+    provider.generate = delayed_child
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = general_payload("never", wall_time_limit_ms=2000)
+    payload["role_bindings"]["planner"] = dict(payload["role_bindings"]["controller"])
+    result = (await client.post(f"/api/v1/runs/{run['run_id']}/agent-workflows",
+                                json=payload)).json()
+    assert result["status"] == "outcome_unknown", result.get("error")
+    assert result["error"]["outcome_is_known"] is False
+    assert result["error"]["error_code"] == "agent_provider_outcome_unknown"
+    assert result["final_output"] is None
+
+
 @pytest.mark.parametrize("extra_text", ["", "A" * 40000], ids=["normal", "large-prose"])
 async def test_general_agent_delegates_and_records_real_task_agent_and_handoff(
     client,

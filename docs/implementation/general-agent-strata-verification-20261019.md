@@ -435,6 +435,32 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 未执行真实模型/本地MySQL-MinIO快照写入、并发竞争或跨进程恢复验收；下一步应先验证真实对象和固定历史集合查询。
   本次没有新增Provider调用、没有前端修改或部署，Python/Shell与跨进程续跑继续暂缓。
 
+### 检查点与输入查询真实存储、委派期限错误修复（2026-10-20）
+
+- 代码64b4fc8，启动时工作区干净；检查无近期活动任务后重启本地API，旧九月记录保持原样。
+  使用Strata、FULLTEXT03.pdf、Planner绑定和on_verification_failure，只发起一次新请求。
+  问题为“请将附件首部论文主题核对委派给 planner 一次，只读开头少量原文，要求真实短引用，不要通读。
+  主 Agent 收到交接后，通过工具目录加载 get_task_input_coverage 并查询当前任务实际输入，然后依据交接原文用两句话说明论文研究对象与未读限制，引用 [S1] 等实际来源。
+  不要把输入记录等同于理解，不要重复委派，不需要运行代码。”
+- 报告 `/tmp/general-agent-checkpoints-strata-20261020.json`；Run `44701934-f28f-4719-85df-11204657aa7f`，
+  Workflow `630300f1-69c3-4d09-a83a-af96b845a1f8`。失败，601.975秒，7次请求，6次completed、最后一次outcome_unknown。
+  已知输入37,298、输出4,216、合计41,514 Token，缓存输入17,794；最后请求用量、全部推理用量及总费用未知。
+  一直观察同一脚本/工作流，没有因等待而重发；第7次请求长时间无返回，不能断言是重复思考或供应商排队。
+- 主Agent读取20块并委派；子任务额外多次搜索工具目录后加载和调用输入查询。该查询成功返回当前子任务4个请求，
+  每次20块原文、audit_complete均为true。原文来自显式交接输入，不把目录查询或文件搜索当作额外阅读。
+  多余目录搜索是效率问题，不是重复文件读取；子任务没有提交结果，Handoff/最终回答均未完成。
+- 真实MySQL/MinIO登记28个快照对象（14份JSON及对应Markdown），全部哈希通过；逐Task版本链与Attempt归属核对通过。
+  快照只证明当时执行事实已保存，不代表存在完成终态快照、自动恢复或成功回答。
+  7份实际请求清单重建一致；本例仍没有成功返回的委派工具包，不能作为非空delegated_source_manifest的真实验收。
+- 运行在600秒任务期限到达时中断了子供应商请求，Attempt正确记录provider_outcome_unknown，
+  但外层TimeoutError被错误转换成agent_workflow_internal_error/outcome_is_known=true。
+  新回归在2秒期限下复现；最初1秒夹具先被最低剩余时间拒绝，调整为2秒后才复现真实缺陷。
+  修复检查持久Attempt的未知结果，不再仅凭外层异常类判定已知；不修改历史失败记录。
+- 回归：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_general_delegation.py apps/api/tests/test_general_agent.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_task_execution_checkpoint.py --tb=short`，
+  54通过（23.87秒）；Ruff及git diff --check通过。未为修复额外发起真实模型请求。
+- 验证脚本新增检查点对象/链/归属核对，并保留首次测得耗时。对本报告执行--observe仅只读补证据，
+  确认耗时仍为601.975秒，没有把事后核对时间加入执行耗时。无前端修改、无推送部署、无DeepSeek调用。
+
 ## 尚未验收的完整目标
 
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。

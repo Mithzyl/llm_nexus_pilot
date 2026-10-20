@@ -316,7 +316,19 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         except Exception as error:
             await self.db_session.rollback()
             workflow = await self.db_session.get(LlmAgentWorkflowExecution, execution_id)
-            await self._fail_workflow(workflow, error=self._public_error_from_exception(error))
+            # An enclosing delegation deadline converts child cancellation into
+            # TimeoutError. Persisted Attempt facts must still determine whether
+            # the upstream outcome is known, not the outer exception's class.
+            public_error = (
+                self._workflow_error(
+                    "agent_provider_outcome_unknown",
+                    "Interrupted provider outcome is unknown",
+                    outcome_is_known=False,
+                )
+                if await self.workflow_state.workflow_has_outcome_unknown_attempt(workflow)
+                else self._public_error_from_exception(error)
+            )
+            await self._fail_workflow(workflow, error=public_error)
         finally:
             await self.workflow_state.reconcile_terminal_usage(execution_id)
 
