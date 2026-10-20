@@ -33,6 +33,30 @@ from nexuspilot_api.services.tool_context import bound_file_page
 from nexuspilot_api.services.user_file_service import read_parsed_file
 
 
+def tool_argument_validation_errors(error: ValidationError, schema: type[BaseModel]) -> list[dict]:
+    """Expose eight declared-field errors at most, never input values or arbitrary extra keys."""
+    allowed_types = {
+        "missing", "extra_forbidden", "string_type", "string_pattern_mismatch",
+        "string_too_short", "string_too_long", "int_type", "int_parsing",
+        "greater_than", "greater_than_equal", "less_than", "less_than_equal",
+        "list_type", "dict_type", "bool_type", "bool_parsing", "literal_error",
+        "too_long", "too_short",
+    }
+    result = []
+    for item in error.errors(include_input=False, include_url=False, include_context=False)[:8]:
+        location = item["loc"]
+        root = location[0] if location else None
+        field = root if isinstance(root, str) and root in schema.model_fields else None
+        entry = {
+            "field": field,
+            "type": item["type"] if item["type"] in allowed_types else "invalid_value",
+        }
+        if field and len(location) > 1 and isinstance(location[1], int):
+            entry["index"] = location[1]
+        result.append(entry)
+    return result
+
+
 class EmptyArguments(BaseModel):
     """Reject all model-authored identity, permission or filesystem arguments."""
 
@@ -235,6 +259,7 @@ class AgentFileToolService:
         """Claim once and check policy before dispatching a pinned registered operation.
 
         File operations remain read-only; task writes use trusted catalog bounds.
+        Invalid input returns bounded field diagnostics without echoing supplied values.
         A delegated model task inherits its enclosing workflow deadline instead
         of the short file-read timeout. Both retain durable results and cancellation.
         """
@@ -286,7 +311,15 @@ class AgentFileToolService:
                 return await self._finish(record, "permission_denied", error="tool_not_allowed")
             if offered_versions.get(tool.name) != tool.version:
                 return await self._finish(record, "permission_denied", error="tool_not_loaded")
-            arguments = tool.arguments.model_validate(call.arguments)
+            try:
+                arguments = tool.arguments.model_validate(call.arguments)
+            except ValidationError as error:
+                return await self._finish(
+                    record, "failed", error="invalid_arguments",
+                    result={"validation_errors": tool_argument_validation_errors(
+                        error, tool.arguments,
+                    )},
+                )
             record.permission_decision = "allowed"
             record.status = "running"
             await self.db.commit()

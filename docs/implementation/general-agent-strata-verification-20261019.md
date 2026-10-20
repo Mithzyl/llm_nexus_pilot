@@ -761,6 +761,46 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 完整委派复验：完成运行但来源核对未通过（2026-10-20）
+
+- 本地API仍为`6dd063a`，相同PDF、原完整问题、planner委派及条件审核策略；
+  本次运行中修改的笔记错误反馈没有加载，不能算它的真实测试。
+  Run `6d36a713-7385-4a47-843f-2f7415796ca0`，
+  Workflow `c3515500-9ffc-4a45-9310-a799bb950c2e`，
+  Session `07b7c661-ccd1-4514-b1cb-92179c80ad48`，
+  报告`/tmp/general-agent-native-full-strata-20261020.json`。
+- 运行completed，459.528秒，11次模型请求；输入151,616、输出23,082，
+  合计174,698 Token，缓存输入47,715；独立推理用量和费用未知。
+  完成一次委派/Handoff、实际输入查询、Reviewer三次搜索和一次补读、submit_review、
+  最终回答保存。业务轮次1、内容修正0、格式修正0。
+- **来源核对不通过，不能以completed宣称答案验收成功**：候选/最终回答用S1支持包含GPT-4、
+  Gemini Pro和RCMP的论文研究对象。候选保存的S1对应第1页1–20行，
+  S2才对应第1页21–22行和第3页1–18行；Reviewer却声称这些内容已由“S1第1页标题与第3页摘要”
+  核实，提交supported且未填source_aliases。需要继续查Handoff、主Agent与Reviewer的输入、
+  来源编号及审核要求；本次不能算内容修正后交付通过，也不能直接把错误归因于模型能力。
+- planner两次save_task_note都因source_aliases[0]的string_pattern_mismatch失败。
+  原工具只返回invalid_arguments，没有字段说明。Handoff仍实际保存，但不能据此声称笔记成功。
+- 21条消息/节点/Handoff/工具正文SQL为空、MinIO对象及内容哈希通过；
+  48个执行观察对象、11份实际输入清单、2份候选输入快照已核对。
+  Playwright运行中刷新继续跟踪；完成回答与审核结果在刷新后恢复。
+  证据`output/playwright/general-agent-native-full-{running,refreshed,completed,restored}.yml`。
+  恢复通过不代表恢复的结论正确。
+- 本次只用Strata，不用DeepSeek，不改前端，不推送或部署；终态后仅执行只读observe。
+
+### 工具参数错误的可修正反馈（2026-10-20）
+
+针对上述笔记失败，输入Schema校验现在返回最多8条已声明顶层字段、可选数组索引和固定错误类别。
+不回显输入值、未知额外键名、异常消息或上下文；权限检查先于校验，内部分派异常不套用输入字段诊断。
+错误状态仍是failed/invalid_arguments，不绕过来源格式和归属校验，不把失败调用改成成功。
+该结果通过原Tool Call对象保存，沿用SQL正文为空、MinIO存正文方式，无迁移。
+
+测试先确认旧实现没有字段反馈而失败；实现后检查敏感值/额外键不回显，
+并用脚本化Provider验证失败后另发正确参数、保存成功、读回笔记，保留两次调用的不同状态。
+后者初次测试夹具漏填ModelResponse必需字段，补齐夹具后通过，并非产品修复。
+命令：
+`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_agent_task_notes.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_review_submission.py apps/api/tests/test_tool_catalog.py --tb=short`
+——68项通过（15.86秒），Ruff及diff检查通过。真实模型是否据此修正仍待验证。
+
 ### 协议观察报告兼容检查（2026-10-20）
 
 验证脚本现在把私有进度对象中的protocol_evidence写入本地报告，不复制正文或私有推理。

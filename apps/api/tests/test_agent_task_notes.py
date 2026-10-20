@@ -138,6 +138,61 @@ async def test_invalid_note_arguments_never_create_a_successful_note(
         assert not saved
 
 
+async def test_invalid_note_feedback_identifies_field_without_echoing_supplied_values(client):
+    """Give the model actionable schema feedback while withholding arbitrary input and key names."""
+    provider = NoteProvider(arguments={
+        "note": "draft",
+        "source_aliases": ["PRIVATE_SOURCE"],
+        "PRIVATE_FIELD": "PRIVATE_VALUE",
+    })
+    await run_notes(client, provider)
+    result = provider.results[-1]
+    assert result["status"] == "failed"
+    assert result["error_code"] == "invalid_arguments"
+    assert {"field": "source_aliases", "index": 0, "type": "string_pattern_mismatch"} in (
+        result["result"]["validation_errors"]
+    )
+    assert {"field": None, "type": "extra_forbidden"} in result["result"]["validation_errors"]
+    assert "PRIVATE_" not in json.dumps(result)
+
+
+async def test_note_can_correct_arguments_after_failed_tool_without_weakening_schema(
+    client, test_database_session_factory,
+):
+    """Keep the failed call, allow a separately valid call, and read only the committed note."""
+    class CorrectingNoteProvider(NoteProvider):
+        """Fix one malformed source-array entry after inspecting the failed tool result."""
+
+        async def generate(self, request):
+            """Use returned field feedback instead of repeating the identical invalid call."""
+            previous = [message for message in request.messages if message.role.value == "tool"]
+            if len(previous) == 1:
+                feedback = json.loads(previous[-1].content)
+                assert feedback["status"] == "failed"
+                assert feedback["result"]["validation_errors"][0]["field"] == "source_aliases"
+                self.requests.append(request)
+                return ModelResponse(
+                    tool_calls=[ToolCall(
+                        id="corrected-note", name="save_task_note",
+                        arguments={"note": "No source has been read yet.", "source_aliases": []},
+                    )],
+                    finish_reason="tool_calls", input_tokens=10, output_tokens=5,
+                    latency_ms=1, raw_response={"fixture": "corrected-note"},
+                )
+            return await super().generate(request)
+
+    provider = CorrectingNoteProvider(arguments={"note": "draft", "source_aliases": ["[S1]"]})
+    await run_notes(client, provider)
+    assert provider.note_id is not None
+    async with test_database_session_factory() as db:
+        calls = list(await db.scalars(select(LlmModelToolCall).where(
+            LlmModelToolCall.tool_name == "save_task_note",
+        )))
+        assert sorted(call.status for call in calls) == ["completed", "failed"]
+        failed = next(call for call in calls if call.status == "failed")
+        assert failed.error_code == "invalid_arguments"
+
+
 @pytest.mark.parametrize("revoke", [False, True])
 async def test_note_keeps_actual_sources_and_history_rechecks_revoked_files(
     client, test_database_session_factory, monkeypatch, revoke,

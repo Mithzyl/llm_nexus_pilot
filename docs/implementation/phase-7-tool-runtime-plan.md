@@ -294,6 +294,12 @@ Messages分别记录stop_reason和message_stop_received；GenerateContent记录f
 submit_review保存和最终回答成功，77.445秒/35,771 Token，浏览器刷新恢复通过。
 该样本没有委派或内容修正，不能替代上述失败范围；详见
 [原生审核成功样本](general-agent-strata-verification-20261019.md#原生审核的独立成功样本2026-10-20)。
+完整委派复验随后completed，但出现“S1仅第1页、Reviewer却声称S1包含第3页摘要”的反证；
+来源语义审核未通过，尚不能将该完成记录算作准确交付。具体见
+[完整委派复验](general-agent-strata-verification-20261019.md#完整委派复验完成运行但来源核对未通过2026-10-20)。
+同次笔记调用两次因来源编号格式失败；已补充受限字段错误反馈并通过68项离线回归，
+权限/Schema要求不变，真实修正效果待验证。下一步检查来源在Handoff与审核输入中的传递，
+不通过自动替换模型引用或后端拼接结论来伪造审核通过。
 
 角色说明修复后的Strata样本不再重复搜索planner工具，但Reviewer输出说明文字、Markdown代码块及
 本批之外的决定，引起高成本格式修正，最终仍在期限内未完成。详见
