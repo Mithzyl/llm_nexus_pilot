@@ -26,7 +26,9 @@ REVIEW_INSTRUCTIONS = (
     "candidate, and is unavailable for this review. Do not reject another task's attempt "
     "because it is absent from your own requests. File source aliases cannot prove "
     "platform request counts. If the relevant snapshot is unavailable, mark unconfirmed. "
-    "You may read more using the supplied tools. Return only JSON: "
+    "You may read more using the supplied tools. Prefer submit_review to submit exactly this "
+    "batch's decisions; make it the only tool call in that response. No prose JSON is needed "
+    "after a valid submission. If not using that tool, the compatible output is only JSON: "
     '{"decisions":[{"unit_id":"u1","verdict":"supported|revise|unconfirmed",'
     '"feedback":"short reason or required change","source_aliases":["S1"]}]}. '
     "Return exactly one decision for each review_unit, no other units or global verdict. "

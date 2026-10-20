@@ -653,10 +653,44 @@ outcome_unknown）；实现后通过，并增加不调用任何审核工具也�
   证据 `output/playwright/general-agent-role-scope-{running,refreshed,terminal,restored}.yml`。
 - 验证脚本增加保存快照原观察时间（旧对象保持null）；单项回归通过（0.52秒），Ruff及diff检查通过。
 
-本次停止重复相同付费样本。下一步评估并实现Reviewer的原生工具提交入口，复用当前已正常工作的工具
+本次停止重复相同付费样本。该记录提交时下一步为实现Reviewer的原生工具提交入口，复用当前已正常工作的工具
 Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON；纯正文旧路径保留兼容。
 该调整只能减少格式包装与记录组装问题，不能保证模型判断正确或缩短推理时间。
 完整范围、失败行为与验收要求在阶段7维护；实现/离线验证后再做真实测试。
+
+## 原生审核提交首批实现（2026-10-20）
+
+状态：代码与离线回归已完成，Strata真实验证未执行；本地API仍运行前一提交。
+
+- 新增 `submit_review` 1.0.0，仅General Agent当前Reviewer批次提供；主Agent、planner和快速回复
+  没有该能力。单元ID枚举/决定数量/来源编号由当前服务端数据约束，模型不能提供Task、Run或候选ID。
+- 执行时检查调用Attempt的Task归属、角色与运行状态、候选Run及完成状态、运行中审核节点的候选关联；
+  与兼容JSON路径共用逐单元字段/缺少/重复/未知ID及来源校验。只读候选元数据作身份检查，
+  不为拒绝另一个Run的目标而读取其候选正文。
+- 有效调用通过已有Tool Call写入MinIO后，循环检查停止状态并结束本批。后端读取该已保存决定，
+  组装原general_review.v2，不修改供应商原始正文、不创建额外模型Attempt。多批仍共用原任务期限。
+  模型输出合法字段不是内容已被证明；三种策略及返工回到主Agent的职责保持不变。
+- 非法参数先保留失败工具记录，再进入原有一次有限格式修正；本次修正仍使用兼容JSON正文且不提供工具，
+  保留已校验决定并明确待修正单元，按原output_repair事件计数和计费。权限/归属/保存失败不走字段修正。
+  与其他工具混在同一模型响应的提交在执行任何工具前失败，原模型响应保留；不会先写笔记再批准。
+- 取消继续传播CancelledError，随后查询恢复cancelled终态；保存失败无最终答案。已完成提交随工作流
+  幂等重读不再调用模型。历史JSON审核、Handoff及数据库结构不变，无迁移或前端改动。
+- 测试先增加有效原生提交和错误单元修正两个场景，旧实现均因未提供工具失败。
+  新测试共21项，验证有效提交无额外模型调用、7类正常/非法输入、混合调用不执行工具、保存失败/取消、
+  主Agent拒绝、跨Task/Run/未关联候选拒绝、两批覆盖、内容修正按策略流转、文件工具返回引用及撤权拒绝。
+  既有planner回归同时确认其工具列表没有submit_review。
+- 多批次检查另复现消息顺序问题：上一批原生提交后的工具结果成为历史最后消息。
+  已在其后追加下一批的候选ID/单元ID指令，不重复原文；相应测试先失败再通过。
+  既有格式修正通过tool_history_before_input把新修正要求放在历史之后，保持此行为并增加断言，
+  没有另加一份重复修正消息。
+- 执行：
+  `PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_review_submission.py apps/api/tests/test_task_input_coverage.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_task_execution_checkpoint.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_general_candidate.py apps/api/tests/test_general_review.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_task_read_coverage.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_agent_output_repair.py --tb=short`
+  ——最终239项通过（59.65秒）。Ruff及diff检查通过。
+
+本轮使用SQLite、内存对象存储和脚本化Provider，未产生Strata或DeepSeek调用。
+下一步加载已提交代码再验证Strata是否实际使用原生提交、字段修正/内容返工、最终答案及刷新恢复；
+不提前声称格式成本下降，也不将观察时点的语义误判视为已经解决。原始结束信号、受控草稿续接、
+完整后端与真实隔离/恢复验收仍按既有未完成列表推进。
 
 ## 尚未验收的完整目标
 

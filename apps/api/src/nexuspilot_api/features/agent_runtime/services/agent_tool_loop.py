@@ -41,8 +41,9 @@ class ToolLoopState:
 async def run_file_tool_loop(
     service, workflow, node, options, *, state=None, present_result=None, before_model_call=None,
     tool_service=None, checkpoint=None,
+    terminal_tool_name=None,
 ):
-    """Continue tools and optionally checkpoint actual model/tool returns without resuming them."""
+    """Return a sole designated submission only after durable recording and stop checks."""
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
     task = await db.get(LlmTask, node.task_id)
@@ -95,6 +96,11 @@ async def run_file_tool_loop(
             response.tool_calls
         ):
             raise InvalidRequestError("Invalid or excessive tool call batch")
+        if (terminal_tool_name and len(response.tool_calls) != 1
+                and any(call.name == terminal_tool_name for call in response.tool_calls)):
+            raise InvalidRequestError(
+                "Review submission must be the only tool call in its response"
+            )
         assistant = Message(
             role=MessageRole.ASSISTANT,
             content=response.output_text or "",
@@ -156,3 +162,6 @@ async def run_file_tool_loop(
                     content=json.dumps(visible_result, ensure_ascii=False),
                 )
             )
+            if call.name == terminal_tool_name:
+                await service.workflow_state.ensure_workflow_running(workflow)
+                return ToolLoopResult(response, history, records)

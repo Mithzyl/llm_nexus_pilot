@@ -1,9 +1,9 @@
-"""Private, immutable task notes using existing audited Tool Calls and MinIO bodies.
+"""Task-scoped notes, input audits, delegation and native review submission.
 
-These are model-authored working notes, not verified claims, shared Memory, or
-restart checkpoints. Only the current task can read them. A save succeeds when
-the shared executor commits its output; no separate object pointer or side write
-can claim success before that commit.
+Notes are private model-authored work, not verified claims or shared Memory.
+Review judgments remain model-authored and are bound to a server-selected candidate.
+Both use existing audited Tool Calls and MinIO bodies; only a committed output can
+claim persistence, and no separate object pointer bypasses the shared executor.
 """
 
 from typing import Annotated, Literal
@@ -12,6 +12,12 @@ from pydantic import Field
 from sqlalchemy import select
 
 from nexuspilot_api.core.errors import ResourceConflictError
+from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import GeneralUnitReview
+from nexuspilot_api.features.agent_runtime.services.general_review_service import (
+    REVIEW_BATCH_SIZE,
+    ReviewDecisionError,
+    parse_review_decisions,
+)
 from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
     authorize_input_coverage_history,
     task_input_coverage,
@@ -21,7 +27,14 @@ from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
     read_task_input_snapshot,
 )
 from nexuspilot_api.features.agent_runtime.services.task_read_coverage import task_read_coverage
-from nexuspilot_api.models import LlmModelAttempt, LlmModelToolCall, LlmRun, LlmTask, TaskStatus
+from nexuspilot_api.models import (
+    LlmAgentWorkflowNodeExecution,
+    LlmModelAttempt,
+    LlmModelToolCall,
+    LlmRun,
+    LlmTask,
+    TaskStatus,
+)
 from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
 from nexuspilot_api.services.agent_file_tool_service import (
     FILE_TOOL_CATALOG,
@@ -87,6 +100,23 @@ class TaskNote(EmptyArguments):
     next_actions: list[str]
     sources: dict[str, FileEvidenceReference]
     content_verified: Literal[False] = False
+
+
+class SubmitReviewArguments(EmptyArguments):
+    """Accept only model decisions; candidate identity and expected units are server-owned."""
+
+    decisions: list[GeneralUnitReview] = Field(min_length=1, max_length=REVIEW_BATCH_SIZE)
+
+
+SUBMIT_REVIEW_TOOL = RegisteredTool(
+    name="submit_review", version="1.0.0",
+    description="Submit decisions for exactly the current review_units. Use this call alone, "
+    "without other tool calls in the same response. A saved valid submission finishes this batch; "
+    "do not also write JSON prose. Candidate identity and policy are supplied by the server.",
+    arguments=SubmitReviewArguments, output=FileToolResult,
+    required_capabilities=frozenset({"review_submit"}), initially_loaded=True,
+    keywords=("审核", "review", "submit"), risk_level="task_write",
+)
 
 
 NOTE_TOOLS = (
@@ -160,27 +190,31 @@ DELEGATE_TOOL = RegisteredTool(
 )
 GENERAL_TOOL_CATALOG = ToolCatalog(
     (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS,
-     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, INPUT_SNAPSHOT_TOOL, DELEGATE_TOOL)
+     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, INPUT_SNAPSHOT_TOOL, DELEGATE_TOOL,
+     SUBMIT_REVIEW_TOOL)
 )
 
 
 class GeneralAgentToolService(AgentFileToolService):
-    """Add task notes, read/input audits and delegation without enabling host writes."""
+    """Scope notes, input audits, delegation and review submission without enabling host writes."""
 
     def __init__(
         self, db, storage, *, task_id, sources, allowed_task_ids,
-        delegate=None, input_snapshots=None,
+        delegate=None, input_snapshots=None, review_candidate_id=None, review_unit_ids=None,
     ):
-        """Bind server-owned task and source mappings; models cannot expand this scope."""
+        """Bind server-owned scope and optional reviewer batch; models cannot select the target."""
         super().__init__(db, storage)
         self.task_id = task_id
         self.sources = sources
         self.allowed_task_ids = allowed_task_ids
         self.delegate = delegate
         self.input_snapshots = input_snapshots if input_snapshots is not None else {}
+        self.review_candidate_id = review_candidate_id
+        self.review_unit_ids = list(review_unit_ids or [])
         self.catalog = GENERAL_TOOL_CATALOG
         self.capabilities = frozenset(
             {"read", "task_notes"} | ({"delegate"} if delegate else set())
+            | ({"review_submit"} if review_candidate_id and self.review_unit_ids else set())
         )
         self.loaded_versions = {
             tool.name: tool.version for tool in self.catalog.entries if tool.initially_loaded
@@ -188,11 +222,29 @@ class GeneralAgentToolService(AgentFileToolService):
         if self.input_snapshots:
             self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
+    def definitions(self):
+        """Constrain native review schemas to the server-selected batch, not model-supplied IDs."""
+        definitions = super().definitions()
+        for definition in definitions:
+            if definition.name == SUBMIT_REVIEW_TOOL.name:
+                schema = definition.input_schema
+                schema["$defs"]["GeneralUnitReview"]["properties"]["unit_id"]["enum"] = (
+                    self.review_unit_ids
+                )
+                schema["properties"]["decisions"]["minItems"] = len(self.review_unit_ids)
+                schema["properties"]["decisions"]["maxItems"] = len(self.review_unit_ids)
+                aliases = schema["$defs"]["GeneralUnitReview"]["properties"]["source_aliases"]
+                if self.sources:
+                    aliases["items"]["enum"] = sorted(self.sources)
+                else:
+                    aliases["maxItems"] = 0
+        return definitions
+
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize task notes, read/input queries and delegation before shared persistence."""
+        """Authorize task work and validate reviewer decisions before shared durable persistence."""
         if name not in NOTE_NAMES | {
             READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
-            DELEGATE_TOOL.name,
+            DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name,
         }:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
@@ -201,6 +253,44 @@ class GeneralAgentToolService(AgentFileToolService):
                 or run is None or task.status != TaskStatus.RUNNING
                 or run.status.value not in {"pending", "running"}):
             raise ToolOperationError("task_not_running", status="permission_denied")
+        if name == SUBMIT_REVIEW_TOOL.name:
+            if task.assigned_role != "reviewer":
+                raise ToolOperationError(
+                    "review_submission_not_allowed", status="permission_denied",
+                )
+            candidate = (await self.db.execute(select(
+                LlmAgentWorkflowNodeExecution.run_id,
+                LlmAgentWorkflowNodeExecution.output_type,
+                LlmAgentWorkflowNodeExecution.status,
+            ).where(
+                LlmAgentWorkflowNodeExecution.node_execution_id == self.review_candidate_id,
+            ))).one_or_none()
+            review_node = await self.db.scalar(select(LlmAgentWorkflowNodeExecution).where(
+                LlmAgentWorkflowNodeExecution.task_id == task.task_id,
+                LlmAgentWorkflowNodeExecution.run_id == attempt.run_id,
+                LlmAgentWorkflowNodeExecution.output_type == "general_review",
+            ))
+            if (candidate is None
+                    or candidate.run_id != attempt.run_id
+                    or candidate.output_type != "general_candidate"
+                    or candidate.status.value != "completed"
+                    or review_node is None or review_node.status.value != "running"
+                    or self.review_candidate_id not in (
+                        review_node.input_json.get("source_node_execution_ids", [])
+                    )):
+                raise ToolOperationError(
+                    "review_submission_not_allowed", status="permission_denied",
+                )
+            try:
+                decisions = parse_review_decisions(
+                    arguments.model_dump_json(), self.review_unit_ids, self.sources,
+                )
+            except ReviewDecisionError as error:
+                raise ToolOperationError("invalid_review_submission") from error
+            return {
+                "candidate_node_id": self.review_candidate_id,
+                "decisions": [decision.model_dump(mode="json") for decision in decisions],
+            }
         if name == DELEGATE_TOOL.name:
             if self.delegate is None:
                 raise ToolOperationError("delegation_not_allowed", status="permission_denied")
@@ -275,17 +365,20 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck source grants and ownership before sending note/read/input history."""
+        """Recheck task ownership, review target and source grants before reusing tool history."""
         await super().validate_history(run_id, records)
         for record in records:
             if (record.tool_name not in NOTE_NAMES | {
                     READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
-                    DELEGATE_TOOL.name}
+                    DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name}
                     or record.status != "completed"):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
                 raise ResourceConflictError("Task note history belongs to another task")
+            if record.tool_name == SUBMIT_REVIEW_TOOL.name:
+                if record.output_json["result"]["candidate_node_id"] != self.review_candidate_id:
+                    raise ResourceConflictError("Review history belongs to another candidate")
             if record.tool_name == INPUT_SNAPSHOT_TOOL.name:
                 result = record.output_json["result"]
                 if result["snapshot_id"] not in self.input_snapshots or result["run_id"] != run_id:

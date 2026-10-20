@@ -7,6 +7,7 @@ and typed Worker generation are never called. No extra model call synthesizes fi
 import asyncio
 import copy
 import hashlib
+import json
 from time import monotonic
 
 from nexuspilot_models.contracts import Message, MessageRole
@@ -390,7 +391,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Compose scoped tools and checkpoint returns; only the main role delegates."""
+        """Scope delegation and review submission by role, and checkpoint durable returns."""
         delegated_roles = sorted({"planner", "researcher"} & payload.role_bindings.keys())
         can_delegate = task.assigned_role == "controller" and bool(delegated_roles)
 
@@ -446,7 +447,15 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 sources=self.sources, allowed_task_ids=self.general_task_ids,
                 delegate=delegate if can_delegate else None,
                 input_snapshots=self.input_snapshot_refs,
+                review_candidate_id=(
+                    values.get("candidate_node_id") if task.assigned_role == "reviewer" else None
+                ),
+                review_unit_ids=(
+                    [unit["unit_id"] for unit in values.get("review_units", [])]
+                    if task.assigned_role == "reviewer" else None
+                ),
             ),
+            terminal_tool_name="submit_review" if task.assigned_role == "reviewer" else None,
         )
         return loop.response
 
@@ -504,17 +513,41 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         review_input,
         review_history,
         batch_index,
+        submission_record=None,
     ):
-        """Repair decisions once, retaining accepted units and auditing nested original evidence."""
+        """Validate saved native decisions or legacy prose, with one shared finite field repair."""
         expected = [unit["unit_id"] for unit in review_input["review_units"]]
         pending = expected
         accepted = {}
         for attempt in range(2):
-            self.model_node_service._require_complete_response(response)
-            try:
-                decisions = parse_review_decisions(
-                    response.output_text or "", pending, self.sources
+            original_submission = None
+            if attempt == 0 and submission_record is not None:
+                can_repair = (
+                    submission_record.status == "failed"
+                    and submission_record.error_code in {
+                        "invalid_arguments", "invalid_review_submission",
+                    }
                 )
+                if submission_record.status != "completed" and not can_repair:
+                    raise InvalidRequestError(
+                        "Native review submission could not be saved or allowed"
+                    )
+                original_submission = submission_record.input_json
+                if submission_record.status == "completed":
+                    result = submission_record.output_json["result"]
+                    if result["candidate_node_id"] != review_input["candidate_node_id"]:
+                        raise InvalidRequestError("Review submission belongs to another candidate")
+                    review_text = json.dumps({"decisions": result["decisions"]})
+                else:
+                    review_text = json.dumps(original_submission)
+            else:
+                self.model_node_service._require_complete_response(response)
+                review_text = response.output_text or ""
+            try:
+                decisions = parse_review_decisions(review_text, pending, self.sources)
+                if (attempt == 0 and submission_record is not None
+                        and submission_record.status != "completed"):
+                    raise ReviewDecisionError("Native submission was rejected", expected)
             except ReviewDecisionError as error:
                 if attempt:
                     raise InvalidRequestError(
@@ -545,7 +578,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     binding=payload.role_bindings[task.assigned_role],
                     role=task.assigned_role,
                     purpose=REVIEW_INSTRUCTIONS + " Repair only the requested pending units; "
-                    "do not repeat accepted decisions or invent a different judgment.",
+                    "do not repeat accepted decisions or invent a different judgment. "
+                    "No tools are available for this repair; "
+                    "return only the JSON decisions object.",
                     model_output=None,
                     model_input={
                         "candidate_context": {
@@ -558,6 +593,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         },
                         "validation_error": str(error),
                         "original_output": response.output_text,
+                        "original_submission": original_submission,
                     },
                     tool_messages=review_history,
                     runtime_source_paths=(("candidate_context", "original_sources"),),
@@ -580,7 +616,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         raise AssertionError("unreachable")
 
     async def _review_candidate(self, workflow, node, payload, task, review_input):
-        """Review all located units in small batches under one deadline and durable node."""
+        """Consume saved native submissions or legacy JSON per batch under one shared deadline."""
         state = ToolLoopState()
         decisions = []
         units = review_input["candidate_units"]
@@ -595,6 +631,18 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     for unit in units[offset : offset + REVIEW_BATCH_SIZE]
                 ],
             }
+            if offset:
+                # A prior native submission ends with a tool result in history.
+                # Place the next assignment after it, not only before the old dialogue.
+                state.history.append(Message(
+                    role=MessageRole.USER,
+                    content=json.dumps({
+                        "instruction": "The previous batch is recorded. Review only this next "
+                        "batch using the current candidate and authorized sources.",
+                        "candidate_node_id": review_input["candidate_node_id"],
+                        "review_unit_ids": [unit["unit_id"] for unit in values["review_units"]],
+                    }, ensure_ascii=False),
+                ))
             response = await self._turn(
                 workflow,
                 node,
@@ -614,6 +662,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 review_input=values,
                 review_history=state.history,
                 batch_index=batch_index,
+                submission_record=next((
+                    record for record in state.records
+                    if record.attempt_id == response.id and record.tool_name == "submit_review"
+                ), None),
             )
             await self._resolve_sources(workflow)
             decisions.extend(reviewed)

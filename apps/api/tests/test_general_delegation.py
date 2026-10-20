@@ -36,6 +36,7 @@ class DelegatingProvider(GeneralProvider):
         tools = {tool.name for tool in request.tools}
         if role == "planner":
             assert "delegate_task" not in tools
+            assert "submit_review" not in tools
             assert any("Compare two approaches" in m.content for m in request.messages)
             contexts = []
             for message in request.messages:
