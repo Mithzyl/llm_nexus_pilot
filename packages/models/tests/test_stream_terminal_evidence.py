@@ -10,6 +10,63 @@ from nexuspilot_models.errors import ModelProviderError
 from nexuspilot_models.providers.strata import StrataChatProvider
 from nexuspilot_models.transport import HttpTransport
 from nexuspilot_models.stream_progress import ModelStreamProgress
+from nexuspilot_models.providers.openai import OpenAIResponsesProvider
+from nexuspilot_models.providers.anthropic import AnthropicMessagesProvider
+from nexuspilot_models.providers.gemini import GeminiGenerateContentProvider
+
+
+@pytest.mark.parametrize("provider_class,provider_name,chunk,expected", [
+    (OpenAIResponsesProvider, ProviderName.OPENAI,
+     {"type": "response.completed", "response": {"status": "completed"}},
+     {"protocol": "responses_sse", "terminal_event": "response.completed"}),
+    (OpenAIResponsesProvider, ProviderName.OPENAI,
+     {"type": "response.incomplete", "response": {"status": "incomplete"}},
+     {"protocol": "responses_sse", "terminal_event": "response.incomplete"}),
+    (AnthropicMessagesProvider, ProviderName.ANTHROPIC,
+     {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+     {"protocol": "messages_sse", "stop_reason": "end_turn", "message_stop_received": False}),
+    (AnthropicMessagesProvider, ProviderName.ANTHROPIC,
+     {"type": "message_stop"},
+     {"protocol": "messages_sse", "stop_reason": None, "message_stop_received": True}),
+    (GeminiGenerateContentProvider, ProviderName.GEMINI,
+     {"candidates": [{"finishReason": "STOP"}]},
+     {"protocol": "generate_content_sse", "finish_reason": "STOP"}),
+    (AnthropicMessagesProvider, ProviderName.ANTHROPIC,
+     {"type": "message_delta", "delta": {"stop_reason": "PRIVATE_VALUE"}},
+     {"protocol": "messages_sse", "stop_reason": "unknown", "message_stop_received": False}),
+    (GeminiGenerateContentProvider, ProviderName.GEMINI,
+     {"candidates": [{"finishReason": "PRIVATE_VALUE"}]},
+     {"protocol": "generate_content_sse", "finish_reason": "unknown"}),
+])
+async def test_native_protocol_signal_survives_subsequent_read_error(
+    provider_class, provider_name, chunk, expected,
+):
+    """Observe each existing adapter's wire signal without accepting a transport failure."""
+    class BrokenStream(httpx.AsyncByteStream):
+        """Send the selected protocol event and then disconnect."""
+
+        async def __aiter__(self):
+            """Exercise real SSE parsing without a paid provider request."""
+            yield ("data: " + json.dumps(chunk) + "\n\n").encode()
+            raise httpx.ReadError("PRIVATE_UPSTREAM_ERROR")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, stream=BrokenStream()),
+    )) as client:
+        provider = provider_class(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid", api_key="dummy",
+        )
+        request = ModelRequest(
+            provider=provider_name, model="fixture",
+            messages=[{"role": "user", "content": "test"}],
+        )
+        with pytest.raises(ModelProviderError) as caught:
+            _ = [event async for event in provider.stream(request)]
+    assert caught.value.error_type == "network_error"
+    assert caught.value.stream_progress["protocol_evidence"] == expected
+    assert caught.value.stream_progress["response_complete"] is False
+    assert "PRIVATE_VALUE" not in json.dumps(caught.value.stream_progress)
 
 
 @pytest.mark.parametrize("finish,done", [(None, False), ("stop", False), (None, True)])

@@ -61,7 +61,7 @@ class GeminiGenerateContentProvider:
 
     @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize GenerateContent SSE, rejecting blocked prompts, errors and missing finish."""
+        """Normalize GenerateContent SSE and retain private finish observations on interruption."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -70,6 +70,11 @@ class GeminiGenerateContentProvider:
         tool_calls: list[ToolCall] = []
         usage: dict[str, Any] = {}
         finish_reason = None
+        protocol_evidence = request._stream_protocol_evidence
+        protocol_evidence.clear()
+        protocol_evidence.update({
+            "protocol": "generate_content_sse", "finish_reason": None,
+        })
         request_id: str | None = None
         async with self.transport.open_sse(
             self._url(request.model, stream=True),
@@ -113,6 +118,12 @@ class GeminiGenerateContentProvider:
                 if candidates:
                     candidate = candidates[0]
                     finish_reason = candidate.get("finishReason") or finish_reason
+                    if finish_reason:
+                        protocol_evidence["finish_reason"] = (
+                            finish_reason if isinstance(finish_reason, str) and finish_reason in {
+                                "STOP", "MAX_TOKENS", "SAFETY", "RECITATION",
+                            } else "unknown"
+                        )
                     for part in (candidate.get("content") or {}).get("parts") or []:
                         if isinstance(part.get("text"), str):
                             value = part["text"]

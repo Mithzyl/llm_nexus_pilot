@@ -64,7 +64,7 @@ class OpenAIResponsesProvider:
 
     @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize Responses events and reject EOF before an explicit terminal response."""
+        """Normalize Responses events, privately record terminal facts and reject missing completion."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -74,6 +74,9 @@ class OpenAIResponsesProvider:
         reasoning_started = False
         tool_parts: dict[str, dict[str, str]] = {}
         final_payload: dict[str, Any] | None = None
+        protocol_evidence = request._stream_protocol_evidence
+        protocol_evidence.clear()
+        protocol_evidence.update({"protocol": "responses_sse", "terminal_event": None})
         async with self.transport.open_sse(
             f"{self.base_url}/responses",
             headers=self._headers(),
@@ -151,6 +154,7 @@ class OpenAIResponsesProvider:
                             "arguments": item.get("arguments", ""),
                         }
                 elif event_type in {"response.completed", "response.incomplete"}:
+                    protocol_evidence["terminal_event"] = event_type
                     final_payload = event.get("response") or {}
                     usage = final_payload.get("usage") or {}
                     yield StreamEvent(
@@ -160,6 +164,7 @@ class OpenAIResponsesProvider:
                     )
                     sequence += 1
                 elif event_type in {"response.failed", "error"}:
+                    protocol_evidence["terminal_event"] = event_type
                     failed_usage = (event.get("response") or {}).get("usage")
                     if isinstance(failed_usage, dict):
                         yield StreamEvent(

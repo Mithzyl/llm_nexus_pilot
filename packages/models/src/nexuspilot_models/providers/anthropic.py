@@ -62,7 +62,7 @@ class AnthropicMessagesProvider:
 
     @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize Messages events and require message_stop plus an actual stop reason."""
+        """Observe Messages stop signals privately while requiring both for completion."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -76,6 +76,13 @@ class AnthropicMessagesProvider:
         output_tokens: int | None = None
         stop_reason = None
         received_message_stop = False
+        protocol_evidence = request._stream_protocol_evidence
+        protocol_evidence.clear()
+        protocol_evidence.update({
+            "protocol": "messages_sse",
+            "stop_reason": None,
+            "message_stop_received": False,
+        })
         request_id: str | None = None
         async with self.transport.open_sse(
             f"{self.base_url}/messages",
@@ -152,6 +159,13 @@ class AnthropicMessagesProvider:
                     stop_reason = (event.get("delta") or {}).get(
                         "stop_reason"
                     ) or stop_reason
+                    if stop_reason:
+                        protocol_evidence["stop_reason"] = (
+                            stop_reason if isinstance(stop_reason, str) and stop_reason in {
+                                "end_turn", "max_tokens", "tool_use", "refusal",
+                                "model_context_window_exceeded", "stop_sequence", "pause_turn",
+                            } else "unknown"
+                        )
                     usage = event.get("usage") or {}
                     output_tokens = usage.get("output_tokens", output_tokens)
                     yield StreamEvent(
@@ -168,6 +182,7 @@ class AnthropicMessagesProvider:
                     sequence += 1
                 elif event_type == "message_stop":
                     received_message_stop = True
+                    protocol_evidence["message_stop_received"] = True
                 elif event_type == "error":
                     error = event.get("error") or {}
                     raise ModelProviderError(

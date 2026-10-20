@@ -740,7 +740,20 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 模型包和相关API测试192项通过（12.17秒）；随后增加在途及取消对象保存断言，
 保存层4项再次通过（0.88秒）。静态检查发现一处测试断言过长，拆行后重新检查。
 没有新模型请求，没有重启API或部署；当前运行的API尚未加载这批改动。
-这里只验证Chat Completions SSE，其他协议及受控草稿续接仍未完成。
+该提交只验证Chat Completions SSE；随后按下节补充其他现有协议，受控草稿续接仍未完成。
+
+### 其他现有SSE协议的结束观察（2026-10-20）
+
+- Responses的completed/incomplete事件、Messages的stop_reason/message_stop、
+  GenerateContent的finishReason已接入同一私有观察对象，不新增公开SSE事件或数据库字段。
+  未知结束原因记unknown，不复制任意上游文本；不会因为收到结束事件就把随后读流失败转为成功。
+- 测试先复现五种事件在断流后留下空协议观察；实现后再加入两种未知原因的脱敏检查。
+  所有网络由httpx.MockTransport模拟，不调用任何供应商。
+- 命令：
+  `PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q -o asyncio_mode=auto packages/models/tests apps/api/tests/test_stream_progress_persistence.py apps/api/tests/test_responses.py --tb=short`
+  ——199项通过（11.45秒）；修改文件Ruff与diff检查通过。
+- 本地API未重启，新增协议观察尚未真实验收；未推送、未部署、未改前端。
+  完整终态后的恢复判断、受控草稿续接和真实原生审核最终交付继续保留为未完成工作。
 
 2026-10-20 分批保存的离线验证：新增 SQLite/内存对象存储测试先复现上游停止发片段后没有在途对象引用；已接入2秒检查、5秒写入期限及独立会话保存。新增流式 ASGI 取消测试发现重复取消会打断终态保存，已仅对写入任务收尾与终态保存增加取消保护，不保护模型执行。等待时保存、两种消费模式取消、写入失败中止及迟到进度不覆盖终态均通过；模型包与 Responses/通用Agent/委派/执行任务合计237项通过（25.70秒），Ruff及diff检查通过。这些离线检查没有模型调用；随后真实Strata验收结果见上节，不能以离线通过替代最终回答成功。
 
