@@ -1581,7 +1581,20 @@ export default function Home() {
       return;
     }
     updateDraft(prompt);
-    expandComposer();
+    if (!isComposerMinimized) {
+      window.requestAnimationFrame(() => composerTextarea.current?.focus());
+      return;
+    }
+    // The saved expanded height belongs to the old draft. Expand from the new
+    // content instead of animating to that stale height.
+    if (composerAnimationTimer.current !== null) {
+      window.clearTimeout(composerAnimationTimer.current);
+      composerAnimationTimer.current = null;
+    }
+    setIsComposerAnimating(false);
+    setComposerHeight(null);
+    setIsComposerMinimized(false);
+    window.requestAnimationFrame(() => composerTextarea.current?.focus());
   }
 
   /** Lock the measured Composer height, animate to the target, then release it. */
