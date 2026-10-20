@@ -13,7 +13,11 @@ REVIEW_BATCH_SIZE = 6
 REVIEW_INSTRUCTIONS = (
     "Compare each requested review_unit with the complete candidate and original sources. "
     "Check omissions, contradictions, unsupported certainty and unread/extraction limits. "
-    "For platform input/attempt claims, read_task_input_snapshot is already loaded: "
+    "For platform input/attempt claims, candidate_input_evidence contains the authorized "
+    "first page of the candidate's fixed requests. Use these platform records directly; "
+    "they are evidence even without file source aliases. Counts mean prepared input, "
+    "not provider receipt or model comprehension. If next_offset is non-null and more "
+    "records are needed, read_task_input_snapshot is already loaded: "
     "use candidate_input_snapshot or an explicitly related snapshot. They identify fixed "
     "request sets for the named tasks. get_task_input_coverage is your own task, NOT the "
     "candidate, and is unavailable for this review. Do not reject another task's attempt "

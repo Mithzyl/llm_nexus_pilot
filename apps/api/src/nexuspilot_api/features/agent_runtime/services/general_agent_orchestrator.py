@@ -47,6 +47,7 @@ from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint im
     save_task_execution_checkpoint,
 )
 from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
+    read_task_input_snapshot,
     save_task_input_snapshot,
 )
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
@@ -68,7 +69,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
     async def execute(self, workflow, payload):
-        """Persist all evidence; carry only current review originals into each revision."""
+        """Persist evidence and provide authorized input facts and current originals for review."""
         execution_id = workflow.workflow_execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node = None
@@ -166,6 +167,15 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         "candidate": text,
                         "candidate_input_snapshot": candidate.input_snapshot.model_dump(
                             mode="json"
+                        ),
+                        # Supply necessary execution facts, not just a dereferenceable ID.
+                        # The same authorized reader backs subsequent model-requested pages.
+                        "candidate_input_evidence": await read_task_input_snapshot(
+                            self.db_session, self.storage, run_id=workflow.run_id,
+                            requester_task_id=reviewer_task.task_id,
+                            snapshot_id=candidate.input_snapshot.snapshot_id,
+                            allowed_snapshot_ids=set(self.input_snapshot_refs),
+                            offset=0, limit=10,
                         ),
                         "related_input_snapshots": list(self.input_snapshot_refs.values()),
                         "candidate_node_id": candidate_node_id,

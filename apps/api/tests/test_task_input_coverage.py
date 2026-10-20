@@ -150,18 +150,20 @@ async def test_input_tool_uses_current_task_requests_and_rechecks_file_access(
             await authorize_input_coverage_history(db, run_id=task.run_id, result=result)
 
 
-@pytest.mark.parametrize("tries_own_task", [False, True])
+@pytest.mark.parametrize(("tries_own_task", "reads_pages"), [
+    (False, True), (True, True), (False, False),
+])
 async def test_reviewer_reads_candidate_fixed_inputs_not_its_own_requests(
-    client, test_database_session_factory, tries_own_task,
+    client, test_database_session_factory, tries_own_task, reads_pages,
 ):
-    """A reviewer's source-bearing requests cannot disprove a source-free first main request."""
+    """Fixed input facts are available immediately and optional page reads keep the same scope."""
     _, _, file, turn = await prepare_conversation_file(client)
     provider = GeneralProvider()
     pages = []
     references = []
 
     async def generate(request):
-        """Read the file as main, then inspect two fixed main pages while Reviewer calls grow."""
+        """Verify the injected first page, then read fixed pages while Reviewer calls grow."""
         provider.requests.append(request)
         previous = [m for m in request.messages if m.role.value == "tool"]
         if request.metadata["agent_role"] == "controller":
@@ -186,7 +188,19 @@ async def test_reviewer_reads_candidate_fixed_inputs_not_its_own_requests(
         assert contexts
         reference = contexts[-1].get("candidate_input_snapshot")
         assert reference is not None, "Reviewer needs the candidate's fixed input reference"
+        evidence = contexts[-1].get("candidate_input_evidence")
+        assert evidence is not None, "Reviewer needs an authorized first page, not only an ID"
+        assert evidence["snapshot_id"] == reference["snapshot_id"]
+        assert evidence["task_id"] == reference["task_id"]
+        assert evidence["attempt_count"] == 2
+        assert [a["block_occurrences"] for a in evidence["attempts"]] == [0, 1]
+        assert evidence["next_offset"] is None
         references.append(reference)
+        if not reads_pages:
+            return ModelResponse(
+                text=unit_review_text(request, "supported", "Checked the provided fixed page."),
+                finish_reason="stop", latency_ms=1, raw_response={},
+            )
         if tries_own_task and len(previous) < 2:
             name, arguments = (
                 ("describe_tools", {"name": "get_task_input_coverage", "version": "1.0.0"})
@@ -224,6 +238,9 @@ async def test_reviewer_reads_candidate_fixed_inputs_not_its_own_requests(
     response = await client.post(f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
                                  json=general_payload("always"))
     assert response.json()["status"] == "completed", response.text
+    if not reads_pages:
+        assert not pages and len(references) == 1
+        return
     assert len(pages) == 2
     assert pages[0]["attempts"][0]["block_occurrences"] == 0
     assert pages[1]["attempts"][0]["block_occurrences"] == 1
