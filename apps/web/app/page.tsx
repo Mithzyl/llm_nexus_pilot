@@ -94,7 +94,7 @@ import { AuthenticationGate } from "../components/auth/AuthenticationGate";
 import Link from "next/link";
 import {
   composerConversationClearance,
-  composerTextareaHeight,
+  resizeComposerTextarea,
   shouldSendComposerKey,
 } from "../lib/composer-layout";
 import {
@@ -629,26 +629,40 @@ export default function Home() {
   useEffect(() => {
     const textarea = composerTextarea.current;
     if (!textarea) return;
-    const previousHeight = textarea.getBoundingClientRect().height;
-    const previousTransition = textarea.style.transition;
-    // Measure the content without letting the outgoing height animate it larger.
-    textarea.style.transition = "none";
-    textarea.style.overflowY = "hidden";
-    textarea.style.height = "auto";
-    const nextHeight = composerTextareaHeight(textarea.scrollHeight);
-    textarea.style.height = `${previousHeight}px`;
-    void textarea.offsetHeight;
-    // Shrinking immediately avoids a tall empty frame while the outgoing height animates.
-    const shouldAnimate = nextHeight > previousHeight;
-    textarea.style.transition = shouldAnimate ? previousTransition : "none";
-    textarea.style.height = `${nextHeight}px`;
-    if (!shouldAnimate) {
-      window.requestAnimationFrame(() => {
-        textarea.style.transition = previousTransition;
-      });
-    }
-    textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+    // Restored drafts should render at their final height immediately; only
+    // active editing needs the growth animation.
+    resizeComposerTextarea(textarea, document.activeElement === textarea);
   }, [draft, authenticationState, isComposerMinimized]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+    let active = true;
+    const remeasure = () => {
+      if (!active) return;
+      const textarea = composerTextarea.current;
+      if (textarea) resizeComposerTextarea(textarea, document.activeElement === textarea);
+    };
+    const frame = window.requestAnimationFrame(remeasure);
+    const settleTimer = window.setTimeout(remeasure, 300);
+    let lastWidth = composer.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const width = composer.getBoundingClientRect().width;
+      if (Math.abs(width - lastWidth) < 1) return;
+      lastWidth = width;
+      remeasure();
+    });
+    observer.observe(composer);
+    window.addEventListener("resize", remeasure);
+    if (document.fonts) void document.fonts.ready.then(remeasure);
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      observer.disconnect();
+      window.removeEventListener("resize", remeasure);
+    };
+  }, []);
 
   useEffect(() => {
     if (composerAnimationTimer.current === null) return;

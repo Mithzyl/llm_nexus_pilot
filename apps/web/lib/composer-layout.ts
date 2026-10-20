@@ -34,3 +34,29 @@ export function nextComposerOptionIndex(
   if (optionCount <= 0) return -1;
   return (currentIndex + direction + optionCount) % optionCount;
 }
+
+
+/** Resize one Composer textarea from its real content, optionally animating growth only. */
+export function resizeComposerTextarea(
+  textarea: HTMLTextAreaElement,
+  animateGrowth = true,
+): void {
+  const previousHeight = textarea.getBoundingClientRect().height;
+  const previousTransition = textarea.style.transition;
+  // Measure with the transition disabled so a shrinking box cannot keep its old height.
+  textarea.style.transition = "none";
+  textarea.style.overflowY = "hidden";
+  textarea.style.height = "auto";
+  const nextHeight = composerTextareaHeight(textarea.scrollHeight);
+  textarea.style.height = `${previousHeight}px`;
+  void textarea.offsetHeight;
+  const shouldAnimate = animateGrowth && nextHeight > previousHeight;
+  textarea.style.transition = shouldAnimate ? previousTransition : "none";
+  textarea.style.height = `${nextHeight}px`;
+  if (!shouldAnimate) {
+    window.requestAnimationFrame(() => {
+      textarea.style.transition = previousTransition;
+    });
+  }
+  textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+}
