@@ -500,6 +500,15 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 浏览器打开取消会话恢复“已取消”，输入框可编辑，填写测试草稿后发送按钮可用，随后已清空且未发送。证据：`output/playwright/general-agent-stream-cancel-{restored,input}.yml`。实际停止由验证脚本调用API，不冒充浏览器点击停止验收。
 - 观察脚本增加Handoff对象核查、推理字符计数及“看到已保存进度后再取消”选项；仅对终态执行只读`--observe`补证据，保持原604.022秒耗时，没有重发模型。新增“无新增事件不重复写对象”断言后，4项分批保存回归通过（0.91秒）；Ruff和差异检查通过。
 
+## 固定审核输入快照修复（2026-10-20）
+
+- 针对上一节真实发现的错误，新增主/子候选的 `task_input_snapshot.v1`，通过已有快照登记表和MinIO协议保存固定请求ID、状态和请求对象哈希；候选与Handoff保留可选引用。无数据库迁移，无前端修改。
+- Reviewer得到平台授予的被审快照，并自动加载 `read_task_input_snapshot`；调用旧当前Task查询会明确拒绝，不把当前Task静默替换成被审Task。分页返回固定Task和请求总数，不暴露提示词/原文/私有推理/URI。原请求对象、快照哈希、Run/Task/用户归属和当前文件访问都校验；历史重用也重新校验。
+- 测试先行：缺少候选固定引用导致原场景失败；实现后相同场景可核对主任务首轮0块、后轮1块，而Reviewer自身带原文不改变主任务记录。另发现旧Handoff缺少新可选字段时被严格dict比较拒绝，先复现再修正为仅比较时补None，原对象和幂等哈希不变。
+- 其他回归：Reviewer误查旧工具后改读正确快照；新增更早排序请求不改变已捕获页面；重复保存不新增对象；无授予、错误Run、另一用户归属拒绝；快照/请求损坏拒绝；文件撤权拒绝；快照上传校验失败不发布引用、不调用Reviewer。
+- 命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_input_coverage.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_task_execution_checkpoint.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_general_candidate.py apps/api/tests/test_general_review.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_task_read_coverage.py --tb=short`，177通过（38.18秒）。使用SQLite/内存对象存储和脚本化Provider，不是新的真实模型验收。
+- 本次尚未重启API加载新快照代码，也未发起新的付费请求；下一步用Strata与真实MySQL/MinIO核对审核目标与最终交付。跨进程恢复及Python/Shell接入继续后置。
+
 ## 尚未验收的完整目标
 
 2026-10-20 分批保存的离线验证：新增 SQLite/内存对象存储测试先复现上游停止发片段后没有在途对象引用；已接入2秒检查、5秒写入期限及独立会话保存。新增流式 ASGI 取消测试发现重复取消会打断终态保存，已仅对写入任务收尾与终态保存增加取消保护，不保护模型执行。等待时保存、两种消费模式取消、写入失败中止及迟到进度不覆盖终态均通过；模型包与 Responses/通用Agent/委派/执行任务合计237项通过（25.70秒），Ruff及diff检查通过。这些离线检查没有模型调用；随后真实Strata验收结果见上节，不能以离线通过替代最终回答成功。
@@ -507,6 +516,6 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有确定性测试及历史 DeepSeek 保存/读回成功样本；本轮Strata有save_task_note成功记录，但尚未验证后续读回及依此最终交付；
 按需委派及 Handoff 已有实现、确定性测试及上述 Strata 单轮审核真实最终交付；
-仍需补齐固定检查点绑定的输入覆盖读取与审核目标、原始结束信号与受控草稿续接、多轮审核内容修正真实交付、
+固定输入覆盖读取与审核目标已有离线实现，仍需真实验证；还需补齐原始结束信号与受控草稿续接、多轮审核内容修正真实交付、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

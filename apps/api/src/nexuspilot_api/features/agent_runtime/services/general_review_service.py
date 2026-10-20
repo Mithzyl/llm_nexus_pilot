@@ -13,6 +13,12 @@ REVIEW_BATCH_SIZE = 6
 REVIEW_INSTRUCTIONS = (
     "Compare each requested review_unit with the complete candidate and original sources. "
     "Check omissions, contradictions, unsupported certainty and unread/extraction limits. "
+    "For platform input/attempt claims, read_task_input_snapshot is already loaded: "
+    "use candidate_input_snapshot or an explicitly related snapshot. They identify fixed "
+    "request sets for the named tasks. get_task_input_coverage is your own task, NOT the "
+    "candidate, and is unavailable for this review. Do not reject another task's attempt "
+    "because it is absent from your own requests. File source aliases cannot prove "
+    "platform request counts. If the relevant snapshot is unavailable, mark unconfirmed. "
     "You may read more using the supplied tools. Return only JSON: "
     '{"decisions":[{"unit_id":"u1","verdict":"supported|revise|unconfirmed",'
     '"feedback":"short reason or required change","source_aliases":["S1"]}]}. '

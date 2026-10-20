@@ -76,7 +76,7 @@ async def submit_handoff(
     run_id: str,
     payload: AgentHandoffCreate,
 ) -> HandoffWriteResult:
-    """Persist immutable handoffs; versioned evidence must match actual completed role outputs."""
+    """Match completed outputs, normalizing absent optional input refs without rewriting history."""
 
     run = await db_session.get(LlmRun, run_id)
     if run is None:
@@ -138,13 +138,18 @@ async def submit_handoff(
             LlmAgentWorkflowNodeExecution, payload.handoff_json["candidate_node_execution_id"]
         )
         candidate = GeneralCandidateOutput.model_validate(payload.handoff_json["candidate"])
+        stored_candidate = dict(child.output_json) if child and child.output_json else None
+        if stored_candidate is not None:
+            # Historical v3 Handoffs predate this optional candidate field. Treat
+            # absence as None only for comparison; preserve payload hashes/objects.
+            stored_candidate.setdefault("input_snapshot", None)
         task = await db_session.get(LlmTask, task_id)
         if (child is None or task is None or child.run_id != run_id
                 or child.task_id != task_id or child.agent_run_id != agent_run.agent_run_id
                 or child.workflow_execution_id != agent_run.workflow_execution_id
                 or child.output_type != "general_delegated_candidate"
                 or child.status != AgentWorkflowNodeStatus.COMPLETED
-                or child.output_json != candidate.model_dump(mode="json")
+                or stored_candidate != candidate.model_dump(mode="json")
                 or payload.handoff_json["objective"] != task.objective):
             raise ResourceConflictError("Handoff does not match the completed delegated task")
         task_ids = set(await db_session.scalars(select(LlmAgentWorkflowNodeExecution.task_id).where(

@@ -100,6 +100,47 @@ async def test_delegation_deadline_does_not_claim_provider_outcome_is_known(clie
     assert result["final_output"] is None
 
 
+async def test_historical_handoff_without_input_snapshot_remains_compatible(
+    client, test_database_session_factory,
+):
+    """A pre-extension candidate without the optional field still matches its saved node."""
+    from nexuspilot_api.models import LlmAgentWorkflowNodeExecution
+
+    run = await create_test_run(client)
+    provider = DelegatingProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    payload = general_payload("never")
+    payload["role_bindings"]["planner"] = dict(payload["role_bindings"]["controller"])
+    result = (await client.post(
+        f"/api/v1/runs/{run['run_id']}/agent-workflows", json=payload,
+    )).json()
+    assert result["status"] == "completed", result.get("error")
+    async with test_database_session_factory() as db:
+        handoff = await db.scalar(select(LlmAgentHandoff).where(
+            LlmAgentHandoff.run_id == run["run_id"],
+        ))
+        historical = copy.deepcopy(handoff.handoff_json)
+        historical["candidate"].pop("input_snapshot")
+        node = await db.get(
+            LlmAgentWorkflowNodeExecution, historical["candidate_node_execution_id"],
+        )
+        # Fixture only: emulate the JSON shape saved by the preceding version.
+        node.output_json = copy.deepcopy(historical["candidate"])
+        await db.commit()
+        request = AgentHandoffCreate(
+            agent_run_id=handoff.agent_run_id, task_id=handoff.task_id,
+            schema_version="agent_handoff.v3", handoff_json=historical,
+            idempotency_key="historical-without-input-snapshot",
+        )
+        stored = await submit_handoff(
+            db, app.dependency_overrides[get_object_storage](), run["run_id"], request,
+        )
+        again = await submit_handoff(
+            db, app.dependency_overrides[get_object_storage](), run["run_id"], request,
+        )
+        assert stored.record.agent_handoff_id == again.record.agent_handoff_id
+
+
 @pytest.mark.parametrize("extra_text", ["", "A" * 40000], ids=["normal", "large-prose"])
 async def test_general_agent_delegates_and_records_real_task_agent_and_handoff(
     client,

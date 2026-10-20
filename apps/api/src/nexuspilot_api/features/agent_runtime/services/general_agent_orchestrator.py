@@ -20,6 +20,7 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     NodeEvidenceRead,
     NodeTransitionRead,
     NodeUsageRead,
+    TaskInputSnapshotReference,
 )
 from nexuspilot_api.features.agent_runtime.services.agent_tool_loop import (
     ToolLoopState,
@@ -44,6 +45,9 @@ from nexuspilot_api.features.agent_runtime.services.model_only_workflow_orchestr
 )
 from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint import (
     save_task_execution_checkpoint,
+)
+from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
+    save_task_input_snapshot,
 )
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
 from nexuspilot_api.models import (
@@ -73,6 +77,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         self.general_task_ids = set()
         self.delegated_agent_run_ids = []
         self.delegated_handoff_ids = []
+        self.input_snapshot_refs = {}
         try:
             run = await self._require_run(workflow.run_id)
             main_task = await self._new_task(run, "controller", payload.role_bindings["controller"])
@@ -85,6 +90,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 originals = await self._resolve_sources(workflow)
                 main_input = {
                     "objective": run.user_request,
+                    "related_input_snapshots": list(self.input_snapshot_refs.values()),
                     "feedback": feedback,
                     "review_sources": {
                         alias: originals[alias] for alias in sorted(supplementary_aliases)
@@ -158,6 +164,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     )
                     review_input = {
                         "candidate": text,
+                        "candidate_input_snapshot": candidate.input_snapshot.model_dump(
+                            mode="json"
+                        ),
+                        "related_input_snapshots": list(self.input_snapshot_refs.values()),
                         "candidate_node_id": candidate_node_id,
                         "candidate_units": [unit.model_dump(mode="json") for unit in units],
                         "returned_file_scope": [
@@ -425,6 +435,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 self.db_session, self.storage, task_id=task.task_id,
                 sources=self.sources, allowed_task_ids=self.general_task_ids,
                 delegate=delegate if can_delegate else None,
+                input_snapshots=self.input_snapshot_refs,
             ),
         )
         return loop.response
@@ -599,7 +610,14 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         return assemble_review(review_input["candidate_node_id"], decisions, self.sources), response
 
     async def _finish_general_node(self, workflow, node, output, next_node, attempt_id):
-        """Use shared node persistence to aggregate every actual model/tool round once."""
+        """Bind candidate input evidence before publishing its node or delegated Handoff."""
+        if isinstance(output, GeneralCandidateOutput):
+            reference = await save_task_input_snapshot(
+                self.db_session, self.storage, run_id=workflow.run_id, task_id=node.task_id,
+                candidate_node_id=node.node_execution_id,
+            )
+            output.input_snapshot = TaskInputSnapshotReference.model_validate(reference)
+            self.input_snapshot_refs[reference["snapshot_id"]] = reference
         await self._complete_node(
             workflow,
             node,

@@ -7,7 +7,12 @@ from nexuspilot_models.contracts import Message, MessageRole, ModelResponse, Too
 from sqlalchemy import select
 from test_agent_workflows import register_default_agent_test_model, scripted_registry  # noqa: F401
 from test_conversation_file_context import prepare_conversation_file
-from test_general_agent import GeneralProvider, general_model_catalog, general_payload  # noqa: F401
+from test_general_agent import (  # noqa: F401
+    GeneralProvider,
+    general_model_catalog,
+    general_payload,
+    unit_review_text,
+)
 from test_model_input_manifest import delegated_message, runtime_sources, tool_message
 
 from nexuspilot_api.core.dependencies import get_provider_registry
@@ -17,10 +22,22 @@ from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
     summarize_input_request,
     task_input_coverage,
 )
+from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
+    read_task_input_snapshot,
+    save_task_input_snapshot,
+)
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import ListTaskNotesArguments
 from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
-from nexuspilot_api.models import LlmTask, UserFile, new_id
+from nexuspilot_api.models import (
+    AttemptStatus,
+    LlmMemorySnapshotObject,
+    LlmModelAttempt,
+    LlmTask,
+    User,
+    UserFile,
+    new_id,
+)
 from nexuspilot_api.services.model_input_manifest import (
     RuntimeSourceInput,
     build_delegated_source_manifest,
@@ -131,3 +148,224 @@ async def test_input_tool_uses_current_task_requests_and_rechecks_file_access(
         await db.commit()
         with pytest.raises(ResourceConflictError):
             await authorize_input_coverage_history(db, run_id=task.run_id, result=result)
+
+
+@pytest.mark.parametrize("tries_own_task", [False, True])
+async def test_reviewer_reads_candidate_fixed_inputs_not_its_own_requests(
+    client, test_database_session_factory, tries_own_task,
+):
+    """A reviewer's source-bearing requests cannot disprove a source-free first main request."""
+    _, _, file, turn = await prepare_conversation_file(client)
+    provider = GeneralProvider()
+    pages = []
+    references = []
+
+    async def generate(request):
+        """Read the file as main, then inspect two fixed main pages while Reviewer calls grow."""
+        provider.requests.append(request)
+        previous = [m for m in request.messages if m.role.value == "tool"]
+        if request.metadata["agent_role"] == "controller":
+            if not previous:
+                return ModelResponse(
+                    tool_calls=[ToolCall(id="main-read", name="read_file_content",
+                                         arguments={"file_id": file["file_id"], "limit": 1})],
+                    finish_reason="tool_calls", latency_ms=1, raw_response={},
+                )
+            return ModelResponse(
+                text="The first request had no file blocks; the later request has one [S1].",
+                finish_reason="stop", latency_ms=1, raw_response={},
+            )
+        contexts = []
+        for message in request.messages:
+            try:
+                value = json.loads(message.content or "")
+            except ValueError:
+                continue
+            if isinstance(value, dict) and "review_units" in value:
+                contexts.append(value)
+        assert contexts
+        reference = contexts[-1].get("candidate_input_snapshot")
+        assert reference is not None, "Reviewer needs the candidate's fixed input reference"
+        references.append(reference)
+        if tries_own_task and len(previous) < 2:
+            name, arguments = (
+                ("describe_tools", {"name": "get_task_input_coverage", "version": "1.0.0"})
+                if not previous else ("get_task_input_coverage", {})
+            )
+            return ModelResponse(
+                tool_calls=[ToolCall(id=f"wrong-scope-{len(previous)}", name=name,
+                                     arguments=arguments)],
+                finish_reason="tool_calls", latency_ms=1, raw_response={},
+            )
+        if previous and previous[-1].tool_name == "get_task_input_coverage":
+            rejected = json.loads(previous[-1].content)
+            assert rejected["status"] == "failed"
+            assert rejected["error_code"] == "review_requires_read_task_input_snapshot"
+        if previous and previous[-1].tool_name == "read_task_input_snapshot":
+            page = json.loads(previous[-1].content)
+            assert page["status"] == "completed", page
+            pages.append(page["result"])
+        if len(pages) < 2:
+            return ModelResponse(
+                tool_calls=[ToolCall(
+                    id=f"read-fixed-{len(pages)}", name="read_task_input_snapshot",
+                    arguments={"snapshot_id": reference["snapshot_id"],
+                               "offset": len(pages), "limit": 1},
+                )],
+                finish_reason="tool_calls", latency_ms=1, raw_response={},
+            )
+        return ModelResponse(
+            text=unit_review_text(request, "supported", "Checked the fixed candidate input."),
+            finish_reason="stop", latency_ms=1, raw_response={},
+        )
+
+    provider.generate = generate
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    response = await client.post(f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
+                                 json=general_payload("always"))
+    assert response.json()["status"] == "completed", response.text
+    assert len(pages) == 2
+    assert pages[0]["attempts"][0]["block_occurrences"] == 0
+    assert pages[1]["attempts"][0]["block_occurrences"] == 1
+    assert all(page["scope"] == "fixed_task_request_page" for page in pages)
+    assert all(page["attempt_count"] == 2 for page in pages)
+    assert all(page["task_id"] == references[0]["task_id"] for page in pages)
+    assert pages[0]["next_offset"] == 1
+    assert pages[1]["next_offset"] is None
+    assert len({ref["snapshot_id"] for ref in references}) == 1
+
+
+@pytest.fixture
+async def captured_inputs(client):
+    """Create one real candidate snapshot through API/tool/object persistence without a provider."""
+    _, _, file, turn = await prepare_conversation_file(client)
+    provider = GeneralProvider()
+
+    async def generate(request):
+        """Return a source-backed candidate after one actual file read."""
+        provider.requests.append(request)
+        if not any(m.role.value == "tool" for m in request.messages):
+            return ModelResponse(
+                tool_calls=[ToolCall(id="read", name="read_file_content",
+                                     arguments={"file_id": file["file_id"], "limit": 1})],
+                finish_reason="tool_calls", latency_ms=1, raw_response={},
+            )
+        return ModelResponse(text="Original content [S1].", finish_reason="stop",
+                             latency_ms=1, raw_response={})
+
+    provider.generate = generate
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    response = await client.post(f"/api/v1/runs/{turn['run']['run_id']}/agent-workflows",
+                                 json=general_payload("never"))
+    assert response.json()["status"] == "completed", response.text
+    candidate = next(n["output"] for n in response.json()["nodes"]
+                     if n["output_type"] == "general_candidate")
+    return turn["run"]["run_id"], file, candidate["input_snapshot"]
+
+
+async def test_captured_request_pages_do_not_change_when_more_attempts_arrive(
+    client, captured_inputs, test_database_session_factory,
+):
+    """A newly inserted earlier-sorting attempt cannot shift fixed pages or alter a replay."""
+    from datetime import datetime
+
+    run_id, _, ref = captured_inputs
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        args = dict(run_id=run_id, requester_task_id=ref["task_id"],
+                    snapshot_id=ref["snapshot_id"], allowed_snapshot_ids={ref["snapshot_id"]},
+                    offset=0, limit=1)
+        first = await read_task_input_snapshot(db, storage, **args)
+        db.add(LlmModelAttempt(
+            attempt_id=new_id(), run_id=run_id, task_id=ref["task_id"],
+            provider="openai", model="test-model", status=AttemptStatus.COMPLETED,
+            started_at=datetime(2000, 1, 1),
+        ))
+        await db.commit()
+        assert await read_task_input_snapshot(db, storage, **args) == first
+        second = await read_task_input_snapshot(db, storage, **{**args, "offset": 1})
+        assert second["attempt_count"] == 2 and second["next_offset"] is None
+        count = len(storage.objects)
+        replay = await save_task_input_snapshot(
+            db, storage, run_id=run_id, task_id=ref["task_id"],
+            candidate_node_id=ref["candidate_node_id"],
+        )
+        assert replay == ref
+        assert len(storage.objects) == count
+
+
+@pytest.mark.parametrize("failure", [
+    "missing_grant", "different_run", "different_owner",
+    "snapshot_hash", "request_hash", "revoked_file",
+])
+async def test_fixed_input_snapshot_refuses_unavailable_or_unauthorized_evidence(
+    client, captured_inputs, test_database_session_factory, failure,
+):
+    """Refuse missing grants, foreign scope, corrupt objects and revoked files, not empty data."""
+    run_id, file, ref = captured_inputs
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        args = dict(run_id=run_id, requester_task_id=ref["task_id"],
+                    snapshot_id=ref["snapshot_id"], allowed_snapshot_ids={ref["snapshot_id"]},
+                    offset=0, limit=20)
+        snapshot = await db.get(LlmMemorySnapshotObject, ref["snapshot_id"])
+        expected = ResourceNotFoundError
+        if failure == "missing_grant":
+            args["allowed_snapshot_ids"] = set()
+        elif failure == "different_run":
+            args["run_id"] = new_id()
+        elif failure == "different_owner":
+            user = User(user_id=new_id(), display_name="Other owner")
+            db.add(user)
+            await db.flush()
+            snapshot.user_id = user.user_id
+            await db.commit()
+        elif failure in {"snapshot_hash", "request_hash"}:
+            expected = ResourceConflictError
+            uri = snapshot.storage_uri
+            if failure == "request_hash":
+                attempt = await db.scalar(select(LlmModelAttempt).where(
+                    LlmModelAttempt.task_id == ref["task_id"],
+                ).order_by(LlmModelAttempt.started_at).limit(1))
+                uri = attempt.raw_request_uri
+            _, mime = storage.objects[uri]
+            storage.objects[uri] = (b"modified bytes", mime)
+        else:
+            record = await db.get(UserFile, file["file_id"])
+            record.status = "deleted"
+            await db.commit()
+        with pytest.raises(expected):
+            await read_task_input_snapshot(db, storage, **args)
+
+
+async def test_candidate_input_snapshot_write_failure_prevents_review(
+    client, test_database_session_factory, monkeypatch,
+):
+    """Do not publish an input reference or invoke Reviewer when snapshot verification fails."""
+    from test_api import create_test_run
+
+    from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import SCHEMA
+
+    run = await create_test_run(client)
+    storage = app.dependency_overrides[get_object_storage]()
+    original_verify = storage.verify_object
+
+    async def reject_input_snapshot(uri, digest):
+        """Fail only candidate input snapshots, preserving earlier execution observations."""
+        if "task_inputs." in uri:
+            return False
+        return await original_verify(uri, digest)
+
+    monkeypatch.setattr(storage, "verify_object", reject_input_snapshot)
+    provider = GeneralProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+    result = (await client.post(f"/api/v1/runs/{run['run_id']}/agent-workflows",
+                               json=general_payload("always"))).json()
+    assert result["status"] != "completed"
+    assert result["final_output"] is None
+    assert [r.metadata["agent_role"] for r in provider.requests] == ["controller"]
+    async with test_database_session_factory() as db:
+        assert list(await db.scalars(select(LlmMemorySnapshotObject).where(
+            LlmMemorySnapshotObject.run_id == run["run_id"],
+            LlmMemorySnapshotObject.schema_version == SCHEMA,
+        ))) == []

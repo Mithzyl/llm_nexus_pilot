@@ -16,6 +16,10 @@ from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
     authorize_input_coverage_history,
     task_input_coverage,
 )
+from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
+    load_task_input_snapshot_manifest,
+    read_task_input_snapshot,
+)
 from nexuspilot_api.features.agent_runtime.services.task_read_coverage import task_read_coverage
 from nexuspilot_api.models import LlmModelAttempt, LlmModelToolCall, LlmRun, LlmTask, TaskStatus
 from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
@@ -65,6 +69,12 @@ class ListTaskNotesArguments(EmptyArguments):
 
     offset: int = Field(default=0, ge=0, le=10000)
     limit: int = Field(default=10, ge=1, le=20)
+
+
+class ReadTaskInputSnapshotArguments(ListTaskNotesArguments):
+    """Page a server-granted immutable input snapshot, without accepting arbitrary task IDs."""
+
+    snapshot_id: str = Field(min_length=36, max_length=36)
 
 
 class TaskNote(EmptyArguments):
@@ -126,6 +136,16 @@ INPUT_COVERAGE_TOOL = RegisteredTool(
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("输入", "上下文", "input", "coverage", "context"),
 )
+INPUT_SNAPSHOT_TOOL = RegisteredTool(
+    name="read_task_input_snapshot", version="1.0.0",
+    description="Read a fixed candidate task input page using an explicitly supplied snapshot_id. "
+    "The page identifies its task and request set; later requests do not alter it. "
+    "Use this to check another task's input claims. Your own live task coverage cannot "
+    "disprove records from the candidate task. No source prose or private reasoning is returned.",
+    arguments=ReadTaskInputSnapshotArguments, output=FileToolResult,
+    required_capabilities=frozenset({"task_notes", "read"}),
+    keywords=("输入", "审核", "snapshot", "input", "review", "coverage"),
+)
 DELEGATE_TOOL = RegisteredTool(
     name="delegate_task", version="1.0.0",
     description="Delegate a focused task to a configured planner or researcher and receive its "
@@ -140,20 +160,24 @@ DELEGATE_TOOL = RegisteredTool(
 )
 GENERAL_TOOL_CATALOG = ToolCatalog(
     (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS,
-     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, DELEGATE_TOOL)
+     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, INPUT_SNAPSHOT_TOOL, DELEGATE_TOOL)
 )
 
 
 class GeneralAgentToolService(AgentFileToolService):
     """Add task notes, read/input audits and delegation without enabling host writes."""
 
-    def __init__(self, db, storage, *, task_id, sources, allowed_task_ids, delegate=None):
+    def __init__(
+        self, db, storage, *, task_id, sources, allowed_task_ids,
+        delegate=None, input_snapshots=None,
+    ):
         """Bind server-owned task and source mappings; models cannot expand this scope."""
         super().__init__(db, storage)
         self.task_id = task_id
         self.sources = sources
         self.allowed_task_ids = allowed_task_ids
         self.delegate = delegate
+        self.input_snapshots = input_snapshots if input_snapshots is not None else {}
         self.catalog = GENERAL_TOOL_CATALOG
         self.capabilities = frozenset(
             {"read", "task_notes"} | ({"delegate"} if delegate else set())
@@ -161,11 +185,14 @@ class GeneralAgentToolService(AgentFileToolService):
         self.loaded_versions = {
             tool.name: tool.version for tool in self.catalog.entries if tool.initially_loaded
         }
+        if self.input_snapshots:
+            self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
         """Authorize task notes, read/input queries and delegation before shared persistence."""
         if name not in NOTE_NAMES | {
-            READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, DELEGATE_TOOL.name,
+            READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
+            DELEGATE_TOOL.name,
         }:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
@@ -184,9 +211,17 @@ class GeneralAgentToolService(AgentFileToolService):
                 arguments=arguments,
             )
         if name == INPUT_COVERAGE_TOOL.name:
+            if task.assigned_role == "reviewer" and self.input_snapshots:
+                raise ToolOperationError("review_requires_read_task_input_snapshot")
             return await task_input_coverage(
                 self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
                 arguments=arguments,
+            )
+        if name == INPUT_SNAPSHOT_TOOL.name:
+            return await read_task_input_snapshot(
+                self.db, self.storage, run_id=attempt.run_id, requester_task_id=self.task_id,
+                snapshot_id=arguments.snapshot_id, allowed_snapshot_ids=set(self.input_snapshots),
+                offset=arguments.offset, limit=arguments.limit,
             )
         if name == "save_task_note":
             unknown = set(arguments.source_aliases) - self.sources.keys()
@@ -244,13 +279,23 @@ class GeneralAgentToolService(AgentFileToolService):
         await super().validate_history(run_id, records)
         for record in records:
             if (record.tool_name not in NOTE_NAMES | {
-                    READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, DELEGATE_TOOL.name}
+                    READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
+                    DELEGATE_TOOL.name}
                     or record.status != "completed"):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
                 raise ResourceConflictError("Task note history belongs to another task")
-            if record.tool_name == INPUT_COVERAGE_TOOL.name:
+            if record.tool_name == INPUT_SNAPSHOT_TOOL.name:
+                result = record.output_json["result"]
+                if result["snapshot_id"] not in self.input_snapshots or result["run_id"] != run_id:
+                    raise ResourceConflictError("Input snapshot history is no longer granted")
+                captured = await load_task_input_snapshot_manifest(
+                    self.db, self.storage, run_id=run_id, snapshot_id=result["snapshot_id"],
+                )
+                if result["task_id"] != captured["task_id"]:
+                    raise ResourceConflictError("Input snapshot history has a different task")
+            if record.tool_name in {INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name}:
                 await authorize_input_coverage_history(
                     self.db, run_id=run_id, result=record.output_json["result"],
                 )

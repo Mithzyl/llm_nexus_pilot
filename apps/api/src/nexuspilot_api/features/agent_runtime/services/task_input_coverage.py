@@ -71,6 +71,48 @@ def summarize_input_request(raw):
     return result
 
 
+async def summarize_attempt_input(db, storage, *, run_id, attempt, expected_request_hash=None):
+    """Verify one prepared request and reauthorize its files without returning body or URI."""
+    run = await db.get(LlmRun, run_id, populate_existing=True)
+    if run is None or attempt.run_id != run_id:
+        raise ResourceNotFoundError("Model request")
+    if attempt.raw_request_uri:
+        content = await storage.open_object(attempt.raw_request_uri)
+        encoded = await asyncio.to_thread(b"".join, content.chunks)
+        if expected_request_hash and hashlib.sha256(encoded).hexdigest() != expected_request_hash:
+            raise ResourceConflictError("Captured model request hash mismatch")
+        try:
+            raw = json.loads(encoded)
+        except (ValueError, TypeError) as error:
+            raise ResourceConflictError("Prepared model request is unreadable") from error
+        summary = summarize_input_request(raw)
+    else:
+        summary = summarize_input_request({})
+    allowed_files = await conversation_file_ids(db, run_id)
+    for identity in {b["file_id"] for b in summary["prepared_blocks"]}:
+        file = await db.get(UserFile, identity, populate_existing=True)
+        if (identity not in allowed_files or file is None
+                or file.user_id != run.user_id or file.status != "ready"):
+            raise ResourceNotFoundError("File")
+    snapshots = {}
+    for block in summary.pop("prepared_blocks"):
+        key = tuple(block[name] for name in (
+            "file_id", "source_hash", "parsed_hash", "parser_version",
+        ))
+        snapshots.setdefault(key, []).append(block)
+    summary["files"] = [{
+        **dict(zip(
+            ("file_id", "source_hash", "parsed_hash", "parser_version"), key, strict=True,
+        )),
+        "unique_prepared_blocks": len(blocks),
+        "prepared_blocks_sha256": hashlib.sha256(json.dumps(
+            sorted(blocks, key=lambda b: (b["block_id"], b["block_sha256"])),
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest(),
+    } for key, blocks in snapshots.items()]
+    return {"attempt_id": attempt.attempt_id, "status": attempt.status.value, **summary}
+
+
 async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
     """Read one bounded live page of the exact task's requests and reauthorize every file.
 
@@ -86,42 +128,13 @@ async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
         LlmModelAttempt.run_id == run_id, LlmModelAttempt.task_id == task_id,
     ).order_by(LlmModelAttempt.started_at, LlmModelAttempt.attempt_id)
         .offset(arguments.offset).limit(arguments.limit + 1)))
-    allowed_files = await conversation_file_ids(db, run_id)
     records = []
     for attempt in attempts[:arguments.limit]:
-        if attempt.raw_request_uri:
-            content = await storage.open_object(attempt.raw_request_uri)
-            try:
-                raw = json.loads(await asyncio.to_thread(b"".join, content.chunks))
-            except (ValueError, TypeError) as error:
-                raise ResourceConflictError("Prepared model request is unreadable") from error
-            summary = summarize_input_request(raw)
-        else:
-            summary = summarize_input_request({})
-        for identity in {b["file_id"] for b in summary["prepared_blocks"]}:
-            file = await db.get(UserFile, identity, populate_existing=True)
-            if (identity not in allowed_files or file is None
-                    or file.user_id != run.user_id or file.status != "ready"):
-                raise ResourceNotFoundError("File")
-        snapshots = {}
-        for block in summary.pop("prepared_blocks"):
-            key = tuple(block[name] for name in (
-                "file_id", "source_hash", "parsed_hash", "parser_version",
-            ))
-            snapshots.setdefault(key, []).append(block)
-        summary["files"] = [{
-            **dict(zip(
-                ("file_id", "source_hash", "parsed_hash", "parser_version"), key, strict=True,
-            )),
-            "unique_prepared_blocks": len(blocks),
-            "prepared_blocks_sha256": hashlib.sha256(json.dumps(
-                sorted(blocks, key=lambda b: (b["block_id"], b["block_sha256"])),
-                sort_keys=True, separators=(",", ":"),
-            ).encode()).hexdigest(),
-        } for key, blocks in snapshots.items()]
-        records.append({"attempt_id": attempt.attempt_id, "status": attempt.status.value,
-                        **summary})
+        records.append(await summarize_attempt_input(
+            db, storage, run_id=run_id, attempt=attempt,
+        ))
     return {"schema_version": "task_input_coverage.v1", "scope": "current_task_request_page",
+            "run_id": run_id, "task_id": task_id,
             "attempts": records, "next_offset": arguments.offset + arguments.limit
             if len(attempts) > arguments.limit else None,
             "model_understanding_verified": False, "provider_receipt_verified": False,

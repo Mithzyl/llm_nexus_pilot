@@ -600,6 +600,17 @@ class GeneralReadCoverage(StrictContract):
     model_understanding_verified: Literal[False] = False
 
 
+class TaskInputSnapshotReference(StrictContract):
+    """Identify a server-captured request set, not a model-selected task access grant."""
+
+    snapshot_id: str
+    run_id: str
+    task_id: str
+    candidate_node_id: str
+    role: str | None
+    attempt_count: int = Field(ge=0)
+
+
 class GeneralCandidateOutput(StrictContract):
     """Persist full prose and sources; the node/object byte envelope bounds storage size."""
 
@@ -609,6 +620,7 @@ class GeneralCandidateOutput(StrictContract):
     validation_issues: list[str] = Field(default_factory=list)
     units: list[GeneralCandidateUnit] = Field(default_factory=list)
     read_coverage: list[GeneralReadCoverage] = Field(default_factory=list)
+    input_snapshot: TaskInputSnapshotReference | None = None
 
     @model_validator(mode="after")
     def validate_located_units(self):
