@@ -507,7 +507,51 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 - 测试先行：缺少候选固定引用导致原场景失败；实现后相同场景可核对主任务首轮0块、后轮1块，而Reviewer自身带原文不改变主任务记录。另发现旧Handoff缺少新可选字段时被严格dict比较拒绝，先复现再修正为仅比较时补None，原对象和幂等哈希不变。
 - 其他回归：Reviewer误查旧工具后改读正确快照；新增更早排序请求不改变已捕获页面；重复保存不新增对象；无授予、错误Run、另一用户归属拒绝；快照/请求损坏拒绝；文件撤权拒绝；快照上传校验失败不发布引用、不调用Reviewer。
 - 命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_input_coverage.py apps/api/tests/test_general_agent.py apps/api/tests/test_general_delegation.py apps/api/tests/test_task_execution_checkpoint.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_workflow_execution_tasks.py apps/api/tests/test_agent_workflows.py apps/api/tests/test_general_candidate.py apps/api/tests/test_general_review.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_task_read_coverage.py --tb=short`，177通过（38.18秒）。使用SQLite/内存对象存储和脚本化Provider，不是新的真实模型验收。
-- 本次尚未重启API加载新快照代码，也未发起新的付费请求；下一步用Strata与真实MySQL/MinIO核对审核目标与最终交付。跨进程恢复及Python/Shell接入继续后置。
+- 提交 `019dc66` 时尚未重启API或发起付费请求；加载该提交后的真实结果见下一节。跨进程恢复及Python/Shell接入继续后置。
+
+## 固定快照的真实保存与审核使用缺口（2026-10-20）
+
+本地API重启加载 `019dc66`，使用相同的首部核对、一次Planner委派、主任务输入覆盖查询问题与
+`on_verification_failure` 策略。仅发起一次Strata工作流，后续 `--observe` 只读补充证据；
+未调用DeepSeek，未修改前端，未推送或部署。
+
+- Run `202c2ca8-265d-4e78-8523-caa2c3c63696`，Workflow `58274874-5016-41da-9d2c-373810f40069`，
+  Session `123a4526-2e26-43c1-b717-fd210cbfe58d`。
+  本地报告 `/tmp/general-agent-fixed-input-strata-20261020.json`；
+  [浏览器会话](http://localhost:3000/c/123a4526-2e26-43c1-b717-fd210cbfe58d)。
+- 执行结果 `completed`，449.962秒，13次模型请求全部完成；输入181,391、输出21,785、
+  合计203,176 Token，缓存输入83,898（已包含在输入中）。独立推理Token和实际费用未知。
+  Reviewer一次请求报告输出16,339 Token；不得将其全解释为可见审核正文。
+  业务轮次1、内容修正0、格式修正0，不是“修正后交付”通过。
+- 首次委派因 `unknown_delegated_source` 被拒绝，模型随后使用合法参数完成一次委派；
+  Planner三次读取首部共60块，未通读1542块全文。Handoff
+  `1e1dbbd3-6233-40f4-a2b5-39f09add3867` 已持久保存。
+- Planner快照 `1a92e1d1-00c3-41d5-a6f8-c1fbe5611083` 与主任务快照
+  `1e5a229d-157b-465a-9707-96904a35c2b7` 各固定6次请求。
+  两份MinIO快照的归属/哈希、12份原始请求的Task归属/URI/字节哈希核对通过。
+  8条消息/节点/Handoff记录的SQL正文为空，对象存在且哈希通过；
+  48个执行观察对象的哈希及JSON链/Attempt归属通过，13份实际输入清单重建一致。
+- **审核使用未通过**：实际Reviewer请求 `0df0a651-7e52-4e12-9fe2-3daa525c3002`
+  包含主任务 `candidate_input_snapshot`，工具列表包含 `read_task_input_snapshot`；
+  但Reviewer没有调用它，直接将输入统计标为 `unconfirmed`，理由是“缺乏可核实来源”。
+  这不是本次请求漏传工具/快照，也不是再次误读自己Task；只能证明平台提供了读取能力，
+  尚未证明真实模型使用它完成核对。不得把 `completed` 等同于审核目标达成。
+- 内容质量仍有问题：主答案将 `provider_receipt_verified=false` 同时解释为“输入被送达”；
+  把首部读取描述为“第1–3页”，但第2页无提取文字。Reviewer指出页码表述不准仍判该单元supported，
+  对输入统计返回unconfirmed；后端按既有策略追加未确认说明并交付原文。
+  因此本例不能证明审核后答案全部准确或内容修正有效。
+- Playwright先在运行中刷新，后观察页面自动显示完成，再刷新恢复同一正文及未确认说明；
+  API的消息正文与最终正文一致，再次读取工作流结果一致。证据：
+  `output/playwright/general-agent-fixed-input-{running,refreshed,reviewing,completed,restored}.yml`。
+  没有为了浏览器检查再次发送消息。
+- 验证脚本新增候选快照与原始请求哈希核查，保留空/未知与失败区别。
+  `test_live_snapshot_report_detects_changed_request_bytes` 确认即使快照哈希合法，
+  原始请求字节变化也会被报告为失败。`test_task_input_coverage.py` 15项通过（4.78秒）；
+  两个修改Python文件Ruff及 `git diff --check` 通过。
+
+下一步应为审核提供已授权、与当前候选固定关联的必要平台记录摘要，保留分页补读工具，
+避免将“来源只有引用、模型未读取”误说成“证据不存在”。摘要仍须由保存的请求重建，
+不可由模型自报或从别的Task借用。再验证内容修正和最终答案，不以重复相同付费请求代替修复。
 
 ## 尚未验收的完整目标
 
@@ -516,6 +560,6 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 继续完成内容修正后的真实交付及新后端完整实现；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；任务笔记已有确定性测试及历史 DeepSeek 保存/读回成功样本；本轮Strata有save_task_note成功记录，但尚未验证后续读回及依此最终交付；
 按需委派及 Handoff 已有实现、确定性测试及上述 Strata 单轮审核真实最终交付；
-固定输入覆盖读取与审核目标已有离线实现，仍需真实验证；还需补齐原始结束信号与受控草稿续接、多轮审核内容修正真实交付、
+固定输入快照的真实保存/请求哈希已验证，Reviewer实际读取与核对仍未通过；还需补齐原始结束信号与受控草稿续接、多轮审核内容修正真实交付、
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
 本批不提前实现，不影响继续补齐当前通用循环后端范围。

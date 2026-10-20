@@ -33,6 +33,10 @@ from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint im
     SCHEMA as CHECKPOINT_SCHEMA,
     read_task_execution_checkpoint,
 )
+from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
+    SCHEMA as INPUT_SNAPSHOT_SCHEMA,
+    load_task_input_snapshot_manifest,
+)
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.models import LlmMemorySnapshotObject, LlmModelAttempt
@@ -254,6 +258,51 @@ async def execution_checkpoint_evidence(run_id):
     return records
 
 
+async def candidate_input_snapshot_evidence(run_id):
+    """Verify frozen candidate requests against real MySQL/MinIO records without exposing bodies."""
+    storage = ObjectStorage()
+    records = []
+    async with database_session_factory() as db:
+        snapshots = list(await db.scalars(select(LlmMemorySnapshotObject).where(
+            LlmMemorySnapshotObject.run_id == run_id,
+            LlmMemorySnapshotObject.schema_version == INPUT_SNAPSHOT_SCHEMA,
+            LlmMemorySnapshotObject.mime_type == "application/json",
+        )))
+        for snapshot in snapshots:
+            manifest = await load_task_input_snapshot_manifest(
+                db, storage, run_id=run_id,
+                snapshot_id=snapshot.memory_snapshot_object_id,
+            )
+            attempts = []
+            for saved in manifest["attempts"]:
+                attempt = await db.get(LlmModelAttempt, saved["attempt_id"])
+                request_hash_matches = None
+                if saved["request_uri"] and saved["request_sha256"]:
+                    obj = await storage.open_object(saved["request_uri"])
+                    encoded = await asyncio.to_thread(b"".join, obj.chunks)
+                    request_hash_matches = (
+                        hashlib.sha256(encoded).hexdigest() == saved["request_sha256"]
+                    )
+                attempts.append({
+                    "attempt_id": saved["attempt_id"],
+                    "scope_matches": bool(
+                        attempt and attempt.run_id == run_id
+                        and attempt.task_id == manifest["task_id"]
+                        and attempt.raw_request_uri == saved["request_uri"]
+                    ),
+                    "request_hash_matches": request_hash_matches,
+                })
+            records.append({
+                "snapshot_id": snapshot.memory_snapshot_object_id,
+                "task_id": manifest["task_id"],
+                "candidate_node_id": manifest["candidate_node_id"],
+                "role": manifest["role"],
+                "snapshot_verified": True,
+                "attempts": attempts,
+            })
+    return records
+
+
 async def start(client, args, report):
     """Upload once, bind optional requested child role, then detach after a durable workflow ID."""
     owner = (await request(client, "GET", "auth/me"))["user_id"]
@@ -433,6 +482,7 @@ async def observe(client, args, report):
     report["storage"] = await storage_evidence(report["run_id"])
     report["model_input_evidence"] = await model_input_evidence(report["run_id"])
     report["execution_checkpoints"] = await execution_checkpoint_evidence(report["run_id"])
+    report["candidate_input_snapshots"] = await candidate_input_snapshot_evidence(report["run_id"])
     checkpoint(args.report, report)
     print(
         json.dumps({k: report[k] for k in ["status", "elapsed_seconds", "usage"]}),
