@@ -26,7 +26,7 @@ def preserve_stream_usage(stream):
 
     @wraps(stream)
     async def tracked(*args, **kwargs):
-        """Copy known nonnegative counters; repeated snapshots replace, never add."""
+        """Copy counters and private protocol observations without duplicating nested captures."""
         usage = {}
         progress = ModelStreamProgress()
         request = next((arg for arg in args if isinstance(arg, ModelRequest)), kwargs.get("request"))
@@ -36,6 +36,9 @@ def preserve_stream_usage(stream):
             # the same iterator; otherwise every delta would be counted twice.
             capture.claimed = True
             progress = capture
+        if request is not None:
+            # Both wrappers observe the same adapter-owned map; no extra public SSE event.
+            progress.protocol_evidence = request._stream_protocol_evidence
         started = time.perf_counter()
         fields = {
             "input_tokens",

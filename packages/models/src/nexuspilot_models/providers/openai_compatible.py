@@ -77,7 +77,7 @@ class OpenAICompatibleChatProvider:
 
     @preserve_stream_usage
     async def stream(self, request: ModelRequest) -> AsyncIterator[StreamEvent]:
-        """Normalize Chat SSE; reject errors/refusals and require an observed finish reason."""
+        """Normalize Chat SSE and privately observe terminal signals without accepting partial turns."""
 
         self._validate_request(request)
         started = time.perf_counter()
@@ -90,6 +90,13 @@ class OpenAICompatibleChatProvider:
         usage: dict[str, Any] = {}
         request_id: str | None = None
         received_done_marker = False
+        protocol_evidence = request._stream_protocol_evidence
+        protocol_evidence.clear()
+        protocol_evidence.update({
+            "protocol": "chat_completions_sse",
+            "finish_reason": None,
+            "done_marker_received": False,
+        })
         async with self.transport.open_sse(
             f"{self.base_url}/chat/completions",
             headers=self._headers(),
@@ -101,6 +108,7 @@ class OpenAICompatibleChatProvider:
             async for message in messages:
                 if message.data == "[DONE]":
                     received_done_marker = True
+                    protocol_evidence["done_marker_received"] = True
                     break
                 try:
                     chunk = json.loads(message.data)
@@ -131,6 +139,15 @@ class OpenAICompatibleChatProvider:
                     continue
                 choice = choices[0]
                 finish_reason = choice.get("finish_reason") or finish_reason
+                if choice.get("finish_reason"):
+                    # Unknown values are not copied: upstream fields can contain arbitrary text.
+                    reason = choice["finish_reason"]
+                    protocol_evidence["finish_reason"] = (
+                        reason if isinstance(reason, str) and reason in {
+                            "stop", "length", "tool_calls", "function_call", "content_filter",
+                            "insufficient_system_resource",
+                        } else "unknown"
+                    )
                 delta = choice.get("delta") or {}
                 self._check_refusal(delta, attempts)
                 reasoning_content = delta.get("reasoning_content")

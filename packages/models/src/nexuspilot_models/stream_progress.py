@@ -34,6 +34,7 @@ class ModelStreamProgress:
         self.started = time.perf_counter()
         self.claimed = False
         self.completed = False
+        self.protocol_evidence: dict[str, Any] = {}
 
     def record(self, event: StreamEvent) -> None:
         """Observe normalized events; tool fragments remain unvalidated and non-executable."""
@@ -81,12 +82,13 @@ class ModelStreamProgress:
             self.last_output_at = now
 
     def snapshot(self) -> dict[str, Any]:
-        """Return incomplete evidence; character counts are not token or cost estimates."""
+        """Return incomplete evidence and protocol observations, never a completion approval."""
         text = "".join(self.text_parts)
         return {
             "schema_version": "model_stream_progress.v1",
             "response_complete": False,
             "usage_complete": False,
+            "protocol_evidence": copy.deepcopy(self.protocol_evidence),
             "text": text,
             "text_characters": len(text),
             "text_sha256": hashlib.sha256(text.encode()).hexdigest(),

@@ -25,7 +25,12 @@ class IdleProvider:
 
     @preserve_stream_usage
     async def stream(self, request):
-        """Return one draft fragment and then remain idle, without a completed signal."""
+        """Simulate a finish observation without DONE, then idle without approving completion."""
+        request._stream_protocol_evidence.update({
+            "protocol": "chat_completions_sse",
+            "finish_reason": "stop",
+            "done_marker_received": False,
+        })
         try:
             yield StreamEvent(
                 type=StreamEventType.TEXT_DELTA, sequence=1, data={"delta": "已收到的文字"},
@@ -46,7 +51,7 @@ class IdleProvider:
 async def test_idle_provider_preserves_received_progress_before_cancellation(
     client, monkeypatch, stream,
 ):
-    """Persist a received fragment even when no further events arrive to trigger a flush."""
+    """Persist draft and terminal observations while idle, then retain them after cancellation."""
     monkeypatch.setattr(
         model_response_service, "STREAM_PROGRESS_INTERVAL_SECONDS", 0.02, raising=False,
     )
@@ -88,6 +93,8 @@ async def test_idle_provider_preserves_received_progress_before_cancellation(
         raw = json.loads(storage.objects[attempt["raw_response_uri"]][0])
         assert raw["stream_progress"]["text"] == "已收到的文字"
         assert raw["stream_progress"]["response_complete"] is False
+        assert raw["stream_progress"]["protocol_evidence"]["finish_reason"] == "stop"
+        assert raw["stream_progress"]["protocol_evidence"]["done_marker_received"] is False
         assert not task.done()
         await asyncio.sleep(0.06)
         assert len(progress_writes) == 1
@@ -97,6 +104,12 @@ async def test_idle_provider_preserves_received_progress_before_cancellation(
             await task
     detail = (await client.get(f"/api/v1/runs/{run['run_id']}")).json()
     assert detail["attempts"][0]["status"] == "outcome_unknown"
+    final_uri = detail["attempts"][0]["raw_response_uri"]
+    final_raw = json.loads(storage.objects[final_uri][0])
+    assert (
+        final_raw["stream_progress"]["protocol_evidence"]
+        == raw["stream_progress"]["protocol_evidence"]
+    )
     assert provider.closed.is_set()
 
 
