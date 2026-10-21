@@ -19,9 +19,16 @@ type ModelPickerProps = {
   onRetry?: () => void;
 };
 
-/** Convert a provider identifier into the compact label shown in the picker. */
+const PROVIDER_LABELS: Record<string, string> = {
+  deepseek: "DeepSeek",
+  strata: "Strata",
+};
+
+/** Convert a provider identifier into the label shown in the picker. */
 function providerLabel(provider: ProviderName | ""): string {
-  return provider ? provider.replaceAll("_", " ") : "未连接";
+  if (!provider) return "未连接";
+  return PROVIDER_LABELS[provider]
+    ?? provider.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 /** Render an accessible custom Provider and model menu backed by the server catalog. */
@@ -174,13 +181,13 @@ export function ModelPicker({
       </button>
 
       {isOpen && (
-        <div className="model-picker-popover" role="dialog" aria-label="选择 Provider 和模型">
+        <div className="model-picker-popover" role="dialog" aria-label="选择模型">
           <div className="model-picker-title">
-            <div><strong>选择模型</strong><small>来自服务端允许列表</small></div>
+            <strong>选择模型</strong>
             <button type="button" onClick={() => setIsOpen(false)} aria-label="关闭模型选择器">×</button>
           </div>
 
-          <div className="model-provider-tabs" role="tablist" aria-label="Provider">
+          <div className="model-provider-tabs" role="tablist" aria-label="模型提供方">
             {catalog.providers.map((provider) => (
               <button
                 type="button"
@@ -207,6 +214,8 @@ export function ModelPicker({
               onKeyDown={handleSearchKeyDown}
               placeholder={isUnrestrictedProvider ? "输入模型名称" : "搜索模型"}
               aria-label={isUnrestrictedProvider ? "输入自定义模型名称" : "搜索模型"}
+              autoComplete="off"
+              spellCheck={false}
               aria-activedescendant={
                 !isUnrestrictedProvider && filteredModels[activeModelIndex]
                   ? `model-option-${activeModelIndex}`
@@ -239,7 +248,7 @@ export function ModelPicker({
                   onMouseEnter={() => setActiveModelIndex(index)}
                   onClick={() => activeProvider && commitSelection(activeProvider, model)}
                 >
-                  <span><strong>{model}</strong><small>{providerLabel(activeProvider)}</small></span>
+                  <strong title={model}>{model}</strong>
                   <i aria-hidden="true">{selectedProvider === activeProvider && selectedModel === model ? "✓" : "→"}</i>
                 </button>
               )) : (
@@ -249,14 +258,6 @@ export function ModelPicker({
               )}
             </div>
           )}
-
-          <p className="model-picker-footnote">
-            {isUnrestrictedProvider
-              ? "空允许列表表示服务端接受自定义模型标识。"
-              : configuredModels
-                ? `${configuredModels.length} 个模型由当前服务端配置提供。`
-                : "模型合同不完整，当前 Provider 不可提交。"}
-          </p>
         </div>
       )}
     </div>
