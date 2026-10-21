@@ -78,7 +78,9 @@ export function ContextEvidencePanel({
             : state === "error"
               ? "不可用"
               : evidence
-                ? `${selectedCount} 纳入 · ${excludedCount} 排除`
+                ? excludedCount > 0
+                  ? `已纳入 ${selectedCount} 项 · 未纳入 ${excludedCount} 项`
+                  : `已纳入 ${selectedCount} 项`
                 : "等待调用"}
         </span>}
       </div>
@@ -116,10 +118,8 @@ export function ContextEvidencePanel({
           </div>
           <div className="context-meta">
             {cumulativeInputTokens !== null && cumulativeInputTokens !== undefined && (
-              <span>累计输入 <strong>{formatTokenCount(cumulativeInputTokens)}</strong></span>
+              <span>累计输入 <strong>{formatTokenCount(cumulativeInputTokens)}</strong> tokens</span>
             )}
-            <span>策略 <strong>{evidence.policy_version}</strong></span>
-            <span>目录 <strong>{evidence.catalog_version_id.slice(0, 8)}</strong></span>
           </div>
           <button
             type="button"
@@ -137,7 +137,11 @@ export function ContextEvidencePanel({
             aria-hidden={!isDetailsOpen}
             inert={!isDetailsOpen}
           >
-            <ul className="context-source-list">
+            <div className="context-details-inner">
+              <p className="context-technical">
+                上下文策略 <strong>{evidence.policy_version}</strong> · 模型目录 <strong>{evidence.catalog_version_id.slice(0, 8)}</strong>
+              </p>
+              <ul className="context-source-list">
               {browserVisibleSources.map((source) => {
                 const selectionLabel =
                   source.selection_status === "selected"
@@ -162,7 +166,8 @@ export function ContextEvidencePanel({
                   </li>
                 );
               })}
-            </ul>
+              </ul>
+            </div>
           </div>
         </>
       ) : null}

@@ -902,6 +902,25 @@ export default function Home() {
     () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  const conversationStatus: { label: string; tone: "muted" | "running" | "danger" } =
+    isInspectingHistoricalRun
+      ? { label: "历史回复", tone: "muted" }
+      : assistantSaveFailed
+        ? { label: "保存失败", tone: "danger" }
+        : isSending || run?.status === "running"
+          ? { label: "生成中", tone: "running" }
+          : agentWorkflow?.status === "failed" || run?.status === "failed"
+            ? { label: "运行失败", tone: "danger" }
+            : agentWorkflow?.status === "outcome_unknown"
+              ? { label: "结果待确认", tone: "danger" }
+              : run?.status === "cancelled"
+                ? { label: "已取消", tone: "muted" }
+                : responseCompleted && !assistantSaved
+                  ? { label: "待保存", tone: "running" }
+                  : activeSession
+                    ? { label: "已保存", tone: "muted" }
+                    : { label: "新会话", tone: "muted" };
+  const conversationInitial = activeSession?.title?.trim().slice(0, 1).toUpperCase() || "N";
 
   const isActiveSessionBusyInAnotherTab = Boolean(
     activeSessionId && remoteBusySessionIds.has(activeSessionId),
@@ -2334,38 +2353,45 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="打开会话列表">☰</button>
-          <div className="conversation-title-block">
-            <div className="conversation-kicker">
-              <span className="conversation-kicker-dot" aria-hidden="true" />
-              <span>{activeSession ? "当前会话" : "工作台"}</span>
-              {activeSession && <span className="conversation-kicker-time">· {formatTime(activeSession.updated_at)}</span>}
-            </div>
-            {isRenamingSession && activeSession ? (
-              <form
-                className="conversation-title-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveSessionTitle();
-                }}
-              >
-                <input
-                  value={sessionTitleDraft}
-                  onChange={(event) => setSessionTitleDraft(event.target.value)}
-                  maxLength={255}
-                  autoFocus
-                  aria-label="会话标题"
-                />
-                <button type="submit" disabled={isSavingSessionTitle}>保存</button>
-                <button type="button" onClick={() => setIsRenamingSession(false)}>取消</button>
-              </form>
-            ) : (
-              <div className="conversation-title-row">
-                <h1 title={activeSession?.title ?? "新对话"}>{activeSession?.title ?? "新对话"}</h1>
-                {activeSession && <button type="button" className="title-rename" onClick={beginSessionRename}>重命名</button>}
+          <div className="conversation-identity">
+            <span className="conversation-avatar" aria-hidden="true">{conversationInitial}</span>
+            <div className="conversation-title-block">
+              <div className="conversation-kicker">
+                <span>{activeSession ? "会话" : "工作台"}</span>
+                {activeSession && <span className="conversation-kicker-time">· {formatTime(activeSession.updated_at)}</span>}
               </div>
-            )}
+              {isRenamingSession && activeSession ? (
+                <form
+                  className="conversation-title-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveSessionTitle();
+                  }}
+                >
+                  <input
+                    value={sessionTitleDraft}
+                    onChange={(event) => setSessionTitleDraft(event.target.value)}
+                    maxLength={255}
+                    autoFocus
+                    aria-label="会话标题"
+                  />
+                  <button type="submit" disabled={isSavingSessionTitle}>保存</button>
+                  <button type="button" onClick={() => setIsRenamingSession(false)}>取消</button>
+                </form>
+              ) : (
+                <div className="conversation-title-row">
+                  <h1 title={activeSession?.title ?? "新对话"}>{activeSession?.title ?? "新对话"}</h1>
+                  {activeSession && <button type="button" className="title-rename" onClick={beginSessionRename}>重命名</button>}
+                </div>
+              )}
+            </div>
           </div>
           <div className="topbar-actions">
+            {activeSession && (
+              <span className="conversation-status" data-tone={conversationStatus.tone} role="status" aria-label={`会话状态：${conversationStatus.label}`}>
+                <i aria-hidden="true" />{conversationStatus.label}
+              </span>
+            )}
             <button className="icon-button" onClick={toggleTheme} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
             <button className={`detail-toggle ${isInspectorOpen ? "active" : ""}`} onClick={() => setIsInspectorOpen((current) => !current)}>
               <span className="status-dot" />运行详情

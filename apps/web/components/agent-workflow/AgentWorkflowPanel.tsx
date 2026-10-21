@@ -19,6 +19,7 @@ import {
   agentDispatchGroupSummary,
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
+  agentActivityDisplayText,
   agentNodePublicActivityText,
   agentToolLabel,
   agentToolResultSummary,
@@ -260,7 +261,7 @@ export function AgentWorkflowActivityFeed({ events }: { events: AgentWorkflowEve
               title={activityTime}
             >
               <i aria-hidden="true" />
-              <span>{activity.text}</span>
+              <span>{agentActivityDisplayText(activity.text)}</span>
               {showTime && <time dateTime={activity.occurredAt}>{activityTime}</time>}
             </li>
           );
@@ -295,9 +296,9 @@ export function AgentWorkflowPanel({
       <div className="agent-workflow-heading">
         <div>
           <p className="eyebrow">{["tool_enabled_v1", "general_tools_v1"].includes(workflow.execution_profile) ? "附件读取工作流" : "纯模型工作流"}</p>
-          <h3>{workflow.node_count} / {workflow.max_nodes} 节点</h3>
+          <h3>已记录 {workflow.node_count} 个节点</h3>
         </div>
-        <span>{workflow.active_node_execution_ids.length} 活动 · 快照 v{workflow.snapshot_version}</span>
+        <span>{workflow.active_node_execution_ids.length > 0 ? `${workflow.active_node_execution_ids.length} 个节点正在运行` : "当前无运行中的节点"}</span>
       </div>
 
       {workflow.error && (

@@ -204,6 +204,11 @@ export function agentToolResultSummary(results: AgentToolResult[]): AgentToolRes
   };
 }
 
+/** Keep the detailed failure message in the inspector, not repeated in the activity feed. */
+export function agentActivityDisplayText(text: string): string {
+  return /^执行失败[：:]/.test(text) ? "执行失败，详情见运行详情" : text;
+}
+
 /** Collapse consecutive progress events into one durable tool-call summary. */
 export function groupAgentToolCallActivities(
   activities: AgentWorkflowActivityItem[],

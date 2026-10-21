@@ -12,6 +12,7 @@ import {
   agentNodeBudgetSummary,
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
+  agentActivityDisplayText,
   agentToolLabel,
   agentToolResultSummary,
   agentToolStatusLabel,
@@ -416,4 +417,15 @@ test("groups consecutive tool progress activities without losing lifecycle event
     "已记录 3 次工具调用，Agent 继续处理",
     "Agent 已提交候选回答",
   ]);
+});
+
+test("keeps detailed failure messages in the inspector", () => {
+  assert.equal(
+    agentActivityDisplayText("执行失败：Reviewer decision is invalid after one repair"),
+    "执行失败，详情见运行详情",
+  );
+  assert.equal(
+    agentActivityDisplayText("Agent 已提交候选回答"),
+    "Agent 已提交候选回答",
+  );
 });
