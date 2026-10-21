@@ -3,7 +3,7 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
-import { claimVerdictLabel, selectClaimEntries, sourceBlockLocation } from "../lib/claim-evidence";
+import { claimVerdictLabel, selectClaimEntries, sourceBlockLocation, visibleClaimBlocks } from "../lib/claim-evidence";
 import { isAllowedProxyRoute } from "../lib/proxy-policy";
 import type { AgentWorkflowNodeResult, ClaimSources } from "../lib/types";
 
@@ -101,6 +101,20 @@ test("initial panel escapes model text and does not assert source validity befor
   assert.match(html, /aria-expanded="false"/);
 });
 
+/** Claims use the same Markdown renderer while keeping their evidence collapsed. */
+test("renders claim Markdown and keeps source evidence collapsed", () => {
+  const records = nodes();
+  const worker = records[0];
+  if (worker.output_type !== "agent_model_execution" || !worker.output) throw new Error("fixture");
+  worker.output.structured_output.claims![0].text = "**定义**：Prompt chaining 是顺序提示。";
+  const html = renderToStaticMarkup(createElement(ClaimEvidencePanel, {workflowId: "workflow", nodes: records, running: false}));
+  assert.match(html, /<strong>定义<\/strong>/);
+  assert.doesNotMatch(html, /\*\*定义\*\*/);
+  assert.match(html, /查看原文/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /引用原文/);
+});
+
 /** Preserve an explicit historical empty state and distinguish pending work. */
 test("legacy records and running empty results have distinct honest explanations", () => {
   const html = renderToStaticMarkup(createElement(ClaimEvidencePanel, {workflowId: "workflow", nodes: [], running: false}));
@@ -112,4 +126,15 @@ test("legacy records and running empty results have distinct honest explanations
   if (worker.output_type !== "agent_model_execution" || !worker.output) throw new Error("fixture");
   delete worker.output.structured_output.schema_version;
   assert.equal(selectClaimEntries(records).length, 1);
+});
+
+/** Blank parser rows are not useful evidence and should not become empty cards. */
+test("filters blank source blocks while retaining table and text blocks", () => {
+  const blocks = [
+    { text: "" },
+    { text: "   " },
+    { text: "", cells: ["A"] },
+    { text: "Real source" },
+  ] as ClaimSources["sources"][number]["blocks"];
+  assert.deepEqual(visibleClaimBlocks(blocks), [blocks[2], blocks[3]]);
 });

@@ -134,6 +134,8 @@ import {
   type ConversationSyncEvent,
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
+import { formatCost, formatDurationMs, formatTokenCount } from "../lib/format";
+import { filterSessionsByTitle, groupSessionsByDate } from "../lib/session-list";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
 import { usePathname } from "next/navigation";
 import { readModelPreference, writeModelPreference } from "../lib/model-catalog";
@@ -210,7 +212,7 @@ function messageFileKind(filename: string): string {
 function formatDuration(run: Run | RunDetail | null): string {
   if (!run?.started_at || !run.completed_at) return "待确认";
   const duration = new Date(run.completed_at).getTime() - new Date(run.started_at).getTime();
-  return `${Math.max(0, duration) / 1000} 秒`;
+  return formatDurationMs(duration);
 }
 
 /** Keep historical run status in the same language as the rest of the inspector. */
@@ -229,7 +231,7 @@ function runStatusLabel(status: Run["status"]): string {
 /** Format restored token usage without inventing values when an attempt is incomplete. */
 function formatTokenTotal(usage: { input: number | null; output: number | null } | null): string {
   if (!usage || usage.input === null || usage.output === null) return "—";
-  return String(usage.input + usage.output);
+  return formatTokenCount(usage.input + usage.output);
 }
 
 /**
@@ -351,6 +353,7 @@ export default function Home() {
   const [inspectedRunEvidenceError, setInspectedRunEvidenceError] =
     useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [sessionQuery, setSessionQuery] = useState("");
   const [isDark, setIsDark] = useState(false);
   const [isThemeTransitioning, setIsThemeTransitioning] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -451,6 +454,9 @@ export default function Home() {
   const evidenceWorkflowNodes = isInspectingHistoricalRun
     ? inspectedRunEvidence?.nodes ?? []
     : agentWorkflowNodes;
+  const evidenceClaimCount = evidenceWorkflow ? selectClaimEntries(evidenceWorkflowNodes).length : 0;
+  const visibleSessions = filterSessionsByTitle(sessions, sessionQuery);
+  const sessionGroups = groupSessionsByDate(visibleSessions);
   const evidenceEventState = isInspectingHistoricalRun
     ? inspectedRunEvidence?.eventState ?? EMPTY_AGENT_EVENT_STATE
     : agentEventState;
@@ -2258,23 +2264,54 @@ export default function Home() {
         </button>
 
         <div className="session-group">
-          <p className="eyebrow">最近会话</p>
-          <nav>
+          <div className="session-group-heading">
+            <p className="eyebrow">最近会话</p>
+            {sessionQuery && <span>匹配 {visibleSessions.length}</span>}
+          </div>
+          <label className="session-search">
+            <span aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              value={sessionQuery}
+              onChange={(event) => setSessionQuery(event.target.value)}
+              placeholder="搜索会话标题"
+              aria-label="搜索会话标题"
+            />
+            {sessionQuery && (
+              <button type="button" onClick={() => setSessionQuery("")} aria-label="清除会话搜索">×</button>
+            )}
+          </label>
+          <div className="session-list-scroll">
             {sessions.length === 0 ? (
               <p className="empty-sessions">发送第一条消息后，会话会出现在这里。</p>
-            ) : sessions.map((session) => (
-              <button
-                key={session.session_id}
-                className={`session-item ${activeSessionId === session.session_id ? "active" : ""}`}
-                onClick={() => void handleSelectSession(session.session_id)}
-              >
-                <span className="session-copy">
-                  <strong>{session.title ?? "未命名会话"}</strong>
-                </span>
-                <time>{formatTime(session.updated_at)}</time>
-              </button>
+            ) : visibleSessions.length === 0 ? (
+              <p className="empty-sessions">没有匹配的会话。</p>
+            ) : sessionGroups.map((group) => (
+              <section className="session-date-group" key={group.key} aria-label={`${group.label}会话`}>
+                <div className="session-date-heading">
+                  <span>{group.label}</span>
+                  <small>{group.items.length}</small>
+                </div>
+                <nav>
+                  {group.items.map((session) => {
+                    const title = session.title ?? "未命名会话";
+                    return <button
+                      key={session.session_id}
+                      className={`session-item ${activeSessionId === session.session_id ? "active" : ""}`}
+                      aria-current={activeSessionId === session.session_id ? "page" : undefined}
+                      title={title}
+                      onClick={() => void handleSelectSession(session.session_id)}
+                    >
+                      <span className="session-copy">
+                        <strong>{title}</strong>
+                      </span>
+                      <time>{formatTime(session.updated_at)}</time>
+                    </button>;
+                  })}
+                </nav>
+              </section>
             ))}
-          </nav>
+          </div>
         </div>
 
         <div className="sidebar-footer">
@@ -2298,7 +2335,11 @@ export default function Home() {
         <header className="topbar">
           <button className="icon-button mobile-menu" onClick={() => setIsSidebarOpen(true)} aria-label="打开会话列表">☰</button>
           <div className="conversation-title-block">
-            <p className="eyebrow">当前会话</p>
+            <div className="conversation-kicker">
+              <span className="conversation-kicker-dot" aria-hidden="true" />
+              <span>{activeSession ? "当前会话" : "工作台"}</span>
+              {activeSession && <span className="conversation-kicker-time">· {formatTime(activeSession.updated_at)}</span>}
+            </div>
             {isRenamingSession && activeSession ? (
               <form
                 className="conversation-title-form"
@@ -2319,8 +2360,8 @@ export default function Home() {
               </form>
             ) : (
               <div className="conversation-title-row">
-                <h1>{activeSession?.title ?? "新对话"}</h1>
-                {activeSession && <button type="button" onClick={beginSessionRename}>重命名</button>}
+                <h1 title={activeSession?.title ?? "新对话"}>{activeSession?.title ?? "新对话"}</h1>
+                {activeSession && <button type="button" className="title-rename" onClick={beginSessionRename}>重命名</button>}
               </div>
             )}
           </div>
@@ -2623,7 +2664,10 @@ export default function Home() {
 
         {evidenceWorkflow && <>
           <div className="evidence-tabs" aria-label="运行详情视图">
-            <button type="button" aria-pressed={evidenceTab === "sources"} onClick={() => setEvidenceTab("sources")}>结论与来源</button>
+            <button type="button" aria-pressed={evidenceTab === "sources"} onClick={() => setEvidenceTab("sources")}>
+              结论与来源
+              {evidenceClaimCount > 0 && <span className="evidence-tab-count">{evidenceClaimCount}</span>}
+            </button>
             <button type="button" aria-pressed={evidenceTab === "process"} onClick={() => setEvidenceTab("process")}>运行过程</button>
           </div>
           {isInspectorOpen && evidenceTab === "sources" && <>
@@ -2634,21 +2678,42 @@ export default function Home() {
           </>}
         </>}
         {(!evidenceWorkflow || evidenceTab === "process") && <>
-        <div className="run-state">
-          <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
-          <div>
-            <strong>{evidenceWorkflow ? agentWorkflowStatusLabel(evidenceWorkflow.status) : isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "响应已保存" : evidenceRun?.status === "failed" ? "生成失败" : evidenceRun?.status === "cancelled" ? "已取消" : evidenceRun ? "运行处理中" : "等待证据" : isSending ? "生成进行中" : evidenceRun?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : evidenceRun ? "运行已创建" : "等待首次运行"}</strong>
-            {isInspectingHistoricalRun && <p>所选回复的只读快照，不改变当前工作台</p>}
+        <section className={`run-overview ${isEvidenceEmpty ? "is-empty" : ""}`} aria-label="运行概览" data-state={evidenceWorkflow?.status ?? evidenceRun?.status ?? "idle"}>
+          <div className="run-state">
+            <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
+            <div className="run-state-copy">
+              <span className="run-state-kicker">运行状态</span>
+              <strong>{evidenceWorkflow ? agentWorkflowStatusLabel(evidenceWorkflow.status) : isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "响应已保存" : evidenceRun?.status === "failed" ? "生成失败" : evidenceRun?.status === "cancelled" ? "已取消" : evidenceRun ? "运行处理中" : "等待证据" : isSending ? "生成进行中" : evidenceRun?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : evidenceRun ? "运行已创建" : "等待首次运行"}</strong>
+              {isInspectingHistoricalRun && <p>所选回复的只读快照，不改变当前工作台</p>}
+            </div>
+            {evidenceRun && <time>{formatTime(evidenceRun.updated_at)}</time>}
           </div>
-          {evidenceRun && <time>{formatTime(evidenceRun.updated_at)}</time>}
-        </div>
 
-        <div className="metric-grid">
-          <div>{!isEvidenceEmpty && <><span>总耗时</span><strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong></>}</div>
-          <div>{!isEvidenceEmpty && <><span>总 Token</span><strong>{formatTokenTotal(evidenceUsage)}</strong></>}</div>
-          <div>{!isEvidenceEmpty && <><span>预估费用</span><strong>{evidenceUsage?.cost ?? "—"}</strong></>}</div>
-          <div>{!isEvidenceEmpty && <><span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span><strong>{evidenceWorkflow ? `${evidenceWorkflow.model_call_count}${evidenceWorkflow.max_model_calls ? ` / ${evidenceWorkflow.max_model_calls}` : " 次"}` : evidenceAttemptId ? "已记录" : "—"}</strong></>}</div>
-        </div>
+          {!isEvidenceEmpty && (
+            <div className="run-metrics" aria-label="运行指标">
+              <article className="run-metric">
+                <span>总耗时</span>
+                <strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong>
+                <small>{evidenceRun?.completed_at ? "开始至完成" : "等待完成"}</small>
+              </article>
+              <article className="run-metric">
+                <span>总 Token</span>
+                <strong>{formatTokenTotal(evidenceUsage)}</strong>
+                <small>{evidenceUsage ? `输入 ${formatTokenCount(evidenceUsage.input)} · 输出 ${formatTokenCount(evidenceUsage.output)}` : "用量待确认"}</small>
+              </article>
+              <article className="run-metric">
+                <span>预估费用</span>
+                <strong>{formatCost(evidenceUsage?.cost)}</strong>
+                <small>{evidenceUsage?.cost ? "按模型用量估算" : "暂无费用记录"}</small>
+              </article>
+              <article className="run-metric">
+                <span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span>
+                <strong>{evidenceWorkflow ? evidenceWorkflow.model_call_count : evidenceAttemptId ? "1" : "—"}</strong>
+                <small>{evidenceWorkflow ? `${evidenceWorkflow.node_count} 个节点${evidenceWorkflow.max_model_calls ? ` · 上限 ${evidenceWorkflow.max_model_calls}` : ""}` : evidenceAttemptId ? "已记录调用" : "等待调用"}</small>
+              </article>
+            </div>
+          )}
+        </section>
 
         {(displayedContextEvidenceState !== "empty" || isEvidenceEmpty) && (
           <ContextEvidencePanel
@@ -2675,8 +2740,8 @@ export default function Home() {
           {!isEvidenceEmpty && <dl className="detail-list">
             <div><dt>Provider</dt><dd>{(evidenceModelFacts?.provider ?? (isInspectingHistoricalRun ? "" : selectedProvider)) || "—"}</dd></div>
             <div><dt>Model</dt><dd>{(evidenceModelFacts?.model ?? (isInspectingHistoricalRun ? "" : selectedModel)) || "—"}</dd></div>
-            <div><dt>输入 Token</dt><dd>{evidenceUsage?.input ?? "—"}</dd></div>
-            <div><dt>输出 Token</dt><dd>{evidenceUsage?.output ?? "—"}</dd></div>
+            <div><dt>输入 Token</dt><dd>{formatTokenCount(evidenceUsage?.input)}</dd></div>
+            <div><dt>输出 Token</dt><dd>{formatTokenCount(evidenceUsage?.output)}</dd></div>
             <div><dt>请求状态</dt><dd className={evidenceRun?.status === "failed" ? "error-text" : "success-text"}>{isInspectingHistoricalRun ? evidenceRun ? runStatusLabel(evidenceRun.status) : "等待" : statusLabel}</dd></div>
           </dl>}
           {(isInspectingHistoricalRun

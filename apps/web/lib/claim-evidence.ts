@@ -71,3 +71,11 @@ export function claimVerdictLabel(entry: ClaimEntry): string {
   if (entry.assessment.verdict === "insufficient_evidence") return "证据不足";
   return entry.claim.source_type === "file" ? "原文支持" : "审核认可";
 }
+
+
+/** Drop parser rows that contain neither text nor cells before rendering source excerpts. */
+export function visibleClaimBlocks(
+  blocks: ClaimSources["sources"][number]["blocks"],
+): ClaimSources["sources"][number]["blocks"] {
+  return blocks.filter((block) => Boolean(block.cells?.length) || Boolean(block.text?.trim()));
+}

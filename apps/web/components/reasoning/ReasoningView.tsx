@@ -83,11 +83,14 @@ function ReasoningDisclosure({
         <i aria-hidden="true">{isExpanded ? "−" : "+"}</i>
       </button>
       {!isExpanded && preview && <p className="reasoning-preview">{preview}</p>}
-      {isExpanded && (
-        <div id={contentId} className="reasoning-text">
-          {presentation.text}
-        </div>
-      )}
+      <div
+        id={contentId}
+        className={`reasoning-expandable ${isExpanded ? "is-open" : ""}`}
+        aria-hidden={!isExpanded}
+        inert={!isExpanded}
+      >
+        <div className="reasoning-text">{presentation.text}</div>
+      </div>
       {mode === "trajectory" && <ReasoningMetrics presentation={presentation} />}
     </section>
   );

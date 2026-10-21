@@ -1,4 +1,5 @@
 import type { ContextBuildEvidence } from "../../lib/types";
+import { formatTokenCount } from "../../lib/format";
 
 type ContextEvidencePanelProps = {
   evidence: ContextBuildEvidence | null;
@@ -54,14 +55,14 @@ export function ContextEvidencePanel({
         <>
           <dl className="context-evidence-summary">
             <div><dt>策略</dt><dd>{evidence.policy_version}</dd></div>
-            <div><dt>输入估算</dt><dd>{evidence.input_token_estimate} tokens</dd></div>
+            <div><dt>输入估算</dt><dd>{formatTokenCount(evidence.input_token_estimate)} tokens</dd></div>
             <div><dt>模型目录</dt><dd>{evidence.catalog_version_id.slice(0, 8)}</dd></div>
           </dl>
           <ul className="context-source-list">
             {browserVisibleSources.map((source) => {
               const selectionLabel =
                 source.selection_status === "selected"
-                  ? `${source.token_estimate} tokens`
+                  ? `${formatTokenCount(source.token_estimate)} tokens`
                   : source.exclusion_reason ?? "已排除";
               const sourceStatus = `${selectionLabel}${source.is_required ? " · 必选" : ""}`;
               const sourceVersion = source.source_version

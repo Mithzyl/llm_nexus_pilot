@@ -11,6 +11,7 @@ import type {
   ReasoningBlockSnapshot,
 } from "../../lib/types";
 import { MarkdownContent } from "../markdown/MarkdownContent";
+import { formatDurationMs, formatTokenCount } from "../../lib/format";
 import { ReasoningView } from "../reasoning/ReasoningView";
 import {
   agentCandidateCoverageSummary,
@@ -43,6 +44,28 @@ const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   final_synthesis: "最终汇总",
   workflow_completion: "工作流完成",
 };
+
+const WORKFLOW_STAGE_LABELS: Record<string, string> = {
+  workflow_completion: "流程完成",
+  general_candidate: "模型 Agent",
+  general_delegated_candidate: "模型 Agent · 委派",
+  general_review: "独立审核",
+  final_synthesis: "最终汇总",
+  request_intake: "请求归一化",
+  context_assembly: "上下文组装",
+  controller_plan: "Controller 规划",
+  plan_validation: "计划校验",
+  agent_dispatch: "Agent 分派",
+  agent_model_execution: "模型 Agent",
+  agent_handoff: "Handoff",
+  independent_review: "独立审核",
+};
+
+/** Keep internal workflow stages out of the primary header. */
+function workflowStageLabel(stage: string | null): string {
+  if (!stage) return "等待首个节点";
+  return WORKFLOW_STAGE_LABELS[stage] ?? stage.replaceAll("_", " ");
+}
 
 /** Convert workflow status values into stable user-facing labels without inventing actions. */
 export function agentWorkflowStatusLabel(status: AgentWorkflowStatus): string {
@@ -135,7 +158,7 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
         ["Agent 摘要", node.output.structured_output.summary],
         ["Provider / Model", `${node.output.provider} / ${node.output.model}`],
         ["完成原因", node.output.finish_reason],
-        ["时长", `${node.output.latency_ms} ms`],
+        ["时长", formatDurationMs(node.output.latency_ms)],
       ];
     case "agent_handoff":
       return [
@@ -175,8 +198,8 @@ function nodeOutputFacts(node: AgentWorkflowNodeResult): Array<[string, string]>
       return [
         ["节点", String(node.output.node_count)],
         ["模型调用", String(node.output.model_attempt_ids.length)],
-        ["总 Token", String(node.output.total_input_tokens + node.output.total_output_tokens)],
-        ["总耗时", `${node.output.total_duration_ms} ms`],
+        ["总 Token", formatTokenCount(node.output.total_input_tokens + node.output.total_output_tokens)],
+        ["总耗时", formatDurationMs(node.output.total_duration_ms)],
       ];
   }
 }
@@ -270,7 +293,7 @@ export function AgentWorkflowPanel({
           <p className="eyebrow">{["tool_enabled_v1", "general_tools_v1"].includes(workflow.execution_profile) ? "附件读取工作流" : "纯模型工作流"}</p>
           <h3>{agentWorkflowStatusLabel(workflow.status)}</h3>
         </div>
-        <span>{workflow.current_stage ?? "等待首个节点"}</span>
+        <span>{workflowStageLabel(workflow.current_stage)}</span>
       </div>
 
       <dl className="agent-workflow-metrics">
@@ -319,7 +342,7 @@ export function AgentWorkflowPanel({
                       ? `模型 Agent · ${agentDelegationRoleLabel(node.agent_role, node.node_key) ?? "委派"}`
                       : NODE_LABELS[node.output_type]}</strong>
                   </span>
-                  <time>{node.timing.duration_ms} ms</time>
+                  <time>{formatDurationMs(node.timing.duration_ms)}</time>
                 </summary>
                 <div className="agent-node-details">
                   {(node.output_type === "general_candidate"
@@ -347,7 +370,7 @@ export function AgentWorkflowPanel({
                     </ul>
                   )}
                   <p>
-                    {node.usage.model_call_count} 次模型调用 · {node.usage.input_tokens + node.usage.output_tokens} tokens ·
+                    {node.usage.model_call_count} 次模型调用 · {formatTokenCount(node.usage.input_tokens + node.usage.output_tokens)} tokens ·
                     {node.usage.tool_call_count > 0 && ` ${node.usage.tool_call_count} 次工具调用 · `}
                     {node.budget.remaining_model_calls === null ? "未设调用次数上限" : `剩余 ${node.budget.remaining_model_calls} 次调用`}
                   </p>

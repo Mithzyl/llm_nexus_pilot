@@ -140,7 +140,7 @@ test("keeps consumed cost and temporary reservation as separate budget facts", (
     agentNodeBudgetSummary({ cost_used_after: "1.25", reserved_estimated_cost: "3.00" }),
     [
       ["已消费费用", "1.25"],
-      ["当前费用预留", "3.00"],
+      ["当前费用预留", "3"],
     ],
   );
 });

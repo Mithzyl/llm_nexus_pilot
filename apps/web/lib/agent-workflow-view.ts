@@ -7,6 +7,7 @@ import type {
   AgentWorkflowStatus,
 } from "./types";
 import { isAgentWorkflowNodeActivitySummary } from "./agent-workflow";
+import { formatCost } from "./format";
 
 type AgentDispatchGroup = AgentWorkflowNodeOutputMap["agent_dispatch"]["dispatch_groups"][number];
 type AgentNodeBudget = AgentWorkflowNodeResult["budget"];
@@ -189,8 +190,8 @@ export function agentNodeBudgetSummary(
   budget: Pick<AgentNodeBudget, "cost_used_after" | "reserved_estimated_cost">,
 ): Array<[string, string]> {
   return [
-    ["已消费费用", String(budget.cost_used_after)],
-    ["当前费用预留", String(budget.reserved_estimated_cost)],
+    ["已消费费用", formatCost(budget.cost_used_after)],
+    ["当前费用预留", formatCost(budget.reserved_estimated_cost)],
   ];
 }
 
