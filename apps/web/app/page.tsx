@@ -2792,7 +2792,9 @@ export default function Home() {
           />
         )}
         </>}
-        {!isInspectingHistoricalRun && errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
+        {!isInspectingHistoricalRun && errorMessage
+          && !(agentWorkflow?.error?.public_message && errorMessage.includes(agentWorkflow.error.public_message))
+          && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}
       </aside>
     </main>
   );
