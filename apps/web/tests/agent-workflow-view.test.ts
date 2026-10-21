@@ -13,8 +13,10 @@ import {
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
   agentToolLabel,
+  agentToolResultSummary,
   agentToolStatusLabel,
   agentWorkflowEventActivity,
+  groupAgentToolCallActivities,
   selectAgentWorkflowActivityTimeline,
   selectVisibleAgentWorkflowActivities,
   isAgentWorkflowAssistantMessage,
@@ -383,4 +385,35 @@ test("restores workflow presentation on the persisted assistant message for the 
     ),
     false,
   );
+});
+
+test("summarizes tool calls by tool and completion status", () => {
+  const results = [
+    { tool_call_id: "a", tool_name: "read_file_content", version: "1", status: "completed", error_code: null, file_id: "f" },
+    { tool_call_id: "b", tool_name: "read_file_content", version: "1", status: "completed", error_code: null, file_id: "f" },
+    { tool_call_id: "c", tool_name: "search_file_content", version: "1", status: "failed", error_code: "timeout", file_id: "f" },
+  ];
+  const summary = agentToolResultSummary(results);
+  assert.equal(summary.total, 3);
+  assert.equal(summary.completed, 2);
+  assert.equal(summary.statusLabel, "1 次未完成");
+  assert.equal(summary.hasIssues, true);
+  assert.deepEqual(summary.groups, [
+    { label: "读取文件文字", count: 2 },
+    { label: "搜索文件文字", count: 1 },
+  ]);
+});
+
+test("groups consecutive tool progress activities without losing lifecycle events", () => {
+  const activities = selectAgentWorkflowActivityTimeline([
+    activityEvent(1, "node", "running", "已记录 1 次工具调用，Agent 继续处理"),
+    activityEvent(2, "node", "running", "已记录 2 次工具调用，Agent 继续处理"),
+    activityEvent(3, "node", "running", "已记录 3 次工具调用，Agent 继续处理"),
+    activityEvent(4, "node", "completed", "Agent 已提交候选回答"),
+  ]);
+  const grouped = groupAgentToolCallActivities(activities);
+  assert.deepEqual(grouped.map((activity) => activity.text), [
+    "已记录 3 次工具调用，Agent 继续处理",
+    "Agent 已提交候选回答",
+  ]);
 });

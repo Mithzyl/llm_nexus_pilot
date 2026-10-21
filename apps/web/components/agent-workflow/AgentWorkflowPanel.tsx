@@ -21,8 +21,10 @@ import {
   agentNodeMissingOutputLabel,
   agentNodePublicActivityText,
   agentToolLabel,
+  agentToolResultSummary,
   agentToolStatusLabel,
   agentWorkflowEventActivity,
+  groupAgentToolCallActivities,
   isAgentWorkflowCancellable,
   selectAgentWorkflowActivityTimeline,
   selectVisibleAgentWorkflowActivities,
@@ -191,11 +193,36 @@ function formatAgentActivityTime(value: string): string {
   }).format(new Date(value));
 }
 
+/** Present call counts without repeating one line per call. */
+function AgentNodeToolSummary({ node }: { node: AgentWorkflowNodeResult }) {
+  const results = node.evidence.tool_results ?? [];
+  if (results.length === 0) return null;
+  const summary = agentToolResultSummary(results);
+  return <section className={`agent-tool-summary ${summary.hasIssues ? "has-issues" : ""}`} aria-label="工具结果摘要">
+    <div className="agent-tool-summary-head">
+      <strong>工具结果</strong>
+      <span>{summary.total} 次调用 · {summary.statusLabel}</span>
+    </div>
+    <div className="agent-tool-summary-groups">
+      {summary.groups.map((group) => <span key={group.label}>{group.label}<small>{group.count}</small></span>)}
+    </div>
+    <details className="agent-tool-details">
+      <summary>查看 {summary.total} 次调用明细</summary>
+      <ul>
+        {results.map((call) => <li key={call.tool_call_id}>
+          {agentToolLabel(call.tool_name)} · {agentToolStatusLabel(call.tool_name, call.status)}
+          {call.error_code ? ` · ${call.error_code}` : ""}
+        </li>)}
+      </ul>
+    </details>
+  </section>;
+}
+
 /** Render the latest activity by default and preserve the full collapsible timeline. */
 export function AgentWorkflowActivityFeed({ events }: { events: AgentWorkflowEvent[] }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const activityTimelineId = useId();
-  const activities = selectAgentWorkflowActivityTimeline(events);
+  const activities = groupAgentToolCallActivities(selectAgentWorkflowActivityTimeline(events));
   if (activities.length === 0) return null;
   const latestActivity = activities[activities.length - 1];
   const visibleActivities = selectVisibleAgentWorkflowActivities(activities, isExpanded);
@@ -329,16 +356,7 @@ export function AgentWorkflowPanel({
                       <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
                     ))}
                   </dl>
-                  {(node.evidence.tool_results ?? []).length > 0 && (
-                    <ul aria-label="工具调用">
-                      {node.evidence.tool_results?.map((call) => (
-                        <li key={call.tool_call_id}>
-                          {agentToolLabel(call.tool_name)}
-                          {" · "}{agentToolStatusLabel(call.tool_name, call.status)}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  <AgentNodeToolSummary node={node} />
                   <p>
                     {node.usage.model_call_count} 次模型调用 · {formatTokenCount(node.usage.input_tokens + node.usage.output_tokens)} tokens ·
                     {node.usage.tool_call_count > 0 && ` ${node.usage.tool_call_count} 次工具调用 · `}

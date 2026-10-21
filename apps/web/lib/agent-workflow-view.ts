@@ -174,6 +174,66 @@ export function selectVisibleAgentWorkflowActivities(
   return isExpanded ? activities : activities.slice(-1);
 }
 
+type AgentToolResult = NonNullable<AgentWorkflowNodeOutputMap["agent_model_execution"]["tool_results"]>[number];
+
+export type AgentToolResultSummary = {
+  total: number;
+  completed: number;
+  statusLabel: string;
+  hasIssues: boolean;
+  groups: Array<{ label: string; count: number }>;
+};
+
+/** Summarize which tools ran and whether their persisted results completed. */
+export function agentToolResultSummary(results: AgentToolResult[]): AgentToolResultSummary {
+  const completed = results.filter((result) => result.status === "completed").length;
+  const issues = results.length - completed;
+  const counts = new Map<string, number>();
+  for (const result of results) {
+    const label = agentToolLabel(result.tool_name);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return {
+    total: results.length,
+    completed,
+    hasIssues: issues > 0,
+    statusLabel: results.length === 0 ? "没有调用" : issues > 0 ? `${issues} 次未完成` : "全部成功",
+    groups: [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, "zh-CN")),
+  };
+}
+
+/** Collapse consecutive progress events into one durable tool-call summary. */
+export function groupAgentToolCallActivities(
+  activities: AgentWorkflowActivityItem[],
+): AgentWorkflowActivityItem[] {
+  const result: AgentWorkflowActivityItem[] = [];
+  let toolCount = 0;
+  let latestToolActivity: AgentWorkflowActivityItem | null = null;
+  const flushTools = () => {
+    if (!latestToolActivity || toolCount === 0) return;
+    result.push({
+      ...latestToolActivity,
+      text: `已记录 ${toolCount} 次工具调用，Agent 继续处理`,
+    });
+    toolCount = 0;
+    latestToolActivity = null;
+  };
+  for (const activity of activities) {
+    const match = /^已记录 (\d+) 次工具调用/.exec(activity.text);
+    if (match) {
+      toolCount = Number(match[1]);
+      latestToolActivity = activity;
+      continue;
+    }
+    flushTools();
+    result.push(activity);
+  }
+  flushTools();
+  return result;
+}
+
 /** Describe persisted dispatch groups without inferring dependencies from event arrival order. */
 export function agentDispatchGroupSummary(dispatchGroups: AgentDispatchGroup[]): string {
   if (dispatchGroups.length === 0) return "无执行组";
