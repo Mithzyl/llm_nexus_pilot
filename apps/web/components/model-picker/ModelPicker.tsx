@@ -46,7 +46,8 @@ export function ModelPicker({
     selectedProvider || catalog.providers[0] || "",
   );
   const [query, setQuery] = useState("");
-  const [activeModelIndex, setActiveModelIndex] = useState(0);
+  const [activeModelIndex, setActiveModelIndex] = useState(-1);
+  const [isKeyboardNavigating, setIsKeyboardNavigating] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -109,7 +110,8 @@ export function ModelPicker({
     }
     setActiveProvider(selectedProvider || catalog.providers[0] || "");
     setQuery("");
-    setActiveModelIndex(0);
+    setActiveModelIndex(-1);
+    setIsKeyboardNavigating(false);
     setIsOpen(true);
   }
 
@@ -117,7 +119,8 @@ export function ModelPicker({
   function handleProviderChange(provider: ProviderName) {
     setActiveProvider(provider);
     setQuery("");
-    setActiveModelIndex(0);
+    setActiveModelIndex(-1);
+    setIsKeyboardNavigating(false);
     searchInputRef.current?.focus();
   }
 
@@ -139,12 +142,14 @@ export function ModelPicker({
     }
     if (event.key === "ArrowDown" && filteredModels.length > 0) {
       event.preventDefault();
-      setActiveModelIndex((current) => Math.min(current + 1, filteredModels.length - 1));
+      setIsKeyboardNavigating(true);
+      setActiveModelIndex((current) => current < 0 ? 0 : Math.min(current + 1, filteredModels.length - 1));
       return;
     }
     if (event.key === "ArrowUp" && filteredModels.length > 0) {
       event.preventDefault();
-      setActiveModelIndex((current) => Math.max(current - 1, 0));
+      setIsKeyboardNavigating(true);
+      setActiveModelIndex((current) => current < 0 ? filteredModels.length - 1 : Math.max(current - 1, 0));
       return;
     }
     if (event.key !== "Enter" || !activeProvider) return;
@@ -153,7 +158,7 @@ export function ModelPicker({
       commitSelection(activeProvider, query);
       return;
     }
-    const activeModel = filteredModels[activeModelIndex];
+    const activeModel = filteredModels[activeModelIndex] ?? filteredModels[0];
     if (activeModel) commitSelection(activeProvider, activeModel);
   }
 
@@ -209,7 +214,8 @@ export function ModelPicker({
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
-                setActiveModelIndex(0);
+                setActiveModelIndex(-1);
+                setIsKeyboardNavigating(false);
               }}
               onKeyDown={handleSearchKeyDown}
               placeholder={isUnrestrictedProvider ? "输入模型名称" : "搜索模型"}
@@ -236,7 +242,7 @@ export function ModelPicker({
               </button>
             </div>
           ) : (
-            <div className="model-option-list" role="listbox" aria-label="可用模型">
+            <div className={`model-option-list ${isKeyboardNavigating ? "is-keyboard" : ""}`} role="listbox" aria-label="可用模型">
               {filteredModels.length > 0 ? filteredModels.map((model, index) => (
                 <button
                   type="button"
@@ -245,7 +251,10 @@ export function ModelPicker({
                   aria-selected={selectedProvider === activeProvider && selectedModel === model}
                   className={`${index === activeModelIndex ? "is-active" : ""} ${selectedProvider === activeProvider && selectedModel === model ? "is-selected" : ""}`}
                   key={model}
-                  onMouseEnter={() => setActiveModelIndex(index)}
+                  onMouseEnter={() => {
+                    setActiveModelIndex(index);
+                    setIsKeyboardNavigating(false);
+                  }}
                   onClick={() => activeProvider && commitSelection(activeProvider, model)}
                 >
                   <strong title={model}>{model}</strong>
