@@ -2715,14 +2715,6 @@ export default function Home() {
           )}
         </section>
 
-        {(displayedContextEvidenceState !== "empty" || isEvidenceEmpty) && (
-          <ContextEvidencePanel
-            evidence={displayedContextEvidence}
-            state={displayedContextEvidenceState}
-            errorMessage={displayedContextEvidenceError}
-          />
-        )}
-
         {evidenceWorkflow ? (
           <AgentWorkflowPanel
             workflow={evidenceWorkflow}
@@ -2767,6 +2759,13 @@ export default function Home() {
         </section>
 
           </>
+        )}
+        {(displayedContextEvidenceState !== "empty" || isEvidenceEmpty) && (
+          <ContextEvidencePanel
+            evidence={displayedContextEvidence}
+            state={displayedContextEvidenceState}
+            errorMessage={displayedContextEvidenceError}
+          />
         )}
         </>}
         {!isInspectingHistoricalRun && errorMessage && <div className="error-banner" role="alert"><strong>需要处理</strong><p>{errorMessage}</p></div>}

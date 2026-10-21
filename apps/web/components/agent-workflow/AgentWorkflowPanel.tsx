@@ -62,9 +62,13 @@ const WORKFLOW_STAGE_LABELS: Record<string, string> = {
 };
 
 /** Keep internal workflow stages out of the primary header. */
-function workflowStageLabel(stage: string | null): string {
-  if (!stage) return "等待首个节点";
-  return WORKFLOW_STAGE_LABELS[stage] ?? stage.replaceAll("_", " ");
+function workflowStageLabel(stage: string | null, status: AgentWorkflowStatus): string {
+  if (status === "failed" || status === "outcome_unknown") return "执行中断";
+  if (status === "completed") return "流程完成";
+  if (status === "cancelled") return "已取消";
+  if (status === "pending") return "等待开始";
+  if (!stage) return "执行中";
+  return WORKFLOW_STAGE_LABELS[stage] ?? "执行中";
 }
 
 /** Convert workflow status values into stable user-facing labels without inventing actions. */
@@ -293,8 +297,16 @@ export function AgentWorkflowPanel({
           <p className="eyebrow">{["tool_enabled_v1", "general_tools_v1"].includes(workflow.execution_profile) ? "附件读取工作流" : "纯模型工作流"}</p>
           <h3>{agentWorkflowStatusLabel(workflow.status)}</h3>
         </div>
-        <span>{workflowStageLabel(workflow.current_stage)}</span>
+        <span>{workflowStageLabel(workflow.current_stage, workflow.status)}</span>
       </div>
+
+      {workflow.error && (
+        <div className="agent-workflow-error" role="alert">
+          <span className="agent-workflow-error-kicker">失败原因</span>
+          <strong>{workflow.error.public_message}</strong>
+          <span>{workflow.error.error_code} · {workflow.error.outcome_is_known ? "结果已知" : "结果未知"}</span>
+        </div>
+      )}
 
       <dl className="agent-workflow-metrics">
         <div><dt>节点</dt><dd>{workflow.node_count} / {workflow.max_nodes}</dd></div>
@@ -316,13 +328,6 @@ export function AgentWorkflowPanel({
         <p className="agent-evidence-warning" role="status">
           事件序号存在缺口；当前界面已停止宣称实时完整，并以查询快照为准。
         </p>
-      )}
-
-      {workflow.error && (
-        <div className="agent-workflow-error" role="alert">
-          <strong>{workflow.error.public_message}</strong>
-          <span>{workflow.error.error_code} · {workflow.error.outcome_is_known ? "结果已知" : "结果未知"}</span>
-        </div>
       )}
 
       <div className="agent-workflow-section-title">
