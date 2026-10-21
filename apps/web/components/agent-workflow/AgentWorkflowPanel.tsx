@@ -45,32 +45,6 @@ const NODE_LABELS: Record<AgentWorkflowNodeResult["output_type"], string> = {
   workflow_completion: "工作流完成",
 };
 
-const WORKFLOW_STAGE_LABELS: Record<string, string> = {
-  workflow_completion: "流程完成",
-  general_candidate: "模型 Agent",
-  general_delegated_candidate: "模型 Agent · 委派",
-  general_review: "独立审核",
-  final_synthesis: "最终汇总",
-  request_intake: "请求归一化",
-  context_assembly: "上下文组装",
-  controller_plan: "Controller 规划",
-  plan_validation: "计划校验",
-  agent_dispatch: "Agent 分派",
-  agent_model_execution: "模型 Agent",
-  agent_handoff: "Handoff",
-  independent_review: "独立审核",
-};
-
-/** Keep internal workflow stages out of the primary header. */
-function workflowStageLabel(stage: string | null, status: AgentWorkflowStatus): string {
-  if (status === "failed" || status === "outcome_unknown") return "执行中断";
-  if (status === "completed") return "流程完成";
-  if (status === "cancelled") return "已取消";
-  if (status === "pending") return "等待开始";
-  if (!stage) return "执行中";
-  return WORKFLOW_STAGE_LABELS[stage] ?? "执行中";
-}
-
 /** Convert workflow status values into stable user-facing labels without inventing actions. */
 export function agentWorkflowStatusLabel(status: AgentWorkflowStatus): string {
   const labels: Record<AgentWorkflowStatus, string> = {
@@ -288,16 +262,15 @@ export function AgentWorkflowPanel({
   onCancel?: () => void;
 }) {
   const nodes = "nodes" in workflow ? workflow.nodes : liveNodes;
-  const workflowResult = "nodes" in workflow ? workflow : null;
 
   return (
     <section className="agent-workflow" data-status={workflow.status} aria-label="Agent 工作流证据">
       <div className="agent-workflow-heading">
         <div>
           <p className="eyebrow">{["tool_enabled_v1", "general_tools_v1"].includes(workflow.execution_profile) ? "附件读取工作流" : "纯模型工作流"}</p>
-          <h3>{agentWorkflowStatusLabel(workflow.status)}</h3>
+          <h3>{workflow.node_count} / {workflow.max_nodes} 节点</h3>
         </div>
-        <span>{workflowStageLabel(workflow.current_stage, workflow.status)}</span>
+        <span>{workflow.active_node_execution_ids.length} 活动 · 快照 v{workflow.snapshot_version}</span>
       </div>
 
       {workflow.error && (
@@ -307,13 +280,6 @@ export function AgentWorkflowPanel({
           <span>{workflow.error.error_code} · {workflow.error.outcome_is_known ? "结果已知" : "结果未知"}</span>
         </div>
       )}
-
-      <dl className="agent-workflow-metrics">
-        <div><dt>节点</dt><dd>{workflow.node_count} / {workflow.max_nodes}</dd></div>
-        <div><dt>模型调用</dt><dd>{workflow.model_call_count}{workflow.max_model_calls ? ` / ${workflow.max_model_calls}` : " 次"}</dd></div>
-        <div><dt>活动节点</dt><dd>{workflow.active_node_execution_ids.length}</dd></div>
-        <div><dt>快照</dt><dd>v{workflow.snapshot_version}</dd></div>
-      </dl>
 
       {onCancel && isAgentWorkflowCancellable(workflow.status) && (
         <div className="agent-cancel-action">
@@ -332,7 +298,6 @@ export function AgentWorkflowPanel({
 
       <div className="agent-workflow-section-title">
         <h4>节点时间线</h4>
-        <span>{nodes.length > 0 ? `${nodes.length} 个完整节点` : `${events.length} 个公共事件`}</span>
       </div>
 
       {nodes.length > 0 ? (
@@ -409,13 +374,6 @@ export function AgentWorkflowPanel({
             );
           })}
         </ol>
-      )}
-
-      {workflowResult?.final_output && (
-        <div className="agent-final-evidence">
-          <strong>最终结果已提交</strong>
-          <span>{workflowResult.final_output.assistant_message_id ? "会话消息已关联" : "未关联会话消息"}</span>
-        </div>
       )}
     </section>
   );

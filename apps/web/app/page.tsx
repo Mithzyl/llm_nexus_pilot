@@ -2682,7 +2682,6 @@ export default function Home() {
           <div className="run-state">
             <div className={`status-emblem ${evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "is-failed" : ""}`}>{evidenceRun?.status === "failed" || evidenceWorkflow?.status === "failed" || evidenceWorkflow?.status === "outcome_unknown" ? "!" : evidenceRun ? "✓" : "·"}</div>
             <div className="run-state-copy">
-              <span className="run-state-kicker">运行状态</span>
               <strong>{evidenceWorkflow ? agentWorkflowStatusLabel(evidenceWorkflow.status) : isInspectingHistoricalRun ? evidenceRun?.status === "completed" ? "响应已保存" : evidenceRun?.status === "failed" ? "生成失败" : evidenceRun?.status === "cancelled" ? "已取消" : evidenceRun ? "运行处理中" : "等待证据" : isSending ? "生成进行中" : evidenceRun?.status === "failed" ? "生成失败" : assistantSaveFailed ? "响应已生成，保存失败" : assistantSaved ? lastAssistantMessage?.truncated ? "响应达到上限，部分内容已保存" : "响应已保存" : responseCompleted ? "响应已完成，待保存" : evidenceRun ? "运行已创建" : "等待首次运行"}</strong>
               {isInspectingHistoricalRun && <p>所选回复的只读快照，不改变当前工作台</p>}
             </div>
@@ -2694,22 +2693,20 @@ export default function Home() {
               <article className="run-metric">
                 <span>总耗时</span>
                 <strong>{evidenceRun ? formatDuration(evidenceRun) : "—"}</strong>
-                <small>{evidenceRun?.completed_at ? "开始至完成" : "等待完成"}</small>
               </article>
               <article className="run-metric">
-                <span>总 Token</span>
+                <span>累计 Token</span>
                 <strong>{formatTokenTotal(evidenceUsage)}</strong>
                 <small>{evidenceUsage ? `输入 ${formatTokenCount(evidenceUsage.input)} · 输出 ${formatTokenCount(evidenceUsage.output)}` : "用量待确认"}</small>
               </article>
               <article className="run-metric">
                 <span>预估费用</span>
                 <strong>{formatCost(evidenceUsage?.cost)}</strong>
-                <small>{evidenceUsage?.cost ? "按模型用量估算" : "暂无费用记录"}</small>
               </article>
               <article className="run-metric">
                 <span>{evidenceWorkflow ? "模型调用" : "Attempt"}</span>
                 <strong>{evidenceWorkflow ? evidenceWorkflow.model_call_count : evidenceAttemptId ? "1" : "—"}</strong>
-                <small>{evidenceWorkflow ? `${evidenceWorkflow.node_count} 个节点${evidenceWorkflow.max_model_calls ? ` · 上限 ${evidenceWorkflow.max_model_calls}` : ""}` : evidenceAttemptId ? "已记录调用" : "等待调用"}</small>
+                <small>{evidenceWorkflow ? evidenceWorkflow.max_model_calls ? `上限 ${evidenceWorkflow.max_model_calls} 次` : "未设调用上限" : evidenceAttemptId ? "已记录调用" : "等待调用"}</small>
               </article>
             </div>
           )}
@@ -2765,6 +2762,7 @@ export default function Home() {
             evidence={displayedContextEvidence}
             state={displayedContextEvidenceState}
             errorMessage={displayedContextEvidenceError}
+            cumulativeInputTokens={evidenceUsage?.input}
           />
         )}
         </>}

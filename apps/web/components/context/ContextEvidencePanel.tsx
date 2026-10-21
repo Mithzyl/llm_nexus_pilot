@@ -8,6 +8,7 @@ type ContextEvidencePanelProps = {
   evidence: ContextBuildEvidence | null;
   state: "empty" | "loading" | "ready" | "error";
   errorMessage: string | null;
+  cumulativeInputTokens?: number | null;
 };
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -54,6 +55,7 @@ export function ContextEvidencePanel({
   evidence,
   state,
   errorMessage,
+  cumulativeInputTokens,
 }: ContextEvidencePanelProps) {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const detailsId = useId();
@@ -86,7 +88,7 @@ export function ContextEvidencePanel({
         <>
           <div className="context-overview">
             <div className="context-total">
-              <span>输入估算</span>
+              <span>最近一次输入</span>
               <strong>{formatTokenCount(evidence.input_token_estimate)}</strong>
               <small>tokens</small>
             </div>
@@ -113,6 +115,9 @@ export function ContextEvidencePanel({
             </div>
           </div>
           <div className="context-meta">
+            {cumulativeInputTokens !== null && cumulativeInputTokens !== undefined && (
+              <span>累计输入 <strong>{formatTokenCount(cumulativeInputTokens)}</strong></span>
+            )}
             <span>策略 <strong>{evidence.policy_version}</strong></span>
             <span>目录 <strong>{evidence.catalog_version_id.slice(0, 8)}</strong></span>
           </div>
@@ -124,7 +129,6 @@ export function ContextEvidencePanel({
             onClick={() => setIsDetailsOpen((current) => !current)}
           >
             <span>来源明细</span>
-            <small>{selectedCount} 项纳入 · {excludedCount} 项排除</small>
             <i aria-hidden="true">{isDetailsOpen ? "−" : "+"}</i>
           </button>
           <div
