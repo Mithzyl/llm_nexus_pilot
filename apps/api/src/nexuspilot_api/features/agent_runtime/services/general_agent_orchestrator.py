@@ -391,7 +391,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Scope delegation and review submission by role, and checkpoint durable returns."""
+        """Bind role, candidate citation scope and checkpoints to each authorized turn."""
         delegated_roles = sorted({"planner", "researcher"} & payload.role_bindings.keys())
         can_delegate = task.assigned_role == "controller" and bool(delegated_roles)
 
@@ -452,6 +452,11 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 ),
                 review_unit_ids=(
                     [unit["unit_id"] for unit in values.get("review_units", [])]
+                    if task.assigned_role == "reviewer" else None
+                ),
+                review_unit_sources=(
+                    {unit["unit_id"]: unit["source_aliases"]
+                     for unit in values.get("review_units", [])}
                     if task.assigned_role == "reviewer" else None
                 ),
             ),
@@ -515,7 +520,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         batch_index,
         submission_record=None,
     ):
-        """Validate saved native decisions or legacy prose, with one shared finite field repair."""
+        """Check native and legacy approval scopes under the same finite field repair policy."""
         expected = [unit["unit_id"] for unit in review_input["review_units"]]
         pending = expected
         accepted = {}
@@ -544,7 +549,11 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 self.model_node_service._require_complete_response(response)
                 review_text = response.output_text or ""
             try:
-                decisions = parse_review_decisions(review_text, pending, self.sources)
+                decisions = parse_review_decisions(
+                    review_text, pending, self.sources,
+                    candidate_sources={unit["unit_id"]: unit["source_aliases"]
+                                       for unit in review_input["review_units"]},
+                )
                 if (attempt == 0 and submission_record is not None
                         and submission_record.status != "completed"):
                     raise ReviewDecisionError("Native submission was rejected", expected)

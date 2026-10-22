@@ -373,17 +373,20 @@ async def test_native_review_refinement_returns_to_main_and_preserves_policy(
     assert "[S999]" not in result["final_output"]["final_text"]
 
 
+@pytest.mark.parametrize("missing_review_sources", [False, True])
 @pytest.mark.parametrize("revoke_file", [False, True])
 async def test_native_review_keeps_real_file_sources_and_rechecks_access(
-    client, test_database_session_factory, revoke_file,
+    client, test_database_session_factory, revoke_file, missing_review_sources,
 ):
-    """Native source aliases resolve to actual read results; revocation prevents final delivery."""
+    """Require explicit native source approval, finite repair and current file authorization."""
     from test_conversation_file_context import prepare_conversation_file
 
     from nexuspilot_api.models import UserFile
 
     _, _, file, turn = await prepare_conversation_file(client)
-    provider = SubmittingReviewer()
+    provider = SubmittingReviewer(
+        invalid="missing_cited_sources" if missing_review_sources else False,
+    )
     generate = provider.generate
 
     async def read_then_review(request):
@@ -398,6 +401,8 @@ async def test_native_review_keeps_real_file_sources_and_rechecks_access(
                 )
             return ModelResponse(text="The attached original is available [S1].",
                                  finish_reason="stop", latency_ms=1, raw_response={})
+        if not request.tools:
+            return await generate(request)
         schema = next(t.input_schema for t in request.tools if t.name == "submit_review")
         assert schema["$defs"]["GeneralUnitReview"]["properties"]["source_aliases"]["items"][
             "enum"
@@ -407,7 +412,10 @@ async def test_native_review_keeps_real_file_sources_and_rechecks_access(
                 row = await db.get(UserFile, file["file_id"])
                 row.status = "deleted"
                 await db.commit()
-        return await generate(request)
+        response = await generate(request)
+        if missing_review_sources:
+            response.tool_calls[0].arguments["decisions"][0]["source_aliases"] = []
+        return response
 
     provider.generate = read_then_review
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
@@ -422,3 +430,16 @@ async def test_native_review_keeps_real_file_sources_and_rechecks_access(
         review = next(n["output"] for n in result["nodes"] if n["output_type"] == "general_review")
         assert review["decisions"][0]["source_aliases"] == ["S1"]
         assert review["sources"]["S1"]["file_id"] == file["file_id"]
+        assert result["loop_statistics"]["output_repair_count"] == int(missing_review_sources)
+        from sqlalchemy import select
+
+        from nexuspilot_api.models import LlmModelToolCall
+
+        async with test_database_session_factory() as db:
+            submission = await db.scalar(select(LlmModelToolCall).where(
+                LlmModelToolCall.tool_name == "submit_review",
+            ))
+            assert submission.status == ("failed" if missing_review_sources else "completed")
+            assert submission.error_code == (
+                "invalid_review_submission" if missing_review_sources else None
+            )

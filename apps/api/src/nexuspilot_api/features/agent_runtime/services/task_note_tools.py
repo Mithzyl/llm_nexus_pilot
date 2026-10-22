@@ -201,8 +201,9 @@ class GeneralAgentToolService(AgentFileToolService):
     def __init__(
         self, db, storage, *, task_id, sources, allowed_task_ids,
         delegate=None, input_snapshots=None, review_candidate_id=None, review_unit_ids=None,
+        review_unit_sources=None,
     ):
-        """Bind server-owned scope and optional reviewer batch; models cannot select the target."""
+        """Bind the server-owned target and citations; models cannot broaden approval scope."""
         super().__init__(db, storage)
         self.task_id = task_id
         self.sources = sources
@@ -211,6 +212,7 @@ class GeneralAgentToolService(AgentFileToolService):
         self.input_snapshots = input_snapshots if input_snapshots is not None else {}
         self.review_candidate_id = review_candidate_id
         self.review_unit_ids = list(review_unit_ids or [])
+        self.review_unit_sources = review_unit_sources
         self.catalog = GENERAL_TOOL_CATALOG
         self.capabilities = frozenset(
             {"read", "task_notes"} | ({"delegate"} if delegate else set())
@@ -241,7 +243,7 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize task work and validate reviewer decisions before shared durable persistence."""
+        """Authorize task work and check explicit citation approval before durable persistence."""
         if name not in NOTE_NAMES | {
             READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
             DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name,
@@ -284,6 +286,7 @@ class GeneralAgentToolService(AgentFileToolService):
             try:
                 decisions = parse_review_decisions(
                     arguments.model_dump_json(), self.review_unit_ids, self.sources,
+                    candidate_sources=self.review_unit_sources,
                 )
             except ReviewDecisionError as error:
                 raise ToolOperationError("invalid_review_submission") from error

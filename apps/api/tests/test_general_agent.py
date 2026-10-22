@@ -413,7 +413,7 @@ async def test_revision_input_keeps_current_evidence_without_accumulating_old_re
     revision_sources = []
 
     async def generate(request):
-        """Read different reviewer blocks across revisions, then approve the third candidate."""
+        """Read distinct reviewer blocks, revise the final citation, then approve that scope."""
         nonlocal review_round
         provider.requests.append(request)
         tools = [m for m in request.messages if m.role.value == "tool"]
@@ -444,7 +444,8 @@ async def test_revision_input_keeps_current_evidence_without_accumulating_old_re
                     revision_sources.append(set(value["review_sources"]))
             if review_round == 2:
                 assert revision_sources[-1] == {"S1", "S3"}
-            text = f"Candidate revision {review_round} [S1]"
+            alias = "S3" if review_round == 2 else "S1"
+            text = f"Candidate revision {review_round} [{alias}]"
         if arguments is not None:
             return ModelResponse(tool_calls=[ToolCall(
                 id=f"read-{role}-{review_round}", name="read_file_content",
@@ -645,7 +646,7 @@ async def test_file_sources_review_reread_and_object_body_restore(
 
 @pytest.mark.parametrize("policy", ["never", "on_verification_failure", "always"])
 async def test_fabricated_source_cannot_be_approved_or_loop_forever(client, policy):
-    """Backend rejects unissued source aliases even if an independent reviewer approves them."""
+    """Reject fabricated sources, with finite field repair for an inconsistent reviewer approval."""
     provider = GeneralProvider()
     original = provider.generate
 
@@ -665,8 +666,9 @@ async def test_fabricated_source_cannot_be_approved_or_loop_forever(client, poli
         )
     ).json()
     assert result["status"] == "failed" and result["final_output"] is None, result
-    assert len(provider.requests) == (2 if policy == "never" else 4)
+    assert len(provider.requests) == (2 if policy == "never" else 3)
     assert provider.reviews == (0 if policy == "never" else 2)
+    assert result["loop_statistics"]["output_repair_count"] == int(policy != "never")
 
 
 async def test_uncited_unit_triggers_conditional_review_without_forcing_false_citation(client):

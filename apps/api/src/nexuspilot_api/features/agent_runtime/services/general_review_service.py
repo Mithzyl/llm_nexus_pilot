@@ -13,6 +13,12 @@ REVIEW_BATCH_SIZE = 6
 REVIEW_INSTRUCTIONS = (
     "Compare each requested review_unit with the complete candidate and original sources. "
     "Check omissions, contradictions, unsupported certainty and unread/extraction limits. "
+    "Each source alias denotes exactly its returned blocks, not the whole file or all "
+    "blocks seen by another agent. For a cited unit marked supported, source_aliases must "
+    "explicitly match that unit's cited aliases, and those exact excerpts must support it. "
+    "If only a different excerpt supports the claim, use revise and identify the correct "
+    "alias so the main Agent changes its prose. Never approve an incorrect citation "
+    "merely because the claim is true elsewhere in the file. "
     "For platform input/attempt claims, candidate_input_evidence contains the authorized "
     "first page of the candidate's fixed requests. Use these platform records directly; "
     "they are evidence even without file source aliases. Counts mean prepared input, "
@@ -54,8 +60,8 @@ class ReviewDecisionError(ValueError):
             self.pending_unit_ids = list(expected)
 
 
-def parse_review_decisions(text, expected_unit_ids, known_aliases):
-    """Reject missing/duplicate/foreign IDs and unknown sources without guessing a verdict."""
+def parse_review_decisions(text, expected_unit_ids, known_aliases, *, candidate_sources=None):
+    """Validate decisions and explicit approval scope without inferring semantic support."""
     expected = list(expected_unit_ids)
     try:
         data = json.loads(text)
@@ -85,6 +91,13 @@ def parse_review_decisions(text, expected_unit_ids, known_aliases):
                 raise ValueError("Duplicate source aliases")
             if not set(decision.source_aliases).issubset(known_aliases):
                 raise ValueError("Unknown source aliases")
+            cited = set((candidate_sources or {}).get(unit_id, []))
+            if (decision.verdict == "supported" and cited
+                    and set(decision.source_aliases) != cited):
+                raise ValueError(
+                    "Supported cited unit must explicitly confirm exactly its cited aliases; "
+                    "use revise if the citation must change"
+                )
         except (ValidationError, ValueError) as error:
             errors.append(f"Invalid decision for {unit_id}: {error}")
             continue

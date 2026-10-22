@@ -23,6 +23,29 @@ def decision(unit_id, verdict="supported", sources=None):
     }
 
 
+@pytest.mark.parametrize("sources", [[], ["S2"], ["S1", "S2"]])
+def test_supported_cited_unit_requires_its_actual_candidate_aliases(sources):
+    """Approval must identify the exact cited scope, not omit it or silently substitute another."""
+    with pytest.raises(ReviewDecisionError) as failure:
+        parse_review_decisions(
+            json.dumps({"decisions": [decision("u1", sources=sources)]}),
+            ["u1"], {"S1", "S2"}, candidate_sources={"u1": ["S1"]},
+        )
+    assert failure.value.pending_unit_ids == ["u1"]
+
+
+@pytest.mark.parametrize("verdict,sources", [
+    ("supported", ["S1"]), ("revise", ["S2"]), ("unconfirmed", []),
+])
+def test_review_can_approve_matching_scope_or_request_citation_change(verdict, sources):
+    """A different supporting excerpt can request revision, never silently approve old prose."""
+    result = parse_review_decisions(
+        json.dumps({"decisions": [decision("u1", verdict, sources)]}),
+        ["u1"], {"S1", "S2"}, candidate_sources={"u1": ["S1"]},
+    )
+    assert result[0].verdict == verdict
+
+
 def test_partial_review_keeps_valid_decisions_for_targeted_repair():
     """Missing and invalid references require correction without redoing accepted units."""
     with pytest.raises(ReviewDecisionError) as failure:
