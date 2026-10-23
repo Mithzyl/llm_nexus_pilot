@@ -26,6 +26,7 @@ from nexuspilot_api.core.errors import (
 from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks import (
     workflow_execution_tasks,
 )
+from nexuspilot_api.features.identity.routers.application_runs import router as application_router
 from nexuspilot_api.features.identity.routers.authentication import router as authentication_router
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.provider_registry import (
@@ -40,9 +41,12 @@ from nexuspilot_api.services.provider_endpoint_service import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Create provider resources; drain owned workflows before closing HTTP and SQL clients."""
+    """Validate private App configuration and own provider/workflow resource lifetimes."""
+
+    from nexuspilot_api.services.application_tools import application_tool_configurations
 
     settings = get_settings()
+    application_tool_configurations()
     http_client = httpx.AsyncClient(
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20)
     )
@@ -69,6 +73,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(authentication_router)
+app.include_router(application_router)
 app.include_router(api_router)
 
 

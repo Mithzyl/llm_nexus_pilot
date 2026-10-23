@@ -241,6 +241,9 @@ class AgentFileToolService:
             entry.name: entry.version for entry in self.catalog.entries if entry.initially_loaded
         }
 
+    async def refresh_catalog(self, run_id: str) -> None:
+        """Keep native tools unchanged; application-aware subclasses reauthorize their additions."""
+
     def definitions(self) -> list[ToolDefinition]:
         """Resolve loaded versions against current policy before each Provider request."""
         return [

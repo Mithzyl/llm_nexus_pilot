@@ -108,6 +108,7 @@ async def run_file_tool_loop(
 
     Default stop preserves old callers. Designated submissions still require
     durable recording; continuation never catches cancellation or replays tools.
+    Application tool grants are refreshed before exposing tools or reusing history.
     """
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
@@ -127,6 +128,7 @@ async def run_file_tool_loop(
     while True:
         state.model_round_count += 1
         await service.workflow_state.ensure_workflow_running(workflow)
+        await tools.refresh_catalog(workflow.run_id)
         await tools.validate_history(workflow.run_id, records)
         if before_model_call is not None:
             await before_model_call(workflow)

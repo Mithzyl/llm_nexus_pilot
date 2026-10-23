@@ -18,10 +18,79 @@
 
 ## 多业务 App 工具与隔离执行接入规划（2026-10-23）
 
-状态：未开始（实现）；本节已完成设计核对。用户本次仅要求规划，附件提示词中的“实现Adapter”不作为本次代码修改授权。
+状态：进行中。规划已提交8d38eca，用户随后授权第一批App身份、静态远程只读工具及本地HTTP验证；当前实现说明见下节。业务写入、真实业务API、Shell接入和部署仍未启用。
 本节是外部App工具的当前设计定义；阶段5维护身份实现，路线图只引用本节。不新增Phase编号，不重建Agent循环。
 Retail、Personal Assistant（下称PA）各有前端、用户和业务数据库，提供真实业务API；NexusPilot负责执行、授权和记录。
-业务数据不迁入NexusPilot；外部用户无需注册平台登录账号。当前没有正式业务接口，下面接口和表均为拟新增，不是已有能力。
+业务数据不迁入NexusPilot；外部用户无需注册平台登录账号。当前没有正式业务接口；除下节明确列出的首批实现外，后文表/API字段仍是目标设计。
+
+### 第一批实现与本地运行（2026-10-23）
+
+本批已有实际代码：
+
+- `identity/models/applications.py`和迁移20261023_0025新增applications、application_user_mappings、run_application_context。
+  复用users资源owner，无密码/登录身份；同App同外部用户重复使用映射，不同App分开；应用/映射/owner停用拒绝执行。
+- `application_tools.py`静态定义Retail的search_products/get_product_details/get_product_availability，以及PA的list_calendar_events/list_tasks/search_notes。
+  扩展现有RegisteredTool的execution_type/owner_application_id/canonical_name，模型函数名称用下划线，业务请求使用规范点号名称。
+  所有工具仅read_only。参数拒绝额外身份字段；读取响应统一为`{"items":[对象],"next_cursor":可空字符串}`。
+  这是平台第一版适配信封，不是假定业务方已有接口；正式业务端不同格式须增加受信静态转换并验收。
+- `remote_tool_adapter.py`执行一次POST，不重试、不跟随重定向；总超时10秒、返回最多64KiB，边接收边检查大小。
+  校验Pydantic输出，错误返回脱敏代码；取消向HTTP传播，失败不是空列表。没有实现业务写入、确认或未知写入恢复。
+- GeneralAgentToolService向原目录附加App获准工具，原Agent循环每轮重新核对身份/工具授权，执行前再次核对Task及Run状态。
+  原工具记录、MinIO正文引用、进度事件、最终回答、取消和查询复用，未新增第二套循环。快速回复未开放App工具。
+- `application_runs.py`新增`/api/v1/app/runs`创建入口，并在`/api/v1/app`下复用原agent-workflows创建/查询/事件/取消路由。
+  App SSE结果/节点链接保存为App路径，不把服务调用方引导至浏览器认证接口。
+  创建Run只接受user_request，身份来自已认证后端Headers；创建工作流必须指定general_agent/1.0.0/general_tools_v1。
+
+首批刻意采用静态配置授权：当前两个App、一个general_agent配置、工具1.0.0，全部未配置时禁用。
+没有创建设计中的tool_services/tool_versions/application_tool_grants或HTTP重试子表：本批没有动态注册或自动重试，
+可信operation/凭据在服务端配置中，Run持久化允许版本。跨App关联、分Agent配置、用户细分授权/到期和动态管理API仍为后续范围。
+业务API必须再次核验external_user_id及资源范围，不能仅凭平台过滤认为业务数据已授权。
+
+运行步骤（需要开发者显式配置；本次未改现有.env或运行数据库）：
+
+1. 执行`make api-migrate`升级到20261023_0025，再启动API。迁移仅新增表，不迁移旧Run或用户。
+2. 在apps/api/.env设置`NEXUSPILOT_APP_TOOLS_JSON`私有JSON，默认`{}`不启用。
+   示例结构如下；地址和凭据均需替换，不能把示例视为正式服务。
+
+```json
+{
+  "retail": {
+    "inbound_key": "替换为至少32字符的独立服务调用凭据",
+    "service_token": "替换为至少16字符的业务端访问凭据",
+    "base_url": "https://retail-backend.example.invalid",
+    "operations": {"retail_search_products": "/tools/search-products"},
+    "allow_local_http": false
+  }
+}
+```
+
+operations只接受已静态注册的工具和固定相对路径。每App inbound_key必须不同；凭据不写SQL、不进入describe_tools。
+仅development显式allow_local_http时允许回环HTTP；production拒绝该选项。配置在启动时校验；修改.env需重启API。
+已认证且配置存在的App首次请求自动登记applications行；数据库已有is_enabled=false时不会重新启用。
+
+3. App后端使用`Authorization: Bearer <inbound_key>`、`X-Application-ID: retail`、
+   `X-External-User-ID: <业务后端验证的用户标识>`调用`POST /api/v1/app/runs`，正文`{"user_request":"查找茶叶"}`。
+   外部标识区分大小写，不接受首尾空白，不由模型生成；不需要平台部署Key、Cookie或用户另行注册。
+4. 用返回run_id调用`POST /api/v1/app/runs/{run_id}/agent-workflows`，沿用现有AgentWorkflowCreate、模型绑定和审核策略，
+   stream可选。结果/SSE/取消请求始终带同一App凭据及用户Headers，不能把服务Key放入浏览器。
+5. 只读结果恢复不会重发业务请求；配置移除工具或App/用户映射停用后，后续执行被拒绝。
+
+本批测试只使用脚本化模型、临时SQLite、测试对象存储及真实回环HTTP服务器，不调用Strata/DeepSeek或真实Retail/PA服务。
+因此能验证平台HTTP协议和业务流，不宣称真实业务权限、生产MySQL迁移或真实MinIO部署已经通过。
+后续设计段落保留目标字段，是否已有以本节实际实现为准。
+
+验证记录：身份测试先因模块缺失2项失败，Adapter测试先因模块缺失3项失败，实现后通过。
+端到端拒绝用例首次因测试误读既有error_code为error.code失败，按现有接口修正；
+SSE测试发现App事件使用原生结果地址，已修正为App路径，并验证实时及恢复查询。
+最终组合命令（根目录，PYTHONPATH=apps/api/src:packages/models/src）：
+`apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_application_tool_loop.py apps/api/tests/test_application_identity.py apps/api/tests/test_remote_tool_adapter.py apps/api/tests/test_application_identity_migration.py apps/api/tests/test_agent_tool_discovery.py apps/api/tests/test_general_agent.py apps/api/tests/test_workflow_execution_tasks.py --tb=short`
+结果60项通过、28.75秒。覆盖本地HTTP真实请求、不同用户身份、跨App拒绝、写工具拒绝、参数/版本校验、
+JSON/SSE结果、SQL空正文/对象引用、取消后无后续请求，以及原通用Agent/目录/生命周期兼容。
+另执行`cd apps/api && .venv/bin/alembic upgrade 20261018_0024:20261023_0025 --sql`，MySQL SQL生成通过，
+不是MySQL实际迁移测试。修改文件Ruff及git diff --check通过。没有新增额外哈希验证。
+随后配置/身份冲突收尾后的App专项16项通过、9.84秒；HTTP错误分类补验9项通过，区分授权拒绝、
+对象不存在、请求拒绝、暂时不可用及禁止重定向，均不重试。专项复验与组合测试重叠，不相加为唯一用例数。
+本批未做MySQL并发实测，不能将唯一约束及当前读实现解释成已通过生产并发验收。
 
 ### 已核对实现与缺项
 

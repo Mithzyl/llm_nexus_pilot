@@ -26,6 +26,9 @@ class RegisteredTool:
     risk_level: str = "read_only"
     timeout_seconds: float | None = 15
     max_result_bytes: int = 65536
+    execution_type: str = "internal"
+    owner_application_id: str | None = None
+    canonical_name: str | None = None
 
     def __post_init__(self) -> None:
         """Validate trusted schemas and execution bounds before advertising a built-in tool."""
@@ -43,6 +46,13 @@ class RegisteredTool:
             raise ValueError("Tool timeout must be positive or inherited from its caller")
         if not 1 <= self.max_result_bytes <= 16 * 1024 * 1024:
             raise ValueError("Tool result limit exceeds object body capacity")
+        if self.execution_type not in {"internal", "remote_http"}:
+            raise ValueError("Unsupported tool execution type")
+        if self.execution_type == "remote_http" and (
+            not self.owner_application_id or not self.canonical_name
+            or self.risk_level != "read_only"
+        ):
+            raise ValueError("Remote tools require ownership and read-only execution")
 
     def definition(self) -> ToolDefinition:
         """Publish callable input metadata without internal execution references or secrets."""
@@ -53,14 +63,13 @@ class RegisteredTool:
         )
 
     def describe(self) -> dict:
-        """Return the pinned schemas and scope; loading never grants additional permissions."""
+        """Publish pinned schemas without internal capabilities or service configuration."""
         return {
             "name": self.name,
             "version": self.version,
             "description": self.description,
             "input_schema": self.arguments.model_json_schema(),
             "output_schema": self.output.model_json_schema(),
-            "required_capabilities": sorted(self.required_capabilities),
             "available": True,
             "availability_scope": "tool_implementation_only; resource_authorization_on_each_call",
         }

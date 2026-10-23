@@ -1123,7 +1123,17 @@ class WorkflowExecutionStateService:
 
         Worker progress may commit through another session, so an in-memory counter
         can be stale even when the coordinator is about to record a terminal error.
+        App-owned Runs persist App-authenticated result links for both live and replayed events.
         """
+        if "result_path" in public_payload or "node_result_path" in public_payload:
+            from nexuspilot_api.features.identity.models.applications import RunApplicationContext
+
+            if await self.db_session.get(RunApplicationContext, workflow.run_id) is not None:
+                public_payload = dict(public_payload)
+                for key in ("result_path", "node_result_path"):
+                    path = public_payload.get(key)
+                    if isinstance(path, str) and path.startswith("/api/v1/agent-workflows/"):
+                        public_payload[key] = path.replace("/api/v1/", "/api/v1/app/", 1)
         await self.db_session.execute(
             update(LlmAgentWorkflowExecution)
             .where(

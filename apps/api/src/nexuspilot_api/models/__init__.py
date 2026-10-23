@@ -1,5 +1,10 @@
 """Public model exports and metadata registration for the NexusPilot API."""
 
+from nexuspilot_api.features.identity.models.applications import (  # noqa: F401
+    Application,
+    ApplicationUserMapping,
+    RunApplicationContext,
+)
 from nexuspilot_api.features.identity.models.authentication import (
     AuthenticationAuditEvent,
     UserAuthenticationIdentity,

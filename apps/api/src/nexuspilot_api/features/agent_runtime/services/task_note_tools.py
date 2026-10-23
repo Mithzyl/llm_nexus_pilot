@@ -11,7 +11,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 from sqlalchemy import select
 
-from nexuspilot_api.core.errors import ResourceConflictError
+from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import GeneralUnitReview
 from nexuspilot_api.features.agent_runtime.services.general_review_service import (
     REVIEW_BATCH_SIZE,
@@ -249,6 +249,36 @@ class GeneralAgentToolService(AgentFileToolService):
         if self.input_snapshots:
             self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
+    async def refresh_catalog(self, run_id):
+        """Attach only current App-authorized static versions to the existing tool catalog."""
+        from nexuspilot_api.services.application_tools import (
+            STATIC_APP_TOOLS,
+            authorized_application_context,
+        )
+
+        resolved = await authorized_application_context(self.db, run_id)
+        if resolved is None:
+            return
+        context, mapping, config = resolved
+        if set(context.allowed_tool_versions) - set(config.operations):
+            raise ResourceNotFoundError("Application tool grant")
+        entries = tuple(
+            tool
+            for tool in STATIC_APP_TOOLS[mapping.application_id]
+            if context.allowed_tool_versions.get(tool.name) == tool.version
+            and tool.name in config.operations
+        )
+        # Revocation cannot silently reuse already collected remote history.
+        previously_allowed = {
+            t.name
+            for t in self.catalog.entries
+            if t.name not in {native.name for native in GENERAL_TOOL_CATALOG.entries}
+        }
+        if previously_allowed - {t.name for t in entries}:
+            raise ResourceNotFoundError("Application tool grant")
+        self.catalog = ToolCatalog((*GENERAL_TOOL_CATALOG.entries, *entries))
+        self.capabilities = self.capabilities | {"app_read"}
+
     def definitions(self):
         """Constrain native review schemas to the server-selected batch, not model-supplied IDs."""
         definitions = super().definitions()
@@ -268,7 +298,54 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize task notes, reading scope and review before durable tool-result persistence."""
+        """Authorize App reads, task notes and review before shared durable result persistence."""
+        from nexuspilot_api.services.application_tools import (
+            STATIC_APP_TOOLS,
+            authorized_application_context,
+        )
+        from nexuspilot_api.services.remote_tool_adapter import RemoteToolAdapter
+
+        remote = next(
+            (t for tools in STATIC_APP_TOOLS.values() for t in tools if t.name == name), None
+        )
+        if remote is not None:
+            resolved = await authorized_application_context(self.db, attempt.run_id)
+            task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
+            run = await self.db.get(LlmRun, attempt.run_id, populate_existing=True)
+            if (
+                resolved is None
+                or task is None
+                or attempt.task_id != self.task_id
+                or task.run_id != attempt.run_id
+                or task.status != TaskStatus.RUNNING
+                or run is None
+                or run.status.value not in {"pending", "running"}
+            ):
+                raise ToolOperationError("app_tool_not_allowed", status="permission_denied")
+            context, mapping, config = resolved
+            if (
+                name not in config.operations
+                or context.allowed_tool_versions.get(name) != remote.version
+                or remote not in STATIC_APP_TOOLS[mapping.application_id]
+            ):
+                raise ToolOperationError("app_tool_not_allowed", status="permission_denied")
+            adapter = RemoteToolAdapter(
+                base_url=config.base_url,
+                token=config.service_token.get_secret_value(),
+                allow_local_http=config.allow_local_http,
+            )
+            return await adapter.execute(
+                path=config.operations[name],
+                execution_id=record.tool_call_id,
+                application_id=mapping.application_id,
+                external_user_id=mapping.external_user_id,
+                tool_name=remote.canonical_name,
+                version=remote.version,
+                arguments=arguments,
+                output=remote.output,
+                timeout_seconds=remote.timeout_seconds,
+                max_result_bytes=remote.max_result_bytes,
+            )
         if name not in NOTE_NAMES | READING_PLAN_NAMES | {
             READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
             DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name,

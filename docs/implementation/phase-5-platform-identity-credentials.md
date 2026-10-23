@@ -2,7 +2,13 @@
 
 ## 通用 Agent 的授权沿用规则
 
-### 多业务App身份扩展（2026-10-23，未开始）
+### 多业务App身份扩展（2026-10-23，进行中）
+
+首批已实现applications、application_user_mappings、run_application_context及App服务认证入口，
+复用users资源归属；未生成用户登录身份。迁移20261023_0025已完成隔离SQLite升降级和MySQL离线SQL生成，
+尚未在运行数据库执行。跨App/用户结果读取、停用映射、身份字段拒绝及原工具循环集成通过本地测试。
+首批工具授权由服务端静态配置和Run固定版本决定，细分Agent/用户授权管理、跨App账号关联仍未实现。
+下列原设计中的拟新增基础身份对象已有实现，运行说明统一见阶段7第一批实现。
 
 外部Retail/Personal Assistant用户无需平台登录账号。拟新增应用认证、
 `application_user_mappings`及Run应用身份关联，将(application_id, external_user_id)
