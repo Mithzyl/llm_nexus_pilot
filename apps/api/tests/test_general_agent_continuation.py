@@ -13,6 +13,57 @@ from nexuspilot_api.main import app
 from nexuspilot_api.models import LlmAgentWorkflowEvent, LlmModelAttempt, LlmModelToolCall
 
 
+async def test_live_verification_injects_once_and_closes_real_stream_parser(monkeypatch):
+    """The isolated test hook preserves real prefixes and closes the interrupted HTTP stream."""
+    from pathlib import Path
+
+    import httpx
+    from nexuspilot_models.contracts import ModelRequest, ProviderName
+    from nexuspilot_models.providers.strata import StrataChatProvider
+    from nexuspilot_models.transport import HttpTransport
+
+    monkeypatch.syspath_prepend(
+        str(Path(__file__).resolve().parents[3] / "deployments/verification"))
+    from check_live_draft_continuation import InterruptedStrata
+
+    closed = []
+
+    class Stream(httpx.AsyncByteStream):
+        """Return a complete stream unless the verification hook interrupts consumption."""
+
+        async def __aiter__(self):
+            """Send enough real SSE text for the local hook to interrupt before terminal events."""
+            yield (b'data: {"choices":[{"delta":{"content":"This is a long actual test prefix '
+                   b'of more than forty characters."}}]}\n\n')
+            yield b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+
+        async def aclose(self):
+            """Observe connection cleanup without making another HTTP request."""
+            closed.append(True)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, stream=Stream()),
+    )) as client:
+        provider = InterruptedStrata(StrataChatProvider(
+            HttpTransport(client, max_retries=0),
+            base_url="https://offline.invalid", api_key="dummy",
+        ))
+        req = ModelRequest(provider=ProviderName.STRATA, model="test",
+            metadata={"agent_role": "controller"},
+            messages=[{"role": "user", "content": "Explain"},
+                      {"role": "tool", "tool_name": "read_file_content", "tool_call_id": "r1",
+                       "content": "source"}])
+        with pytest.raises(ModelProviderError) as caught:
+            await provider.generate(req)
+        assert caught.value.raw_error["verification_injected_interruption"] is True
+        assert caught.value.stream_progress["text"].startswith("This is a long actual")
+        assert caught.value.stream_progress["response_complete"] is False
+        assert closed == [True]
+        result = await provider.generate(req)
+        assert result.text.startswith("This is a long actual")
+        assert closed == [True, True]
+
+
 def test_continuation_policy_preserves_default_and_rejects_legacy():
     """The opt-in cannot silently change old requests or enable a legacy workflow."""
     from pydantic import ValidationError

@@ -789,6 +789,16 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
+### 真实流中断验证入口（2026-10-23）
+
+新增独立脚本deployments/verification/check_live_draft_continuation.py，显式付费许可、
+新报告路径及本地无登录依赖检查通过后才新建会话；复用当前用户可访问的ready附件。
+所有生成仍来自Strata，在主Agent已收到read_file_content结果后，正文达到40字符时，
+仅一次注入明确标注的network_error。中断在SSE消费内部发生，正常适配器负责保存已收草稿。
+不伪造输出，不注册假模型，不修改正常API的Provider，不自动重试原失败Run。
+初版外层生成器注入未及时关闭底层连接，离线测试复现后已移入Transport消费过程。
+17项续接/验证钩子测试通过（3.71秒），Ruff通过；真实运行尚待执行。
+
 ### 任务内受控草稿续接实现（2026-10-23）
 
 新增general_agent请求参数partial_response_policy，默认stop；显式continue_once才允许每Task
