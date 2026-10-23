@@ -161,7 +161,13 @@ done_marker_received，不新增公共SSE事件或数据库字段。仅保存固
 Messages分别记录stop_reason和message_stop_received；GenerateContent记录finish_reason。
 未观察的字段为null/false，未知原因值为unknown；仍不保存任意上游字符串。
 这些记录不改变原有完成/失败处理，收到终态事件后读流失败也不会在本次修改中自动转为成功。
-这类已收到完整终态但运输层随后失败的恢复，需要后续核验完整响应及工具、任务状态后单独实现。
+2026-10-23已完成一类窄范围处理：Chat Completions适配器收到正常finish_reason与DONE后，
+仅连接关闭阶段的HTTP异常不再丢弃已收响应。共享Transport保存stream_close_error及异常类名，
+适配器仍执行正文、工具参数及结构化输出校验，通过后才返回ModelResponse。
+快速回复和Agent使用相同适配器，不重发请求，不修改任务终态检查。
+取消、读流异常、缺失结束信号、截断输出及非法工具参数不转换成功。
+其他协议未启用此关闭错误恢复条件；存储阶段中断和未完成草稿的受控续接仍未实现。
+这不是对上次Strata零事件network_error的修复，也不宣称真实供应商已复现关闭阶段故障。
 
 实施范围与处理要求：
 

@@ -1,5 +1,6 @@
 """Offline Chat SSE evidence tests; never contact a model or authorize partial tools."""
 
+import asyncio
 import json
 
 import httpx
@@ -164,3 +165,81 @@ async def test_reused_request_resets_signals_and_snapshot_is_immutable():
     assert original["protocol_evidence"]["done_marker_received"] is True
     assert caught.value.stream_progress["protocol_evidence"]["done_marker_received"] is False
     assert caught.value.stream_progress["protocol_evidence"]["finish_reason"] is None
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_chat_complete_response_survives_close_error_but_not_cancellation(cancel):
+    """A verified protocol terminal permits cleanup failure, never explicit cancellation."""
+    class ClosingStream(httpx.AsyncByteStream):
+        """Return a full response then fail while releasing the connection."""
+
+        async def __aiter__(self):
+            """Supply actual SSE bytes with usage and both required terminal signals."""
+            yield (b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}],'
+                   b'"usage":{"prompt_tokens":7,"completion_tokens":1}}\n\n'
+                   b'data: [DONE]\n\n')
+
+        async def aclose(self):
+            """Distinguish a transport cleanup error from caller cancellation."""
+            if cancel:
+                raise asyncio.CancelledError()
+            raise httpx.CloseError("PRIVATE_CLOSE_ERROR")
+
+    calls = []
+
+    def reply(request):
+        """Count physical requests to ensure recovery does not regenerate the answer."""
+        calls.append(request)
+        return httpx.Response(200, stream=ClosingStream())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+        provider = StrataChatProvider(HttpTransport(client, max_retries=0),
+                                      base_url="https://offline.invalid", api_key="dummy")
+        request = ModelRequest(provider=ProviderName.STRATA, model="fixture",
+                               messages=[{"role": "user", "content": "test"}])
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await provider.generate(request)
+        else:
+            result = await provider.generate(request)
+            assert result.text == "ok"
+            assert result.input_tokens == 7
+            assert result.output_tokens == 1
+            assert result.transport_attempts[0].error_type == "stream_close_error"
+            assert "PRIVATE_CLOSE_ERROR" not in result.model_dump_json()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("choice,done", [
+    ({"delta": {"content": "draft"}, "finish_reason": None}, True),
+    ({"delta": {"content": "draft"}, "finish_reason": "length"}, True),
+    ({"delta": {"tool_calls": [{"index": 0, "id": "call-1", "function": {
+        "name": "read_file_content", "arguments": '{"file_id":',
+    }}]}, "finish_reason": "tool_calls"}, True),
+    ({"delta": {"content": "draft"}, "finish_reason": "stop"}, False),
+])
+async def test_close_failure_does_not_approve_incomplete_output(choice, done):
+    """Terminal cleanup recovery never bypasses missing markers or invalid tool arguments."""
+    class InvalidClosingStream(httpx.AsyncByteStream):
+        """Supply an incomplete turn and fail cleanup without contacting a provider."""
+
+        async def __aiter__(self):
+            """Encode the selected invalid response through the real SSE parser."""
+            yield ("data: " + json.dumps({"choices": [choice]}) + "\n\n").encode()
+            if done:
+                yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            """Fail transport cleanup so the adapter must retain its validation requirements."""
+            raise httpx.CloseError("PRIVATE_CLOSE_ERROR")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, stream=InvalidClosingStream()),
+    )) as client:
+        provider = StrataChatProvider(HttpTransport(client, max_retries=0),
+                                      base_url="https://offline.invalid", api_key="dummy")
+        request = ModelRequest(provider=ProviderName.STRATA, model="fixture",
+                               messages=[{"role": "user", "content": "test"}])
+        with pytest.raises(ModelProviderError) as caught:
+            await provider.generate(request)
+        assert caught.value.stream_progress["response_complete"] is False

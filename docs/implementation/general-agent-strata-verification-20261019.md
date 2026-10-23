@@ -789,6 +789,21 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
+### 完整Chat响应的关闭错误处理（2026-10-23）
+
+按中断结果规划，先用真实SSE解码与MockTransport复现：正文、用量、stop和DONE均已收到，
+但连接aclose抛出CloseError导致generate没有返回响应；取消用例原本已正确拒绝。
+共享Transport现在允许适配器提供协议结束确认，仅在消费未失败且正常结束已经确认时，
+将关闭错误记录为stream_close_error并继续原内容校验。异常只记录类名，不保存私有错误正文。
+没有重试或新的模型调用；取消仍传播，未知/截断正文和非法工具参数仍拒绝。
+
+验证命令：
+`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q -o asyncio_mode=auto packages/models/tests apps/api/tests/test_stream_progress_persistence.py --tb=short`
+——154项通过（2.09秒）；Ruff与diff检查通过。
+本批没有请求Strata或DeepSeek，没有重启API、数据库迁移、费用/哈希/前端修改或部署。
+仅Chat Completions启用正常结束确认；未完整草稿的受控续接、其他协议同类恢复及保存阶段中断仍未完成。
+此前笔记联调末次零事件network_error不满足此条件，不据本修复把该失败样本改成成功。
+
 ### Strata任务笔记保存与读回（2026-10-23，最终回答失败）
 
 - 使用已有本地API（进程仍加载06b4167）、MySQL/MinIO和FULLTEXT03.pdf，策略never。

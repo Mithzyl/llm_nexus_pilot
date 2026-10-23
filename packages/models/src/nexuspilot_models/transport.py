@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -151,10 +151,16 @@ class HttpTransport:
         headers: dict[str, str],
         payload: dict[str, Any],
         timeout_seconds: float | None,
+        terminal_received: Callable[[], bool] | None = None,
     ) -> AsyncIterator[
         tuple[AsyncIterator[SSEMessage], httpx.Headers, list[TransportAttempt]]
     ]:
-        """Allow unlimited stream reads on request while closing transport on cancellation."""
+        """Close streams without regenerating completed output or suppressing cancellation.
+
+        Adapters may confirm their protocol terminal to retain an otherwise valid
+        response after connection cleanup fails. Parsing and business validation
+        still run in the adapter; read failures are never recovered here.
+        """
 
         attempts: list[TransportAttempt] = []
         for attempt_index in range(1, self.max_retries + 2):
@@ -204,6 +210,7 @@ class HttpTransport:
                         latency_ms=latency_ms,
                     )
                 )
+                consumer_failed = False
                 try:
                     yield (
                         self._iter_sse(response.aiter_lines()),
@@ -211,6 +218,7 @@ class HttpTransport:
                         attempts,
                     )
                 except (httpx.TimeoutException, httpx.RequestError) as exc:
+                    consumer_failed = True
                     error_type = (
                         "timeout"
                         if isinstance(exc, httpx.TimeoutException)
@@ -225,8 +233,23 @@ class HttpTransport:
                         "Model provider stream read failed.",
                         transport_attempts=attempts,
                     ) from exc
+                except BaseException:
+                    # Preserve cancellation and parsing errors if closing also fails.
+                    consumer_failed = True
+                    raise
                 finally:
-                    await stream_context.__aexit__(None, None, None)
+                    try:
+                        await stream_context.__aexit__(None, None, None)
+                    except httpx.RequestError as exc:
+                        if not consumer_failed:
+                            attempts[-1].error_type = "stream_close_error"
+                            attempts[-1].error_message = type(exc).__name__
+                            attempts[-1].latency_ms = self._elapsed_ms(started)
+                            if terminal_received is None or not terminal_received():
+                                raise ModelProviderError(
+                                    "network_error", "Model provider stream close failed.",
+                                    transport_attempts=attempts,
+                                ) from exc
                 return
 
             body = await response.aread()

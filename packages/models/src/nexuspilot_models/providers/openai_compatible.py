@@ -102,6 +102,9 @@ class OpenAICompatibleChatProvider:
             headers=self._headers(),
             payload=self._build_payload(request, stream=True),
             timeout_seconds=request.timeout_seconds,
+            terminal_received=lambda: (
+                received_done_marker and finish_reason in {"stop", "tool_calls", "function_call"}
+            ),
         ) as (messages, _headers, attempts):
             yield StreamEvent(type=StreamEventType.STARTED, sequence=sequence)
             sequence += 1
