@@ -789,6 +789,29 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
+### Strata笔记完整交付复验（2026-10-23）
+
+- 先只读检查Strata模型目录，HTTP200且目标模型可用，不算生成验收。
+  重启前确认仅有两条九月STARTED历史Attempt和对应工作流，早于本地API进程；未改历史记录。
+  初次手工查询误用表名而失败，改用项目ORM后取得实际记录。随后优雅重启本地API，加载317cff2。
+- 新建一次独立工作流，不复活旧失败Run。Run `7048557a-25ee-4cf8-b1f3-4ff6385771f0`，
+  Workflow `5ab10139-8143-4a6a-9dd7-0a9993eccc90`，Session
+  `ecf6c5f6-eb00-4f8e-9e00-4b4f2d978a97`；报告
+  `/tmp/general-agent-notes-strata-20261023-recheck.json`。只用Strata、never策略、FULLTEXT03.pdf。
+- 五次请求均completed；搜索Degree project后按page:1:line:8定点读取20块，
+  save_task_note保存30学分及S1，read_task_note用返回note_id读回，最终正文确认30学分并引用S1。
+  四次工具调用均完成，没有委派、顺序通读或额外最终汇总模型调用。
+- 耗时43.462秒；输入35,095、输出654、合计35,749 Token；缓存27,276是输入子集。
+  推理Token和费用未知，不补零。此次没有触发stream_close_error，不宣称真实复现关闭故障恢复。
+- 结果与消息接口读回一致。Playwright在运行期间观察同一会话，完成后reload并重新snapshot，
+  恢复“工作流已完成”、最终30学分正文、S1及1条来源。never策略显示“尚未审核”，没有伪造批准。
+  证据 `output/playwright/general-agent-notes-recheck-running.yml`、
+  `output/playwright/general-agent-notes-recheck-restored.yml`。
+  刷新后点击“查看原文”，实际展开第1页第8行“Degree project 30 credits”；
+  证据 `output/playwright/general-agent-notes-recheck-source.yml`。
+- 本次笔记保存/读回/最终交付/刷新恢复通过；不覆盖受控草稿续接、跨进程恢复或所有模型稳定性。
+  未修改前端、费用或新增哈希检查，未调用DeepSeek、未推送或部署。
+
 ### 完整Chat响应的关闭错误处理（2026-10-23）
 
 按中断结果规划，先用真实SSE解码与MockTransport复现：正文、用量、stop和DONE均已收到，
@@ -1044,7 +1067,7 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 继续完成新后端剩余实现与必要验收；浏览器发起/在途停止已有上述样本，不能扩大成整项目完成。
 逐单元审核与来源查询已有代码、确定性测试和真实条件审核样本；受控固定候选后的真实Strata内容修正与最终交付已通过，不能当作自然错误率测试。
-任务笔记已有确定性测试及Strata保存/读回成功样本，但该样本末次网络错误，依此最终交付尚未通过；
+任务笔记已有确定性测试及Strata保存/读回/最终交付和浏览器刷新恢复成功样本；此前末次网络错误保留为失败记录；
 按需委派及 Handoff 已有实现、确定性测试及上述 Strata 单轮审核真实最终交付；
 固定输入快照的真实保存已验证，Reviewer实际读取与核对仍需按明确任务验收；原始结束信号已记录，受控草稿续接尚未完成；还需必要的
 真实存储/权限与恢复测试。用户已明确 Python/Shell 接入及跨进程续跑在 Agent 真实调测完成后再检查；
