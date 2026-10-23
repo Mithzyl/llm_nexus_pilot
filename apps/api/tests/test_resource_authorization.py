@@ -29,7 +29,7 @@ from nexuspilot_api.main import app
 async def test_backend_cross_user_access(
     resource_client, test_database_session_factory, monkeypatch, owner, other
 ):
-    """Require independent final-user authorization, even behind a valid service credential."""
+    """Require real user authorization for legacy and general Agent resources and source text."""
     monkeypatch.setenv("NEXUSPILOT_AUTHENTICATION_ENABLED", "true")
     get_settings.cache_clear()
     client = resource_client
@@ -209,6 +209,22 @@ async def test_backend_cross_user_access(
         workflow = await create(f"runs/{rid}/agent-workflows", workflow_payload())
         wid = workflow["workflow_execution_id"]
 
+        # New general Agent bodies and source expansion must use the same actual login checks.
+        from test_general_agent import FileReadingProvider, general_payload
+
+        app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(
+            FileReadingProvider(fid)
+        )
+        general = await create(f"runs/{file_rid}/agent-workflows", general_payload("never"))
+        assert general["status"] == "completed", general.get("error")
+        general_id = general["workflow_execution_id"]
+        candidate = next(n for n in general["nodes"] if n["output_type"] == "general_candidate")
+        source_path = (f"agent-workflows/{general_id}/nodes/"
+                       f"{candidate['node_execution_id']}/claim-sources?claim_key=u1")
+        owner_sources = await client.get(f"/api/v1/{source_path}")
+        assert owner_sources.status_code == 200
+        assert "A_PRIVATE_UPLOAD" in owner_sources.text
+
         # Switch actual browser cookies, without overriding principal dependencies.
         client.cookies.clear()
         client.headers.pop("X-CSRF-Token", None)
@@ -244,6 +260,12 @@ async def test_backend_cross_user_access(
             f"files/{fid}/content",
             f"artifacts/{fid}/content",
             f"runs/{file_rid}",
+            f"agent-workflows/{general_id}",
+            f"agent-workflows/{general_id}/result",
+            f"agent-workflows/{general_id}/nodes",
+            f"agent-workflows/{general_id}/nodes/{candidate['node_execution_id']}",
+            f"agent-workflows/{general_id}/events",
+            source_path,
         ]
         for path in reads:
             await probe("B-to-A", "GET", path)
