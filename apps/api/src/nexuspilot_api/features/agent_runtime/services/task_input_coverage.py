@@ -114,6 +114,39 @@ async def summarize_attempt_input(db, storage, *, run_id, attempt, expected_requ
     return {"attempt_id": attempt.attempt_id, "status": attempt.status.value, **summary}
 
 
+def summarize_fixed_task_inputs(summaries):
+    """Aggregate one fixed request set; missing audits remain unknown, not empty input.
+
+    Deduplication uses existing file/version/block identities, without computing a
+    new content digest. Repeated blocks count once in unique coverage and once per
+    appearance in occurrences. Neither count proves provider receipt or comprehension.
+    """
+    files = {}
+    known_occurrences = 0
+    unknown = 0
+    for summary in summaries:
+        unknown += int(not summary["audit_complete"])
+        known_occurrences += summary["block_occurrences"] or 0
+        for block in summary["prepared_blocks"]:
+            identity = tuple(block[key] for key in (
+                "file_id", "source_hash", "parsed_hash", "parser_version"))
+            files.setdefault(identity, set()).add((block["block_id"], block["block_sha256"]))
+    unique = sum(len(blocks) for blocks in files.values())
+    return {
+        "schema_version": "task_input_coverage_summary.v1",
+        "scope": "fixed_candidate_task_requests", "request_count": len(summaries),
+        "unknown_request_count": unknown, "all_requests_audited": unknown == 0,
+        "known_block_occurrences": known_occurrences, "known_unique_prepared_blocks": unique,
+        "total_block_occurrences": None if unknown else known_occurrences,
+        "unique_prepared_blocks": None if unknown else unique,
+        "files": [{**dict(zip(
+            ("file_id", "source_hash", "parsed_hash", "parser_version"), identity, strict=True)),
+            "known_unique_prepared_blocks": len(blocks)}
+            for identity, blocks in sorted(files.items())],
+        "provider_receipt_verified": False, "model_understanding_verified": False,
+    }
+
+
 async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
     """Read one bounded live page of the exact task's requests and reauthorize every file.
 
@@ -150,11 +183,13 @@ async def task_input_coverage(db, storage, *, run_id, task_id, arguments):
 
 
 async def authorize_input_coverage_history(db, *, run_id, result):
-    """Recheck file access before reusing stored input summaries in another model request."""
+    """Recheck all page and whole-snapshot file access before exposing input statistics."""
     run = await db.get(LlmRun, run_id, populate_existing=True)
     allowed = await conversation_file_ids(db, run_id)
-    for identity in {file["file_id"] for attempt in result["attempts"]
-                     for file in attempt["files"]}:
+    identities = {file["file_id"] for attempt in result["attempts"] for file in attempt["files"]}
+    identities.update(file["file_id"] for file in
+                      (result.get("task_input_coverage") or {}).get("files", []))
+    for identity in identities:
         file = await db.get(UserFile, identity, populate_existing=True)
         if (run is None or identity not in allowed or file is None
                 or file.user_id != run.user_id or file.status != "ready"):

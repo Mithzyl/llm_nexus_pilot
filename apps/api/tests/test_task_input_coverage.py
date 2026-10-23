@@ -292,6 +292,35 @@ async def captured_inputs(client):
     return turn["run"]["run_id"], file, candidate["input_snapshot"]
 
 
+def test_fixed_input_summary_distinguishes_repeat_versions_and_unknown_requests():
+    """Deduplicate repeated blocks per file version without interpreting missing audits as zero."""
+    from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
+        summarize_fixed_task_inputs,
+    )
+
+    block = {"file_id": "f1", "source_hash": "source", "parsed_hash": "parsed",
+             "parser_version": "v1", "block_id": "line:1", "block_sha256": "body"}
+    known = {"audit_complete": True, "block_occurrences": 2,
+             "prepared_blocks": [block, block]}
+    result = summarize_fixed_task_inputs([known, known])
+    assert result["unique_prepared_blocks"] == 1
+    assert result["total_block_occurrences"] == 4
+    changed = {**known, "prepared_blocks": [{**block, "parsed_hash": "new-version"}],
+               "block_occurrences": 1}
+    assert summarize_fixed_task_inputs([known, changed])["unique_prepared_blocks"] == 2
+    missing = {"audit_complete": False, "block_occurrences": None, "prepared_blocks": []}
+    partial = summarize_fixed_task_inputs([known, missing])
+    assert partial["unknown_request_count"] == 1
+    assert partial["known_unique_prepared_blocks"] == 1
+    assert partial["unique_prepared_blocks"] is None
+    assert partial["total_block_occurrences"] is None
+    empty = summarize_fixed_task_inputs([
+        {"audit_complete": True, "block_occurrences": 0, "prepared_blocks": []},
+    ])
+    assert empty["unique_prepared_blocks"] == 0
+    assert empty["all_requests_audited"] is True
+
+
 async def test_captured_request_pages_do_not_change_when_more_attempts_arrive(
     client, captured_inputs, test_database_session_factory,
 ):
@@ -307,6 +336,11 @@ async def test_captured_request_pages_do_not_change_when_more_attempts_arrive(
         first = await read_task_input_snapshot(db, storage, **args)
         assert first["observation_kind"] == "candidate_request_set"
         assert first["request_list_observed_at"]
+        summary = first["task_input_coverage"]
+        assert summary["request_count"] == 2
+        assert summary["unknown_request_count"] == 0
+        assert summary["known_unique_prepared_blocks"] == 1
+        assert summary["provider_receipt_verified"] is False
         db.add(LlmModelAttempt(
             attempt_id=new_id(), run_id=run_id, task_id=ref["task_id"],
             provider="openai", model="test-model", status=AttemptStatus.COMPLETED,
@@ -366,6 +400,7 @@ async def test_historical_input_snapshot_does_not_invent_observation_time(
         raw, mime = storage.objects[row.storage_uri]
         envelope = json.loads(raw)
         envelope["content"].pop("request_list_observed_at")
+        envelope["content"].pop("task_input_coverage")
         historical = json.dumps(envelope).encode()
         storage.objects[row.storage_uri] = (historical, mime)
         row.content_hash = hashlib.sha256(historical).hexdigest()
@@ -377,6 +412,7 @@ async def test_historical_input_snapshot_does_not_invent_observation_time(
             offset=0, limit=20,
         )
         assert page["request_list_observed_at"] is None
+        assert page["task_input_coverage"] is None
         assert page["observation_kind"] == "candidate_request_set"
         assert len(page["attempts"]) == 2
 
@@ -421,6 +457,8 @@ async def test_fixed_input_snapshot_refuses_unavailable_or_unauthorized_evidence
             record = await db.get(UserFile, file["file_id"])
             record.status = "deleted"
             await db.commit()
+            # The first request has no source blocks; the whole-set summary still must deny.
+            args.update(offset=0, limit=1)
         with pytest.raises(expected):
             await read_task_input_snapshot(db, storage, **args)
 

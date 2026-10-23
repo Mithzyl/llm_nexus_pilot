@@ -21,6 +21,8 @@ REVIEW_INSTRUCTIONS = (
     "merely because the claim is true elsewhere in the file. "
     "For platform input/attempt claims, candidate_input_evidence contains the authorized "
     "first page of the candidate's fixed requests. Use these platform records directly; "
+    "task_input_coverage summarizes the whole fixed set rather than only this page; "
+    "unknown_request_count means totals are incomplete, not zero. "
     "they are evidence even without file source aliases. Counts mean prepared input, "
     "not provider receipt or model comprehension. An earlier tool query and the candidate "
     "snapshot can have different request counts because later requests were added. "

@@ -11,6 +11,11 @@ import json
 from sqlalchemy import select
 
 from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
+from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
+    authorize_input_coverage_history,
+    summarize_fixed_task_inputs,
+    summarize_input_request,
+)
 from nexuspilot_api.features.memory.services.snapshot_protocol import upload_and_register_snapshot
 from nexuspilot_api.models import (
     LlmAgentWorkflowNodeExecution,
@@ -60,7 +65,7 @@ async def load_task_input_snapshot_manifest(db, storage, *, run_id, snapshot_id)
 
 
 async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_node_id):
-    """Capture a dated request list per candidate; replay preserves its original observation."""
+    """Capture request identities and fixed input coverage; replay preserves the original set."""
     task = await db.scalar(select(LlmTask).where(
         LlmTask.task_id == task_id,
     ).with_for_update())
@@ -87,12 +92,16 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
         ).order_by(LlmModelAttempt.started_at, LlmModelAttempt.attempt_id)))
         observed_at = utc_now().isoformat()
         records = []
+        summaries = []
         for attempt in attempts:
             digest = None
+            raw = {}
             if attempt.raw_request_uri:
                 obj = await storage.open_object(attempt.raw_request_uri)
                 encoded = await asyncio.to_thread(b"".join, obj.chunks)
                 digest = hashlib.sha256(encoded).hexdigest()
+                raw = json.loads(encoded)
+            summaries.append(summarize_input_request(raw))
             records.append({
                 "attempt_id": attempt.attempt_id, "status_at_capture": attempt.status.value,
                 "request_uri": attempt.raw_request_uri, "request_sha256": digest,
@@ -101,6 +110,7 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
             "run_id": run_id, "task_id": task_id, "candidate_node_id": candidate_node_id,
             "role": task.assigned_role, "attempts": records,
             "request_list_observed_at": observed_at,
+            "task_input_coverage": summarize_fixed_task_inputs(summaries),
         }
         if len(json.dumps(content).encode()) > 1024 * 1024:
             raise ResourceConflictError("Task input snapshot exceeds 1 MiB")
@@ -123,7 +133,7 @@ async def save_task_input_snapshot(db, storage, *, run_id, task_id, candidate_no
 async def read_task_input_snapshot(
     db, storage, *, run_id, requester_task_id, snapshot_id, allowed_snapshot_ids, offset, limit,
 ):
-    """Read an authorized fixed page; old snapshots have unknown observation time, not read time."""
+    """Read a fixed page and whole-set summary; legacy absent aggregates remain unknown."""
     from nexuspilot_api.features.agent_runtime.services.task_input_coverage import (
         summarize_attempt_input,
     )
@@ -134,6 +144,13 @@ async def read_task_input_snapshot(
     content = await load_task_input_snapshot_manifest(
         db, storage, run_id=run_id, snapshot_id=snapshot_id,
     )
+    try:
+        await authorize_input_coverage_history(db, run_id=run_id, result={
+            "attempts": [], "task_input_coverage": content.get("task_input_coverage"),
+        })
+    except ResourceConflictError as error:
+        # Keep the existing read API's non-disclosing missing-file behavior.
+        raise ResourceNotFoundError("File") from error
     records = []
     for saved in content["attempts"][offset:offset + limit]:
         attempt = await db.get(LlmModelAttempt, saved["attempt_id"], populate_existing=True)
@@ -153,6 +170,7 @@ async def read_task_input_snapshot(
         "observation_kind": "candidate_request_set",
         "offset": offset,
         "request_list_observed_at": content.get("request_list_observed_at"),
+        "task_input_coverage": content.get("task_input_coverage"),
         "observation_note": "Captured for this candidate, not the time of an earlier input query. "
         "Later requests can increase this count without invalidating an earlier query result. "
         "Compare matching attempt IDs. Only offset=0 with next_offset=null covers the full set.",

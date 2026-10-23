@@ -193,6 +193,8 @@ INPUT_SNAPSHOT_TOOL = RegisteredTool(
     name="read_task_input_snapshot", version="1.0.0",
     description="Read a fixed candidate task input page using an explicitly supplied snapshot_id. "
     "The page identifies its task and request set; later requests do not alter it. "
+    "task_input_coverage summarizes the entire captured request set, not just this page; "
+    "legacy missing summaries remain unknown. Do not add the same summary across pages. "
     "Use this to check another task's input claims. Your own live task coverage cannot "
     "disprove records from the candidate task. No source prose or private reasoning is returned.",
     arguments=ReadTaskInputSnapshotArguments, output=FileToolResult,
