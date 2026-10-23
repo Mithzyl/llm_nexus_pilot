@@ -43,8 +43,7 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 不能据此宣称完整规划已完成。此次清单核对时阶段7明确欠缺：约定全文阅读范围的结构化持久计划、
 任务级实际输入覆盖的固定汇总。当前task_note只有正文/来源/后续事项，读取进度只覆盖单文件当前Task，
 执行观察快照只记录当前Attempt/工具引用，不能替代上述两项。下一步先实现持久阅读范围，复用工具记录与MinIO，
-不新增独立Agent角色、不自动全文注入。随后持久阅读范围已实现并通过确定性测试，真实验收待执行，见对应记录；
-任务级输入覆盖固定汇总随后也已实现并通过确定性测试，两项真实组合验收待执行。任务到期后的另行授权恢复接口仍不存在；跨进程续跑和Python/Shell后置。
+不新增独立Agent角色、不自动全文注入。随后两项均已实现，并通过确定性测试和真实Strata/MySQL/MinIO组合验收，见下方2026-10-23记录。任务到期后的另行授权恢复接口仍不存在；跨进程续跑和Python/Shell后置。
 
 | 策略/场景 | 运行结果 | 秒数（不含上传） | 模型请求 | 输入 Token | 输出 Token | 缓存输入 Token |
 |---|---|---:|---:|---:|---:|---:|
@@ -814,6 +813,26 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
+### 阅读计划与固定输入汇总真实组合验收（2026-10-23）
+
+实现提交7380012，重启本地API后执行现有check_live_general_agent.py，provider=strata、policy=never，
+文件FULLTEXT03.pdf，目标为保存前20个解析块的计划、读取前后查询进度、生成带来源正文。
+没有重试模型请求。Run=8690b3ac-3973-467d-acc0-f7750543ea6d，
+Workflow=8b4f32ef-8a45-4dad-9f24-cfe61a136ce7，Session=ae584a42-3b03-4b4e-802c-7526870687ab。
+报告：/tmp/general-agent-reading-plan-strata-20261023.json。
+
+- 通过：7次实际Strata请求全部完成，62.321秒；输入43805、输出1200、合计45005 Token，缓存输入29568（输入的子集），推理Token未知。上传另耗1.639秒。
+- 通过：search_tools、两次describe_tools、save_task_reading_plan、read_task_reading_plan、read_file_content、read_task_reading_plan均成功。计划34a6400b-be85-4447-8b55-f501c58d9d08从0/20变为20/20，未读取其余1522个解析块。解析警告仍保留，不把完成所选范围当作全文完成或模型理解。
+- 通过：快照1f04a90b-7fb8-40dc-b52d-e1364035611c固定7次请求、0个缺失审计、20个唯一块和40次出现。正式read_task_input_snapshot只取1条请求时仍返回同一整组汇总，来源权限检查正常。
+- 通过：12条消息/节点/工具记录的正文为空或JSON null，均持有MinIO对象引用；恢复查询message_matches/workflow_matches均true。
+- 通过：Playwright观察运行并刷新，最终回答及来源恢复，输入框不再显示未结束阻塞提示。快照位于output/playwright/general-agent-reading-plan-running.yml和general-agent-reading-plan-restored.yml。浏览器只是打开现有会话，不产生额外模型请求。
+- 测试复验：test_task_input_coverage.py 18项通过，29.73秒；Ruff、git diff --check通过。
+
+只读诊断首次误用不存在的created_at字段，改为真实started_at；之后快照查询未过滤mime_type，
+在正确读取JSON快照后误读其非JSON记录并得到NotFound。随后用明确快照ID调用正式读取接口通过，
+两次均未修改数据或调用模型，不作为业务失败。模型正文的数字/解释准确性不在本次验收范围。
+未修改前端、费用、部署配置；未调用DeepSeek、未推送或部署。
+
 ### 固定Task输入覆盖汇总（2026-10-23）
 
 在已有候选输入快照中增加可选task_input_coverage，不新增表或另存一份正文。
@@ -839,7 +858,7 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_reading_plan.py apps/api/tests/test_task_read_coverage.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_general_agent.py --tb=short`
 ——46项通过（11.85秒）；测试导入格式调整后Ruff与diff检查通过。
 本批没有供应商请求、真实MySQL/MinIO运行、API重启、前端修改或部署。
-新工具真实联调仍待执行，任务级输入覆盖固定汇总仍待实现；不把保存计划等同于已经读完文件。
+当时新工具真实联调及固定汇总待完成；后续已完成，见上方组合验收。不把保存计划等同于已经读完文件。
 
 ### 本地MySQL/MinIO真实登录隔离检查（2026-10-23）
 
