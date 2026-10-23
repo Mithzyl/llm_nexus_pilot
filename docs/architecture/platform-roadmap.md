@@ -8,7 +8,7 @@
 
 **当前范围：** 通用 Agent 本地后端已完成既定验收，Web 新请求已使用 general_agent；旧工作流读取和历史记录保留。Personal Assistant 已完成 OpenCode Go 普通回答及三种只读工具真实联调，后续 App 取消修复和确定性测试见[App 接入说明](../implementation/personal-assistant-app-integration.md)。本地完成不代表已部署。
 
-**当前优先事项：** 回到 Nexus 自身能力开发。逐结论审核、按需委派、工作记录、阅读计划、输入汇总和有效请求审计已有实现，限定验收见[本地记录](../implementation/general-agent-strata-verification-20261019.md)。Python代码验证/数据计算最小接入已通过授权、工具记录、真实Docker执行、MinIO产物保存及工作流在途停止测试，范围见阶段7；模型和数据库采用测试Provider/SQLite，未执行本批真实模型联调。Shell入口不开放，PDF/Office读取不重复实现。执行配置默认关闭，跨进程续跑仍未实现，不推送、不部署。
+**当前优先事项：** 回到 Nexus 自身能力开发。逐结论审核、按需委派、工作记录、阅读计划、输入汇总和有效请求审计已有实现，限定验收见[本地记录](../implementation/general-agent-strata-verification-20261019.md)。Python最小接入先通过固定Provider/SQLite测试，2026-10-24进一步通过OpenCode Go、真实MySQL/MinIO的计算、产物下载及在途取消联调，记录见阶段7。本地账号Python授权已写入私有配置并在8002联调实例生效，旧8000/8001需安全重启加载；产品默认仍关闭。Shell入口不开放，PDF/Office读取不重复实现，跨进程续跑仍未实现，不推送、不部署。
 
 ## 本次整体规划决定
 

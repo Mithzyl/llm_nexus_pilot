@@ -1476,7 +1476,50 @@ MinIO保存并下载；仅测试创建的对象在测试后清理。模型仍为
 普通会话正文用测试存储；不将其描述为真实模型或MySQL联调。既有App工具、后台工作流、
 general_agent及API导入回归命令再次执行为63通过、30.62秒。未启用私有用户授权配置，未部署。
 
+### OpenCode Go与MySQL/MinIO真实Python联调（2026-10-24）
+
+先提交此前实现、测试和记录为`e3d3d7d`，没有推送。随后按用户授权在忽略的
+`apps/api/.env`配置Python私有socket和本地账号`nexuspilot-web`的授权列表；不保存凭据到文档。
+独立执行器使用`/tmp/nexus-python-local/python.sock`；API联调实例监听127.0.0.1:8002。
+既有8000/8001未重启：数据库仍有运行中记录，未为此测试中断其他工作。
+因此私有配置已持久写入且8002已生效，旧API进程需安全重启后才能加载新授权。
+真实MySQL迁移为`20261023_0026`，没有重建用户或数据；对象存储为本地真实MinIO。
+
+模型均为`opencode/deepseek-v4.1-flash`，地址为已登记的Go端点，审核策略为`never`，
+本次验证代码执行流程，不评价模型知识性回答。未切换其他Provider。
+
+| 场景 | 终态 | 总耗时 | 模型调用数 | 输入token | 输出token | 缓存输入token | 推理token |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Python计算并保存下载CSV | completed | 10.108秒 | 4 | 11568 | 432 | 9472 | 71 |
+| Python运行中显式停止 | cancelled | 8.859秒 | 3 | 7898 | 233 | 6144 | 64 |
+
+Token来自保存的供应商返回值，缓存输入包含在输入内，推理token不额外叠加输出。
+计算Run `b398f474-cca3-4136-ae15-83f32346ec15`，工作流
+`b2629a67-bf20-4ba0-b5d5-eabaf8a0591c`：模型发现、加载后执行Python一次，最终文本存在。
+Artifact `a279b4ee-7970-413e-8ba9-23486d5af7ab`的`result.csv`下载HTTP200、9字节，
+与预期`total\n69\n`一致；产物及运行记录保留供查看。
+
+停止Run `2a5b0b8b-d3aa-4f0d-acd8-b497f53127b8`，工作流
+`d71ad0f3-6e44-43dd-bf3a-8c5bc5b03f67`：观察到真实容器Python进程后才调用取消，
+HTTP200，0.692秒后启动请求结束；工具记录cancelled/python_cancelled，无最终回答。
+随后只读复核工作流仍为cancelled，实际执行容器已移除。未用任务结束后的取消冒充在途停止。
+
+命令（apps/api目录）：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m nexuspilot_api.commands.verify_python_agent
+PYTHONPATH=src .venv/bin/python -m nexuspilot_api.commands.verify_python_agent --verify-saved
+```
+
+第一条会产生两次真实Agent Run及模型用量，不应无授权重复运行；第二条仅复核已有结果，
+不请求模型。元数据记录见[本次真实验证](../../output/security/python-agent-opencode-go-20261024.json)。
+此前固定Provider/SQLite的41项及63项回归仍是独立证据，不计为本次真实调用。
+本次未修改业务实现、未开放Shell、未推送或部署；联调脚本和记录在先前提交之后新增。
+
 ### 本地执行器实现与运行（2026-10-09）
+
+> 当前接入状态补充见上方Python最小接入及下方真实联调；本节保留独立执行器首次实现记录，
+> 其中“API尚不调用”描述2026-10-09，不代表2026-10-24的Python接入现状。
 
 新增 `deployments/task-runtime/task_runtime.py` 与独立 Dockerfile；仅供受信本地执行进程或管理员调用，没有 Socket/HTTP 监听器。API 和 Web 尚不调用它，也不获得 Docker 访问权。`WorkspaceStore` 保存目录，`TaskExecutor` 执行结构化 `run_command`；相同的名称与字段供后续 Registry 接入，不另外设计面向模型的执行接口。
 

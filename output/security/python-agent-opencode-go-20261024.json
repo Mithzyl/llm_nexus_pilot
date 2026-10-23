@@ -1,0 +1,178 @@
+{
+  "date": "2026-10-24",
+  "database": "MySQL",
+  "storage": "MinIO",
+  "runs": [
+    {
+      "run_id": "b398f474-cca3-4136-ae15-83f32346ec15",
+      "scenario": "calculate",
+      "workflow_id": "b2629a67-bf20-4ba0-b5d5-eabaf8a0591c",
+      "status": "completed",
+      "final_text_present": true,
+      "artifacts": [
+        {
+          "artifact_id": "a279b4ee-7970-413e-8ba9-23486d5af7ab",
+          "filename": "result.csv",
+          "size_bytes": 9,
+          "download_status": 200,
+          "expected_bytes_match": true
+        }
+      ],
+      "elapsed_seconds": 10.108,
+      "attempts": [
+        {
+          "attempt_id": "7b60b25e-fb98-4618-b0a4-e0190440cf24",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 2158,
+          "output_tokens": 100,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 57,
+          "error_code": null
+        },
+        {
+          "attempt_id": "f8742c0f-02fe-4317-893a-69f3dc2fbe99",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 2419,
+          "output_tokens": 60,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 0,
+          "error_code": null
+        },
+        {
+          "attempt_id": "34f750b1-9d98-4b3c-b2bf-41686e8f5f2c",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 3356,
+          "output_tokens": 143,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 14,
+          "error_code": null
+        },
+        {
+          "attempt_id": "9fc8dd62-10b9-4351-a6be-fc767a79a9ec",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 3635,
+          "output_tokens": 129,
+          "cached_tokens": 3328,
+          "reasoning_tokens": 0,
+          "error_code": null
+        }
+      ],
+      "tool_calls": [
+        {
+          "tool_call_id": "697b0224-b328-4c3c-a385-47efd994c33a",
+          "tool_name": "search_tools",
+          "status": "completed",
+          "error_code": null
+        },
+        {
+          "tool_call_id": "7b58043f-4862-4761-9965-ebdd091de8ee",
+          "tool_name": "describe_tools",
+          "status": "completed",
+          "error_code": null
+        },
+        {
+          "tool_call_id": "fe548c9c-62a6-4ac4-92f2-c71797731d32",
+          "tool_name": "run_command",
+          "status": "completed",
+          "error_code": null
+        }
+      ],
+      "rechecked_status": "completed",
+      "usage_totals": {
+        "input_tokens": 11568,
+        "output_tokens": 432,
+        "cached_tokens": 9472,
+        "reasoning_tokens": 71
+      }
+    },
+    {
+      "run_id": "2a5b0b8b-d3aa-4f0d-acd8-b497f53127b8",
+      "scenario": "cancel",
+      "workflow_id": "d71ad0f3-6e44-43dd-bf3a-8c5bc5b03f67",
+      "python_observed_running": true,
+      "cancel_http_status": 200,
+      "container_name": "nexuspilot-task-ff7e2df38c4340e79406ca68425b27f8",
+      "status": "cancelled",
+      "final_text_present": false,
+      "cancel_completion_seconds": 0.692,
+      "elapsed_seconds": 8.859,
+      "attempts": [
+        {
+          "attempt_id": "4ca872b0-1033-4949-9d98-f57265d1547c",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 2123,
+          "output_tokens": 102,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 38,
+          "error_code": null
+        },
+        {
+          "attempt_id": "7d65e967-5491-4e15-96c3-afb010ab7f99",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 2414,
+          "output_tokens": 70,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 10,
+          "error_code": null
+        },
+        {
+          "attempt_id": "18e036dd-ceff-48dc-b104-a0696dfd0595",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "COMPLETED",
+          "input_tokens": 3361,
+          "output_tokens": 61,
+          "cached_tokens": 2048,
+          "reasoning_tokens": 16,
+          "error_code": null
+        }
+      ],
+      "tool_calls": [
+        {
+          "tool_call_id": "8abc04b8-c665-4015-ae73-98d5c15b7124",
+          "tool_name": "search_tools",
+          "status": "completed",
+          "error_code": null
+        },
+        {
+          "tool_call_id": "9def66a9-a761-4f74-b8dd-3eb1ecb81013",
+          "tool_name": "list_run_files",
+          "status": "completed",
+          "error_code": null
+        },
+        {
+          "tool_call_id": "37cfadbf-edab-446b-a4a8-2d091ec6fd04",
+          "tool_name": "describe_tools",
+          "status": "completed",
+          "error_code": null
+        },
+        {
+          "tool_call_id": "37e40394-4fb7-4312-b139-9f5408638266",
+          "tool_name": "run_command",
+          "status": "cancelled",
+          "error_code": "python_cancelled"
+        }
+      ],
+      "rechecked_status": "cancelled",
+      "container_removed": true,
+      "usage_totals": {
+        "input_tokens": 7898,
+        "output_tokens": 233,
+        "cached_tokens": 6144,
+        "reasoning_tokens": 64
+      }
+    }
+  ]
+}
