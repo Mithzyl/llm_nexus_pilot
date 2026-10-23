@@ -2,14 +2,15 @@
 
 Run from repo root with PYTHONPATH=apps/api/src:packages/models/src and API Python:
   python deployments/verification/check_live_draft_continuation.py --allow-paid-strata \
-    --file-id OWNED_READY_FILE --report NEW.json
+    --file LOCAL_PDF --report NEW.json
 Requires auth-disabled local MySQL/MinIO and an enabled Strata registration/key.
-Uses an existing authorized attachment. No production hook, fake model output,
+Uploads a dedicated test attachment. No production hook, fake model output,
 automatic retry, or deployment. The injected incomplete call has unknown billing.
 """
 
 import argparse
 import asyncio
+import hashlib
 import json
 import subprocess
 import time
@@ -113,14 +114,21 @@ async def run(args):
             base_url="http://127.0.0.1/api/v1/", headers={"X-API-Key": settings.api_key},
             timeout=None) as client:
             owner = (await request(client, "GET", "auth/me"))["user_id"]
-            file = await request(client, "GET", f"files/{args.file_id}")
-            if file["status"] != "ready":
+            content = args.file.read_bytes()
+            file = await request(client, "POST", "files", json={
+                "filename": args.file.name, "size_bytes": len(content),
+                "content_hash": hashlib.sha256(content).hexdigest(),
+                "idempotency_key": str(uuid4()),
+            })
+            uploaded = await request(client, "PUT", f"files/{file['file_id']}/content",
+                                     content=content)
+            if uploaded["status"] != "ready":
                 raise RuntimeError("Attachment is not ready")
             session = await request(client, "POST", "sessions", json={
                 "user_id": owner, "title": "LOCAL Strata interrupted draft verification",
             })
             turn = await request(client, "POST", f"sessions/{session['session_id']}/turns", json={
-                "user_id": owner, "file_ids": [args.file_id], "idempotency_key": str(uuid4()),
+                "user_id": owner, "file_ids": [file["file_id"]], "idempotency_key": str(uuid4()),
                 "content_text": "读取附件标题页少量原文，用一段约150字中文解释Degree project学分和"
                 "论文完整标题，引用原文来源。无需通读、不委派，说明只核对了标题页。",
             })
@@ -162,6 +170,6 @@ async def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-paid-strata", action="store_true")
-    parser.add_argument("--file-id", required=True)
+    parser.add_argument("--file", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     asyncio.run(run(parser.parse_args()))
