@@ -205,6 +205,16 @@ async def run_file_tool_loop(
                 file_blocks = sorted(identity for identity in progress.blocks
                                      if identity[0] == call.arguments.get("file_id"))
                 fingerprint += json.dumps(file_blocks)
+            if call.name == "read_task_reading_plan":
+                # A new read changes plan progress; unrelated note writes do not.
+                target_files = {
+                    target["file_id"] for saved in records
+                    if saved.tool_call_id == call.arguments.get("plan_id")
+                    and saved.tool_name == "save_task_reading_plan" and saved.status == "completed"
+                    for target in saved.output_json["result"]["targets"]
+                }
+                fingerprint += json.dumps(sorted(
+                    identity for identity in progress.blocks if identity[0] in target_files))
             if not allow_tool_request(seen, call.name, fingerprint, len(records)):
                 raise InvalidRequestError(
                     "Agent repeated an unchanged tool request without progress"

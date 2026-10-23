@@ -40,10 +40,11 @@ SSE 收到持久 Workflow ID 后主动断开观察，再通过只读查询跟进
 | MySQL结构化记录、MinIO正文与身份隔离 | 各真实流程API读回及local-isolation的18项检查 | 已测路径通过 |
 | 旧工作流兼容、新请求入口 | 兼容回归、apps/web/lib/agent-workflow.ts实际general_agent定义 | 已实现，不改前端布局 |
 
-不能据此宣称完整规划已完成。阶段7仍明确欠缺：约定全文阅读范围的结构化持久计划、
+不能据此宣称完整规划已完成。此次清单核对时阶段7明确欠缺：约定全文阅读范围的结构化持久计划、
 任务级实际输入覆盖的固定汇总。当前task_note只有正文/来源/后续事项，读取进度只覆盖单文件当前Task，
 执行观察快照只记录当前Attempt/工具引用，不能替代上述两项。下一步先实现持久阅读范围，复用工具记录与MinIO，
-不新增独立Agent角色、不自动全文注入。任务到期后的另行授权恢复接口仍不存在；跨进程续跑和Python/Shell后置。
+不新增独立Agent角色、不自动全文注入。随后持久阅读范围已实现并通过确定性测试，真实验收待执行，见对应记录；
+任务级输入覆盖固定汇总仍待实现。任务到期后的另行授权恢复接口仍不存在；跨进程续跑和Python/Shell后置。
 
 | 策略/场景 | 运行结果 | 秒数（不含上传） | 模型请求 | 输入 Token | 输出 Token | 缓存输入 Token |
 |---|---|---:|---:|---:|---:|---:|
@@ -812,6 +813,20 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
   联调继续记录耗时、供应商报告的Token用量及未知项，不将未知费用换算为实际支出。
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
+
+### 持久阅读范围实现（2026-10-23）
+
+新增save_task_reading_plan/read_task_reading_plan，复用工具目录、Task授权和Tool Call对象化保存。
+先写实际API工具循环用例，旧实现因工具未注册而失败；接入后复现读取后再次查询计划被误判重复，
+已按目标文件实际返回块变化调整查询指纹，没有放开无进展轮询。
+覆盖保存/读回、读取前后进度、范围只计算选定块、重复查询拒绝、跨Task拒绝、文件撤权、
+越界/重复目标拒绝及SQL正文空、MinIO对象引用存在。测试夹具将SQLite JSON null误判为非空，
+改为解析JSON后比较None，没有修改保存规则或弱化正文隔离要求。
+
+命令：`PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_task_reading_plan.py apps/api/tests/test_task_read_coverage.py apps/api/tests/test_agent_task_notes.py apps/api/tests/test_general_agent.py --tb=short`
+——46项通过（11.85秒）；测试导入格式调整后Ruff与diff检查通过。
+本批没有供应商请求、真实MySQL/MinIO运行、API重启、前端修改或部署。
+新工具真实联调仍待执行，任务级输入覆盖固定汇总仍待实现；不把保存计划等同于已经读完文件。
 
 ### 本地MySQL/MinIO真实登录隔离检查（2026-10-23）
 

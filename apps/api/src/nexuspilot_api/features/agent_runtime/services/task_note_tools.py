@@ -27,6 +27,13 @@ from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
     read_task_input_snapshot,
 )
 from nexuspilot_api.features.agent_runtime.services.task_read_coverage import task_read_coverage
+from nexuspilot_api.features.agent_runtime.services.task_reading_plan import (
+    ReadReadingPlanArguments,
+    SaveReadingPlanArguments,
+    build_reading_plan,
+    load_reading_plan,
+    reading_plan_progress,
+)
 from nexuspilot_api.models import (
     LlmAgentWorkflowNodeExecution,
     LlmModelAttempt,
@@ -147,6 +154,22 @@ NOTE_TOOLS = (
     ),
 )
 NOTE_NAMES = {tool.name for tool in NOTE_TOOLS}
+READING_PLAN_TOOLS = (
+    RegisteredTool(name="save_task_reading_plan", version="1.0.0",
+        description="Save an immutable reading scope for this task. Targets use zero-based parsed "
+        "block ranges; omit block_count to include through the document end. This does not read "
+        "source text or prove understanding. Save a new plan for changes, never overwrite one.",
+        arguments=SaveReadingPlanArguments, output=FileToolResult,
+        required_capabilities=frozenset({"task_notes", "read"}), risk_level="task_write",
+        keywords=("通读", "阅读计划", "reading", "plan")),
+    RegisteredTool(name="read_task_reading_plan", version="1.0.0",
+        description="Read this task's saved plan_id and actual returned-block progress. File "
+        "permissions and versions are checked again. Complete coverage is not comprehension.",
+        arguments=ReadReadingPlanArguments, output=FileToolResult,
+        required_capabilities=frozenset({"task_notes", "read"}),
+        keywords=("通读", "阅读计划", "reading", "plan", "progress")),
+)
+READING_PLAN_NAMES = {tool.name for tool in READING_PLAN_TOOLS}
 READ_COVERAGE_TOOL = RegisteredTool(
     name="get_task_read_coverage", version="1.0.0",
     description="Inspect this task's actual returned blocks and remaining unread locations for "
@@ -189,7 +212,7 @@ DELEGATE_TOOL = RegisteredTool(
     timeout_seconds=None, max_result_bytes=2 * 1024 * 1024,
 )
 GENERAL_TOOL_CATALOG = ToolCatalog(
-    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS,
+    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, *READING_PLAN_TOOLS,
      READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, INPUT_SNAPSHOT_TOOL, DELEGATE_TOOL,
      SUBMIT_REVIEW_TOOL)
 )
@@ -243,8 +266,8 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize task work and check explicit citation approval before durable persistence."""
-        if name not in NOTE_NAMES | {
+        """Authorize task notes, reading scope and review before durable tool-result persistence."""
+        if name not in NOTE_NAMES | READING_PLAN_NAMES | {
             READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
             DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name,
         }:
@@ -255,6 +278,12 @@ class GeneralAgentToolService(AgentFileToolService):
                 or run is None or task.status != TaskStatus.RUNNING
                 or run.status.value not in {"pending", "running"}):
             raise ToolOperationError("task_not_running", status="permission_denied")
+        if name == "save_task_reading_plan":
+            return await build_reading_plan(self.db, self.storage, run_id=attempt.run_id,
+                plan_id=record.tool_call_id, arguments=arguments)
+        if name == "read_task_reading_plan":
+            return await reading_plan_progress(self.db, self.storage, run_id=attempt.run_id,
+                task_id=self.task_id, plan_id=arguments.plan_id)
         if name == SUBMIT_REVIEW_TOOL.name:
             if task.assigned_role != "reviewer":
                 raise ToolOperationError(
@@ -368,10 +397,10 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck task ownership, review target and source grants before reusing tool history."""
+        """Recheck task ownership, reading plans and source grants before reusing history."""
         await super().validate_history(run_id, records)
         for record in records:
-            if (record.tool_name not in NOTE_NAMES | {
+            if (record.tool_name not in NOTE_NAMES | READING_PLAN_NAMES | {
                     READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
                     DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name}
                     or record.status != "completed"):
@@ -379,6 +408,9 @@ class GeneralAgentToolService(AgentFileToolService):
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
                 raise ResourceConflictError("Task note history belongs to another task")
+            if record.tool_name in READING_PLAN_NAMES:
+                await load_reading_plan(self.db, self.storage, run_id=run_id, task_id=self.task_id,
+                                       plan_id=record.output_json["result"]["plan_id"])
             if record.tool_name == SUBMIT_REVIEW_TOOL.name:
                 if record.output_json["result"]["candidate_node_id"] != self.review_candidate_id:
                     raise ResourceConflictError("Review history belongs to another candidate")

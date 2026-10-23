@@ -9,7 +9,7 @@ from nexuspilot_api.services.tool_context import FILE_BODY_TOOLS
 from nexuspilot_api.services.user_file_service import read_parsed_file
 
 
-def summarize_task_reads(document, file, results, *, offset, limit):
+def summarize_task_reads(document, file, results, *, offset, limit, planned_range=None):
     """Deduplicate exact returned blocks and page unread locations without copying source text.
 
     Results must come from successful tools in the authorized task. Check their
@@ -39,7 +39,7 @@ def summarize_task_reads(document, file, results, *, offset, limit):
             returned.add(identity)
     unread = [(index, block) for index, block in enumerate(document.blocks)
               if block.block_id not in returned]
-    return {
+    result = {
         "schema_version": "task_read_coverage.v1", "scope": "current_task_tool_results",
         "file_id": file.file_id, "source_hash": file.content_hash,
         "parsed_hash": file.parsed_hash, "parser_version": document.parser_version,
@@ -60,10 +60,20 @@ def summarize_task_reads(document, file, results, *, offset, limit):
         "Use read_arguments for exact source locations. "
         "Missing parsed text is not readable coverage.",
     }
+    if planned_range is not None:
+        start, end = planned_range
+        if not 0 <= start < end <= len(document.blocks):
+            raise ResourceConflictError("Reading plan range is invalid")
+        selected = {b.block_id for b in document.blocks[start:end]}
+        result["planned_range"] = {
+            "target_block_count": len(selected), "returned_block_count": len(selected & returned),
+            "unreturned_block_count": len(selected - returned),
+        }
+    return result
 
 
-async def task_read_coverage(db, storage, *, run_id, task_id, arguments):
-    """Authorize the turn's file and inspect only this task's completed native read results."""
+async def task_read_coverage(db, storage, *, run_id, task_id, arguments, planned_range=None):
+    """Inspect committed reads for the task, optionally counting a fixed parsed-block range."""
     run = await db.get(LlmRun, run_id, populate_existing=True)
     allowed = await conversation_file_ids(db, run_id)
     file = await db.get(UserFile, arguments.file_id, populate_existing=True)
@@ -78,4 +88,5 @@ async def task_read_coverage(db, storage, *, run_id, task_id, arguments):
     return summarize_task_reads(
         document, file, ((record.output_json or {}).get("result") or {} for record in records),
         offset=arguments.offset, limit=arguments.limit,
+        planned_range=planned_range,
     )
