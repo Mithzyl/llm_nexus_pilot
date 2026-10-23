@@ -16,7 +16,163 @@
 
 > 历史编号：2026 年 8 月 19 日本能力由原阶段4调整为阶段7。该编号保留用于引用，不再要求阶段4～6全部完成后才开发工具；当前必要条件是本次使用的身份/资源授权、持久调用记录和真实隔离测试通过，完整遥测平台不作为本地工具开发前置。生产启用须通过对应版本的部署验收；历史发布不自动授权后续部署。
 
-## 目标
+## 多业务 App 工具与隔离执行接入规划（2026-10-23）
+
+状态：未开始（实现）；本节已完成设计核对。用户本次仅要求规划，附件提示词中的“实现Adapter”不作为本次代码修改授权。
+本节是外部App工具的当前设计定义；阶段5维护身份实现，路线图只引用本节。不新增Phase编号，不重建Agent循环。
+Retail、Personal Assistant（下称PA）各有前端、用户和业务数据库，提供真实业务API；NexusPilot负责执行、授权和记录。
+业务数据不迁入NexusPilot；外部用户无需注册平台登录账号。当前没有正式业务接口，下面接口和表均为拟新增，不是已有能力。
+
+### 已核对实现与缺项
+
+| 对象 | 当前代码事实 | 本次后续需要新增 |
+|---|---|---|
+| `services/tool_catalog.py` | RegisteredTool含name/version/description、Pydantic输入输出类型、capabilities、risk_level、timeout_seconds、max_result_bytes；名称仅小写字母数字下划线、最多64字符；每个名称一个活动版本 | 工具归属、执行类型、处理器/服务引用、启用与确认策略、应用授权过滤、版本固定 |
+| ToolCatalog | 已有search/get/describe与加载版本；describe当前包含required_capabilities | 外部工具发现前按应用/主体过滤；模型可见描述去掉内部权限及地址，只发布名称、版本、说明、Schema和可用性 |
+| AgentFileToolService.execute | 记录调用、检查已加载版本、Pydantic参数、超时/结果大小；分发到内置实现；Attempt+Provider调用ID唯一 | 保留该执行生命周期，提取可复用分发部分，增加remote_http/task_container执行器；不能复制第二套循环；远程错误不能落入file_unavailable |
+| general_agent与快速回复 | 共用Gateway和文件工具能力；Agent有审核/委派/笔记/来源/取消 | 扩展同一目录/执行入口；首批远程App仅显式授权的general_agent使用，不默认向所有快速回复开放 |
+| MySQL/MinIO | users归属及Run/Task/Attempt/llm_tool_calls；正文通过body_ref_json保存到MinIO | App映射、授权、固定工具身份、必要远程尝试与未知结果状态；复用正文服务，不保存业务正文到SQL |
+| 身份 | user_auth_identities为本地登录；没有application_user_mappings | 独立服务调用方认证、外部用户映射和Run的可信App身份；不能复用关闭登录时的共享owner |
+| 执行环境 | deployments/task-runtime已有本地Python/Shell执行器，不是模型可调用API | Agent身份绑定、受控执行器通信、Tool Call/Artifact保存与停止接入仍未实现 |
+
+当前范围不依赖Redis/Dragonfly：持久身份、授权和执行状态用MySQL；后续若缓存目录，也必须支持撤销生效，不能把缓存作为授权依据。
+
+### 一个工具目录，三类执行方式
+
+扩展现有RegisteredTool而非建立RemoteToolRegistry：`internal`、`remote_http`、`task_container`三种execution_type。
+保留现有arguments/output Pydantic类与输入输出Schema生成方式。第一版仅受信代码静态注册外部工具；
+不接受模型/普通App在线上传任意Schema、代码或HTTP模板。动态目录发布和通用JSON Schema解释留到后续。
+
+| 拟新增或保留字段 | 规则 |
+|---|---|
+| tool_id、owner_application_id、canonical_name、version | 稳定逻辑身份及不可变版本；归属应用与可调用应用分别表达，不能仅凭归属授予访问 |
+| name | 模型侧兼容名；保留旧内置名称。`retail.search_products`为规范名称，注册时显式映射`retail_search_products`；检查冲突与长度，保存映射并按本次实际提供的映射还原，不使用简单字符串替换 |
+| execution_type、handler_id、service_id、operation_id | 仅后端读取；处理器由代码白名单解析。operation固定方法、相对路径及请求/响应映射；模型不能选择URL、Header、用户或服务 |
+| arguments、output、required_capabilities | 沿用Pydantic类型；外部响应也必须output.model_validate。Schema为模型字段与业务字段定义，不接受身份/凭据字段 |
+| side_effect、risk_level、requires_confirmation | side_effect分read/task_write/business_write；risk_level保留旧值并拟增业务写/高风险写。首批只能read且无需确认，写工具可作目录设计但不得发布为可执行 |
+| timeout_seconds、max_result_bytes | 复用既有单位，不另增timeout_ms冲突字段；外部文档若用毫秒只在边缘转换。首次示例10秒、64KiB需按业务API确认，不宣称已配置 |
+| definition_source、is_enabled | 受信代码版本与服务端启停状态；加载不等于授权。运行固定版本和允许范围，每次执行重查停用/撤权，不能悄悄切到新版 |
+
+模型只获得函数名称、说明、参数Schema，以及按需加载所需公开版本；不给服务地址、credential_ref、内部capabilities或其他租户目录。
+ToolDefinition本身不含服务配置。既有describe_tools输出需同步调整及回归，不能仅隐藏顶层函数定义。
+
+### App身份与存储设计
+
+第一版继续单MySQL和现有MinIO，不分业务库到NexusPilot。下列名称为拟新增迁移对象，实施时核对仓库命名后确定：
+
+- `applications`：应用ID、启停和服务调用方配置引用；应用之间不因共享部署Key互相信任。
+- `application_user_mappings`：唯一(application_id, external_user_id) → pilot_principal_id。
+  pilot_principal_id映射现有users.user_id，自动建立无密码/无登录身份的内部owner，复用现有资源权限；
+  不按邮箱自动合并，不强迫用户创建NexusPilot账号。不同App默认不同owner；原生账号跨App关联需独立显式授权，第一版不开放。
+- `application_tool_grants`：调用App、Agent配置、工具版本、capabilities、作用范围、有效期及撤销状态。
+  用户授权可进一步收窄，不能扩大服务调用方范围。agent_id来自受信配置，不把模型角色字符串当Agent身份。
+- `tool_services`及`tool_versions`：可信地址/credential_ref/启停、规范工具身份及受信定义版本。
+  静态Schema/operation由代码维护，SQL仅登记版本引用和启停，避免两份Schema互相覆盖。
+- `run_application_context`：每Run唯一，保存调用App、映射ID、外部用户、Agent配置和获准版本/权限快照；
+  查询工具时仍复查当前有效授权。旧Run无此记录继续原生身份路径，不能解释成任意App权限。
+- `llm_tool_calls`增加可空tool_id/owner_application_id/caller_application_id等必要结构化关联；
+  旧行仍可读，不回填猜测身份。一次逻辑调用仍只有一条记录，Provider ToolCall ID不是跨重试业务幂等键。
+  如启用HTTP重试，新增从属`tool_execution_attempts`记录每次实际请求、HTTP状态/耗时/结果确定性；不要创建虚构Model Attempt。
+- 业务参数、结果及后续确认详情使用现有MinIO正文方式；SQL仅存状态、归属、版本和引用。
+  对象读取先验证应用与owner。已保存结果恢复不重新访问业务API，不把业务结果偷偷转换成文件[S1]来源。
+
+服务凭据第一版本地由服务端环境/私有配置提供，数据库只保存credential_ref。
+发出请求需使用原值，因此不能只存不可逆哈希；未来凭据托管另行设计，当前不恢复暂停的用户Provider Key工作项。
+日志只保存服务标识、状态、耗时与请求关联ID，不保存认证头。App传来的external_user_id是经认证业务后端的声明，不是模型参数或浏览器任意字段。
+服务间认证需为每App独立可撤销凭据，限定受众/作用域；生产启用前与业务方确定轮换和委托授权方案，不沿用通用部署Key。
+
+### 远程执行与接口草案
+
+拟新增App后端入口，例如`POST /api/v1/app/runs`（尚不存在）：认证服务调用方后，从其App作用域接受external_user_id、
+agent配置、问题与业务授权，生成内部owner和固定Run身份，再调用现有工作流创建服务。
+查询、SSE、取消同样检查调用App和owner；浏览器不能用该服务凭据。原生会话API保持不变。
+第一版NexusPilot将受信operation映射到业务API；业务方可接受下面统一信封，也可通过静态Adapter映射已有API，不能假装已有统一路由。
+
+```json
+{
+  "tool_execution_id": "平台生成的稳定逻辑调用ID",
+  "application_id": "personal_assistant",
+  "external_user_id": "来自已验证Run身份",
+  "tool_name": "list_calendar_events",
+  "tool_version": "1.0.0",
+  "arguments": {"start_date": "2026-10-26", "end_date": "2026-11-01"}
+}
+```
+
+执行顺序：完整ToolCall → 查本次固定名称/版本映射 → 已加载/启用校验 → 参数Schema → 当前App/owner/资源授权 →
+确认条件 → 复用Tool Call记录与唯一性检查 → Remote HTTP Adapter → 校验业务状态和output Schema → MinIO正文及SQL状态 → Tool Result回原循环。
+网络期间不持有长数据库事务。业务服务负责再次校验用户资源、门店、价格库存等，不能认为NexusPilot传来ID即代表拥有资源。
+地址来自受信配置；不允许模型指定URL或跳转目标，不自动跟随重定向。生产HTTPS；仅本地模拟服务可显式允许HTTP。
+流式读取HTTP响应并累计字节，超过工具上限立即停止并返回明确结果过大；不把截断JSON交给模型或全量无限缓存。
+合法有界结果照旧保存MinIO，大结果必须由业务API提供分页/结果引用，不能绕过16MiB对象正文上限。
+
+首批关闭自动HTTP重试，以便一次Tool Call对应一次请求；后续只读重试仅针对明确暂时错误，至多额外一次且共用原截止时间。
+写入在支持确认、稳定幂等键和原请求结果查询前禁用。超时/断开可能已写入则记outcome_unknown，禁止模型换参数重新执行绕过未知状态。
+取消Run停止后续工具和模型请求，尽力取消在途HTTP；不能由本地取消推断远端写入已撤销。
+已知结果已返回但MinIO保存失败时，不再次发起业务写入；保留结构化未知/保存失败事实，恢复只查询原操作ID。
+错误区分参数、工具/版本、授权、资源不存在、暂时不可用、超时、非法响应、结果过大和未知结果；业务失败不是空列表。
+SSE复用已有工具/节点持久事件，实施前核对枚举与消费方；仅确有缺项才新增版本兼容事件，不把新状态直接塞入旧终态。
+
+确认阶段：后端保存精确工具版本、参数及操作范围，等待用户批准；批准绑定该记录、用户、有效期，参数变化须重新确认。
+ToolCall和Reviewer通过都不是用户批准。批准后再查授权和业务条件；订单价格/库存以业务服务最终校验为准。
+持久等待、重启后确认继续依赖阶段10，不能靠当前进程内Future承诺可靠恢复；未接通前写工具不开放。
+
+### Shell与最小Docker环境：独立执行方式，不是HTTP代理
+
+当前`deployments/task-runtime/Dockerfile`继承已有解析镜像，移除pip/ensurepip，以65532运行。
+`task_runtime.py`固定python解释器或/bin/sh，以参数列表启动Docker；脚本只在容器运行，不使用宿主shell=True。
+Docker容器不是独立虚拟机：macOS上使用Docker Desktop的Linux环境，Linux上使用宿主容器内核。
+本项目未实现每任务microVM，也不在本次规划中引入新的虚拟机系统。
+
+现有约束：固定镜像ID、--pull never、无网络、只读根、drop ALL、no-new-privileges，1 CPU/256MiB、64进程；
+/input只读挂载，/workspace为32MiB tmpfs，/tmp为16MiB；单文件8MiB、总文件16MiB、128文件，stdout/stderr保留32KiB。
+每次调用1–60秒，默认30秒；执行器两并发，每工作区现有32次上限。这些是现有代码事实，不是通用Agent模型轮数限制。
+容器sleep 300只是管理进程，不代表Agent必须300秒结束。接入时需重新定义Workspace生命周期/配额是否仍适用，不能静默删除现有限制。
+当前调用后验证并导出到私有宿主快照；保存失败冻结容器，重启tmpfs丢失仍是限制，不等同于MinIO持久产物。
+
+后续接入只扩展现有分发：服务端Run/Task/App owner → 受控执行器请求 → 原有TaskExecutor →
+保存Tool Call与MinIO文件快照/Artifact引用 → 再清理容器；不得由模型传宿主路径、镜像、挂载、Docker参数或身份。
+API与宿主执行器使用私有通信入口，不挂Docker Socket进API/用户容器。使用预构建镜像，pip仅构建时使用。
+Remote HTTP Adapter运行在后端，不在无网络容器里curl业务接口，也不把App凭据注入脚本环境。
+停止需传到具体调用并确认容器停止；执行结果未知不自动重跑。Mac/Linux共用协议、分别验证，不能以本机Docker Desktop结果当服务器验收。
+这项仍是下一独立交付，先做App只读工具不依赖Shell；两者共享工具定义和记录，不共享业务凭据或权限。
+
+### 候选工具目录（未启用）
+
+| 应用/批次 | 候选工具 | 风险和责任 |
+|---|---|---|
+| Retail首批 | search_products、get_product_details、get_product_availability | 只读；业务端检查门店/商品可见范围 |
+| Retail后续读取 | get_product_price、search_product_categories、get_related_products、get_product_promotions、get_cart、get_checkout_summary、get_delivery_options、get_order_status | 只读但可能含私人数据；价格/库存以实际业务结果为准 |
+| Retail写入 | add_cart_item、update_cart_item、remove_cart_item、prepare_order | 业务写入；明确授权/确认与幂等，不默认执行 |
+| Retail高风险 | submit_order | 高风险写入；业务结算、价格库存和用户确认完整前禁用，不绕过支付 |
+| PA首批 | list_calendar_events、list_tasks、search_notes | 私人只读；绑定当前外部用户 |
+| PA后续读取 | get_calendar_event、check_calendar_availability、get_task、list_reminders、read_note、list_documents、read_document、get_weather_forecast、get_weather_alerts、search_places、get_route_options、get_commute_context、get_travel_preferences | 只读；天气位置能力由业务端提供，不假定服务器拥有设备位置或Apple客户端能力 |
+| PA写入 | create_calendar_event、update_calendar_event、create_task、update_task、complete_task、create_reminder、create_note、update_note | 业务写入；对象与权限由PA再次核验 |
+| PA高风险 | delete_calendar_event | 高风险删除；明确批准及重复处理 |
+
+PA提醒的未来触发/通知由PA服务执行，不保持Agent循环到提醒时间；正式笔记属于PA，不替换为NexusPilot Task Note或长期Memory。
+
+### 实施顺序与验收
+
+1. 先做App身份和静态远程只读工具：扩展catalog/schema、服务端执行上下文、Remote Adapter及现有dispatcher，
+   用本地模拟HTTP服务和现有模型替身验证真实HTTP协议。静态定义不代表业务方真实API已接通。
+2. 业务方提供接口后再真实联调：前三个Retail/PA工具、认证、用户映射、请求响应Schema、分页/错误、取消能力。
+   实际模型调用需当次授权；本次未调用模型、未启动业务模拟服务。
+3. 最后写入/确认/结果查询：依赖业务幂等和状态查询，及持久批准/恢复；不先放开订单、购物车或日程写入。
+4. Python/Shell为另一个可独立验收工作项，接现有执行器、DB归属和MinIO产物；不作为远程只读前置，不重新建沙箱。
+
+必要测试逐项覆盖提示词的13项：Retail允许读取；跨App拒绝；两个用户身份正确；模型伪造用户拒绝；
+非法参数不发HTTP；已加载版本不符拒绝；结果进入原Agent历史；超时状态准确；写入超时不重发；
+取消后不发后续请求；超大结果拒绝/业务分页；SSE与持久状态一致；凭据不进入模型/结果/普通日志。
+另验证旧内置工具兼容、工具撤销、名称映射冲突和对象结果恢复。这些为实现时必要验证，不在规划阶段额外执行安全扫描或哈希测试。
+写入相关用例先验证未开放时拒绝，确认实现后再验证实际状态流；不得将拒绝用例当成业务写入验收。
+
+涉及模块：tool_catalog、agent_file_tool_service的公共执行部分、新Remote Adapter、identity服务和迁移、Run创建/查询授权、
+现有Tool Call正文保存及事件、general Agent调用方；必要时快速回复共享调用方兼容。前端和业务App代码不在首批范围。
+待业务方明确：稳定服务地址及认证方式、external_user_id语义、Agent授权、资源范围、API Schema与分页、
+请求ID/幂等保留期、超时后查询、速率限制、版本兼容；未提供前只完成平台模拟验收，不编造正式接口。
+
+## 原有工具目标
 
 - 要实现的结果：Agent 能发现并连续调用工具、根据失败修正操作、提交有依据的结果；需要新逻辑时能在获准环境创建、验证并使用任务工具。
 - 要实现的结果：模型只能调用注册工具；工具输入由明确 Schema 校验；文件、命令和 Git 操作只能发生在绑定的隔离 Workspace 内。
