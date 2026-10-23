@@ -761,6 +761,24 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 固定候选验证组件首步（2026-10-23，入口仍在实现）
+
+- 新增`deployments/verification/refinement_seed.py`，正常API没有导入或启用它。
+  `verification-fixed-candidate`为独立本地夹具模型名称，沿用测试用OpenAI协议槽，
+  不请求OpenAI或Strata；原始对象明确标记verification_seed/provider_request_sent=false，
+  本地夹具用量为0，后续真实Strata用量必须分开统计。
+- 组件先返回真实read_file_content调用，只接受指定文件成功结果中实际出现的
+  “Degree project 30 credits”和平台来源编号，才产生故意写成300的固定候选。
+  读取失败、文件不符、原文不符或别名缺失均拒绝，不补造证据。
+- 临时执行钩子只替换指定Run第一轮controller绑定，不影响Reviewer、后续修正或其他Run，
+  不修改原payload。退出/异常时恢复原方法，拒绝嵌套安装与意外覆盖。
+  该钩子只能由独立验证进程显式调用，不是产品请求参数或恢复接口。
+- 测试`apps/api/tests/test_refinement_seed.py`：5项通过（0.03秒），
+  覆盖真实工具结果要求、种子原始记录、模型误用拒绝、四种角色/Run/轮次范围、异常恢复。
+  Ruff及diff检查通过。这些是纯离线组件检查，不是实际工作流或MySQL/MinIO验收。
+- **尚未完成**：独立运行器的模型/能力登记、种子和真实Provider注册、端口与Run隔离、
+  实际持久化及真实Strata返工调用。本批没有新的模型请求，不宣称返工验收通过。
+
 ### 受控返工提示未按要求执行及在途取消（2026-10-23）
 
 - 为避免等待随机错误，本次用户测试输入明确要求先读取标题页，将30学分故意写成300学分的
