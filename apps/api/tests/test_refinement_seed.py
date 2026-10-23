@@ -23,6 +23,48 @@ def seed_module(monkeypatch):
     return refinement_seed
 
 
+async def test_seed_registration_disables_after_failure_and_reuses_catalog(
+    seed_module,
+    test_database_session_factory,
+):
+    """Retain audit rows, disable the fixture on exit, and reuse its catalog version."""
+    from sqlalchemy import func, select
+
+    from nexuspilot_api.models import LlmModelCatalogVersion, LlmRegisteredModel
+
+    with pytest.raises(RuntimeError, match="test interruption"):
+        async with seed_module.register_seed(test_database_session_factory):
+            async with test_database_session_factory() as db:
+                row = await db.scalar(
+                    select(LlmRegisteredModel).where(
+                        LlmRegisteredModel.model_identifier == seed_module.SEED_MODEL,
+                    )
+                )
+                assert row.status.value == "enabled"
+            raise RuntimeError("test interruption")
+    async with seed_module.register_seed(test_database_session_factory):
+        with pytest.raises(RuntimeError, match="already enabled"):
+            async with seed_module.register_seed(test_database_session_factory):
+                pass
+    async with test_database_session_factory() as db:
+        row = await db.scalar(
+            select(LlmRegisteredModel).where(
+                LlmRegisteredModel.model_identifier == seed_module.SEED_MODEL,
+            )
+        )
+        assert row.status.value == "disabled"
+        assert (
+            await db.scalar(
+                select(func.count())
+                .select_from(LlmModelCatalogVersion)
+                .where(
+                    LlmModelCatalogVersion.model == seed_module.SEED_MODEL,
+                )
+            )
+            == 1
+        )
+
+
 async def test_seed_uses_real_read_and_never_claims_a_strata_request(seed_module):
     """Keep real source selection separate from intentionally incorrect fixture prose."""
     file_id = str(uuid4())
@@ -272,3 +314,22 @@ async def test_seed_runs_through_persisted_review_and_real_binding_refinement(
             raw = json.loads(b"".join(stored.chunks))
             assert raw["record_kind"] == "verification_seed"
             assert raw["provider_request_sent"] is False
+
+
+@pytest.mark.parametrize("paid,existing", [(False, False), (True, True), (True, False)])
+async def test_live_runner_refuses_missing_permission_existing_report_or_nonlocal_database(
+    seed_module, tmp_path, paid, existing,
+):
+    """Guard failures happen before upload, model execution, or new report creation."""
+    import check_seeded_refinement as runner
+
+    report = tmp_path / "report.json"
+    if existing:
+        report.write_text("existing verification")
+    with pytest.raises(RuntimeError):
+        await runner.run(SimpleNamespace(
+            allow_paid_strata=paid, report=report, file=tmp_path / "does-not-exist.pdf",
+        ))
+    assert report.exists() == existing
+    if existing:
+        assert report.read_text() == "existing verification"

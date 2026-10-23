@@ -8,12 +8,95 @@ local fixture records, not evidence of a Strata request or model quality.
 """
 
 import json
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from uuid import UUID
 
 from nexuspilot_models.contracts import ModelResponse, ProviderName, ToolCall
 
 SEED_MODEL = "verification-fixed-candidate"
+
+
+@asynccontextmanager
+async def register_seed(session_factory):
+    """Temporarily enable an explicitly owned fixture model; preserve disabled audit rows on exit.
+
+    Refuse an existing enabled row (including a crashed prior run) rather than stealing
+    it. A process kill can prevent cleanup; inspect the test Run before manual recovery.
+    """
+    from nexuspilot_api.models import LlmModelCatalogVersion, LlmRegisteredModel
+    from nexuspilot_api.models.base import utc_now
+    from nexuspilot_api.models.enums import ModelRegistrationStatus
+    from sqlalchemy import select
+
+    async with session_factory() as db:
+        row = await db.scalar(
+            select(LlmRegisteredModel)
+            .where(
+                LlmRegisteredModel.provider == ProviderName.OPENAI,
+                LlmRegisteredModel.model_identifier == SEED_MODEL,
+            )
+            .with_for_update()
+        )
+        if row is not None:
+            if not (row.metadata_json or {}).get("verification_seed"):
+                raise RuntimeError("Existing model is not owned by this verification")
+            if row.status == ModelRegistrationStatus.ENABLED:
+                raise RuntimeError(
+                    "Seed model is already enabled; inspect the owning verification"
+                )
+            row.status = ModelRegistrationStatus.ENABLED
+        else:
+            row = LlmRegisteredModel(
+                provider=ProviderName.OPENAI,
+                model_identifier=SEED_MODEL,
+                display_name="LOCAL VERIFICATION SEED — no provider request",
+                metadata_json={"verification_seed": True},
+                reasoning_supported_efforts_json=["medium"],
+                reasoning_effort_mapping_json={"medium": "medium"},
+                reasoning_supports_disable=True,
+                reasoning_default_enabled=True,
+                reasoning_default_effort="medium",
+                reasoning_profile_version="verification-seed.v1",
+            )
+            db.add(row)
+        catalog = await db.scalar(
+            select(LlmModelCatalogVersion).where(
+                LlmModelCatalogVersion.provider == "openai",
+                LlmModelCatalogVersion.model == SEED_MODEL,
+            )
+        )
+        if catalog is None:
+            db.add(
+                LlmModelCatalogVersion(
+                    provider="openai",
+                    model=SEED_MODEL,
+                    catalog_version="verification-seed.v1",
+                    source="local-verification",
+                    confirmed_at=utc_now(),
+                    context_window=163840,
+                    supports_tools=True,
+                    tokenizer_name="utf8_bytes_upper_bound",
+                    tokenizer_version="v1",
+                    capabilities_json={"verification_seed": True},
+                )
+            )
+        elif not (catalog.capabilities_json or {}).get("verification_seed"):
+            raise RuntimeError(
+                "Existing model catalog is not owned by this verification"
+            )
+        await db.commit()
+        identity = row.model_id
+    try:
+        yield
+    finally:
+        async with session_factory() as db:
+            row = await db.get(LlmRegisteredModel, identity)
+            if row is None or not (row.metadata_json or {}).get("verification_seed"):
+                raise RuntimeError(
+                    "Seed registration ownership changed; refuse cleanup"
+                )
+            row.status = ModelRegistrationStatus.DISABLED
+            await db.commit()
 
 
 class SeedProvider:

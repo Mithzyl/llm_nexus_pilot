@@ -761,6 +761,23 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 独立固定候选运行器（2026-10-23，真实运行待执行）
+
+新增`deployments/verification/check_seeded_refinement.py`，通过独立进程内ASGI调用实际API，
+不增加公网/产品接口。只接受本地MySQL/MinIO、development无登录测试环境、新报告路径及
+显式`--allow-paid-strata`；拒绝复用报告，不自动重发。先上传PDF并创建独立会话/Run，再仅对
+该Run的首轮controller使用本地种子，其余Reviewer/修正调用用现有Strata注册。
+
+模型登记保存verification_seed标识；同名非验证记录或已启用记录拒绝使用，防止覆盖或并发抢占。
+退出后停用但保留模型和能力登记用于审计。进程被强制杀死可能来不及停用，后续调用会拒绝已启用记录，
+必须先检查原Run，不能自动抢占。正常API没有加载种子Provider，运行器也不调用DeepSeek/OpenAI。
+报告分别列出种子Attempt和真实Strata已知/未知用量，复用对象哈希与执行快照检查。
+
+登记生命周期测试先因缺少实现失败；新增异常退出停用、目录复用、重复启用拒绝及运行器前置拒绝测试。
+`pytest -q apps/api/tests/test_refinement_seed.py --tb=short`（既有PYTHONPATH/API虚拟环境）
+10项通过（0.84秒）；CLI帮助、Ruff及diff检查通过。此时真实MySQL/MinIO和Strata运行尚未执行，
+不能把离线检查当作该运行器已真实验收。
+
 ### 固定种子接入实际API的离线验证（2026-10-23）
 
 - 新增真实ASGI工作流路径的测试，使用隔离SQLite、内存对象存储、解析文本附件和脚本化后续Provider；
