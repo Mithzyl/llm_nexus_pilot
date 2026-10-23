@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     strata_api_key: SecretStr | None = None
     strata_models: str = ""
 
+    opencode_api_key: SecretStr | None = None
+    opencode_models: str = ""
+
     @model_validator(mode="after")
     def validate_separate_internal_key(self) -> Self:
         """Validate service separation, absolute executor paths and nonlocal login security."""

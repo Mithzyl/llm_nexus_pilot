@@ -145,6 +145,33 @@ X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 
 公共和内部密钥必须不同，否则应用配置校验失败。
 
+### OpenCode Provider
+
+OpenCode 使用独立 Provider ID `opencode`，本地登记模型 `deepseek-v4.1-flash`。
+当前Key属于Go，Base URL为 `https://opencode.ai/inference/go/openai/v1`，实际调用 `/chat/completions`；
+不把完整 `/chat/completions` 路径作为Base URL，也不复用官方DeepSeek的Key。
+Key只保存于 `apps/api/.env` 的 `NEXUSPILOT_OPENCODE_API_KEY`，允许模型由
+`NEXUSPILOT_OPENCODE_MODELS=deepseek-v4.1-flash` 指定。
+
+```bash
+PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python \
+ -m nexuspilot_api.commands.register_opencode
+```
+
+该命令只增加本机数据库地址、模型登记和能力快照，不保存Key、不调用模型、不改其他Provider；
+现有provider列为VARCHAR，无需新增结构迁移。重启API后加载新Provider。
+模型ID/Go端点见[OpenCode Go官方目录](https://opencode.ai/v2/docs/console/go/)，
+上下文窗口1,000,000及工具能力取自[公开模型元数据](https://models.dev/api.json)的对应条目。
+tokenizer沿用平台cl100k_base估算，不声称是供应商精确分词器。
+
+本次复用通用Chat JSON/SSE、工具结果与用量解析，保留reasoning_content的工具续接；
+不宣称原生JSON Schema或显式思考等级控制已验证，当前思考配置使用供应商默认。
+Responses路径尚未接入；本地PA联调角色已按用户要求切换为opencode/deepseek-v4.1-flash。
+请求携带真实User-Agent NexusPilot/0.1及稳定workflow会话ID；不冒充其他客户端。
+2026-10-23：后端Provider/续接/端点测试74项、前端相关测试12项和TypeScript检查通过；
+本地目录服务确认selectable=true；后续Go入口的真实PA普通回答和任务/笔记/日历工具调用已通过，
+见[App联调记录](docs/implementation/personal-assistant-app-integration.md)。未执行浏览器页面交互验收。
+
 ### 个人 API Key（程序调用）
 
 确认数据库地址并备份，执行 `make api-migrate` 到 `20261023_0026`（包含 App 迁移0025），

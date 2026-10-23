@@ -18,6 +18,10 @@
 
 ## 多业务 App 工具与隔离执行接入规划（2026-10-23）
 
+Personal Assistant当前回调字段、工具名称映射与本地实测见
+[PA App接口及验收](personal-assistant-app-integration.md)。App端已改为JSON信封；旧X-NexusPilot请求头方案不再使用。
+官方DeepSeek首轮HTTP402记录保留；后续OpenCode Go真实联调普通回答及三种只读工具均通过，结果见上述记录。
+
 原生个人 API Key 的管理、scope 和 Provider 复用规则统一见阶段5文首；个人调用继续使用原工具循环和 owner 检查。
 App 服务 Key 不与个人 Key 互换；此批未开放动态授权、跨App账号关联或业务写入。
 

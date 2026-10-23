@@ -46,10 +46,21 @@ def app_headers(app_id="retail", user="u1"):
 
 
 @pytest.mark.parametrize("user,stream", [("u1", False), ("u2", True)])
+@pytest.mark.parametrize("application_id", ["retail", "personal_assistant"])
 async def test_app_run_reuses_loop_and_remote_result(
-    client, configured_application, user, stream, test_database_session_factory,
+    client,
+    configured_application,
+    user,
+    stream,
+    test_database_session_factory,
+    application_id,
 ):
     """Discover, load, invoke and consume remote JSON through the same durable tool loop."""
+    tool_name = (
+        "retail_search_products"
+        if application_id == "retail"
+        else "personal_assistant_search_notes"
+    )
 
     class Provider(GeneralProvider):
         """Supply deterministic tool choices, leaving HTTP and persistence real."""
@@ -64,7 +75,7 @@ async def test_app_run_reuses_loop_and_remote_result(
                         ToolCall(
                             id="describe",
                             name="describe_tools",
-                            arguments={"name": "retail_search_products", "version": "1.0.0"},
+                            arguments={"name": tool_name, "version": "1.0.0"},
                         )
                     ],
                     finish_reason="tool_calls",
@@ -73,13 +84,14 @@ async def test_app_run_reuses_loop_and_remote_result(
                 )
             if len(previous) == 1:
                 assert "required_capabilities" not in previous[0].content
-                assert "personal_assistant_search_notes" not in [t.name for t in request.tools]
+                forbidden = (
+                    "personal_assistant_search_notes"
+                    if application_id == "retail"
+                    else "retail_search_products"
+                )
+                assert forbidden not in [t.name for t in request.tools]
                 return ModelResponse(
-                    tool_calls=[
-                        ToolCall(
-                            id="read", name="retail_search_products", arguments={"query": "tea"}
-                        )
-                    ],
+                    tool_calls=[ToolCall(id="read", name=tool_name, arguments={"query": "tea"})],
                     finish_reason="tool_calls",
                     latency_ms=1,
                     raw_response={},
@@ -94,7 +106,7 @@ async def test_app_run_reuses_loop_and_remote_result(
 
     provider = Provider()
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
-    headers = app_headers(user=user)
+    headers = app_headers(application_id, user=user)
     created = await client.post(
         "/api/v1/app/runs", headers=headers, json={"user_request": "Find tea"}
     )
@@ -117,21 +129,48 @@ async def test_app_run_reuses_loop_and_remote_result(
     assert result.json()["status"] == "completed", result.text
     assert len(configured_application) == 1
     assert configured_application[0][2]["external_user_id"] == user
-    assert configured_application[0][2]["tool_name"] == "retail.search_products"
+    expected_name = (
+        "retail.search_products"
+        if application_id == "retail"
+        else "personal_assistant.search_notes"
+    )
+    assert configured_application[0][2]["tool_name"] == expected_name
+    assert set(configured_application[0][2]) == {
+        "tool_execution_id",
+        "application_id",
+        "external_user_id",
+        "tool_name",
+        "tool_version",
+        "arguments",
+    }
     workflow_id = result.json()["workflow_execution_id"]
     path = f"/api/v1/app/agent-workflows/{workflow_id}/result"
     restored = await client.get(path, headers=headers)
     assert restored.status_code == 200
     assert restored.json()["final_output"] == result.json()["final_output"]
-    for foreign in (app_headers(user="other"), app_headers("personal_assistant")):
+    events_path = f"/api/v1/app/agent-workflows/{workflow_id}/events"
+    events = (await client.get(events_path, headers=headers)).text
+    ids = [int(line[4:]) for line in events.splitlines() if line.startswith("id: ")]
+    assert ids and ids == sorted(set(ids))
+    tail = await client.get(events_path, headers={**headers, "Last-Event-ID": str(ids[-1])})
+    assert not tail.text.strip()
+    other_app = "personal_assistant" if application_id == "retail" else "retail"
+    for foreign in (app_headers(application_id, user="other"), app_headers(other_app)):
         assert (await client.get(path, headers=foreign)).status_code == 404
+        assert (await client.get(events_path, headers=foreign)).status_code == 404
+        assert (
+            await client.post(f"/api/v1/app/agent-workflows/{workflow_id}/cancel", headers=foreign)
+        ).status_code == 404
     assert (await client.get(path)).status_code == 401
     from sqlalchemy import text
 
     async with test_database_session_factory() as db:
-        row = (await db.execute(text(
-            "SELECT output_json, body_ref_json FROM llm_tool_calls WHERE tool_name="
-            "'retail_search_products'"))).one()
+        row = (
+            await db.execute(
+                text("SELECT output_json, body_ref_json FROM llm_tool_calls WHERE tool_name=:name"),
+                {"name": tool_name},
+            )
+        ).one()
         assert (json.loads(row[0]) if isinstance(row[0], str) else row[0]) is None
         assert row[1]
 
@@ -206,10 +245,12 @@ async def test_rejected_app_tool_never_sends_http(
     assert configured_application == []
 
 
+@pytest.mark.parametrize("application_id", ["retail", "personal_assistant"])
 async def test_cancel_app_during_remote_read_stops_next_model_call(
     client,
     configured_application,
     monkeypatch,
+    application_id,
 ):
     """The existing cancellation endpoint stops an in-flight App read and further generation."""
     import asyncio
@@ -217,7 +258,12 @@ async def test_cancel_app_during_remote_read_stops_next_model_call(
     from pydantic import SecretStr
 
     config = json.loads(get_settings().app_tools_json.get_secret_value())
-    config["retail"]["operations"]["retail_search_products"] = "/slow"
+    tool_name = (
+        "retail_search_products"
+        if application_id == "retail"
+        else "personal_assistant_search_notes"
+    )
+    config[application_id]["operations"][tool_name] = "/slow"
     monkeypatch.setattr(get_settings(), "app_tools_json", SecretStr(json.dumps(config)))
 
     class Provider(GeneralProvider):
@@ -231,10 +277,10 @@ async def test_cancel_app_during_remote_read_stops_next_model_call(
                 ToolCall(
                     id="load",
                     name="describe_tools",
-                    arguments={"name": "retail_search_products", "version": "1.0.0"},
+                    arguments={"name": tool_name, "version": "1.0.0"},
                 )
                 if len(self.requests) == 1
-                else ToolCall(id="read", name="retail_search_products", arguments={"query": "tea"})
+                else ToolCall(id="read", name=tool_name, arguments={"query": "tea"})
             )
             return ModelResponse(
                 tool_calls=[call], finish_reason="tool_calls", latency_ms=1, raw_response={}
@@ -242,7 +288,7 @@ async def test_cancel_app_during_remote_read_stops_next_model_call(
 
     provider = Provider()
     app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
-    headers = app_headers()
+    headers = app_headers(application_id)
     run = (
         await client.post("/api/v1/app/runs", headers=headers, json={"user_request": "read"})
     ).json()

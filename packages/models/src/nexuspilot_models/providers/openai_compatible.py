@@ -4,6 +4,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+from uuid import uuid4
 
 from nexuspilot_models.contracts import (
     MessageRole,
@@ -43,9 +44,10 @@ class OpenAICompatibleChatProvider:
         supports_json_object_output: bool = False,
         supports_reasoning_configuration: bool = False,
         requires_done_marker: bool = False,
+        replays_raw_reasoning: bool = False,
         extra_headers: dict[str, str] | None = None,
     ) -> None:
-        """Configure one OpenAI-compatible provider without coupling it to FastAPI or storage."""
+        """Configure the chat codec; opt-in gateways can preserve DeepSeek-style tool reasoning."""
 
         self.name = name
         self.transport = transport
@@ -55,6 +57,7 @@ class OpenAICompatibleChatProvider:
         self.supports_json_object_output = supports_json_object_output
         self.supports_reasoning_configuration = supports_reasoning_configuration
         self.requires_done_marker = requires_done_marker
+        self.replays_raw_reasoning = replays_raw_reasoning or name is ProviderName.DEEPSEEK
         self.extra_headers = extra_headers or {}
 
     async def generate(self, request: ModelRequest) -> ModelResponse:
@@ -64,7 +67,7 @@ class OpenAICompatibleChatProvider:
         started = time.perf_counter()
         result = await self.transport.post_json(
             f"{self.base_url}/chat/completions",
-            headers=self._headers(),
+            headers=self._headers(request),
             payload=self._build_payload(request, stream=False),
             timeout_seconds=request.timeout_seconds,
         )
@@ -99,7 +102,7 @@ class OpenAICompatibleChatProvider:
         })
         async with self.transport.open_sse(
             f"{self.base_url}/chat/completions",
-            headers=self._headers(),
+            headers=self._headers(request),
             payload=self._build_payload(request, stream=True),
             timeout_seconds=request.timeout_seconds,
             terminal_received=lambda: (
@@ -246,7 +249,7 @@ class OpenAICompatibleChatProvider:
                     for index, value in sorted(tool_parts.items())
                 ],
             )
-            if self.name is ProviderName.DEEPSEEK and reasoning_text and tool_parts
+            if self.replays_raw_reasoning and reasoning_text and tool_parts
             else None
         )
         response = ModelResponse(
@@ -486,7 +489,7 @@ class OpenAICompatibleChatProvider:
                     for tool_call in tool_calls
                 ],
             )
-            if self.name is ProviderName.DEEPSEEK and reasoning_text and tool_calls
+            if self.replays_raw_reasoning and reasoning_text and tool_calls
             else None
         )
         response = ModelResponse(
@@ -508,12 +511,20 @@ class OpenAICompatibleChatProvider:
 
         return validate_structured_response(response, request)
 
-    def _headers(self) -> dict[str, str]:
-        """Return authentication and content headers for a compatible endpoint."""
+    def _headers(self, request: ModelRequest | None = None) -> dict[str, str]:
+        """Authenticate the endpoint and give OpenCode a truthful client and stable run identity."""
 
         headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.name is ProviderName.OPENCODE and request is not None:
+            session_id = request.metadata.get("workflow_execution_id") or request.metadata.get(
+                "session_id"
+            )
+            if not session_id:
+                session_id = request.metadata.setdefault("opencode_session_id", str(uuid4()))
+            headers["User-Agent"] = "NexusPilot/0.1"
+            headers["x-opencode-session"] = session_id
         return headers
 
     def _validate_request(self, request: ModelRequest) -> None:
@@ -545,7 +556,7 @@ class OpenAICompatibleChatProvider:
                 f"Provider '{self.name.value}' does not declare reasoning configuration support.",
             )
         if (
-            self.name is ProviderName.DEEPSEEK
+            self.replays_raw_reasoning
             and (request.reasoning is None or request.reasoning.enabled)
             and any(message.role is MessageRole.TOOL for message in request.messages)
         ):

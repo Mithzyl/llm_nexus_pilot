@@ -10,8 +10,10 @@ from nexuspilot_api.core.config import Settings
 from nexuspilot_api.infrastructure.provider_registry import create_provider_registry
 
 
+@pytest.mark.parametrize("provider", ["strata", "opencode"])
 async def test_strata_registered_model_uses_provider_default_without_fake_effort(
     test_database_session_factory,
+    provider,
 ):
     """An unconfigured control profile permits provider defaults but rejects explicit controls."""
     from nexuspilot_models.contracts import ReasoningConfiguration
@@ -25,11 +27,11 @@ async def test_strata_registered_model_uses_provider_default_without_fake_effort
     async with test_database_session_factory() as db:
         db.add(
             LlmRegisteredModel(
-                provider="strata", model_identifier="test-model", display_name="Strata test"
+                provider=provider, model_identifier="test-model", display_name="Gateway test"
             )
         )
         await db.commit()
-        args = dict(provider=ProviderName.STRATA, model="test-model", require_registration=True)
+        args = dict(provider=ProviderName(provider), model="test-model", require_registration=True)
         assert await resolve_registered_model_reasoning_configuration(
             db,
             **args,

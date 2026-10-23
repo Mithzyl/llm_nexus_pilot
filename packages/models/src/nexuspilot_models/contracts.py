@@ -27,6 +27,7 @@ class ProviderName(StrEnum):
     GEMINI = "gemini"
     OPENAI_COMPATIBLE = "openai_compatible"
     STRATA = "strata"
+    OPENCODE = "opencode"
 
 
 class MessageRole(StrEnum):

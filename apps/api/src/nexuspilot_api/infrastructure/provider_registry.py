@@ -128,6 +128,30 @@ def create_provider_registry(
             ),
             allowed_models=_parse_model_allowlist(settings.strata_models),
         )
+    opencode_base_url = enabled_base_urls_by_provider.get(ProviderName.OPENCODE)
+    if settings.opencode_api_key and opencode_base_url:
+        registry.register(
+            ProviderName.OPENCODE,
+            OpenAICompatibleChatProvider(
+                name=ProviderName.OPENCODE,
+                transport=transport,
+                base_url=opencode_base_url,
+                api_key=settings.opencode_api_key.get_secret_value(),
+                supports_json_schema=False,
+                requires_done_marker=True,
+                replays_raw_reasoning=True,
+            ),
+            allowed_models=_parse_model_allowlist(settings.opencode_models),
+            reasoning_capabilities_by_model={
+                model: ModelReasoningCapabilities(
+                    presentation=ReasoningPresentationCapability.RAW,
+                    supports_streaming_presentation=True,
+                    continuation=ReasoningContinuationMode.RAW_REASONING_REPLAY,
+                    supports_reasoning_tokens=True,
+                )
+                for model in _parse_model_allowlist(settings.opencode_models)
+            },
+        )
     return registry
 
 

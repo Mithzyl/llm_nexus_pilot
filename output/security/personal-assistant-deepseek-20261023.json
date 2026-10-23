@@ -1,0 +1,37 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-flash",
+  "runs": [
+    {
+      "mode": "plain",
+      "local_run_id": "3a682dbf-f3bd-455e-add7-a83e76d27a94",
+      "run_id": "3dcf6a51-5aba-4365-872c-0cdf8e6b0d13",
+      "elapsed_seconds": 4.942,
+      "app_status": "failed",
+      "workflow_id": "8ed4516d-f5f6-4ebf-a9cc-a4bedeea790e",
+      "app_answer_exists": false,
+      "status": "failed",
+      "final_text_exists": false,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "estimated_cost": "0",
+        "model_call_count": 1,
+        "tool_call_count": 0
+      },
+      "error_code": "invalid_request",
+      "provider_http_status": 402,
+      "attempt_id": "67bbafa5-4554-4d09-94db-89e6d35afbb5",
+      "provider_input_tokens": null,
+      "provider_output_tokens": null,
+      "usage_note": "Workflow aggregate zero is not provider-reported usage; persisted Attempt token fields are NULL.",
+      "event_count": 4,
+      "tool_receipts": []
+    }
+  ],
+  "checks": ["final-result read", "4 persisted events replayed", "Last-Event-ID tail empty", "foreign result/events/cancel rejected", "foreign App ask read rejected"],
+  "tool_workflow": "not executed after provider HTTP 402",
+  "configuration_note": "PA callback code changed concurrently during this run. Final local configuration uses the existing JSON envelope protocol; this failed plain run did not invoke tools.",
+  "status": "failed"
+}

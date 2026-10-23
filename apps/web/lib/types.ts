@@ -22,7 +22,8 @@ export type ProviderName =
   | "anthropic"
   | "gemini"
   | "openai_compatible"
-  | "strata";
+  | "strata"
+  | "opencode";
 
 export type ProviderCatalog = {
   providers: ProviderName[];

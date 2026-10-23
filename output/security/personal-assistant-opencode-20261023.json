@@ -1,0 +1,39 @@
+{
+  "provider": "opencode",
+  "model": "deepseek-v4.1-flash",
+  "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+  "failure_note": "Used pay-as-you-go endpoint with a Go key; subsequent Go-endpoint verification is recorded separately.",
+  "runs": [
+    {
+      "mode": "plain",
+      "local_run_id": "78f1c933-7ab0-4cf9-bef8-88d9013a58d9",
+      "run_id": "9d1ca5ac-fdf7-4c5b-a40b-ae232ec58878",
+      "elapsed_seconds": 4.364,
+      "app_status": "failed",
+      "workflow_id": "852f6618-827a-4a95-a364-542e24975c0a",
+      "app_answer_exists": false,
+      "status": "failed",
+      "final_text_exists": false,
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "estimated_cost": "0",
+        "model_call_count": 1,
+        "tool_call_count": 0
+      },
+      "error_code": "invalid_request",
+      "provider_http_status": 402,
+      "attempt_id": "411fd40e-6c0e-4d34-a990-597fa2f2c334",
+      "provider_input_tokens": null,
+      "provider_output_tokens": null,
+      "provider_http_latency_ms": 2269,
+      "event_count": 4,
+      "event_suffix_replay_correct": true,
+      "tool_receipts": []
+    }
+  ],
+  "checks": ["event suffix replay", "cross-user result/events/cancel rejection", "cross-user App ask rejection"],
+  "tool_workflow": "not executed on this endpoint after HTTP 402",
+  "status": "failed"
+}

@@ -24,7 +24,7 @@ async def resolve_registered_model_reasoning(
     """Resolve one request against its model policy before any Provider dispatch.
 
     Registered models receive an explicit effective configuration unless their
-    Strata profile deliberately leaves controls to the provider default. Requests
+    gateway profile deliberately leaves controls to the provider default. Requests
     for legacy unregistered model identities retain their existing contract so
     internal migrations and low-level adapter tests are not silently reinterpreted.
     Invalid or unsupported registered-model choices fail without calling a Provider.
@@ -80,17 +80,18 @@ async def resolve_registered_model_reasoning_configuration(
             f"Model '{model}' is disabled in the registered model directory.",
         )
 
-    # Strata currently has no verified reasoning-control codec. An empty profile
+    # These gateways have no verified reasoning-control codec. An empty profile
     # means provider defaults, not an invented medium effort or disabled thinking.
     if (
-        provider is ProviderName.STRATA
+        provider in {ProviderName.STRATA, ProviderName.OPENCODE}
         and registered_model.reasoning_supported_efforts_json == []
         and registered_model.reasoning_effort_mapping_json == {}
         and not registered_model.reasoning_supports_disable
     ):
         if requested_reasoning is not None:
             raise ModelProviderError(
-                "unsupported_capability", "Strata reasoning controls are not configured.",
+                "unsupported_capability",
+                f"{provider.value} reasoning controls are not configured.",
             )
         return None, None
     supported_efforts, effort_mapping, default_effort = _validated_policy(registered_model)
@@ -212,7 +213,7 @@ def validate_provider_reasoning_mapping(
         ProviderName.ANTHROPIC: {"low", "medium", "high", "xhigh", "max"},
         ProviderName.GEMINI: {"minimal", "low", "medium", "high"},
     }
-    if provider in {ProviderName.OPENAI_COMPATIBLE, ProviderName.STRATA}:
+    if provider in {ProviderName.OPENAI_COMPATIBLE, ProviderName.STRATA, ProviderName.OPENCODE}:
         if effort_mapping:
             raise ValueError(
                 "OpenAI-compatible models require a dedicated reasoning codec before mapping"

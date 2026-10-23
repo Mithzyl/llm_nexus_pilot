@@ -1,0 +1,37 @@
+{
+  "status": "passed",
+  "kind": "real local callback HTTP; no model",
+  "checks": [
+    {
+      "tool": "personal_assistant_list_tasks",
+      "call_id": "6ec27bb6-ce27-4ab8-8154-15cb10c7dfe9",
+      "items": 1,
+      "schema_validated": true,
+      "replay": true,
+      "cross_user_replay_rejected": true,
+      "identity_argument_rejected": true
+    },
+    {
+      "tool": "personal_assistant_search_notes",
+      "call_id": "9f13cb1d-4faf-4cb3-a0bc-65db0da37833",
+      "items": 1,
+      "schema_validated": true,
+      "replay": true,
+      "cross_user_replay_rejected": true,
+      "identity_argument_rejected": true
+    },
+    {
+      "tool": "personal_assistant_list_calendar_events",
+      "call_id": "45d7836d-1c28-4de8-9917-d59b1d83442e",
+      "items": 0,
+      "schema_validated": true,
+      "replay": true,
+      "cross_user_replay_rejected": true,
+      "identity_argument_rejected": true
+    }
+  ],
+  "run_id": "a5f70cae-bcf2-4998-848a-d007b47c517e",
+  "persisted_owner_correct": true,
+  "own_cancel": true,
+  "foreign_cancel_rejected": true
+}

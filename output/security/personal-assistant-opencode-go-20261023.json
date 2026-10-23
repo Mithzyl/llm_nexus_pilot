@@ -1,0 +1,84 @@
+{
+  "provider": "opencode",
+  "model": "deepseek-v4.1-flash",
+  "endpoint": "https://opencode.ai/inference/go/openai/v1/chat/completions",
+  "pricing_note": "Tokens are provider-reported. estimated_cost is the platform field, not proof of zero provider charges.",
+  "runs": [
+    {
+      "mode": "plain",
+      "local_run_id": "7e66d6d7-c900-44a2-863d-8be9bbfbb875",
+      "run_id": "c102c0f5-35a9-4979-a927-698e5ee1fc06",
+      "elapsed_seconds": 6.282,
+      "app_status": "succeeded",
+      "workflow_id": "d8e53ed1-6d6b-480d-80ac-911f595a3c87",
+      "app_answer_exists": true,
+      "status": "completed",
+      "final_text_exists": true,
+      "usage": {
+        "input_tokens": 2100,
+        "output_tokens": 82,
+        "cached_tokens": 0,
+        "estimated_cost": "0",
+        "model_call_count": 1,
+        "tool_call_count": 0
+      },
+      "error_code": null,
+      "event_count": 8,
+      "event_suffix_replay_correct": true,
+      "tool_receipts": [],
+      "cross_user_checks_passed": true
+    },
+    {
+      "mode": "app_tools",
+      "local_run_id": "41d577a5-f3e7-4e0d-8c4d-10469bfb8a22",
+      "run_id": "f9fbc59a-4bde-43e4-a0c6-bea52f934766",
+      "elapsed_seconds": 22.791,
+      "app_status": "succeeded",
+      "workflow_id": "5aa656ac-99b4-4c54-9f0f-330d35ab793a",
+      "app_answer_exists": true,
+      "status": "completed",
+      "final_text_exists": true,
+      "usage": {
+        "input_tokens": 16363,
+        "output_tokens": 1043,
+        "cached_tokens": 10752,
+        "estimated_cost": "0",
+        "model_call_count": 5,
+        "tool_call_count": 10
+      },
+      "error_code": null,
+      "event_count": 18,
+      "event_suffix_replay_correct": true,
+      "tool_receipts": [
+        {
+          "call_id": "8c9aed34-db0e-4b70-b76c-0732ed8204d1",
+          "tool_name": "personal_assistant.list_tasks",
+          "status": "completed",
+          "correct_user": true
+        },
+        {
+          "call_id": "c3faae70-c0af-4332-a287-8a393a177fd3",
+          "tool_name": "personal_assistant.search_notes",
+          "status": "completed",
+          "correct_user": true
+        },
+        {
+          "call_id": "b70016c4-023b-4c39-8697-e157ed21667a",
+          "tool_name": "personal_assistant.list_calendar_events",
+          "status": "completed",
+          "correct_user": true
+        }
+      ],
+      "remote_results_in_final_effective_messages": 3,
+      "tool_breakdown": {"search_tools": 3, "describe_tools": 3, "list_run_files": 1, "remote_app_reads": 3},
+      "cross_user_checks_passed": true
+    }
+  ],
+  "checks": [
+    "event replay",
+    "cross-user result/events/cancel denied",
+    "App user isolation",
+    "pending Run cancellation"
+  ],
+  "status": "passed"
+}

@@ -22,6 +22,7 @@ type ModelPickerProps = {
 const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   strata: "Strata",
+  opencode: "OpenCode",
 };
 
 /** Convert a provider identifier into the label shown in the picker. */
