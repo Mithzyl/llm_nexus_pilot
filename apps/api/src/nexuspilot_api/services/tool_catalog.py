@@ -40,14 +40,19 @@ class RegisteredTool:
             raise ValueError("Invalid tool description")
         if not issubclass(self.arguments, BaseModel) or not issubclass(self.output, BaseModel):
             raise ValueError("Tool input and output require typed schemas")
-        if self.risk_level not in {"read_only", "task_write"}:
+        if self.risk_level not in {"read_only", "task_write", "code_execution"}:
             raise ValueError("Unsupported built-in tool risk level")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("Tool timeout must be positive or inherited from its caller")
         if not 1 <= self.max_result_bytes <= 16 * 1024 * 1024:
             raise ValueError("Tool result limit exceeds object body capacity")
-        if self.execution_type not in {"internal", "remote_http"}:
+        if self.execution_type not in {"internal", "remote_http", "task_container"}:
             raise ValueError("Unsupported tool execution type")
+        if self.execution_type == "task_container" and (
+            self.risk_level != "code_execution"
+            or "python_execute" not in self.required_capabilities
+        ):
+            raise ValueError("Task containers require explicit Python execution capability")
         if self.execution_type == "remote_http" and (
             not self.owner_application_id or not self.canonical_name
             or self.risk_level != "read_only"

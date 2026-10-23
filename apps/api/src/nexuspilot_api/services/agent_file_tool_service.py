@@ -339,7 +339,7 @@ class AgentFileToolService:
         except ValidationError:
             return await self._finish(record, "failed", error="invalid_arguments")
         except ToolOperationError as error:
-            return await self._finish(record, error.status, error=error.code)
+            return await self._finish(record, error.status, error=error.code, result=error.result)
         except ToolUnavailableError:
             return await self._finish(record, "permission_denied", error="tool_unavailable")
         except (ResourceConflictError, ResourceNotFoundError):
@@ -550,8 +550,9 @@ class ToolUnavailableError(Exception):
 class ToolOperationError(Exception):
     """Carry a server-defined tool failure without revealing arbitrary exception text."""
 
-    def __init__(self, code: str, *, status: str = "failed"):
-        """Retain a safe diagnostic code and result state for the shared execution audit."""
+    def __init__(self, code: str, *, status: str = "failed", result: dict | None = None):
+        """Retain a safe code and optional validated output, including failed Python diagnostics."""
         super().__init__(code)
         self.code = code
         self.status = status
+        self.result = result

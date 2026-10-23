@@ -3,7 +3,7 @@
 **2026-10-18 上传大小更新：** 原文件上限现为 20 MiB，解析 Socket 最大请求为 `ceil(20 MiB / 3) * 4 + 4096` 字节，包含 base64 和协议字段。下文固定执行器旧 1 MiB/1,500,000 字节为历史限制；输出 4 MiB、OOXML 总解压 20 MiB、压缩比、块数、超时和并发限制不变。此修改不涉及任务工作目录的读写配额，也不等于模型自动读取整份文件。
 
 **文档日期：** 2026 年 10 月 18 日
-**文档状态：** 进行中；Office/PDF 统一解析、五个附件工具循环、内置目录发现已有本地实现。任务目录与 Python／Shell 的本地专用执行器已实现并通过本地容器测试；尚未接入 Agent、数据库归属及 Artifact 保存，不能在聊天中使用。2026-10-12 已授权发布附件解析及工具版本；通用执行器和其后的工作流修改仍未部署，环境事实见下方发布记录。动态工具、受控 SDK、Git 等能力仍未实现或暂停。
+**文档状态：** 进行中；Office/PDF解析、附件工具与目录已有实现。2026-10-23 Python最小接入通过本地真实Docker执行、MinIO产物保存和工作流在途取消验证；固定测试模型与SQLite不代表真实Provider或MySQL联合验收，运行配置默认未启用。Shell入口不开放。2026-10-12附件版本发布是历史事实，不代表本批代码已部署。动态工具、受控SDK、Git仍未实现或暂停。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 2026-10-17 协议复查：DeepSeek 关闭思考后的工具结果续接不再要求私有推理状态；本地真实工具请求与结果续接通过。模型流异常、JSON 解析与节点有限修正的职责统一见[阶段2接口复查](phase-2-llm-core-capabilities.md#模型接口复查与失败语义2026-10-17)及阶段3，不另建工具专用 JSON 修正或供应商专用字段转换。此验证未包含附件解析、浏览器、Strata 或服务器部署。
@@ -1359,7 +1359,7 @@ ARM64 服务器改用 `--platform linux/arm64` 与相应镜像标签。检查通
 
 ## 任务工作目录与 Python／Shell 工具接入计划
 
-状态：进行中。本地统一解析验收已完成；本次新增独立任务执行器，范围与使用方式见下一节。服务器验收按 2026-10-07 用户指示暂停。任务执行器仍需通过服务端身份/数据库 Task 归属、Registry、`llm_tool_calls`、Artifact 和取消流程接入后才能向 Agent 启用；本地 scope 字段检查不等于平台资源鉴权。不新增 Python/Shell HTTP 接口，也不将任意代码加入 `file_parse.v1`。Git、网络及外部副作用不因此恢复实施。
+状态：进行中。固定文件解析与本地任务执行器历史实现保留；本批Python的Task/owner授权、Registry、Tool Call、Artifact及取消代码已修改，联合验收未完成，不能据历史执行器测试宣布新入口可用。不新增公网Python/Shell HTTP接口，也不将任意代码加入`file_parse.v1`。Shell、Git、联网及外部副作用不因此启用。
 
 ### 当前用途判断（2026-10-23）
 
@@ -1377,7 +1377,104 @@ Agent通过已登记的目录、搜索、范围/定点读取工具获取正文�
 `run_command`结构、无网络镜像与任务快照，补Task/owner授权、Tool Call记录、停止和Artifact保存；
 先开放确有用途的解释器，Shell不因Python启用而自动向模型开放。受控SDK、动态创建工具、
 联网、运行时pip安装、项目源文件写回均不包含在最小范围内。本次仅澄清规划，不登记命令工具，
-不启用执行权限、不修改已有执行器；具体接入范围仍待确认。
+该评估没有启用执行权限或修改已有执行器；随后用户授权的Python最小接入状态以下节为准。
+
+### Python最小接入实施（2026-10-23，本地执行验收已完成）
+
+用户随后授权Python代码验证和数据计算，未授权Shell入口。当前代码已增加以下路径，尚未开启
+本地运行服务的执行配置，也未部署。上节“待确认”指本次授权之前的评估，不代表仍等待实施授权。
+
+- 只在原生general_agent目录中按当前Run owner开放`run_command@1.0.0`，风险记录为
+  `code_execution`、执行方式为`task_container`。快速回复、App、旧工作流不因此获得权限。
+  默认关闭；管理员必须同时配置私有socket和明确的用户ID列表，没有通配符或模型自报权限。
+  发现、执行和历史结果复用均检查当前授权；执行前及产物发布前复核Run/Task状态与归属。
+- 参数为`executable: "python"`、`stdin`、可选`file_ids`、`artifact_ids`和`output_files`。
+  额外owner、宿主路径、Shell、命令参数/cwd等字段拒绝。stdin最多64KiB；每次最多8个输入，
+  单件8MiB、合计16MiB。UserFile只能来自当前会话允许的附件且仍归owner所有；Artifact只允许
+  同Run同Task。输入只读位于`/input/<ID>`，不注入数据库、MinIO或Provider凭据。
+- `serve_python.py`为独立受信进程，只监听owner私有目录中的0600 Unix socket，复用原
+  `WorkspaceStore/TaskExecutor`。API不加载Docker实现、不持有Docker socket。本地镜像预先构建，
+  Linux容器无网络、非root、资源受限，不安装新包。只暴露Python入口不等于能靠语言限制禁止
+  Python创建子进程；全部代码和子进程都必须留在同一容器权限与资源限制内。
+- 本批每次调用使用独立工作目录，没有跨调用Python变量或隐式可写文件共享。后续调用需要
+  显式传入同Task的已保存Artifact。这是最小接入选择，原执行器的连续快照能力保留，尚未作为
+  Agent接口开放。服务器按真实Tool Call ID固定调用和输入，重复同ID不重新执行，改参数拒绝。
+- 单次Python执行30秒；stdout/stderr各32KiB并标识截断。请求及响应各最多24MiB。
+  执行器最多两个并发、最多128个保留工作目录（输入与快照最多约4GiB，加记录开销），到限拒绝，
+  不自动删除历史目录。尚无每用户容量调度或崩溃自动恢复；管理员需检查具体已结束目录后维护。
+- 输出必须列在`output_files`中，最多8个受验证的普通相对路径，沿用执行器单件8MiB、总计16MiB。
+  容器移除确认后经现有Artifact服务保存到MinIO，SQL关联Run/Task并记录元数据，工具结果只给
+  Artifact ID/相对路径/大小，不给存储URI。非零退出保持failed，可保留已验证产物和stderr；
+  指定输出缺失、存储失败不会返回成功。多产物按件提交，后续失败时已提交项保留并列在错误结果，
+  不自动重跑脚本。对象写入后SQL提交失败仍沿用现有Artifact的补偿限制，未增加后台对象清理。
+- 共用`llm_tool_calls`和MinIO正文记录；取消向socket发送停止信号，并等待执行器确认容器移除。
+  客户端断开也请求停止。API以独立数据库会话检查运行状态，不能只在工具前后检查取消。
+  确认失败记`python_stop_unconfirmed`，不声称容器已停止；脚本未完成写入不发布为Artifact。
+  已完成代码的产物按件保存，取消与单件上传并发时可能保留已提交产物，但不能把工作流改回成功。
+  跨进程恢复不在此范围，Docker故障需要管理员检查保留执行记录。
+
+本地启动前需已构建任务镜像和已有MinIO服务；以下目录仅为示例，请选择未使用的私有位置，
+不要挂载用户项目或应用凭据目录。启动不会运行用户代码，只有获授权工具调用才执行：
+
+```bash
+mkdir -m 700 /tmp/nexus-python-local
+python3 deployments/task-runtime/serve_python.py \
+  --root /tmp/nexus-python-local/workspaces \
+  --socket /tmp/nexus-python-local/python.sock
+```
+
+在忽略的`apps/api/.env`中显式配置并由操作者重启API（本次未代改私有配置或重启）：
+
+```dotenv
+NEXUSPILOT_PYTHON_RUNTIME_SOCKET=/tmp/nexus-python-local/python.sock
+NEXUSPILOT_PYTHON_EXECUTION_USER_IDS=["实际获授权的Nexus用户ID"]
+```
+
+原生Agent先搜索/describe工具，再请求例如：
+
+```json
+{"executable":"python","stdin":"from pathlib import Path\nprint(sum([1,2,3]))\nPath('result.csv').write_text('total\\n6\\n')","output_files":["result.csv"]}
+```
+
+普通文件阅读继续走已登记读取工具，不因上传附件自动执行代码。原有Shell管理员执行器能力未删除，
+Python socket和模型Schema均不接受Shell；受控SDK、动态工具、联网和源码写回未实现。
+
+验证状态：新增测试先因模块缺失6项失败；随后复现并修复了产物失败回滚影响工作流对象、
+无效参数历史被再次解析、长工具期间未观察取消的问题。测试期间磁盘写满造成SQLite建立失败，
+用户释放空间后恢复。最终执行以下命令（工作目录apps/api）：
+
+```bash
+.venv/bin/pytest -q tests/test_python_tool.py tests/test_python_runtime.py tests/test_tool_catalog.py --tb=short
+# 38 passed, 2 skipped，4.61秒；跳过项是显式要求Docker/MinIO的两个测试。
+.venv/bin/pytest -q tests/test_application_tool_loop.py tests/test_workflow_execution_tasks.py tests/test_general_agent.py tests/test_api_import.py --tb=short
+# 63 passed，95.75秒。
+NEXUSPILOT_TEST_TASK_RUNTIME=1 .venv/bin/pytest -q tests/test_python_runtime.py tests/test_python_tool.py -k real_python --tb=short
+# 初始化失败：Docker image inspect两次各30秒超时，未进入容器运行或MinIO保存。
+```
+
+确定性检查使用固定模型、隔离SQLite与内存对象存储，另有真实Unix socket服务的取消信号检查；
+覆盖未授权/撤销、Shell/身份参数拒绝、其他用户Artifact拒绝、正常输出、非零退出、非法执行器结果、
+产物保存失败、工具调用正文保存、产物下载和工作流停止。Ruff及`git diff --check`通过。
+未调用付费模型；未改私有授权配置，未提交、推送或部署。
+
+以上为恢复前的历史检查。随后用户明确授权强制退出卡住的Docker后台进程；退出已确认的
+backend/build/docker-agent进程后重启Docker Desktop，引擎恢复为29.6.2，并启动原有两组
+MySQL/MinIO容器，没有删除镜像、卷或业务数据。
+
+恢复后首次实际测试为1通过、1失败：Python计算和MinIO产物保存通过，停止测试的
+`docker top -eo args`被当前引擎拒绝（缺少PID列）。补充失败诊断确认原因后改为`pid,args`，
+另增加工作流取消API到实际Python容器的完整停止测试，等待观察到Python进程后才取消。
+
+```bash
+NEXUSPILOT_TEST_TASK_RUNTIME=1 .venv/bin/pytest -q tests/test_python_runtime.py tests/test_python_tool.py tests/test_tool_catalog.py --tb=short
+# 41 passed，9.85秒，无跳过；含3项真实基础设施测试。
+```
+
+实际验证了CSV求和结果6、结果文件字节下载、同调用ID不重复执行、非零退出诊断、Socket在途取消，
+以及工作流显式取消后容器移除、工作流保持cancelled且无最终回答/后续模型请求。产物通过真实
+MinIO保存并下载；仅测试创建的对象在测试后清理。模型仍为固定测试Provider，记录仍用隔离SQLite，
+普通会话正文用测试存储；不将其描述为真实模型或MySQL联调。既有App工具、后台工作流、
+general_agent及API导入回归命令再次执行为63通过、30.62秒。未启用私有用户授权配置，未部署。
 
 ### 本地执行器实现与运行（2026-10-09）
 

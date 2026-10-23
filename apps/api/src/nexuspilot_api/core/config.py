@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     minio_secure: bool = False
     max_artifact_size_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     file_runtime_socket: str | None = Field(default=None, min_length=1, max_length=100)
+    python_runtime_socket: str | None = Field(default=None, min_length=1, max_length=100)
+    python_execution_user_ids: list[str] = Field(default_factory=list)
     user_file_quota_bytes: int = Field(default=500 * 1024 * 1024, ge=1)
     user_file_count_limit: int = Field(default=500, ge=1, le=500)
     model_max_retries: int = Field(default=2, ge=0, le=5)
@@ -94,6 +96,8 @@ class Settings(BaseSettings):
 
         if self.api_key == self.internal_api_key.get_secret_value():
             raise ValueError("internal_api_key must differ from api_key")
+        if self.python_runtime_socket and not Path(self.python_runtime_socket).is_absolute():
+            raise ValueError("python_runtime_socket must be an absolute local Unix socket path")
         if (
             self.file_runtime_socket is not None
             and not Path(self.file_runtime_socket).is_absolute()

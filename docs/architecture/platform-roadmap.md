@@ -8,7 +8,7 @@
 
 **当前范围：** 通用 Agent 本地后端已完成既定验收，Web 新请求已使用 general_agent；旧工作流读取和历史记录保留。Personal Assistant 已完成 OpenCode Go 普通回答及三种只读工具真实联调，后续 App 取消修复和确定性测试见[App 接入说明](../implementation/personal-assistant-app-integration.md)。本地完成不代表已部署。
 
-**当前优先事项：** 回到 Nexus 自身能力开发。逐结论审核、按需委派、工作记录、阅读计划、输入汇总和有效请求审计已有实现，限定验收见[本地记录](../implementation/general-agent-strata-verification-20261019.md)。先明确已有 Python/Shell 执行器的剩余用途：代码验证、数据计算及文件产物，不重复建设 PDF/Office 读取。接入范围待用户确认，不因规划存在就自动开放命令执行；跨进程续跑仍未实现，不推送、不部署。
+**当前优先事项：** 回到 Nexus 自身能力开发。逐结论审核、按需委派、工作记录、阅读计划、输入汇总和有效请求审计已有实现，限定验收见[本地记录](../implementation/general-agent-strata-verification-20261019.md)。Python代码验证/数据计算最小接入已通过授权、工具记录、真实Docker执行、MinIO产物保存及工作流在途停止测试，范围见阶段7；模型和数据库采用测试Provider/SQLite，未执行本批真实模型联调。Shell入口不开放，PDF/Office读取不重复实现。执行配置默认关闭，跨进程续跑仍未实现，不推送、不部署。
 
 ## 本次整体规划决定
 
@@ -97,7 +97,7 @@ Python/Shell仍沿用已有任务容器执行器，另行接DB授权与MinIO产�
 
 首批工具路径已在本地实现：模型产生调用 → 受控读取/搜索 → 保存结果 → 模型继续处理 → 提交答案 → Web 展示进度和调用状态。2026-10-09 首批验证使用隔离 SQL、内存对象存储和脚本模型；后续真实模型及存储验收见文首当前记录，不能继续把全部真实验证列为未执行。具体参数和限制由[工具主计划](../implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)维护；只读工具不等于命令工具已接入。
 
-2026-10-09 已实现内置只读目录的按需搜索、精确版本说明及下一轮加载，并通过本地测试；具体范围见[工具目录](../implementation/phase-7-tool-runtime-plan.md#可搜索目录)。随后新增任务目录与 Python/Shell 的独立本地执行器：隔离容器、任务快照连续使用、超时/取消及本地记录已有实现；尚未接入 Agent、数据库资源归属、`llm_tool_calls` 与 Artifact，聊天中仍不能执行命令。下一步完成这些接入，再实现受控 SDK、任务工具创建与复用，详见同一主计划的任务执行器章节。固定 PDF/Office 解析 Socket 不接受任意命令；任务镜像移除 pip/ensurepip，依赖仅在受信构建时准备。没有明确授权不接触服务器、不发布外部消息、不启用 Git/联网/外部写入。
+2026-10-09 已实现内置只读目录的按需搜索、精确版本说明及下一轮加载，并通过本地测试；具体范围见[工具目录](../implementation/phase-7-tool-runtime-plan.md#可搜索目录)。随后新增任务目录与 Python/Shell 的独立本地执行器。2026-10-23 Python已接入原生general_agent、owner检查、工具调用记录与Artifact保存，真实容器执行及停止通过限定本地验收，默认仍关闭；Shell没有模型入口。Agent每次Python调用使用独立目录，原执行器的连续快照尚未开放给Agent。受控SDK、任务工具创建与复用仍待实现，详见同一主计划。固定PDF/Office解析Socket不接受任意命令；任务镜像移除pip/ensurepip，依赖仅在受信构建时准备。没有明确授权不接触服务器、不发布外部消息、不启用Git/联网/外部写入。
 
 ### 暂停与后置事项
 
@@ -285,4 +285,4 @@ MinIO 可以部署在同一台个人电脑或服务器的持久磁盘上，但�
 
 原完成与验证记录保留在[阶段1](../implementation/phase-1-foundation.md)、[阶段2](../implementation/phase-2-llm-core-capabilities.md)、[阶段3](../implementation/phase-3-agent-workflow-plan.md)；发布取舍与目标环境记录分别见[上线清单](../implementation/initial-release-checklist.md)和[部署记录](../implementation/server-deployment-20261004.md)。[2026-10-05 分支核对](../implementation/branch-task-audit-20261005.md)是当时的检查记录，不替代当前安排。
 
-新循环既定本地验收和PA最小接入已经完成；下一动作是确认命令执行器的独立用途与最小接入范围，或推进尚未实现的跨进程恢复。逐结论处理、委派和Web入口不再作为未实现任务；详细历史记录仍在各主计划保留。
+新循环既定本地验收和PA最小接入已经完成；Python代码验证与数据计算最小接入也已通过限定本地验收。下一动作可按授权配置具体用户启用Python，或推进尚未实现的跨进程恢复；Shell、动态工具与受控SDK不因本批通过而开放。逐结论处理、委派和Web入口不再作为未实现任务；详细历史记录仍在各主计划保留。

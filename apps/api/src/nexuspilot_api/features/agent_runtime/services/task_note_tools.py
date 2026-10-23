@@ -250,7 +250,7 @@ class GeneralAgentToolService(AgentFileToolService):
             self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
     async def refresh_catalog(self, run_id):
-        """Attach only current App-authorized static versions to the existing tool catalog."""
+        """Attach App reads or explicitly granted native Python; Apps cannot execute code."""
         from nexuspilot_api.services.application_tools import (
             STATIC_APP_TOOLS,
             authorized_application_context,
@@ -258,6 +258,15 @@ class GeneralAgentToolService(AgentFileToolService):
 
         resolved = await authorized_application_context(self.db, run_id)
         if resolved is None:
+            from nexuspilot_api.services.python_tool_service import PYTHON_TOOL, python_authorized
+
+            enabled = await python_authorized(self.db, run_id, self.task_id)
+            self.catalog = ToolCatalog((
+                *GENERAL_TOOL_CATALOG.entries, *((PYTHON_TOOL,) if enabled else ()),
+            ))
+            self.capabilities = (self.capabilities - {"python_execute"}) | (
+                {"python_execute"} if enabled else set()
+            )
             return
         context, mapping, config = resolved
         if set(context.allowed_tool_versions) - set(config.operations):
@@ -298,7 +307,13 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize App reads, task notes and review before shared durable result persistence."""
+        """Authorize App reads, Python and task operations before saving durable results."""
+        if name == "run_command":
+            from nexuspilot_api.services.python_tool_service import run_python
+
+            return await run_python(
+                self.db, self.storage, self.task_id, attempt, record, arguments,
+            )
         from nexuspilot_api.services.application_tools import (
             STATIC_APP_TOOLS,
             authorized_application_context,
@@ -476,8 +491,11 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck task ownership, reading plans and source grants before reusing history."""
+        """Recheck task ownership, Python inputs and source grants before reusing history."""
+        from nexuspilot_api.services.python_tool_service import validate_python_history
+
         await super().validate_history(run_id, records)
+        await validate_python_history(self.db, run_id, self.task_id, records)
         for record in records:
             if (record.tool_name not in NOTE_NAMES | READING_PLAN_NAMES | {
                     READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,

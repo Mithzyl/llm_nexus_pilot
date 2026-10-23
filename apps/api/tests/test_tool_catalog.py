@@ -26,6 +26,15 @@ class ExampleArguments(BaseModel):
     query: str
 
 
+def test_python_execution_metadata_is_not_read_only():
+    """Code execution uses a separate risk classification and explicit execution capability."""
+    from nexuspilot_api.services.python_tool_service import PYTHON_TOOL
+
+    assert PYTHON_TOOL.risk_level == "code_execution"
+    assert PYTHON_TOOL.execution_type == "task_container"
+    assert PYTHON_TOOL.required_capabilities == frozenset({"python_execute"})
+
+
 def catalog_entry(name="read_example", **changes):
     """Create explicit registry metadata, never executable code supplied by a model."""
     from nexuspilot_api.services.tool_catalog import RegisteredTool
@@ -104,7 +113,7 @@ def test_catalog_rejects_invalid_execution_bounds(changes):
 
 
 def test_file_defaults_remain_bounded_while_delegation_inherits_its_caller_deadline():
-    """A model cannot supply these settings; only the registered delegate uses the parent deadline."""
+    """Keep file defaults bounded and let registered delegation inherit its caller's deadline."""
     from nexuspilot_api.features.agent_runtime.services.task_note_tools import DELEGATE_TOOL
 
     assert catalog_entry().timeout_seconds == 15
