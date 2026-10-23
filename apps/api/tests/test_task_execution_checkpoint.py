@@ -15,7 +15,7 @@ from nexuspilot_api.features.agent_runtime.services.task_execution_checkpoint im
 )
 from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
-from nexuspilot_api.models import LlmMemorySnapshotObject, new_id
+from nexuspilot_api.models import LlmMemorySnapshotObject, User, new_id
 
 
 @pytest.mark.parametrize("use_tool", [False, True])
@@ -95,3 +95,30 @@ async def test_checkpoint_hash_failure_does_not_register_success_or_continue_mod
             LlmMemorySnapshotObject.schema_version == SCHEMA,
         )))
         assert rows == []
+
+
+async def test_checkpoint_read_rejects_wrong_owner(
+    client, test_database_session_factory,
+):
+    """Recovery rejects a snapshot registered to a different user from its Run."""
+    run = await create_test_run(client)
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(GeneralProvider())
+    response = await client.post(f"/api/v1/runs/{run['run_id']}/agent-workflows",
+                                 json=general_payload("never"))
+    assert response.json()["status"] == "completed", response.text
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        row = await db.scalar(select(LlmMemorySnapshotObject).where(
+            LlmMemorySnapshotObject.run_id == run["run_id"],
+            LlmMemorySnapshotObject.schema_version == SCHEMA,
+            LlmMemorySnapshotObject.mime_type == "application/json",
+        ))
+        other = User(user_id=new_id(), display_name="Other checkpoint owner")
+        db.add(other)
+        await db.flush()
+        row.user_id = other.user_id
+        with pytest.raises(ResourceNotFoundError):
+            await read_task_execution_checkpoint(
+                db, storage, run_id=run["run_id"], task_id=row.task_id,
+                snapshot_id=row.memory_snapshot_object_id,
+            )

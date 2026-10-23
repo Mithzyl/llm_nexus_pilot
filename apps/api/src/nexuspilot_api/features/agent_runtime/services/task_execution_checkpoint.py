@@ -88,9 +88,16 @@ async def save_task_execution_checkpoint(db, storage, *, run_id, task_id, attemp
 
 
 async def read_task_execution_checkpoint(db, storage, *, run_id, task_id, snapshot_id):
-    """Read an authorized task snapshot after verifying its registered object hash."""
-    row = await db.get(LlmMemorySnapshotObject, snapshot_id)
-    if (row is None or row.run_id != run_id or row.task_id != task_id
+    """Read a run-scoped snapshot after checking its registered owner and task.
+
+    Callers must authorize the Run before invoking this internal reader.
+    """
+    row = await db.get(LlmMemorySnapshotObject, snapshot_id, populate_existing=True)
+    run = await db.get(LlmRun, run_id, populate_existing=True)
+    task = await db.get(LlmTask, task_id, populate_existing=True)
+    if (run is None or task is None or task.run_id != run_id
+            or row is None or row.user_id != run.user_id
+            or row.run_id != run_id or row.task_id != task_id
             or row.schema_version != SCHEMA or row.mime_type != "application/json"):
         raise ResourceNotFoundError("Task checkpoint")
     if not await storage.verify_object(row.storage_uri, row.content_hash):
