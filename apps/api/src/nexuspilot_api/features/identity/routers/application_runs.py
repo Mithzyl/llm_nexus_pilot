@@ -7,6 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from nexuspilot_api.features.agent_runtime.dependencies import (
+    AgentWorkflowExecutionServiceDependency,
+)
 from nexuspilot_api.features.agent_runtime.routers.agent_workflows import router as workflows
 from nexuspilot_api.features.identity.models.applications import (
     Application,
@@ -18,6 +21,7 @@ from nexuspilot_api.features.identity.resource_access import (
     validate_resource_references,
 )
 from nexuspilot_api.features.identity.services.application_identity import resolve_application_user
+from nexuspilot_api.models import LlmAgentWorkflowExecution
 from nexuspilot_api.routers.common import DatabaseSessionDependency
 from nexuspilot_api.schemas.runs import RunCreate, RunRead
 from nexuspilot_api.services.application_tools import (
@@ -125,9 +129,27 @@ async def post_application_run(
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRead)
-async def cancel_application_run(run_id: str, db: DatabaseSessionDependency):
-    """Use the existing cancellation state machine after App and owner checks."""
-    return RunRead.model_validate(await cancel_run(db, run_id))
+async def cancel_application_run(
+    run_id: str,
+    db: DatabaseSessionDependency,
+    service: AgentWorkflowExecutionServiceDependency,
+):
+    """Cancel the Run and its workflow so both App views persist the same terminal state.
+
+    Cancel the Run first to prevent a concurrent start from creating new work.
+    The shared workflow service finalizes nodes and emits its durable cancellation
+    event; late model usage remains handled by the existing execution reconciler.
+    """
+    run = await cancel_run(db, run_id)
+    workflow_id = await db.scalar(
+        select(LlmAgentWorkflowExecution.workflow_execution_id).where(
+            LlmAgentWorkflowExecution.run_id == run_id
+        )
+    )
+    if workflow_id is not None:
+        await service.cancel_workflow_execution(workflow_id)
+        await db.refresh(run)
+    return RunRead.model_validate(run)
 
 
 # Reuse JSON, SSE, replay and result handlers instead of creating an App-specific loop.

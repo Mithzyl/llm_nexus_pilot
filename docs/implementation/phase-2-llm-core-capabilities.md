@@ -502,7 +502,7 @@ exclusion_reason, content_hash, message_role, content_text
 
 #### 对象型Message读取合同（阶段2合同补充，阶段4集成验收）
 
-状态：进行中。当前只完成测试方式验证，不提供生产对象型Message读取。Web已提供浏览器本地文件选择、待上传展示和删除，但后端尚未提供上传及Artifact创建，因此选择文件后必须阻止发送。自动化测试仍通过内存对象存储夹具创建Run Artifact，验证普通Responses会把显式Artifact引用交给统一Context Builder；真实用户文件、对象型Message和上传后的产品选择等待正式上传合同。本工作项不更改阶段2原有稳定范围的完成状态。
+状态：进行中，剩余范围是显式对象型Message内容引用的读取，不是基础文件上传或已完成的对话正文迁往MinIO。正式UserFile上传、固定解析、轮次绑定及工具按需读取已有实现；ConversationBodySession会从受控body_ref_json恢复普通消息字段。另一种仅有content_uri而无可读content_text的消息仍被Context Builder拒绝或排除，需要独立完成下述类型与读取校验；不能据此说现有历史对话无法从MinIO恢复。早期Artifact夹具仅代表当时验证，不再作为当前上传状态。
 
 - 对象型Message是正文保存在受控对象存储、Message只保存引用的消息，不等同于已经实现的Run Artifact。它必须复用Artifact读取时已经验证的归属、对象大小、内容哈希、UTF-8完整性和受控存储访问方式，不能让Context Builder直接读取任意`content_uri`。
 - Message来源服务必须明确允许的内容类型、最大字节数、Message与User/Session/Run的归属关系、对象不存在或哈希不一致时的稳定错误，以及内容是否作为完整消息或有界片段进入上下文。未通过合同的对象类型继续在Provider调用前明确失败，不能退化为空文本。

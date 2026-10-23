@@ -2,7 +2,7 @@
 
 ## 通用 Agent 的交互与兼容
 
-**2026-10-18 规划更新；状态：未开始（新执行方式 UI）。** 当前 Composer、历史工作流、来源面板和恢复行为保留；本次不改页面代码。执行机制由[阶段7](../implementation/phase-7-tool-runtime-plan.md#通用-agent-工具循环目标设计)定义，角色和审核由[阶段3](../implementation/phase-3-agent-workflow-plan.md#可组合节点职责与审核策略)定义。
+**2026-10-23 状态核对：进行中。** 新执行方式的必要 API/类型接入、默认 general_agent 请求和限定浏览器恢复验收已完成；正文短引用点击及窄屏停止按钮遮挡等仍待处理。当前 Composer、历史工作流与来源面板保留，本次不修改页面代码。执行机制由[阶段7](../implementation/phase-7-tool-runtime-plan.md#通用-agent-工具循环目标设计)定义，角色和审核由[阶段3](../implementation/phase-3-agent-workflow-plan.md#可组合节点职责与审核策略)定义。
 
 2026-10-20：Web Agent 请求已显式使用 general_agent / 1.0.0 / general_tools_v1，保留旧工作流读取及API兼容。
 沿用用户选择的模型、思考程度、三种审核策略和Planner绑定，不再由页面发送旧两轮限制；快速回复不变。
@@ -761,11 +761,11 @@ apps/web/
 | 思考程度控制 | 完整统一等级、逐模型控制能力目录、四家Provider映射、默认medium、Attempt证据、Composer合并入口、模型切换归一化以及快速回复/Agent Workflow透传已实现 | 真实Provider浏览器矩阵仍待后续执行 | 进行中 |
 | Markdown 与代码块 | 实时和历史Assistant共用安全GitHub Flavored Markdown；本轮新增语言工具栏、独立复制、成功/失败提示、13px代码和按钮、长行独立横滚；模拟BFF下桌面1200px及移动390px Chromium检查通过，继续禁用原始HTML、危险链接和自动远程图片 | 不代表真实BFF、Provider或完整跨浏览器验收；可选语法高亮尚未实现 | 进行中 |
 | 消息输入与发送 | 多行输入、自动增高至 320px 后内部滚动、空白输入拒绝、显式发送及最小化按钮；仅聚焦输入框时 Enter 发送、Shift+Enter 换行，输入法组合不发送；完整 Composer 高度驱动消息底部留白 | 输入区仍需持续进行跨浏览器验证 | 已完成 |
-| Agent Workflow | `model_only_v1` 创建/发现/结果/节点/事件、Controller、计划校验、最多两个 Worker 并行、Handoff、验证、Reviewer、最终汇总、取消、费用预留、快照恢复、审核意见不吞掉最终回答、活动运行恢复后的重复提交保护，以及职责明确的公开活动摘要和可折叠生命周期瀑布流 | 新版工具配置和两轮流程已有本地实现，验收范围见文首；脱离 HTTP 独立执行、跨进程恢复、通用等待／批准仍未实现，不能把事件回放当作后台恢复 | 进行中 |
-| Agent上下文 | Controller、Worker、Reviewer和最终汇总按各自模型使用Run锚定的Context Build；已提交Handoff、确定性验证、独立审核和Evaluation作为类型化来源进入下游节点，当前用户目标与协作数据不重复拼接，并保留策略版本、信任级别、必选标记及Attempt/Node证据 | 上传附件绑定与只读工具已有实现；基础 Context 不包含全部工具历史，最终有效请求保存缺口见阶段2；System Prompt 不增前台配置，Memory／Knowledge 继续暂停 | 进行中 |
+| Agent Workflow | 新请求使用general_agent，保留model_only历史读取；工具循环、委派/Handoff、审核、取消、公开活动流和已保存结果恢复已接入 | 进程内后台执行已独立于观察连接；跨进程恢复、通用等待/批准仍未实现。正文短引用点击及窄屏停止按钮遮挡待修，验收范围见文首 | 进行中 |
+| Agent上下文 | Run锚定Context Build、Handoff/来源、审核、固定输入汇总及最终effective_messages/effective_request保存已有实现，保留版本与Attempt/Node记录 | 基础Context不等于完整最终请求；System Prompt场景策略由后端补齐，不增加前台配置；Memory/Knowledge继续暂停 | 进行中 |
 | 运行证据 | Workflow摘要、11类节点、Attempt Reasoning、用量、费用、并行组、安全错误和脱敏Context证据；消息入口按自身Run读取独立只读快照，查询失败不遮挡当前回复或中断执行；Context已过滤System Prompt存在性及元数据 | 完整Task/Attempt/Retry/Artifact视图、允许动作、Artifact详情页及完整Evaluation开发视图尚未实现；普通产品不增加Prompt视图 | 进行中 |
 | 前端平台边界 | 三栏布局、亮暗主题、移动覆盖层、固定BFF路由、资源归属、请求大小限制、环境与构建目录隔离、Next.js页面边界；BFF按实际Host与请求协议严格比较Origin，两个本地入口同源POST通过、跨别名Origin返回403；117项测试、ESLint、TypeScript、生产构建与20项桌面/移动模拟BFF浏览器测试通过 | 真实Provider浏览器端到端、完整可访问性、跨浏览器、敏感字段和MinIO检查未完整执行；转发头可信代理及HTTPS真实部署未验收，不将本地同源修复作为公网安全通过 | 进行中 |
-| 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属可用于多用户前端联调 | FastAPI 资源主体授权已实现，目标环境完整矩阵待验收；个人 API Key 未实现、用户 Provider 凭据暂停；工具基础循环已有实现，其他后续能力按各自主计划实施 | 进行中 |
+| 身份与后续平台能力 | 浏览器登录、Cookie会话、退出和当前主体BFF归属已实现；个人API Key后端及本地验收已完成 | 账户安全与个人Key管理页面未实现，目标环境完整隔离矩阵待验收，用户Provider凭据暂停；其他工具扩展按主计划实施 | 进行中 |
 
 ### 当前故障定位索引
 
