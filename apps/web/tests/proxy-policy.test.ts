@@ -3,6 +3,15 @@ import test from "node:test";
 
 import { isAllowedProxyRoute } from "../lib/proxy-policy";
 
+/** Saved execution files allow reads and downloads, never browser writes or deletion. */
+test("execution artifacts expose read-only routes", () => {
+  for (const path of [["artifacts"], ["artifacts", "id"], ["artifacts", "id", "content"]]) {
+    assert.equal(isAllowedProxyRoute("GET", path), true);
+    assert.equal(isAllowedProxyRoute("POST", path), false);
+    assert.equal(isAllowedProxyRoute("DELETE", path), false);
+  }
+});
+
 test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("GET", ["providers"]), true);
   assert.equal(isAllowedProxyRoute("GET", ["models"]), true);

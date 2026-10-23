@@ -1556,6 +1556,37 @@ make task-runtime-test
 
 本批测试先确认执行器缺失失败；随后补充并复现了快照根被符号链接替换、二进制输出转 UTF-8 后超限、空文件夹丢失三项问题，再修改实现。真实 Docker 测试也发现并修正了 tmpfs 导出与直接复用含 pip 镜像的问题。验证命令为 `NEXUSPILOT_TEST_TASK_RUNTIME=1 apps/api/.venv/bin/pytest -c apps/api/pyproject.toml apps/api/tests/test_task_runtime.py apps/api/tests/test_tool_catalog.py apps/api/tests/test_agent_tool_discovery.py apps/api/tests/test_agent_file_tools.py apps/api/tests/test_office_runtime_executor.py -q -rs`；截至本批检查为 78 通过、2 跳过（两个既有 Office/PDF 实际 Socket 样本未开启，本次没有修改解析执行器）。任务测试包含实际 Docker Desktop Linux ARM64 容器，不使用模拟执行器代替；模型流程回归仍使用测试 Provider/数据库/对象存储。任务镜像 ID 为 `sha256:db92d5d8e63f5c70d77535267e573ca308a9199b80f07d7134156350268c4b95`；Ruff 与差异空白检查通过。当前没有数据库迁移、真实 Provider 调用或服务器部署，前端未修改，未执行浏览器检查。
 
+### 执行产物保存、下载与保留时间（2026-10-24）
+
+当前实现：Python调用通过`output_files`显式选择输出；执行器确认容器清理并校验输出后，
+API复用Artifact服务将完整文件写入MinIO，MySQL保存Run/Task归属、文件名、大小及对象引用。
+未指定的临时文件不会自动发布。非零退出可保留已确认保存的文件，但工具仍为失败；取消不发布
+尚未完成的输出，也不删除之前已保存的产物。单文件8MiB、总输出16MiB限制保持不变。
+
+Web在回复结束后按Run查询`python_output`产物，展示文件名、大小与下载操作；失败或取消的
+回复也能显示此前已提交文件，刷新后从服务器重新获取。列表按50条分页，可继续加载，
+请求失败显示重试而非空列表。只开放GET列表/详情/内容代理，不开放浏览器产物写入和删除。
+下载使用现有后端owner校验及MinIO读取；错误响应不保存为文件，不向浏览器暴露对象URI或凭据。
+
+**时间规划核查：** 已有工作目录生命周期要求先保存再清理、失败保留待处理状态，尚无确定的
+Artifact保留天数、`expires_at`字段或自动删除任务。已保存产物当前不会由应用按天数自动删除，
+但这不是永久保存或备份承诺；管理员删除、存储故障和外部bucket生命周期仍会影响可用性。
+Provider私有续接状态的过期清理不是产物保留策略，不能套用到用户文件。
+本地执行器目前最多保留128个工作目录，没有自动清理；容器移除不等于宿主快照或MinIO文件删除。
+
+后续实施保留策略前须确认默认期限/用户可选期限、按创建还是最后访问计时、关联会话或任务
+仍引用时的保留要求，以及备份恢复安排；再设计到期标记、下载状态、引用复核、准确对象清理
+和失败重试。本次只记录缺项，不新增TTL、不配置bucket生命周期、不删除现有文件。
+
+本次验证：只读代理新增测试先复现未开放路由，修正后代理/策略32项通过；TypeScript与新增文件
+ESLint通过。后端既有产物/Python测试19通过、2跳过（显式真实Docker测试未开启）；资源归属
+回归2通过。浏览器使用合成对话显示上一轮真实Run产物，真实前端代理/API/MinIO列表和下载
+通过，下载`result.csv`内容为`total\n69\n`；桌面与390px文件区域已查看，模拟503下载显示错误。
+截图位于`output/playwright/python-artifacts-desktop.png`、`python-artifacts-mobile.png`。
+刷新后文件列表恢复通过；前端完整`npm test`为173通过。浏览器控制台的404来自合成会话
+特意返回的空latest-run，503来自下载失败用例，不计为真实服务故障。
+本次未新增真实模型调用，浏览器合成对话不算新的完整模型工作流验收。
+
 ### 工作目录归属与生命周期
 
 - 由平台依据已认证的 user、Run、Task 分配任务工作目录和 `workspace_reference`，模型只使用获准的相对路径；无 Project 的任务也可以创建临时目录，不以项目分类页面为前置。项目 Workspace 与任务临时目录不能共用一个可写根目录。

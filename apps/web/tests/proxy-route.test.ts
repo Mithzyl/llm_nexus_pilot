@@ -12,6 +12,26 @@ let DELETE: typeof import("../app/api/nexus/[...path]/route").DELETE;
 let PUT: typeof import("../app/api/nexus/[...path]/route").PUT;
 const originalFetch = globalThis.fetch;
 
+/** Forward download headers and bytes while retaining backend owner-denial responses. */
+test("artifact downloads retain attachment headers and authorization failures", async () => {
+  for (const status of [200, 404, 503]) {
+    globalThis.fetch = (async () => new Response(status === 200 ? "total\n69\n" : "unavailable", {
+      status, headers: { "content-type": "application/octet-stream",
+        "content-disposition": "attachment; filename=result.csv" },
+    })) as typeof fetch;
+    try {
+      const response = await GET(createRequest("artifacts/test/content"),
+        createContext("artifacts/test/content"));
+      assert.equal(response.status, status);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      if (status === 200) {
+        assert.match(response.headers.get("content-disposition") ?? "", /result.csv/);
+        assert.equal(await response.text(), "total\n69\n");
+      }
+    } finally { globalThis.fetch = originalFetch; }
+  }
+});
+
 /** Prepared Run cancellation must check ownership before forwarding the bodyless mutation. */
 test("prepared Run cancellation is forwarded only for the current user", async () => {
   for (const owner of ["nexuspilot-web", "other-user"]) {

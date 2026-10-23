@@ -134,6 +134,7 @@ import {
   type ConversationSyncEvent,
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
+import { RunArtifacts } from "../components/RunArtifacts";
 import { formatCost, formatDurationMs, formatTokenCount } from "../lib/format";
 import { filterSessionsByTitle, groupSessionsByDate } from "../lib/session-list";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
@@ -2479,6 +2480,9 @@ export default function Home() {
                         <MarkdownContent content={message.content} />
                       ) : (
                         <p className="typing-line"><span /> <span /> <span /></p>
+                      )}
+                      {message.run_id && !message.pending && !message.saving && (
+                        <RunArtifacts key={message.run_id} runId={message.run_id} />
                       )}
                       {message.saving && <p className="stream-note">模型响应已完成，正在写入会话记录。</p>}
                       {message.truncated && !message.pending && <p className="stream-note error-note">模型达到输出 Token 上限，以上是已保存的部分回复；可以要求模型继续，或重新生成更短的回答。</p>}
