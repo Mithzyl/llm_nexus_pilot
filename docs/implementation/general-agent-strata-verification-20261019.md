@@ -789,6 +789,30 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
   新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
+### 真实Strata草稿续接（2026-10-23，执行通过但内容有误）
+
+- 使用独立进程内API、本地MySQL/MinIO、独立FULLTEXT03.pdf附件，always审核，
+  partial_response_policy=continue_once。Run `f9c36c80-abc8-484b-96e9-801d97f74b17`，
+  Session `c3832e3d-9ee4-4065-b11b-afa80ff256ed`，报告
+  `/tmp/general-agent-draft-strata-20261023-owned-file.json`。代码904b1e0。
+- 所有生成来自Strata。主Agent完成read_file_content后，验证器在收到42字符正文时注入一次中断，
+  明确记录verification_injected_interruption=true；不是Strata自然故障。原Attempt
+  `8bcfe25e-c1c5-4a02-b985-62e9916bc971`保持failed及用量未知，没有改成成功。
+- 平台记录一次agent.draft.continuation.requested；只读核对MinIO草稿与后续真实请求中的
+  interrupted_draft完全相同、source_attempt_id正确且同Run/Task。后续Attempt
+  `37ae9a68-9fbc-4fdc-895a-fbd6aea651d6`完成，Reviewer执行submit_review，最终答案保存。
+  仅一次文件读取，没有重放已完成工具；草稿续接不是内容refinement或格式repair，各后两者均0。
+- 共4次模型请求，3次completed、1次本地注入失败。耗时124.454秒；已知输入22,448、
+  输出6,181、合计28,629 Token，缓存输入10,478；中断请求用量未知，全部推理Token及费用未知。
+- Playwright运行中刷新后仍观察同一会话；完成及再次刷新恢复最终正文。
+  证据 `output/playwright/general-agent-draft-strata-{running,refreshed,completed,restored}.yml`。
+- **内容准确性不通过**：学分30及完整标题已呈现，但正文称“本科/课程级”又写Master's Programme，
+  且加入标题页读取材料未支持的“一整年课程负荷”换算；Reviewer未要求修正。
+  本次仅证明真实草稿续接、既有审核流转及保存恢复成功，不把完成状态或supported决定当成事实真值。
+  不重复付费等待随机正确答案，也不通过后端替模型修改正文掩盖该问题。
+- 未用DeepSeek，未修改前端、费用或新增哈希检查，未推送或部署。
+  正常API未加载独立验证钩子；该进程正常结束，不能自动影响其他Run。
+
 ### 真实流中断验证入口（2026-10-23）
 
 新增独立脚本deployments/verification/check_live_draft_continuation.py，显式付费许可、

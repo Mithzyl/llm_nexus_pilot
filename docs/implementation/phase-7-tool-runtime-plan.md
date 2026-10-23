@@ -175,7 +175,10 @@ Messages分别记录stop_reason和message_stop_received；GenerateContent记录f
 其他协议未启用此关闭错误恢复条件；存储阶段中断仍未实现恢复。
 这不是对上次Strata零事件network_error的修复，也不宣称真实供应商已复现关闭阶段故障。
 
-2026-10-23受控纯文本续接已接入新Agent，确定性测试通过，真实Strata续接尚未验收：
+2026-10-23受控纯文本续接已接入新Agent，确定性测试通过；真实Strata注入中断后保存42字符、
+续接、原生审核及最终保存/浏览器刷新恢复通过。但最终正文有未被Reviewer纠正的材料外解释，
+内容准确性不通过，详见[真实续接记录](general-agent-strata-verification-20261019.md#真实strata草稿续接2026-10-23执行通过但内容有误)。
+下列是当前运行规则，不保证模型判断正确：
 
 - 创建请求须显式指定partial_response_policy=continue_once，固定保存到既有request_json；
   缺省stop不改变旧调用和历史请求身份，旧工作流拒绝启用，不修改前端默认行为。
