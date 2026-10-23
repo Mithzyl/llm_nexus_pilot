@@ -11,6 +11,7 @@ from nexuspilot_api.features.identity.models.authentication import (
     UserLoginSession,
     UserPasswordCredential,
 )
+from nexuspilot_api.features.identity.models.personal_api_key import UserApiKey  # noqa: F401
 from nexuspilot_api.features.memory.models.agent_memory import (
     LlmAgentRun,
     LlmAgentTurn,

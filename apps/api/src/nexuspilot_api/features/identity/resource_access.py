@@ -209,6 +209,10 @@ async def authorize_resource_request(
         raise HTTPException(403, "接口尚未配置访问权限。")
     principal = await get_workspace_principal(request, db, get_settings())
     db.info[OWNER_SESSION_KEY] = principal.user_id
+    if principal.authentication_method == "personal_api_key":
+        required = "read" if request.method in {"GET", "HEAD"} else "execute"
+        if required not in principal.scopes:
+            raise HTTPException(403, "Personal API key permission is insufficient")
     if (
         request.method not in {"GET", "HEAD"}
         and principal.authentication_method == "browser_session"

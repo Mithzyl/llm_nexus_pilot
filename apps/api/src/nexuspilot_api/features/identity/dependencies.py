@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.config import Settings, get_settings
+from nexuspilot_api.core.errors import AuthenticationIdentityConflictError
 from nexuspilot_api.core.security import require_api_key
 from nexuspilot_api.features.identity.schemas.authentication import (
     AuthenticatedPrincipalRead,
@@ -40,6 +41,8 @@ async def get_authenticated_principal(
     """Resolve an enabled login session; local owners can never manage browser credentials."""
 
     require_browser_authentication_enabled(settings)
+    if request.headers.get("x-application-id"):
+        raise AuthenticationIdentityConflictError("App identity cannot manage browser credentials")
 
     principal = await resolve_browser_principal(
         db_session,
@@ -66,7 +69,18 @@ async def get_workspace_principal(
     db_session: Annotated[AsyncSession, Depends(get_database_session)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> WorkspacePrincipalRead:
-    """Resolve configured access mode without falling back when enabled authentication fails."""
+    """Resolve explicit personal keys or configured browser/local access without fallback."""
+
+    if request.headers.get("x-application-id"):
+        raise AuthenticationIdentityConflictError("App identity requires the App API")
+    authorization = request.headers.get("authorization")
+    if authorization:
+        if request.cookies.get(SESSION_COOKIE_NAME):
+            raise AuthenticationIdentityConflictError("不能同时提交浏览器会话和 Bearer 身份。")
+        require_browser_authentication_enabled(settings)
+        from nexuspilot_api.features.identity.services.personal_api_keys import resolve_personal_key
+
+        return await resolve_personal_key(db_session, authorization)
 
     if settings.authentication_enabled:
         return await get_authenticated_principal(request, db_session, settings)

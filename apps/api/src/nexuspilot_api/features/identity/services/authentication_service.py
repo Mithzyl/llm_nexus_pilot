@@ -381,7 +381,7 @@ async def resolve_browser_principal(
             "不能同时提交浏览器会话和 Bearer 身份。"
         )
     if authorization_header:
-        raise AuthenticationRequiredError("个人 API Key 认证尚未启用。")
+        raise AuthenticationRequiredError("此接口仅接受浏览器登录身份。")
     if not session_token:
         raise AuthenticationRequiredError("需要登录。")
     row = (

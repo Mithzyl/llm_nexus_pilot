@@ -18,6 +18,9 @@
 
 ## 多业务 App 工具与隔离执行接入规划（2026-10-23）
 
+原生个人 API Key 的管理、scope 和 Provider 复用规则统一见阶段5文首；个人调用继续使用原工具循环和 owner 检查。
+App 服务 Key 不与个人 Key 互换；此批未开放动态授权、跨App账号关联或业务写入。
+
 状态：进行中。规划已提交8d38eca，用户随后授权第一批App身份、静态远程只读工具及本地HTTP验证；当前实现说明见下节。业务写入、真实业务API、Shell接入和部署仍未启用。
 本节是外部App工具的当前设计定义；阶段5维护身份实现，路线图只引用本节。不新增Phase编号，不重建Agent循环。
 Retail、Personal Assistant（下称PA）各有前端、用户和业务数据库，提供真实业务API；NexusPilot负责执行、授权和记录。
@@ -101,7 +104,7 @@ JSON/SSE结果、SQL空正文/对象引用、取消后无后续请求，以及�
 | AgentFileToolService.execute | 记录调用、检查已加载版本、Pydantic参数、超时/结果大小；分发到内置实现；Attempt+Provider调用ID唯一 | 保留该执行生命周期，提取可复用分发部分，增加remote_http/task_container执行器；不能复制第二套循环；远程错误不能落入file_unavailable |
 | general_agent与快速回复 | 共用Gateway和文件工具能力；Agent有审核/委派/笔记/来源/取消 | 扩展同一目录/执行入口；首批远程App仅显式授权的general_agent使用，不默认向所有快速回复开放 |
 | MySQL/MinIO | users归属及Run/Task/Attempt/llm_tool_calls；正文通过body_ref_json保存到MinIO | App映射、授权、固定工具身份、必要远程尝试与未知结果状态；复用正文服务，不保存业务正文到SQL |
-| 身份 | user_auth_identities为本地登录；没有application_user_mappings | 独立服务调用方认证、外部用户映射和Run的可信App身份；不能复用关闭登录时的共享owner |
+| 身份 | 本地登录及application_user_mappings已有实现；个人Key复用owner授权 | 细分授权管理待实施；不能复用关闭登录时的共享owner |
 | 执行环境 | deployments/task-runtime已有本地Python/Shell执行器，不是模型可调用API | Agent身份绑定、受控执行器通信、Tool Call/Artifact保存与停止接入仍未实现 |
 
 当前范围不依赖Redis/Dragonfly：持久身份、授权和执行状态用MySQL；后续若缓存目录，也必须支持撤销生效，不能把缓存作为授权依据。
@@ -152,7 +155,7 @@ ToolDefinition本身不含服务配置。既有describe_tools输出需同步调�
 
 ### 远程执行与接口草案
 
-拟新增App后端入口，例如`POST /api/v1/app/runs`（尚不存在）：认证服务调用方后，从其App作用域接受external_user_id、
+`POST /api/v1/app/runs`已有首批实现（见文首）；下列完整目标设计还包含App作用域的external_user_id、
 agent配置、问题与业务授权，生成内部owner和固定Run身份，再调用现有工作流创建服务。
 查询、SSE、取消同样检查调用App和owner；浏览器不能用该服务凭据。原生会话API保持不变。
 第一版NexusPilot将受信operation映射到业务API；业务方可接受下面统一信封，也可通过静态Adapter映射已有API，不能假装已有统一路由。

@@ -28,6 +28,9 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks imp
 )
 from nexuspilot_api.features.identity.routers.application_runs import router as application_router
 from nexuspilot_api.features.identity.routers.authentication import router as authentication_router
+from nexuspilot_api.features.identity.routers.personal_api_keys import (
+    router as personal_keys_router,
+)
 from nexuspilot_api.infrastructure.database import database_session_factory, engine
 from nexuspilot_api.infrastructure.provider_registry import (
     create_price_catalog,
@@ -73,6 +76,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(authentication_router)
+app.include_router(personal_keys_router)
 app.include_router(application_router)
 app.include_router(api_router)
 

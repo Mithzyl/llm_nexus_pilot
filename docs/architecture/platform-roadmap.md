@@ -57,7 +57,7 @@
 | 多模型对话 | Model Gateway、生成/SSE、模型目录、思考设置、Context 快照、System Prompt 和 Evaluation 基础 | System Prompt 场景默认选择策略、对象型 Message 产品读取及完整真实 Provider 矩阵尚未补齐 |
 | Agent 工作流 | `model_only_v1`、规划/工作节点/交接/验证/审核/汇总、最多两个无依赖工作节点并行、取消和持久活动；附件自动启用只读循环；本地新增逐结论引用、快照/范围检查、Handoff 保留及 Reviewer 补读 | 新版确定性测试及本地真实 DeepSeek/MySQL/MinIO 分段 TXT 样例通过；旧服务器两次结构失败记录保留，未部署新版；事件回放不代表断线继续或重启恢复 |
 | Web 对话 | 对话/推理显示、Markdown、代码块工具栏、独立运行与 Context 证据、文件上传与浏览器登录；Agent 逐条结论、审核意见与授权原文展开 | 新来源面板本地浏览器验证通过；最终答案逐句引用、跨刷新提交 key、完整执行恢复、项目文件页面、完整 Evaluation 视图和语法高亮仍有缺项 |
-| 身份与资源权限 | 预置账号、本地密码、Cookie 会话、CSRF、登录限制、退出/撤销/改密、BFF 与 FastAPI 资源主体授权 | 个人 API Key/scope、账户安全页面、完整目标部署隔离矩阵未完成 |
+| 身份与资源权限 | 预置账号、本地密码、Cookie会话、资源授权；个人API Key/read/execute本批后端已实现 | 本批验收见Phase5；账户安全页面、完整目标部署隔离矩阵未完成 |
 | 文件输入 | 私有上传、MinIO 原件/固定解析结果、下载删除、上传失败清理、两种模式及同会话后续文字引用和 Context 记录 | 逻辑版本历史、跨文件缓存、大文件选择、OCR、PDF 结构化表格/完整目录、项目目录尚未完成 |
 | 本地解析环境 | PDF/Office 共用专用 Socket 和固定无网络容器；2026-10-07 本地四格式及两种模式 Context 检查记录；文件工具复用固定解析结果 | 通用 Python/Shell 与任务快照有本地执行器实现，未接入 Agent／数据库授权／Artifact，也未部署；不等于工作流跨进程恢复 |
 | 部署基础 | 2026-10-12 已部署专用 PDF/Office 执行器，目标环境快速回复首轮 DOCX、续聊 PDF 通过；既有自签 HTTPS 和认证保留 | Agent 服务器验收未通过；可信证书、异机备份恢复、独立外网扫描和完整公开发布验收未完成 |
@@ -87,7 +87,7 @@ Python/Shell仍沿用已有任务容器执行器，另行接DB授权与MinIO产�
 | 长任务可靠执行 | 未开始 | Workflow 执行交给 Worker，创建与观察分开；提交幂等、断线继续、租约/取消/恢复 | 刷新/断线不重复提交或取消，重启后恢复同一任务，未知副作用不盲目重跑 | [后台执行计划](../implementation/phase-10-rabbitmq-task-execution-plan.md)；工具接入由工具主计划验收 |
 | 个人项目与文件能力 | 进行中（基础文件对话已有实现） | 项目归属与受控目录、导入快照/输出确认写回、逻辑版本与大文件选择；OCR/复杂结构按样本能力后续启用 | 用户能选择项目文件，运行使用固定输入，结果不会偷偷覆盖源文件；权限、删除和历史来源明确 | [本页项目设计](#文件上传与个人项目工作区设计)、[文件输入详细规则](../implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日) |
 | 对话与模型产品补齐 | 进行中 | 对象型 Message 读取、后端 System Prompt 场景策略、Evaluation 产品视图、语法高亮及必要可访问性检查 | 已保存内容可可靠读取，模式/错误明确，内部 Prompt 不暴露；恢复部分随后台执行一起交付 | [模型与 Context](../implementation/phase-2-llm-core-capabilities.md)、[Web](../frontend/phase-4-web-ui-plan.md) |
-| 账号与安全管理补齐 | 进行中 | 个人 API Key/scope、账户安全页面、项目权限；扩展资源时补双用户隔离测试 | 每种新增资源的读写/工具/产物均按真实主体授权，撤销生效；界面不能代替 API 检查 | [身份与授权](../implementation/phase-5-platform-identity-credentials.md) |
+| 账号与安全管理补齐 | 进行中 | 个人Key后端本批验收；账户页面和扩展项目权限后续处理，Provider用户凭据继续暂停 | 新资源读写/工具/产物按真实主体授权；Key撤销拒绝新请求，不自动取消在途任务 | [身份与授权](../implementation/phase-5-platform-identity-credentials.md) |
 | 运维诊断与缓存评估 | 未开始（现有日志/用量/活动记录保留） | 关联 trace/metrics、错误诊断、Provider 缓存统计与稳定前缀样本比较 | 能区分模型、工具、解析、队列错误；缓存分子/分母来源明确，不把未报告字段算作零或伪造命中 | 本页运维要求与既有 Agent 用量规则；需要实施时补同主题详细设计 |
 | 目标环境发布验收 | 进行中（已授权发布完成，Agent 验收失败） | 修复并重新验收 Agent；补可信证书、备份恢复、外网端口扫描与完整多用户隔离，新的发布需授权 | 按目标架构/真实服务给出逐项结果；不能以本机容器通过替代服务器通过 | [首次上线清单](../implementation/initial-release-checklist.md)、[部署记录](../implementation/server-deployment-20261012.md) |
 

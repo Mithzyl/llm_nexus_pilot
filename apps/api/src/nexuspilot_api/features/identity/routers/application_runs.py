@@ -29,6 +29,8 @@ from nexuspilot_api.services.run_service import cancel_run, create_run
 
 async def authenticate_application(request: Request, db: DatabaseSessionDependency):
     """Verify the backend and subject, then authorize route resources before execution."""
+    if request.cookies.get("nexuspilot_session"):
+        raise HTTPException(400, "Browser and application identities cannot be combined")
     app_id = request.headers.get("x-application-id", "")
     config = application_tool_configurations().get(app_id)
     token = request.headers.get("authorization", "")

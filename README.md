@@ -145,6 +145,29 @@ X-Internal-API-Key: apps/api/.env 中独立配置的 NEXUSPILOT_INTERNAL_API_KEY
 
 公共和内部密钥必须不同，否则应用配置校验失败。
 
+### 个人 API Key（程序调用）
+
+确认数据库地址并备份，执行 `make api-migrate` 到 `20261023_0026`（包含 App 迁移0025），
+在 `apps/api/.env` 启用 `NEXUSPILOT_AUTHENTICATION_ENABLED=true` 并重启 API。
+使用预置账号登录；本批不新增前端设置页。登录用户携带 Cookie、允许的 Origin 和会话 CSRF 请求头调用：
+
+```text
+POST /api/v1/me/api-keys
+{"name":"my-script","scopes":["read","execute"],"expires_at":"2030-01-01T00:00:00Z"}
+GET /api/v1/me/api-keys?offset=0&limit=50
+DELETE /api/v1/me/api-keys/{api_key_id}
+```
+
+expires_at 可省略，提供时必须是未来的带时区时间。创建响应 `key` 只返回一次原文；
+响应丢失只能从列表找到 ID 后撤销重建。程序使用 `Authorization: Bearer np_...`，
+不带 Cookie，不需要额外部署 X-API-Key；内部管理接口不接受个人 Key。
+read 允许业务查询，execute 允许业务写入、上传、模型运行及取消，通常同时申请两者。
+scope 不扩大资源归属，个人 Key 不能管理 Key 或密码。普通回复和 Agent 复用已有请求字段与平台 Provider，
+不复制供应商凭据给用户。用户 ID 必须与 Key owner 一致。
+到期、撤销、停用后拒绝新请求；已接受任务不自动取消，沿用显式取消。
+App 继续使用独立 /api/v1/app/* 身份，不能混用个人 Key；默认免登录模式不启用个人 Key。
+本批没有升级开发数据库或部署服务器，先完成上述迁移才能使用新增接口。
+
 浏览器认证配置仅位于 `apps/api/.env`，Web 根据 `/auth/me` 返回的访问方式显示界面，不维护第二个开关。开发环境允许显式列出的 HTTP Origin；生产环境必须启用 `NEXUSPILOT_AUTHENTICATION_ENABLED=true`、`NEXUSPILOT_AUTHENTICATION_COOKIE_SECURE=true`，并将 `NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS` 配置为实际 HTTPS 站点。数据库只保存 Argon2id 密码校验值、会话令牌摘要和审计指纹，不保存密码、Cookie 原文或跨站请求伪造防护令牌原文。启用登录后不会自动转移本地旧对话，认证失败不会降级为免登录；本地 owner 停用或已绑定密码账号时明确拒绝免登录访问。
 
 分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。

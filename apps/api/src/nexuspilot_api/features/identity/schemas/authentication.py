@@ -60,4 +60,17 @@ class LocalWorkspacePrincipalRead(BaseModel):
     scopes: list[str]
 
 
-WorkspacePrincipalRead = AuthenticatedPrincipalRead | LocalWorkspacePrincipalRead
+class PersonalKeyPrincipal(BaseModel):
+    """Identify a credential owner without exposing the credential to business handlers."""
+
+    user_id: str
+    display_name: str
+    authentication_method: Literal["personal_api_key"] = "personal_api_key"
+    api_key_id: str
+    scopes: list[str]
+    login_session_id: None = None
+
+
+WorkspacePrincipalRead = (
+    AuthenticatedPrincipalRead | LocalWorkspacePrincipalRead | PersonalKeyPrincipal
+)

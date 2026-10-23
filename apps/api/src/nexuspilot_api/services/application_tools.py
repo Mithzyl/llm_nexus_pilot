@@ -135,6 +135,8 @@ def application_tool_configurations():
         configs = {}
         for app_id, value in raw.items():
             config = ApplicationToolConfiguration.model_validate(value)
+            if config.inbound_key.get_secret_value().startswith("np_"):
+                raise ValueError("Application credentials cannot use the personal key prefix")
             allowed = {t.name for t in STATIC_APP_TOOLS[app_id]}
             if not config.operations or not set(config.operations) <= allowed:
                 raise ValueError("Unknown operation")
