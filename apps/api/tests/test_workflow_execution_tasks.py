@@ -22,7 +22,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
     action,
     workflow_mode,
 ):
-    """Legacy, main and delegated execution survive observer loss and retain cancellation usage."""
+    """Observer loss preserves work; explicit cancellation overrides opted-in draft continuation."""
     from test_agent_workflows import ReleasableWorkerProvider, scripted_registry, workflow_payload
     from test_api import create_test_run
 
@@ -60,7 +60,7 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
             return await original_generate(request)
 
         provider.generate = delayed_general
-        request_payload = general_payload(stream=True)
+        request_payload = general_payload(stream=True, partial_response_policy="continue_once")
         if workflow_mode == "general_delegated":
             request_payload["role_bindings"]["planner"] = dict(
                 request_payload["role_bindings"]["controller"]
@@ -77,9 +77,15 @@ async def test_disconnected_workflow_persists_result_or_explicit_cancellation(
             """Return known billable usage on a provider failure after explicit cancellation."""
             response = await generate(request)
             if request.metadata["agent_node_execution_key"].startswith(worker_key):
-                raise ModelProviderError(
-                    "invalid_json", "Synthetic late failure", response=response
+                error = ModelProviderError(
+                    "network_error", "Synthetic late failure", response=response,
                 )
+                error.stream_progress = {
+                    "schema_version": "model_stream_progress.v1", "response_complete": False,
+                    "text": "Late incomplete response", "tool_fragments": [],
+                    "usage": {}, "elapsed_ms": 1,
+                }
+                raise error
             return response
 
         provider.generate = late_failure

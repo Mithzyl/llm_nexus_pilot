@@ -54,6 +54,7 @@ class AgentWorkflowCreate(StrictContract):
     ]
     reasoning: ReasoningConfiguration | None = None
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
+    partial_response_policy: Literal["stop", "continue_once"] = "stop"
     max_nodes: int = Field(default=32, ge=10, le=32)
     max_model_calls: int = Field(default=0, ge=0,
         description="Zero means no call-count limit; positive values are explicit caller budgets.")
@@ -78,6 +79,8 @@ class AgentWorkflowCreate(StrictContract):
             return self
         if self.execution_profile == "general_tools_v1":
             raise ValueError("general_tools_v1 requires general_agent")
+        if self.partial_response_policy != "stop":
+            raise ValueError("Partial response continuation requires general_agent")
 
         required_roles = {"controller"}
         if not {"planner", "researcher"}.intersection(self.role_bindings):

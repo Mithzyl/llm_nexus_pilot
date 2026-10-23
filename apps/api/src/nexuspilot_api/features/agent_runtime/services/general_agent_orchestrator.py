@@ -461,6 +461,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 ),
             ),
             terminal_tool_name="submit_review" if task.assigned_role == "reviewer" else None,
+            partial_response_policy=payload.partial_response_policy,
         )
         return loop.response
 

@@ -41,9 +41,12 @@ def serialize_agent_generated_json(value: Any) -> str:
 
 
 def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
-    """Hash logical input while preserving v1.0 hashes without the new refinement setting."""
+    """Hash logical input while preserving old identities for default-stop continuation."""
 
     canonical_payload = payload.model_dump(mode="json", exclude={"stream"})
+    # Default stop preserves request identities created before continuation existed.
+    if payload.partial_response_policy == "stop":
+        canonical_payload.pop("partial_response_policy", None)
     if payload.workflow_version == "1.0.0":
         canonical_payload.pop("max_workflow_rounds", None)
     serialized = serialize_agent_generated_json(canonical_payload)

@@ -39,6 +39,8 @@
 - execution_profile = general_tools_v1
 - review_policy = always / on_verification_failure / never
 - idempotency_key、stream 和实际已登记模型的 role_bindings 沿用原接口。
+- partial_response_policy = stop（默认）或 continue_once；仅新general_agent接受后者。
+  它授权每个Task在原期限内最多一次从已保存的中断纯文本继续，不是工具调用轮数限制。
 
 必须提供 controller 模型绑定，非 never 时还需 reviewer 绑定。Controller 绑定在此表示主 Agent 的模型，不表示已调用独立规划节点。旧 model_only 版本和默认请求不变；附件自动启用旧工具配置的逻辑不覆盖新定义。运行从持久请求恢复固定配置，不接受途中改审核策略。
 
@@ -170,8 +172,23 @@ Messages分别记录stop_reason和message_stop_received；GenerateContent记录f
 适配器仍执行正文、工具参数及结构化输出校验，通过后才返回ModelResponse。
 快速回复和Agent使用相同适配器，不重发请求，不修改任务终态检查。
 取消、读流异常、缺失结束信号、截断输出及非法工具参数不转换成功。
-其他协议未启用此关闭错误恢复条件；存储阶段中断和未完成草稿的受控续接仍未实现。
+其他协议未启用此关闭错误恢复条件；存储阶段中断仍未实现恢复。
 这不是对上次Strata零事件network_error的修复，也不宣称真实供应商已复现关闭阶段故障。
+
+2026-10-23受控纯文本续接已接入新Agent，确定性测试通过，真实Strata续接尚未验收：
+
+- 创建请求须显式指定partial_response_policy=continue_once，固定保存到既有request_json；
+  缺省stop不改变旧调用和历史请求身份，旧工作流拒绝启用，不修改前端默认行为。
+- 只处理network_error/timeout且已持久化的失败Attempt，按本Run/Task/节点/请求轮次精确查找。
+  MinIO中的model_stream_progress.v1必须有非空正文、response_complete=false且没有工具片段。
+  只收到推理、零输出、对象未保存、取消、任务到期或第二次中断均不继续。
+- 原失败Attempt、未知用量和已完成工具记录保留；草稿作为明确标注的未完成数据加入下一次实际请求，
+  要求完整替代答案而不是盲目拼接后缀。原来源、工具历史、审核策略、调用预算和截止时间不变。
+  每次实际调用仍写新Attempt，取消检查仍在下一次模型请求及工具前执行。
+- 新事件agent.draft.continuation.requested只含源Attempt ID和字符数，不写正文或私有推理。
+  没有新增表、迁移、桶或哈希检查；原正文继续保存在MinIO。
+- 该实现不复活已终止Run，不自动重置期限，也不提供跨进程或任务到期后的恢复接口。
+  任务到期后需要显式授权的恢复入口仍未实现。继续一次失败仍按原错误路径终止。
 
 实施范围与处理要求：
 
