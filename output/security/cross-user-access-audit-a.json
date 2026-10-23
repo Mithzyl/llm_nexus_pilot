@@ -4,7 +4,7 @@
     {
       "actor": "B-own",
       "method": "GET",
-      "path": "sessions/5a655d5a-12a7-4e5d-9cee-6eafd5e65190",
+      "path": "sessions/af00ca40-7c8c-452f-b30e-98bee026c725",
       "expected": [
         200
       ],
@@ -26,7 +26,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad",
       "expected": [
         401,
         403,
@@ -38,7 +38,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/messages",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/messages",
       "expected": [
         401,
         403,
@@ -50,7 +50,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/messages/latest",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/messages/latest",
       "expected": [
         401,
         403,
@@ -62,7 +62,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/latest-run",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/latest-run",
       "expected": [
         401,
         403,
@@ -74,7 +74,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "runs/5ddacb16-fbc5-4b53-bb00-82b83b61e30c",
+      "path": "runs/dadce215-ea6c-4d5e-8c22-38385be3c9bb",
       "expected": [
         401,
         403,
@@ -86,7 +86,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "runs/5ddacb16-fbc5-4b53-bb00-82b83b61e30c/tasks",
+      "path": "runs/dadce215-ea6c-4d5e-8c22-38385be3c9bb/tasks",
       "expected": [
         401,
         403,
@@ -98,7 +98,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "tasks/d3217d6c-17c3-4a29-99db-90676668c9d6",
+      "path": "tasks/4dcb64a6-124a-464f-8aa6-f8236513df0b",
       "expected": [
         401,
         403,
@@ -110,7 +110,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "attempts/a8b1bbeb-421c-40c7-95a0-f6edcf300eac",
+      "path": "attempts/d5c09d91-fdae-4446-8eec-5f64fb5d2eaa",
       "expected": [
         401,
         403,
@@ -122,7 +122,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "artifacts/b3593096-6a0c-4184-a694-fe2fb5946d52",
+      "path": "artifacts/57670a10-9cdc-4a80-b5a8-fa6e67f09447",
       "expected": [
         401,
         403,
@@ -134,7 +134,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "artifacts/b3593096-6a0c-4184-a694-fe2fb5946d52/content",
+      "path": "artifacts/57670a10-9cdc-4a80-b5a8-fa6e67f09447/content",
       "expected": [
         401,
         403,
@@ -146,7 +146,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "context-builds/53bed1cd-8576-477b-8232-0c70a21b7676",
+      "path": "context-builds/50f77a2c-abf9-47dd-ba79-5dee80cd5a29",
       "expected": [
         401,
         403,
@@ -158,7 +158,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "context-builds/53bed1cd-8576-477b-8232-0c70a21b7676/evidence?user_id=audit-a",
+      "path": "context-builds/50f77a2c-abf9-47dd-ba79-5dee80cd5a29/evidence?user_id=audit-a",
       "expected": [
         401,
         403,
@@ -170,7 +170,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "memories/29b2587e-d632-4ce6-b65f-32a7ad2683df",
+      "path": "memories/2634e594-ac99-4a40-b6fa-dbd6d5114a51",
       "expected": [
         401,
         403,
@@ -182,7 +182,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "knowledge-documents/e688c0eb-1cbf-446c-be1f-1b05e0703d19",
+      "path": "knowledge-documents/ff7b2d5d-9907-4578-b43c-8f6eada5d420",
       "expected": [
         401,
         403,
@@ -194,7 +194,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/memory",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/memory",
       "expected": [
         401,
         403,
@@ -206,7 +206,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "runs/5ddacb16-fbc5-4b53-bb00-82b83b61e30c/agent-workflow",
+      "path": "runs/dadce215-ea6c-4d5e-8c22-38385be3c9bb/agent-workflow",
       "expected": [
         401,
         403,
@@ -218,7 +218,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "agent-workflows/5440fb46-0458-4aa3-8b85-2dd97944c0e1",
+      "path": "agent-workflows/cec2e999-fe83-4a5f-8e1d-b0d02e699ca5",
       "expected": [
         401,
         403,
@@ -230,7 +230,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "agent-workflows/5440fb46-0458-4aa3-8b85-2dd97944c0e1/result",
+      "path": "agent-workflows/cec2e999-fe83-4a5f-8e1d-b0d02e699ca5/result",
       "expected": [
         401,
         403,
@@ -242,7 +242,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "agent-workflows/5440fb46-0458-4aa3-8b85-2dd97944c0e1/nodes",
+      "path": "agent-workflows/cec2e999-fe83-4a5f-8e1d-b0d02e699ca5/nodes",
       "expected": [
         401,
         403,
@@ -254,7 +254,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "agent-workflows/5440fb46-0458-4aa3-8b85-2dd97944c0e1/events",
+      "path": "agent-workflows/cec2e999-fe83-4a5f-8e1d-b0d02e699ca5/events",
       "expected": [
         401,
         403,
@@ -266,7 +266,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f",
       "expected": [
         401,
         403,
@@ -278,7 +278,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78/content",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f/content",
       "expected": [
         401,
         403,
@@ -290,7 +290,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "artifacts/f1da976f-1111-4b2d-a822-9335a54e3e78/content",
+      "path": "artifacts/d07a4365-fd9e-49db-9a40-d3539395534f/content",
       "expected": [
         401,
         403,
@@ -302,7 +302,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "runs/3b96eece-4ab5-4303-86c8-09f05544dd91",
+      "path": "runs/94a6928c-05df-4177-9027-a14b830097da",
       "expected": [
         401,
         403,
@@ -314,7 +314,7 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "projects/af8f059d-c1c6-4f05-8a3e-a310e790f18f",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94",
       "expected": [
         401,
         403,
@@ -326,7 +326,79 @@
     {
       "actor": "B-to-A",
       "method": "GET",
-      "path": "evaluations/24306dd2-6675-434d-8314-4d2237a5ae5a",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94/result",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94/nodes",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94/nodes/38b89761-8d09-4616-a42f-bf1e381a44f7",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94/events",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "agent-workflows/d12b7ad0-9dd5-40a5-96cb-1718abec4d94/nodes/38b89761-8d09-4616-a42f-bf1e381a44f7/claim-sources?claim_key=u1",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "projects/4b71c6f6-3d1b-44cf-86bb-a9a605ae40c3",
+      "expected": [
+        401,
+        403,
+        404
+      ],
+      "actual": 404,
+      "passed": true
+    },
+    {
+      "actor": "B-to-A",
+      "method": "GET",
+      "path": "evaluations/f5ccf367-546c-4721-882e-3138c6d84cdd",
       "expected": [
         401,
         403,
@@ -338,7 +410,7 @@
     {
       "actor": "B-list",
       "method": "GET",
-      "path": "attempts?run_id=5ddacb16-fbc5-4b53-bb00-82b83b61e30c",
+      "path": "attempts?run_id=dadce215-ea6c-4d5e-8c22-38385be3c9bb",
       "expected": "deny or exclude A",
       "actual": 404,
       "contains_A": false,
@@ -347,7 +419,7 @@
     {
       "actor": "B-list",
       "method": "GET",
-      "path": "artifacts?run_id=5ddacb16-fbc5-4b53-bb00-82b83b61e30c",
+      "path": "artifacts?run_id=dadce215-ea6c-4d5e-8c22-38385be3c9bb",
       "expected": "deny or exclude A",
       "actual": 404,
       "contains_A": false,
@@ -413,7 +485,7 @@
     {
       "actor": "B-no-internal-key",
       "method": "PATCH",
-      "path": "projects/af8f059d-c1c6-4f05-8a3e-a310e790f18f",
+      "path": "projects/4b71c6f6-3d1b-44cf-86bb-a9a605ae40c3",
       "expected": [
         401,
         403,
@@ -425,7 +497,7 @@
     {
       "actor": "B-to-A",
       "method": "PATCH",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad",
       "expected": [
         401,
         403,
@@ -437,7 +509,7 @@
     {
       "actor": "B-to-A",
       "method": "POST",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/messages",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/messages",
       "expected": [
         401,
         403,
@@ -449,7 +521,7 @@
     {
       "actor": "B-forged-owner",
       "method": "POST",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/turns",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/turns",
       "expected": [
         401,
         403,
@@ -461,7 +533,7 @@
     {
       "actor": "B-to-A",
       "method": "POST",
-      "path": "runs/3b96eece-4ab5-4303-86c8-09f05544dd91/cancel",
+      "path": "runs/94a6928c-05df-4177-9027-a14b830097da/cancel",
       "expected": [
         401,
         403,
@@ -473,7 +545,7 @@
     {
       "actor": "B-to-A",
       "method": "PUT",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78/content",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f/content",
       "expected": [
         401,
         403,
@@ -485,7 +557,7 @@
     {
       "actor": "B-to-A",
       "method": "DELETE",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f",
       "expected": [
         401,
         403,
@@ -497,7 +569,7 @@
     {
       "actor": "B-to-A",
       "method": "DELETE",
-      "path": "auth/sessions/f641ca23-736b-400d-a349-7cc2d1cfb97e",
+      "path": "auth/sessions/fc010dcb-9fc0-4a1d-8e32-a193128bb619",
       "expected": [
         401,
         403,
@@ -533,7 +605,7 @@
     {
       "actor": "B-to-A",
       "method": "POST",
-      "path": "runs/af46d2a8-0b28-49a6-b11d-59413521a861/tasks",
+      "path": "runs/06a79931-d626-4c68-99ed-2a1cc12589e8/tasks",
       "expected": [
         401,
         403,
@@ -545,7 +617,7 @@
     {
       "actor": "B-to-A",
       "method": "DELETE",
-      "path": "memories/29b2587e-d632-4ce6-b65f-32a7ad2683df",
+      "path": "memories/2634e594-ac99-4a40-b6fa-dbd6d5114a51",
       "expected": [
         401,
         403,
@@ -557,7 +629,7 @@
     {
       "actor": "B-to-A",
       "method": "PATCH",
-      "path": "knowledge-documents/e688c0eb-1cbf-446c-be1f-1b05e0703d19",
+      "path": "knowledge-documents/ff7b2d5d-9907-4578-b43c-8f6eada5d420",
       "expected": [
         401,
         403,
@@ -581,7 +653,7 @@
     {
       "actor": "B-to-A",
       "method": "POST",
-      "path": "runs/af46d2a8-0b28-49a6-b11d-59413521a861/cancel",
+      "path": "runs/06a79931-d626-4c68-99ed-2a1cc12589e8/cancel",
       "expected": [
         401,
         403,
@@ -605,7 +677,7 @@
     {
       "actor": "service-key-only-no-login",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f/messages/latest",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad/messages/latest",
       "expected": [
         401,
         403,
@@ -617,7 +689,7 @@
     {
       "actor": "service-key-only-no-login",
       "method": "GET",
-      "path": "context-builds/53bed1cd-8576-477b-8232-0c70a21b7676",
+      "path": "context-builds/50f77a2c-abf9-47dd-ba79-5dee80cd5a29",
       "expected": [
         401,
         403,
@@ -629,7 +701,7 @@
     {
       "actor": "service-key-only-no-login",
       "method": "GET",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f",
       "expected": [
         401,
         403,
@@ -641,7 +713,7 @@
     {
       "actor": "no-key-no-login",
       "method": "GET",
-      "path": "sessions/2ee653ea-8a61-4a53-ab3c-93b58b0c353f",
+      "path": "sessions/a77b909e-2d63-4d86-a55a-d7f1c44cb8ad",
       "expected": [
         401,
         403,
@@ -653,7 +725,7 @@
     {
       "actor": "no-key-no-login",
       "method": "GET",
-      "path": "files/f1da976f-1111-4b2d-a822-9335a54e3e78",
+      "path": "files/d07a4365-fd9e-49db-9a40-d3539395534f",
       "expected": [
         401,
         403,
@@ -736,6 +808,12 @@
       "methods": [
         "get",
         "patch"
+      ]
+    },
+    {
+      "path": "/api/v1/files/capabilities",
+      "methods": [
+        "get"
       ]
     },
     {
@@ -1309,6 +1387,12 @@
     },
     {
       "path": "/api/v1/internal/agent-runs/{agent_run_id}/memory-packet",
+      "methods": [
+        "get"
+      ]
+    },
+    {
+      "path": "/api/v1/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources",
       "methods": [
         "get"
       ]
