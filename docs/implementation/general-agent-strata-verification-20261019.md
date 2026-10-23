@@ -782,11 +782,12 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
   未改动其他模型登记或正常API的Provider注册。
 - Playwright可见实际两个主Agent节点与两个独立审核节点，最终答案刷新恢复一致，来源显示原文支持；
   证据`output/playwright/general-agent-seeded-refinement-20261023-{running,completed,restored,process}.yml`。
-- **新发现的剩余问题**：4条真实Strata Attempt的estimated_cost均为null，但工作流aggregate_usage
-  和页面预估费用显示0；不能据此声称免费。需要检查后端汇总如何保留未知费用，
-  不用前端隐藏或硬编码替代真实统计。此问题未在本批修复。
+- **已记录但不纳入本次实现的问题**：4条真实Strata Attempt的estimated_cost均为null，
+  但工作流aggregate_usage和页面预估费用显示0；不能据此声称免费。
+  用户明确要求不修复费用问题，本次保留观察记录，不修改费用汇总或前端显示。
+  联调继续记录耗时、供应商报告的Token用量及未知项，不将未知费用换算为实际支出。
 - 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
-  新Agent全部完成；存储/权限完整验收、受控续接和费用未知处理仍需继续。
+  新Agent全部完成；存储/权限完整验收、受控续接仍需继续，费用未知处理不属于本次验收条件。
 
 ### 独立固定候选运行器（2026-10-23，真实运行待执行）
 
