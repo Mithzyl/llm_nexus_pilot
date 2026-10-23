@@ -761,6 +761,35 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 来源批准规则的Strata复验（2026-10-23）
+
+- Xcode许可阻塞解除后确认Git工作区干净、HEAD为06b4167。本地MySQL迁移为
+  20261018_0024=head，未执行迁移；启动现有unified-local解析镜像的执行器，Socket为
+  `/tmp/nexuspilot-general-agent-20261023/executor.sock`，重新启动API与前端。
+  两条九月STARTED历史记录未修改。没有部署服务器或修改前端。
+- 使用相同完整问题、FULLTEXT03.pdf、planner委派、条件审核策略，只发起一次Strata工作流。
+  Run `d2f675a4-0ce6-48ae-a7cd-41b414dfebf6`，Workflow
+  `769a6fa4-526e-4782-a564-15c2d4495a79`，Session
+  `72c6d18e-25eb-44ec-aea9-df80f1bc35f8`；报告
+  `/tmp/general-agent-citation-scope-strata-20261023.json`。
+- 运行completed，206.542秒，6次请求。输入53,058、输出10,946、合计64,004 Token，
+  缓存输入16,273；独立推理用量和实际费用未知。业务轮次1、内容修正0、格式修正0。
+  本次仍未触发真实内容返工，不能计为修正后交付通过。
+- 主Agent只读取前15块，planner使用传入原文完成Handoff；目录搜索/加载及实际输入查询完成。
+  Reviewer通过submit_review显式为两个引用单元提交S1，过渡语和平台输入事实使用空来源，
+  这次未发生漏填/替换引用。审核阶段的在途私有记录实际包含protocol_evidence，
+  收到终态之前finish_reason=null、done_marker_received=false，没有把这些观察当作完成。
+- 内容限制仍存在：回答将前15行的标题片段作为论文标题，但未补读第16行来核对完整标题。
+  因此本次证明执行和批准范围规则可用，不证明完整标题/主题核对充分，也不排除模型误读。
+  同一源PDF先前读取到的完整标题包含“using Large language models”，此次片段未涵盖该部分。
+  后续应区分片段引用与完整字段提取，不靠后端自动补写标题冒充模型已经读取。
+- 14条消息/节点/Handoff/工具正文SQL为空、MinIO对象和哈希通过；24个执行观察对象、
+  6份实际输入清单、2份候选输入快照随报告核对。Playwright运行中刷新继续跟踪，
+  完成及再次刷新后答案/审核记录恢复一致，证据
+  `output/playwright/general-agent-citation-scope-20261023-{running,refreshed,completed,restored}.yml`。
+- 本批只新增真实验证记录，未调用DeepSeek、未改业务代码、未推送或部署。
+  不继续重复相同付费问题来等待随机返工；真实内容修正验收仍需要明确可复核的测试条件。
+
 ### 来源传递核查与批准范围检查（2026-10-22）
 
 - 当前分支保留用户后续前端提交，开始时HEAD为8d6f8c9、工作区干净；本批不改前端。
