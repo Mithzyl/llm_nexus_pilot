@@ -10,6 +10,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from nexuspilot_models.errors import ModelProviderError
 
+# Compose resource routes before App routes reuse their workflow router. Loading
+# the App router first re-enters routers.__init__ while workflows is incomplete.
+from nexuspilot_api import routers as resource_routers
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import (
     ApplicationError,
@@ -36,7 +39,6 @@ from nexuspilot_api.infrastructure.provider_registry import (
     create_price_catalog,
     create_provider_registry,
 )
-from nexuspilot_api.routers import api_router
 from nexuspilot_api.services.provider_endpoint_service import (
     load_enabled_provider_base_urls,
 )
@@ -78,7 +80,7 @@ app = FastAPI(
 app.include_router(authentication_router)
 app.include_router(personal_keys_router)
 app.include_router(application_router)
-app.include_router(api_router)
+app.include_router(resource_routers.api_router)
 
 
 @app.exception_handler(RequestValidationError)

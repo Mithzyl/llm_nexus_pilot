@@ -1,0 +1,223 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "check": "login_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "create_key_0",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "list_key_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "bearer_me_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "session_create_0",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "run_create_0",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "file_reserve_0",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "file_upload_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "login_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "create_key_1",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "list_key_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "bearer_me_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "session_create_1",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "run_create_1",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "file_reserve_1",
+      "status": 201,
+      "passed": true
+    },
+    {
+      "check": "file_upload_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "own_resource_0_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "own_resource_0_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "own_resource_0_2",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_0_0",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_0_1",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_0_2",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_cancel_0",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "own_cancel_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "key_cannot_manage_0",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "identity_conflict_0",
+      "status": 400,
+      "passed": true
+    },
+    {
+      "check": "revoke_0",
+      "status": 204,
+      "passed": true
+    },
+    {
+      "check": "revoked_read_0",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "revoked_write_0",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "own_resource_1_0",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "own_resource_1_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "own_resource_1_2",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_1_0",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_1_1",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_resource_1_2",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "foreign_cancel_1",
+      "status": 404,
+      "passed": true
+    },
+    {
+      "check": "own_cancel_1",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "check": "key_cannot_manage_1",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "identity_conflict_1",
+      "status": 400,
+      "passed": true
+    },
+    {
+      "check": "revoke_1",
+      "status": 204,
+      "passed": true
+    },
+    {
+      "check": "revoked_read_1",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "check": "revoked_write_1",
+      "status": 401,
+      "passed": true
+    }
+  ],
+  "test_user_ids": [
+    "7e15497a-d8f6-421b-966b-2d9caf671e8f",
+    "722e4c29-7848-4c0f-9a7e-2e240bf54469"
+  ],
+  "provider_generation_requests": 0,
+  "transport": "real localhost HTTP",
+  "migration": "20261023_0026",
+  "cleanup": "test users disabled; personal keys and sessions revoked"
+}
