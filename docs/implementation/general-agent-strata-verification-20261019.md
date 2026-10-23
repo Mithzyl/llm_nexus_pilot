@@ -761,6 +761,23 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 固定种子接入实际API的离线验证（2026-10-23）
+
+- 新增真实ASGI工作流路径的测试，使用隔离SQLite、内存对象存储、解析文本附件和脚本化后续Provider；
+  不产生Strata/OpenAI网络调用。测试单独登记种子模型与后续模型/能力，未修改本地MySQL目录。
+- 接入测试发现两处夹具问题：推理登记不能随意设default_enabled=false；
+  第一轮判断应读取执行器workflow_round，而不是模型输入中不存在的workflow_round字段。
+  已按实际流程修正并保留其他Run/角色/轮次不替换的检查，未更改生产编排代码。
+- 实际过程为：种子文件读取、种子错误候选、后续Reviewer要求修正、后续主Agent改成30学分、
+  后续Reviewer批准。确认2轮、1次内容修正、5条Attempt，其中修正轮2次调用。
+  前两条使用独立verification-fixed-candidate模型，原始对象标记verification_seed及
+  provider_request_sent=false，用量0；后三条使用测试Strata绑定。不能将脚本化后续当作真实Strata验证。
+- 命令：
+  `PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python -m pytest -q apps/api/tests/test_refinement_seed.py apps/api/tests/test_review_submission.py --tb=short`
+  ——29项通过（7.19秒）。Ruff指出一处测试注释过长，改短后静态检查及diff检查通过。
+- 独立真实运行器仍需完成：本地MySQL模型登记的生命周期、真实Strata注册、Run隔离及报告。
+  本批未请求模型、未修改前端、未重启服务、未推送或部署；整体目标未完成。
+
 ### 固定候选验证组件首步（2026-10-23，入口仍在实现）
 
 - 新增`deployments/verification/refinement_seed.py`，正常API没有导入或启用它。

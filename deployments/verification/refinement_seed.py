@@ -99,7 +99,7 @@ def seed_first_turn(orchestrator_class, run_id, binding):
         if (
             workflow.run_id == target
             and task.assigned_role == "controller"
-            and values.get("workflow_round") == 1
+            and self.workflow_round == 1
         ):
             payload = payload.model_copy(
                 update={

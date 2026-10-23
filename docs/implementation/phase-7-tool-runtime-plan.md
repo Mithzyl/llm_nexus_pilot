@@ -319,6 +319,9 @@ Reviewer对引用单元显式提交S1，存储与浏览器恢复通过。但未�
 验证组件已开始实现于`deployments/verification/refinement_seed.py`：独立本地模型名称、
 真实原文前置检查及仅指定Run首轮controller的临时绑定，5项离线检查通过；
 模型登记、独立运行器及真实持久化/Strata调用尚未完成，正常API不会启用该组件。
+已补实际API的离线接入验证：种子读取/候选与后续审核、修正、再审核产生2轮、1次内容修正，
+5条Attempt的模型来源及原始对象分别核对，相关29项回归通过。后续Provider仍为脚本化测试，
+真实运行器与MySQL/MinIO/Strata验收没有因此完成。
 
 角色说明修复后的Strata样本不再重复搜索planner工具，但Reviewer输出说明文字、Markdown代码块及
 本批之外的决定，引起高成本格式修正，最终仍在期限内未完成。详见
