@@ -761,6 +761,33 @@ Schema、持久调用及字段校验，不再只靠提示词约束纯正文JSON�
 
 ## 尚未验收的完整目标
 
+### 固定候选后的真实Strata修正交付（2026-10-23）
+
+- 运行器代码8e02d7d，仅在独立进程中使用本地种子Provider；实际文件读取由正常工具执行。
+  Run `5b5f7eae-a5b7-42c8-a2c0-d59c089a05d1`，Workflow
+  `4cfb03b5-f739-451c-9f18-4195b4a7985a`，Session
+  `e789ca7e-1b4d-4ec3-be95-465b05bf9545`；报告
+  `/tmp/general-agent-seeded-refinement-strata-20261023.json`。
+- **本受控条件下修正交付通过**：本地种子读取标题页后写出300学分；真实Strata Reviewer
+  引用S1第8行要求改为30，真实Strata主Agent修改，再次审核后最终保存“Degree project 的学分为30学分[S1]”。
+  这证明实际返工流转，不代表首稿由Strata自然生成，也不是模型自然错误率评估。
+- 2条本地种子Attempt与4条真实Strata Attempt分别登记；总耗时57.838秒。
+  真实输入36,066、输出767、合计36,833 Token，缓存输入0；推理Token及实际费用未知。
+  状态completed，2轮、1次内容修正；第二次审核首次返回自然语言而非审核决定，
+  另发生1次格式修正并成功。原始正文、修正请求/完成事件和Attempt保留，未伪造JSON。
+  格式修正消耗输入7,036/输出369 Token；第2轮包含该格式修正，合计3次调用、输入27,213/输出524。
+  这两组统计范围重叠，不能相加当作总量。
+- 10条消息/节点/工具正文SQL为空且MinIO对象哈希通过，14个执行观察对象核对。
+  退出后查询verification-fixed-candidate已disabled；保留模型/能力记录用于解释历史种子Attempt。
+  未改动其他模型登记或正常API的Provider注册。
+- Playwright可见实际两个主Agent节点与两个独立审核节点，最终答案刷新恢复一致，来源显示原文支持；
+  证据`output/playwright/general-agent-seeded-refinement-20261023-{running,completed,restored,process}.yml`。
+- **新发现的剩余问题**：4条真实Strata Attempt的estimated_cost均为null，但工作流aggregate_usage
+  和页面预估费用显示0；不能据此声称免费。需要检查后端汇总如何保留未知费用，
+  不用前端隐藏或硬编码替代真实统计。此问题未在本批修复。
+- 本批没有DeepSeek/OpenAI网络调用，没有前端改动、推送或部署。受控真实返工通过不代表
+  新Agent全部完成；存储/权限完整验收、受控续接和费用未知处理仍需继续。
+
 ### 独立固定候选运行器（2026-10-23，真实运行待执行）
 
 新增`deployments/verification/check_seeded_refinement.py`，通过独立进程内ASGI调用实际API，
