@@ -119,28 +119,29 @@ async def get_project_memory_candidates(
     "/projects",
     response_model=ProjectRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=internal_key,
 )
 async def post_project(
     payload: ProjectCreate,
     db_session: DatabaseSessionDependency,
 ) -> ProjectRead:
-    """Create one minimal Project scope behind both API-key boundaries."""
+    """Create a personal project for the authenticated owner without enabling Memory."""
 
+    owner = db_session.info.get("authorized_user_id")
+    if owner:
+        payload = payload.model_copy(update={"owner_user_id": owner})
     return (await create_project(db_session, payload)).project
 
 
 @router.patch(
     "/projects/{project_id}",
     response_model=ProjectRead,
-    dependencies=internal_key,
 )
 async def patch_project(
     project_id: str,
     payload: ProjectUpdate,
     db_session: DatabaseSessionDependency,
 ) -> ProjectRead:
-    """Update mutable Project display fields behind both API-key boundaries."""
+    """Rename the project after the shared resource policy has checked its owner."""
 
     return await update_project(db_session, project_id, payload)
 

@@ -117,6 +117,7 @@ from nexuspilot_api.models.model_reasoning import (
     LlmProviderContinuationState,
     LlmReasoningBlock,
 )
+from nexuspilot_api.models.project_file import ProjectFile
 from nexuspilot_api.models.prompt_catalog import (
     LlmModelCatalogVersion,
     LlmPromptTemplate,
@@ -134,6 +135,7 @@ from nexuspilot_api.models.records import (
 from nexuspilot_api.models.user_file import UserFile
 
 __all__ = [
+    "ProjectFile",
     "AgentRunStatus",
     "AgentTurnStatus",
     "AgentTurnType",

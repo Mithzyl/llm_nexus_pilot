@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     python_runtime_socket: str | None = Field(default=None, min_length=1, max_length=100)
     python_execution_user_ids: list[str] = Field(default_factory=list)
     workflow_execution_backend: Literal["inline", "worker"] = "inline"
+    project_workspace_root: str | None = None
     user_file_quota_bytes: int = Field(default=500 * 1024 * 1024, ge=1)
     user_file_count_limit: int = Field(default=500, ge=1, le=500)
     model_max_retries: int = Field(default=2, ge=0, le=5)

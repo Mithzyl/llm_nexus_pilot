@@ -19,6 +19,7 @@ from nexuspilot_api.routers import (
     internal_audit,
     knowledge,
     model_attempts,
+    project_files,
     prompt_catalog,
     providers,
     responses,
@@ -48,6 +49,7 @@ api_router.include_router(model_attempts.router)
 api_router.include_router(run_artifacts.router)
 api_router.include_router(internal_audit.router)
 api_router.include_router(projects.router)
+api_router.include_router(project_files.router)
 api_router.include_router(user_memory.router)
 api_router.include_router(context_builds.router)
 api_router.include_router(knowledge.router)

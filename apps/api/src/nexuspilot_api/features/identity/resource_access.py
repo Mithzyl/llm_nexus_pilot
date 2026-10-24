@@ -75,6 +75,7 @@ RESOURCES = {
     "supersedes_memory_id": m.LlmMemory,
     "memory_retrieval_id": m.LlmMemoryRetrieval,
     "project_id": m.LlmProject,
+    "project_file_id": m.ProjectFile,
     "document_id": m.LlmKnowledgeDocument,
     "knowledge_document_id": m.LlmKnowledgeDocument,
 }
@@ -207,6 +208,16 @@ async def authorize_resource_request(
         return
     if policy not in SHARED_ROUTES | OWNED_ROUTES:
         raise HTTPException(403, "接口尚未配置访问权限。")
+    # Preserve the pre-existing trusted project provisioning entry while allowing owner-scoped UI
+    # create/rename. A browser or Bearer identity can never upgrade via the internal header.
+    if (
+        policy in {("POST", "/projects"), ("PATCH", "/projects/{project_id}")}
+        and request.headers.get("x-internal-api-key")
+        and not request.cookies.get("nexuspilot_session")
+        and not request.headers.get("authorization")
+    ):
+        await require_internal_api_key(request.headers.get("x-internal-api-key"))
+        return
     principal = await get_workspace_principal(request, db, get_settings())
     db.info[OWNER_SESSION_KEY] = principal.user_id
     if principal.authentication_method == "personal_api_key":

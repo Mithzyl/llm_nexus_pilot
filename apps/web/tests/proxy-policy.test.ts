@@ -46,5 +46,16 @@ test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("PATCH", ["sessions", "session-1"]), true);
   assert.equal(isAllowedProxyRoute("PATCH", ["sessions", "session-1", "messages"]), false);
   assert.equal(isAllowedProxyRoute("GET", ["memory", "facts"]), false);
-  assert.equal(isAllowedProxyRoute("POST", ["projects"]), false);
+  assert.equal(isAllowedProxyRoute("POST", ["projects"]), true);
+});
+
+/** Project product routes never expose internal Memory policy or arbitrary workspace binding. */
+test("projects expose explicit copies and conversations but not memory administration", () => {
+  assert.equal(isAllowedProxyRoute("POST", ["projects", "p", "files"]), true);
+  assert.equal(isAllowedProxyRoute("GET", ["projects", "p", "files", "f", "content"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["projects", "p", "files", "f", "materialize"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["projects", "p", "sessions"]), true);
+  assert.equal(isAllowedProxyRoute("PATCH", ["projects", "p", "memory-policy"]), false);
+  assert.equal(isAllowedProxyRoute("POST", ["projects", "p", "workspaces"]), false);
+  assert.equal(isAllowedProxyRoute("DELETE", ["projects", "p", "files", "f"]), false);
 });

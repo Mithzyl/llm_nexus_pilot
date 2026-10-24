@@ -20,6 +20,7 @@ class SessionCreate(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    project_id: str | None = Field(default=None, min_length=1, max_length=36)
 
 
 class SessionUpdate(BaseModel):
@@ -44,6 +45,7 @@ class SessionRead(ApiModel):
 
     session_id: str
     user_id: str
+    project_id: str | None = None
     title: str | None
     status: SessionStatus
     created_at: datetime

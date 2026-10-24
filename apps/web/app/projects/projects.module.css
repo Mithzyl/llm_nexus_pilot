@@ -1,0 +1,23 @@
+.page { max-width: 1200px; margin: 0 auto; padding: 28px; color: #222; background: #fff; height: 100dvh; overflow-y: auto; }
+.header { display: flex; align-items: center; gap: 28px; margin-bottom: 28px; }
+.header h1 { font-size: 28px; margin: 0; }
+.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 36px; }
+.layout aside { border-right: 1px solid #ddd; padding-right: 24px; }
+.form { display: grid; gap: 14px; margin-bottom: 24px; }
+.row { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; }
+.page label { display: grid; gap: 8px; min-width: 0; flex: 1; }
+.page input, .page select { width: 100%; min-width: 0; padding: 10px 12px; font: inherit; border: 1px solid #ccc; border-radius: 8px; background: #fff; }
+.page button { padding: 10px 14px; font: inherit; border: 1px solid #ccc; border-radius: 8px; background: #f8f8f8; cursor: pointer; overflow-wrap: anywhere; }
+.page button:disabled { opacity: .5; cursor: default; }
+.page button:focus-visible, .page a:focus-visible { outline: 2px solid #333; outline-offset: 3px; }
+.page h2 { font-size: 21px; margin-top: 28px; }
+.page p { line-height: 1.6; }
+.list { list-style: none; margin: 20px 0; padding: 0; }
+.list li { padding: 12px 0; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+.layout aside button { width: 100%; text-align: left; }
+.layout aside .selected { background: #222; color: #fff; }
+.file { display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+.file span { min-width: 0; overflow-wrap: anywhere; }
+.file small { display: block; margin-top: 6px; color: #666; }
+.error { color: #a82f22; background: #fff4f2; padding: 14px; border-radius: 8px; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .page { padding: 18px; } .layout { grid-template-columns: 1fr; gap: 24px; } .layout aside { border-right: 0; border-bottom: 1px solid #ddd; padding: 0 0 20px; } .file { align-items: start; flex-direction: column; } .header { gap: 18px; } }

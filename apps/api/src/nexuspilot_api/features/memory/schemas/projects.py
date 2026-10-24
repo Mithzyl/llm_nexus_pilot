@@ -26,16 +26,16 @@ class ProjectMemoryPolicyAction(str, enum.Enum):
 class ProjectCreate(BaseModel):
     """Validate creation of the minimal Project scope without auto-enabling Memory."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    owner_user_id: str = Field(min_length=1, max_length=128)
+    owner_user_id: str | None = Field(default=None, min_length=1, max_length=128)
     project_name: str = Field(min_length=1, max_length=255)
 
 
 class ProjectUpdate(BaseModel):
     """Validate the mutable Project display fields."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     project_name: str | None = Field(default=None, min_length=1, max_length=255)
 

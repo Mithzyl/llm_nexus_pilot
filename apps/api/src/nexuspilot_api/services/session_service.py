@@ -65,27 +65,49 @@ class MessageDatabasePage:
 async def create_session(db_session: AsyncSession, payload: SessionCreate) -> LlmSession:
     """Create once per owner/key; immutable creation input stays distinct from later renames."""
 
-    user = await db_session.scalar(select(User).where(
-        User.user_id == payload.user_id,
-    ).with_for_update())
+    if payload.project_id:
+        from nexuspilot_api.services.project_workspace_service import owned_project
+
+        await owned_project(db_session, payload.project_id, payload.user_id)
+    user = await db_session.scalar(
+        select(User)
+        .where(
+            User.user_id == payload.user_id,
+        )
+        .with_for_update()
+    )
     if user is None or not user.is_active:
         raise ResourceConflictError("Session user must exist and be active")
     key_hash = request_hash = None
     if payload.idempotency_key:
         key_hash = hashlib.sha256(payload.idempotency_key.encode()).hexdigest()
-        request_hash = hashlib.sha256(json.dumps(
-            payload.model_dump(exclude={"idempotency_key"}), sort_keys=True,
-        ).encode()).hexdigest()
-        previous = await db_session.scalar(select(LlmSession).where(
-            LlmSession.user_id == payload.user_id, LlmSession.creation_key_hash == key_hash,
-        ))
+        request_hash = hashlib.sha256(
+            json.dumps(
+                payload.model_dump(
+                    exclude={"idempotency_key", "project_id"}
+                    if payload.project_id is None
+                    else {"idempotency_key"}
+                ),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+        previous = await db_session.scalar(
+            select(LlmSession).where(
+                LlmSession.user_id == payload.user_id,
+                LlmSession.creation_key_hash == key_hash,
+            )
+        )
         if previous:
             if previous.creation_request_hash != request_hash:
                 raise ResourceConflictError("Session key was used for different input")
             await db_session.commit()
             return previous
-    conversation = LlmSession(**payload.model_dump(exclude={"idempotency_key"}),
-        creation_key_hash=key_hash, creation_request_hash=request_hash, status=SessionStatus.ACTIVE)
+    conversation = LlmSession(
+        **payload.model_dump(exclude={"idempotency_key"}),
+        creation_key_hash=key_hash,
+        creation_request_hash=request_hash,
+        status=SessionStatus.ACTIVE,
+    )
     db_session.add(conversation)
     await db_session.commit()
     await db_session.refresh(conversation)
@@ -131,9 +153,7 @@ async def list_sessions(
         query_fingerprint=query_fingerprint,
         limit=limit,
     )
-    next_cursor = (
-        codec.encode_query(page.next_database_key) if page.next_database_key else None
-    )
+    next_cursor = codec.encode_query(page.next_database_key) if page.next_database_key else None
     return CursorPage[SessionRead](
         items=[SessionRead.model_validate(item) for item in page.items],
         next_cursor=next_cursor,
@@ -172,9 +192,7 @@ async def create_message(
     """
 
     conversation = await db_session.scalar(
-        select(LlmSession)
-        .where(LlmSession.session_id == session_id)
-        .with_for_update()
+        select(LlmSession).where(LlmSession.session_id == session_id).with_for_update()
     )
     if conversation is None:
         raise ResourceNotFoundError("Session")
@@ -290,10 +308,8 @@ async def create_conversation_turn(
         )
         from nexuspilot_api.services.user_file_service import bind_files
 
-        if payload.file_ids:
-            conversation = await db_session.get(LlmSession, session_id)
-            if conversation.project_id is not None:
-                raise ResourceConflictError("项目文件授权尚未启用，当前只能在普通会话上传。")
+        # Project conversations use the same explicit owner-checked attachment binding.
+        # Merely belonging to a project never adds all project files to the model input.
         files = await bind_files(db_session, payload.user_id, run.run_id, payload.file_ids)
         message = await create_message(
             db_session,
@@ -331,16 +347,23 @@ async def create_conversation_turn(
 async def find_conversation_turn(db_session: AsyncSession, session_id: str, key: str):
     """Read an owner-scoped committed turn by its key without creating or executing it."""
     await get_session(db_session, session_id)
-    turn = await db_session.scalar(select(LlmConversationTurn).where(
-        LlmConversationTurn.session_id == session_id,
-        LlmConversationTurn.key_hash == hashlib.sha256(key.encode()).hexdigest(),
-    ))
+    turn = await db_session.scalar(
+        select(LlmConversationTurn).where(
+            LlmConversationTurn.session_id == session_id,
+            LlmConversationTurn.key_hash == hashlib.sha256(key.encode()).hexdigest(),
+        )
+    )
     if turn is None:
         raise ResourceNotFoundError("Conversation turn")
     run = await db_session.get(LlmRun, turn.run_id)
     message = await db_session.get(LlmMessage, turn.message_id)
-    if (run is None or message is None or run.session_id != session_id
-            or message.session_id != session_id or message.run_id != run.run_id):
+    if (
+        run is None
+        or message is None
+        or run.session_id != session_id
+        or message.session_id != session_id
+        or message.run_id != run.run_id
+    ):
         raise ResourceConflictError("Committed turn references are unavailable")
     return run, message
 
@@ -374,11 +397,7 @@ async def list_messages(
         after_database_key=after_database_key,
         limit=limit,
     )
-    next_cursor = (
-        codec.encode_sequence(page.next_database_key)
-        if page.next_database_key
-        else None
-    )
+    next_cursor = codec.encode_sequence(page.next_database_key) if page.next_database_key else None
     return CursorPage[MessageSummary](
         items=[
             MessageSummary(
@@ -423,11 +442,7 @@ async def list_message_details(
         after_database_key=after_database_key,
         limit=limit,
     )
-    next_cursor = (
-        codec.encode_sequence(page.next_database_key)
-        if page.next_database_key
-        else None
-    )
+    next_cursor = codec.encode_sequence(page.next_database_key) if page.next_database_key else None
     return CursorPage[MessageRead](
         items=await _message_reads_with_reasoning(db_session, page.items),
         next_cursor=next_cursor,

@@ -2370,6 +2370,8 @@ export default function Home() {
           <kbd>⌘ K</kbd>
         </button>
 
+        <a className="session-link" href="/projects" target="_blank" rel="noopener noreferrer">项目与文件 ↗</a>
+
         <div className="session-group">
           <div className="session-group-heading">
             <p className="eyebrow">最近会话</p>

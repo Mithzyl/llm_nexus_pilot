@@ -199,6 +199,35 @@ App 继续使用独立 /api/v1/app/* 身份，不能混用个人 Key；默认免
 
 分页 cursor 使用服务端 HMAC 签名。生产环境应另外配置 `NEXUSPILOT_CURSOR_SIGNING_KEY`；未配置时暂时回退使用 API Key，便于本地启动。
 
+### 个人项目与文件副本（本地开发，2026-10-24）
+
+新增迁移`20261024_0029`，依赖此前0027/0028。启用前核对本地数据库地址、备份并按现有
+`make api-migrate`流程升级；本批没有升级业务库或服务器。API加载新代码但数据库未升级时，
+项目文件接口不能正常工作。默认执行方式仍inline，不需要RabbitMQ或付费模型。
+
+Web入口`/projects`（对话侧栏“项目与文件”另开标签页，避免离开当前运行中的对话）。支持
+创建/重命名项目、项目内会话、选择已上传文件或运行产物、另存固定副本及下载；新上传复用
+原`/files`解析流程。保存后与原件独立，同名返回冲突，不自动覆盖。项目会话可显式上传附件，
+不会自动读取全部项目文件；目前未提供已保存项目文件一键附加、编辑、版本替换或目录同步。
+
+- `/api/v1/projects`的创建/重命名已开放给当前主体，旧无浏览器身份的内部凭据调用保持兼容；
+  Memory策略和任意Workspace locator绑定仍是内部接口，BFF不开放。
+- `GET/POST /api/v1/projects/{project_id}/files`列出/保存副本；POST只接受`file_id`或`artifact_id`
+  之一、`filename`和`idempotency_key`。同键同输入复用，同键不同输入或同名不同请求返回409。
+- `GET /api/v1/projects/{project_id}/files/{project_file_id}/content`下载固定副本；MySQL只存元信息
+  和引用，正文由现有MinIO客户端保存。单文件20MiB、单项目500条/500MiB，预留记录也占额度。
+- `POST /api/v1/projects/{project_id}/files/{project_file_id}/materialize`显式生成只读本地副本。
+  先在受信位置创建私有目录，并在`apps/api/.env`设置绝对路径`NEXUSPILOT_PROJECT_WORKSPACE_ROOT`，
+  重启API后生效；路径各级不得是符号链接。未配置返回503，不影响MinIO下载。
+  目录布局为`<root>/<project_id>/<project_file_id>`，身份来自数据库而非显示名；不返回绝对路径。
+  本地已有内容不同时返回409，不覆盖；此副本不是可编辑的同步项目目录。
+- `GET/POST /api/v1/projects/{project_id}/sessions`列出/创建项目会话；创建接受标题与幂等键，
+  用户身份由服务端决定。列表每页100条，`offset`继续读取。
+
+MinIO保存中断保留`reserved`记录和对象定位，同一保存请求可重试。没有自动删除原件、项目
+副本、产物或工作目录；物化过程中只清除本次未发布的临时文件。项目记忆保持关闭。
+详细范围和验证见[项目规划](docs/architecture/platform-roadmap.md#个人项目最小实现2026-10-24)。
+
 ## 统一 Responses 接口
 
 Provider 地址与凭据使用不同配置边界：Base URL 从数据库表
