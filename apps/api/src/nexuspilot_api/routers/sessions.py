@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, Path, Query, Request, Response, status
 
 from nexuspilot_api.routers.common import CursorCodecDependency, DatabaseSessionDependency
 from nexuspilot_api.schemas.pagination import CursorPage
@@ -23,6 +23,7 @@ from nexuspilot_api.services.session_service import (
     create_conversation_turn,
     create_message,
     create_session,
+    find_conversation_turn,
     get_message,
     get_session,
     list_latest_message_details,
@@ -76,6 +77,18 @@ async def post_conversation_turn(
         run=RunRead.model_validate(run),
         message=MessageRead.model_validate(message),
     )
+
+
+@router.get("/sessions/{session_id}/turns/{submission_key}", response_model=ConversationTurnRead)
+async def get_conversation_turn(
+    session_id: str,
+    submission_key: Annotated[str, Path(min_length=8, max_length=128)],
+    db_session: DatabaseSessionDependency,
+) -> ConversationTurnRead:
+    """Discover an existing submission after response loss; this never starts a model call."""
+    run, message = await find_conversation_turn(db_session, session_id, submission_key)
+    return ConversationTurnRead(run=RunRead.model_validate(run),
+                                message=MessageRead.model_validate(message))
 
 
 @router.get("/sessions", response_model=CursorPage[SessionRead])

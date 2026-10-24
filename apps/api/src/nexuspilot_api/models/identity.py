@@ -42,6 +42,7 @@ class LlmSession(TimestampMixin, Base):
 
     __tablename__ = "llm_sessions"
     __table_args__ = (
+        UniqueConstraint("user_id", "creation_key_hash", name="uq_session_owner_creation_key"),
         Index(
             "ix_llm_sessions_user_status_created",
             "user_id",
@@ -61,6 +62,8 @@ class LlmSession(TimestampMixin, Base):
         index=True,
     )
     title: Mapped[str | None] = mapped_column(String(255))
+    creation_key_hash: Mapped[str | None] = mapped_column(String(64))
+    creation_request_hash: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[SessionStatus] = mapped_column(
         Enum(SessionStatus, native_enum=False, length=32),
         default=SessionStatus.ACTIVE,

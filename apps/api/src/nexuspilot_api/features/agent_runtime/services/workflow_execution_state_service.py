@@ -180,6 +180,10 @@ class WorkflowExecutionStateService:
         if validate_new_workflow is not None:
             await validate_new_workflow()
 
+        from nexuspilot_api.core.config import get_settings
+        from nexuspilot_api.models import LlmOutboxEvent
+
+        backend = get_settings().workflow_execution_backend
         now = utc_now()
         workflow = LlmAgentWorkflowExecution(
             workflow_execution_id=new_id(),
@@ -187,7 +191,9 @@ class WorkflowExecutionStateService:
             workflow_name=payload.workflow_name,
             workflow_version=payload.workflow_version,
             execution_profile=payload.execution_profile,
-            status=AgentWorkflowStatus.RUNNING,
+            status=(AgentWorkflowStatus.PENDING if backend == "worker"
+                    else AgentWorkflowStatus.RUNNING),
+            execution_backend=backend,
             version=1,
             snapshot_version=1,
             current_stage="workflow_start",
@@ -207,6 +213,14 @@ class WorkflowExecutionStateService:
             started_at=now,
         )
         self.db_session.add(workflow)
+        if backend == "worker":
+            self.db_session.add(LlmOutboxEvent(
+                aggregate_type="agent_workflow", aggregate_id=workflow.workflow_execution_id,
+                event_type="agent_workflow.ready", payload_json={
+                    "schema_version": 1, "workflow_execution_id": workflow.workflow_execution_id,
+                    "run_id": run_id,
+                },
+            ))
         run.status = RunStatus.RUNNING
         run.started_at = run.started_at or now
         try:
@@ -1312,7 +1326,12 @@ class WorkflowExecutionStateService:
         self,
         workflow: LlmAgentWorkflowExecution,
     ) -> None:
-        """Reject work after terminal state or exhaustion of the synchronous deadline."""
+        """Reject stale Worker ownership, terminal execution or exhausted wall time."""
+
+        from nexuspilot_api.features.agent_runtime.services.workflow_ownership import (
+            verify_execution_claim,
+        )
+        await verify_execution_claim(self.db_session)
 
         await self.db_session.refresh(workflow)
         if workflow.status != AgentWorkflowStatus.RUNNING:

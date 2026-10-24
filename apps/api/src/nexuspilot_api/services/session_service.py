@@ -63,12 +63,29 @@ class MessageDatabasePage:
 
 
 async def create_session(db_session: AsyncSession, payload: SessionCreate) -> LlmSession:
-    """Create a conversation after confirming that its owning user is active."""
+    """Create once per owner/key; immutable creation input stays distinct from later renames."""
 
-    user = await db_session.get(User, payload.user_id)
+    user = await db_session.scalar(select(User).where(
+        User.user_id == payload.user_id,
+    ).with_for_update())
     if user is None or not user.is_active:
         raise ResourceConflictError("Session user must exist and be active")
-    conversation = LlmSession(**payload.model_dump(), status=SessionStatus.ACTIVE)
+    key_hash = request_hash = None
+    if payload.idempotency_key:
+        key_hash = hashlib.sha256(payload.idempotency_key.encode()).hexdigest()
+        request_hash = hashlib.sha256(json.dumps(
+            payload.model_dump(exclude={"idempotency_key"}), sort_keys=True,
+        ).encode()).hexdigest()
+        previous = await db_session.scalar(select(LlmSession).where(
+            LlmSession.user_id == payload.user_id, LlmSession.creation_key_hash == key_hash,
+        ))
+        if previous:
+            if previous.creation_request_hash != request_hash:
+                raise ResourceConflictError("Session key was used for different input")
+            await db_session.commit()
+            return previous
+    conversation = LlmSession(**payload.model_dump(exclude={"idempotency_key"}),
+        creation_key_hash=key_hash, creation_request_hash=request_hash, status=SessionStatus.ACTIVE)
     db_session.add(conversation)
     await db_session.commit()
     await db_session.refresh(conversation)
@@ -309,6 +326,23 @@ async def create_conversation_turn(
     except Exception:
         await db_session.rollback()
         raise
+
+
+async def find_conversation_turn(db_session: AsyncSession, session_id: str, key: str):
+    """Read an owner-scoped committed turn by its key without creating or executing it."""
+    await get_session(db_session, session_id)
+    turn = await db_session.scalar(select(LlmConversationTurn).where(
+        LlmConversationTurn.session_id == session_id,
+        LlmConversationTurn.key_hash == hashlib.sha256(key.encode()).hexdigest(),
+    ))
+    if turn is None:
+        raise ResourceNotFoundError("Conversation turn")
+    run = await db_session.get(LlmRun, turn.run_id)
+    message = await db_session.get(LlmMessage, turn.message_id)
+    if (run is None or message is None or run.session_id != session_id
+            or message.session_id != session_id or message.run_id != run.run_id):
+        raise ResourceConflictError("Committed turn references are unavailable")
+    return run, message
 
 
 async def get_message(db_session: AsyncSession, message_id: str) -> MessageRead:

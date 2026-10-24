@@ -175,7 +175,8 @@ async def test_closing_sse_observer_does_not_cancel_execution():
 
         async def prepare_workflow(self, *args, **kwargs):
             """Return a newly committed workflow without a database dependency."""
-            return SimpleNamespace(workflow_execution_id="disconnect-fixture"), False
+            return SimpleNamespace(workflow_execution_id="disconnect-fixture",
+                                   execution_backend="inline"), False
 
         async def execute_prepared_workflow_in_new_session(self, *args, event_sink, **kwargs):
             """Publish progress, wait for test release, and mark completion."""
@@ -204,7 +205,8 @@ async def test_execution_starts_even_without_consuming_response_body():
 
         async def prepare_workflow(self, *args, **kwargs):
             """Return a distinct newly committed workflow."""
-            return SimpleNamespace(workflow_execution_id="before-body-fixture"), False
+            return SimpleNamespace(workflow_execution_id="before-body-fixture",
+                                   execution_backend="inline"), False
 
         async def execute_prepared_workflow_in_new_session(self, *args, **kwargs):
             """Finish immediately to detect lazy execution tied to body iteration."""

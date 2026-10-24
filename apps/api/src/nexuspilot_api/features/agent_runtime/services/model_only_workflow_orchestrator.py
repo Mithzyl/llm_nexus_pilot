@@ -607,7 +607,8 @@ class ModelOnlyWorkflowOrchestrator:
                     {
                         "tool_guidance": file_tool_guidance(),
                         "remaining_model_calls": remaining_call_budget(
-                            workflow, self._review_call_allowance(workflow) + 2),
+                            workflow, self._review_call_allowance(workflow) + 2
+                        ),
                     }
                     if workflow.execution_profile == "tool_enabled_v1"
                     else {}
@@ -747,7 +748,8 @@ class ModelOnlyWorkflowOrchestrator:
             if workflow.execution_profile == "tool_enabled_v1":
                 repair_input["tool_guidance"] = file_tool_guidance()
                 repair_input["available_worker_model_calls"] = remaining_call_budget(
-                    workflow, self._review_call_allowance(workflow) + 2)
+                    workflow, self._review_call_allowance(workflow) + 2
+                )
 
             repair_node = await self._start_node(
                 workflow,
@@ -2088,6 +2090,8 @@ class ModelOnlyWorkflowOrchestrator:
                 )
             ).all()
         )
+        # A recovered completion node is not an additional input node or usage source.
+        existing_nodes = [node for node in existing_nodes if node.node_key != "workflow_completion"]
         model_attempt_ids = [
             attempt_id
             for node in existing_nodes

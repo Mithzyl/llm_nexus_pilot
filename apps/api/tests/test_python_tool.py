@@ -70,6 +70,7 @@ async def real_python_backend(client, monkeypatch, python_server, tmp_path):  # 
     "success", "denied", "shell", "failed", "revoked", "foreign_input", "identity", "storage",
     "invalid_result",
     "foreign_artifact",
+    "receipt_lost",
 ])
 async def test_python_tool_authorization_and_artifact(
     client, monkeypatch, test_database_session_factory, case, real_path=None,
@@ -98,6 +99,22 @@ async def test_python_tool_authorization_and_artifact(
     )
     calls = []
     transport = service.execute_python_request
+    confirmations = []
+
+    async def confirm(socket_path, receipt):
+        """Check that acknowledgement follows database commit and contains matching artifacts."""
+        async with test_database_session_factory() as db:
+            for item in receipt["artifacts"]:
+                artifact = await db.get(LlmRunArtifact, item["artifact_id"])
+                assert artifact is not None and artifact.run_id == run["run_id"]
+                assert item["size_bytes"] == artifact.size_bytes
+                assert item["content_hash"] == artifact.content_hash
+        confirmations.append(receipt)
+        if case == "receipt_lost":
+            raise OSError("Receipt unavailable")
+
+    if not real_path:
+        monkeypatch.setattr(service, "confirm_python_publication", confirm)
 
     async def execute(socket_path, request):
         """Return a synthetic container result; assert identity was derived by the service."""
@@ -108,6 +125,7 @@ async def test_python_tool_authorization_and_artifact(
         if real_path:
             return await transport(socket_path, request)
         return {
+            "retention_receipt_required": True,
             "status": "failed" if case == "failed" else "completed",
             "exit_code": 1 if case == "failed" else 0,
             "stdout": "6", "stderr": "example failure" if case == "failed" else "",
@@ -164,6 +182,7 @@ async def test_python_tool_authorization_and_artifact(
                     "foreign_input": "permission_denied", "identity": "failed", "storage": "failed",
                     "invalid_result": "failed",
                     "foreign_artifact": "permission_denied",
+                    "receipt_lost": "completed",
                 }[case]
                 assert result["status"] == expected, result
                 if calls and case != "invalid_result":
@@ -173,6 +192,7 @@ async def test_python_tool_authorization_and_artifact(
                         assert not result["result"]["artifacts"]
                     else:
                         assert result["result"]["artifacts"][0]["artifact_id"]
+                        assert result["result"]["publication_confirmed"] == (case != "receipt_lost")
                     assert "storage_uri" not in str(result)
                 return ModelResponse(
                     text="Test finished", finish_reason="stop", latency_ms=1, raw_response={},
@@ -188,7 +208,11 @@ async def test_python_tool_authorization_and_artifact(
     assert response.json()["status"] == (
         "failed" if case == "revoked" else "completed"
     ), response.text
-    assert len(calls) == (1 if case in {"success", "failed", "storage", "invalid_result"} else 0)
+    assert len(calls) == (1 if case in {
+        "success", "failed", "storage", "invalid_result", "receipt_lost",
+    } else 0)
+    if not real_path:
+        assert len(confirmations) == (1 if case in {"success", "failed", "receipt_lost"} else 0)
     async with test_database_session_factory() as db:
         records = list(await db.scalars(select(LlmModelToolCall).where(
             LlmModelToolCall.tool_name == "run_command",

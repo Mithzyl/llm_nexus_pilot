@@ -56,6 +56,10 @@ class LlmAgentWorkflowExecution(ConversationBodyMixin, Base):
         index=True,
     )
     version: Mapped[int] = mapped_column(Integer, default=1)
+    execution_backend: Mapped[str] = mapped_column(String(16), default="inline")
+    execution_owner: Mapped[str | None] = mapped_column(String(128))
+    execution_lease_version: Mapped[int] = mapped_column(Integer, default=0)
+    execution_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     current_stage: Mapped[str | None] = mapped_column(String(128))
     primary_node_execution_id: Mapped[str | None] = mapped_column(String(36), index=True)

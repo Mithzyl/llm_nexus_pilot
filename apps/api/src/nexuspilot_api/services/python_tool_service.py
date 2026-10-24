@@ -146,7 +146,7 @@ async def execute_python_request(socket_path, request):
 
 
 async def run_python(db, storage, task_id, attempt, record, arguments):
-    """Recheck ownership, materialize bounded inputs and persist validated private outputs."""
+    """Persist authorized outputs, then acknowledge their committed identities to the executor."""
     if attempt.task_id != task_id or not await python_authorized(db, attempt.run_id, task_id):
         raise ToolOperationError("python_not_authorized", status="permission_denied")
     run = await db.get(LlmRun, attempt.run_id)
@@ -180,6 +180,8 @@ async def run_python(db, storage, task_id, attempt, record, arguments):
         "command": {"executable": "python", "stdin": arguments.stdin},
         "inputs": inputs, "output_files": arguments.output_files,
     })
+    if result.get("error") == "python_result_unavailable":
+        raise ToolOperationError("python_result_unavailable")
     if not await python_authorized(db, run.run_id, task_id):
         raise ToolOperationError("python_not_authorized", status="permission_denied")
     if result.get("container_removed") is not True or result.get("status") not in {
@@ -213,6 +215,7 @@ async def run_python(db, storage, task_id, attempt, record, arguments):
         if not isinstance(report[field], str) or len(report[field].encode()) > 32768:
             raise ToolOperationError("python_invalid_result")
     report["artifacts"] = []
+    receipts = []
     report["missing_output_files"] = [p for p in arguments.output_files if p not in decoded]
     if result["status"] in {"completed", "failed"}:
         for path, content in decoded.items():
@@ -235,6 +238,21 @@ async def run_python(db, storage, task_id, attempt, record, arguments):
                 "artifact_id": artifact.artifact_id, "path": path,
                 "size_bytes": artifact.size_bytes,
             })
+            receipts.append({"artifact_id": artifact.artifact_id, "path": path,
+                             "size_bytes": artifact.size_bytes,
+                             "content_hash": artifact.content_hash})
+    if result.get("retention_receipt_required") and not report["missing_output_files"]:
+        try:
+            await confirm_python_publication(get_settings().python_runtime_socket, {
+                "operation": "confirm_publication", "call_id": record.tool_call_id,
+                "scope": {"user_id": run.user_id, "run_id": run.run_id, "task_id": task_id},
+                "artifacts": receipts,
+            })
+            report["publication_confirmed"] = True
+        except (OSError, ValueError, TimeoutError):
+            # Files are already committed: do not fail the tool or cause code to run twice.
+            # The executor remains publication_pending and cannot become a cleanup candidate.
+            report["publication_confirmed"] = False
     if result["status"] == "completed" and report["missing_output_files"]:
         raise ToolOperationError("python_output_missing", result=report)
     if result["status"] != "completed":
@@ -242,6 +260,23 @@ async def run_python(db, storage, task_id, attempt, record, arguments):
             "python_" + result["status"], status=result["status"], result=report,
         )
     return report
+
+
+async def confirm_python_publication(socket_path, receipt):
+    """Acknowledge committed files; a lost acknowledgement blocks cleanup, not downloads."""
+    writer = None
+    try:
+        async with asyncio.timeout(10):
+            reader, writer = await asyncio.open_unix_connection(socket_path, limit=4096)
+            writer.write(json.dumps(receipt).encode() + b"\n")
+            await writer.drain()
+            response = json.loads(await reader.readline())
+            if response != {"confirmed": True}:
+                raise ValueError("Publication acknowledgement rejected")
+    finally:
+        if writer:
+            writer.close()
+            await writer.wait_closed()
 
 
 async def execute_authorized_python(db, run_id, task_id, request):

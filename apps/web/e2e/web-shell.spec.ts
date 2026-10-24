@@ -143,6 +143,95 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => installApiMocks(page));
 
+/** A Worker acknowledgement ends the stream before completion; polling must deliver the answer. */
+test("queued Agent acknowledgement follows saved result without reporting stream failure", async ({ page }) => {
+  let finished = false;
+  let posts = 0;
+  const timestamps = {created_at:"2026-10-24T00:00:00Z",updated_at:"2026-10-24T00:00:00Z",
+    started_at:"2026-10-24T00:00:00Z",completed_at:null};
+  const run = {...timestamps,run_id:"queued-run",session_id:"session-1",status:"running",attempts:[],tasks:[],artifacts:[]};
+  const summary = {workflow_execution_id:"queued-workflow",run_id:run.run_id,status:"pending",
+    snapshot_version:1,model_call_count:0,node_count:0,active_node_execution_ids:[],nodes:[],
+    aggregate_usage:{input_tokens:0,output_tokens:0,estimated_cost:"0"},final_output:null,...timestamps};
+  await page.route("**/api/nexus/sessions", route => route.request().method() === "POST"
+    ? fulfillJson(route, {session_id:"session-1",user_id:"nexuspilot-web",title:"queued",
+      created_at:"2026-10-24T00:00:00Z",updated_at:"2026-10-24T00:00:00Z"}, 201)
+    : route.fallback());
+  await page.route("**/api/nexus/sessions/session-1/turns", route => fulfillJson(route, {
+    run, message:{message_id:"queued-user",run_id:run.run_id,session_id:"session-1",
+      role:"user",content_type:"text",content_text:"queued request",metadata_json:{},
+      created_at:"2026-10-24T00:00:00Z",sequence:1},
+  }, 201));
+  await page.route("**/api/nexus/runs/queued-run/agent-workflows", async route => {
+    posts += 1;
+    await route.fulfill({status:201,contentType:"text/event-stream",body:""});
+  });
+  await page.route("**/api/nexus/runs/queued-run/agent-workflow", route => fulfillJson(route, summary));
+  await page.route("**/api/nexus/runs/queued-run", route => fulfillJson(route, {
+    ...run,status:finished ? "completed" : "running",
+  }));
+  await page.route("**/api/nexus/agent-workflows/queued-workflow/events?*", route =>
+    route.fulfill({status:200,contentType:"text/event-stream",body:""}));
+  await page.route("**/api/nexus/agent-workflows/queued-workflow/result", route => fulfillJson(route, {
+    ...summary,status:finished ? "completed" : "pending",snapshot_version:finished ? 2 : 1,
+    final_output:finished ? {final_text:"Queued answer recovered",assistant_message_id:"answer-id"} : null,
+  }));
+  await page.goto("/");
+  await page.getByRole("button", {name:"Agent",exact:true}).click();
+  await page.getByRole("textbox", {name:"消息内容"}).fill("queued request");
+  await page.getByRole("button", {name:"发送消息",exact:true}).click();
+  await expect.poll(() => posts).toBe(1);
+  await expect(page.locator("article.assistant-message")).toBeVisible();
+  await expect(page.locator(".error-banner")).toHaveCount(0);
+  finished = true;
+  await expect(page.locator("article.assistant-message")).toContainText("Queued answer recovered");
+  expect(posts).toBe(1);
+});
+
+/** Losing session creation acknowledgement must recover the same keyed creation after refresh. */
+for (const lost of ["session", "turn"] as const) {
+test(`recovers lost ${lost} acknowledgement using stable submission identities`, async ({ page }) => {
+  const sessionBodies: string[] = [];
+  const turnKeys: string[] = [];
+  let workflowPosts = 0;
+  await page.route("**/api/nexus/sessions", async route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    sessionBodies.push(route.request().postData()!);
+    if (lost === "session" && sessionBodies.length === 1) return route.abort("failed");
+    return fulfillJson(route, {session_id:"session-1", user_id:"nexuspilot-web", title:"recover",
+      status:"active", created_at:"2026-10-24T00:00:00Z", updated_at:"2026-10-24T00:00:00Z"}, 201);
+  });
+  await page.route("**/api/nexus/sessions/session-1/turns", async route => {
+    turnKeys.push(route.request().postDataJSON().idempotency_key);
+    if (lost === "turn" && turnKeys.length <= 2) return route.abort("failed");
+    return fulfillJson(route, {run:{run_id:"recover-run",session_id:"session-1",status:"pending"},
+      message:{message_id:"recover-message",run_id:"recover-run",session_id:"session-1"}}, 201);
+  });
+  await page.route("**/api/nexus/runs/recover-run/agent-workflows", async route => {
+    workflowPosts += 1;
+    return fulfillJson(route, {detail:"test execution unavailable"}, 503);
+  });
+  await page.goto("/");
+  await page.getByRole("button", {name:"Agent",exact:true}).click();
+  await page.getByRole("textbox", {name:"消息内容"}).fill("recover original request");
+  await page.getByRole("button", {name:"发送消息",exact:true}).click();
+  await expect.poll(() => sessionBodies.length).toBe(1);
+  if (lost === "turn") await expect.poll(() => turnKeys.length).toBe(2);
+  await page.reload();
+  await expect.poll(() => workflowPosts).toBe(1);
+  if (lost === "session") expect(sessionBodies[1]).toBe(sessionBodies[0]);
+  const saved = await page.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.startsWith("nexuspilot:pending-submissions:nexuspilot-web:item:"))
+    .flatMap(key => JSON.parse(localStorage.getItem(key)!)));
+  expect(saved[0].turnKey).toBe(turnKeys[0]);
+  await page.reload();
+  await expect.poll(() => workflowPosts).toBe(2);
+  expect(turnKeys[1]).toBe(turnKeys[0]);
+  expect(sessionBodies).toHaveLength(lost === "session" ? 2 : 1);
+  expect(new Set(turnKeys).size).toBe(1);
+});
+}
+
 /** A refreshed running conversation follows persisted results without a new POST or reload. */
 /** Restore every terminal state, then submit and display the next deterministic reply. */
 for (const terminalStatus of ["completed", "failed", "cancelled"] as const) {

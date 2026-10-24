@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   cancelAgentWorkflow,
   createConversationTurn,
+  findConversationTurn,
   getAgentWorkflowNode,
   getAgentWorkflowResult,
   getAgentWorkflowSummary,
@@ -21,6 +22,21 @@ import {
 } from "../lib/api";
 
 const originalFetch = globalThis.fetch;
+
+/** Discovery is a read and never falls back to posting a new submission. */
+test("finds a committed turn using the persisted key without a request body", async () => {
+  let calls = 0;
+  globalThis.fetch = (async (input, init) => {
+    calls += 1;
+    assert.equal(String(input), "/api/nexus/sessions/session-1/turns/stable-key");
+    assert.equal(init?.body, undefined);
+    return Response.json({ detail: "not found" }, { status: 404 });
+  }) as typeof fetch;
+  try {
+    await assert.rejects(findConversationTurn("session-1", "stable-key"));
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
 
 test("retries a lost turn response once with the same key and exact body", async () => {
   // A lost HTTP acknowledgement may follow a successful database commit.

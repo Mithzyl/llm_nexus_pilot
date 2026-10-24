@@ -127,10 +127,10 @@ export function getContextBuildEvidence(
 /**
  * Create a new active session owned by the authenticated identity.
  */
-export function createSession(title: string): Promise<Session> {
+export function createSession(title: string, idempotencyKey?: string): Promise<Session> {
   return nexusFetch<Session>("sessions", {
     method: "POST",
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}) }),
   });
 }
 
@@ -220,6 +220,13 @@ export async function createConversationTurn(
     if (!retryable) throw error;
     return nexusFetch<ConversationTurn>(path, init);
   }
+}
+
+/** Find a committed submission without resending its content or starting execution. */
+export function findConversationTurn(sessionId: string, submissionKey: string): Promise<ConversationTurn> {
+  return nexusFetch<ConversationTurn>(
+    `sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(submissionKey)}`,
+  );
 }
 
 /**

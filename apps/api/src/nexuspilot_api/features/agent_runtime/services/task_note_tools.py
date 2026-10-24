@@ -6,6 +6,8 @@ Both use existing audited Tool Calls and MinIO bodies; only a committed output c
 claim persistence, and no separate object pointer bypasses the shared executor.
 """
 
+import asyncio
+import json
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -64,7 +66,8 @@ class SaveTaskNoteArguments(EmptyArguments):
     unresolved_items: list[ShortItem] = Field(default_factory=list, max_length=10)
     next_actions: list[ShortItem] = Field(default_factory=list, max_length=10)
     source_aliases: list[Annotated[str, Field(pattern=r"^S[0-9]+$")]] = Field(
-        default_factory=list, max_length=20,
+        default_factory=list,
+        max_length=20,
     )
 
 
@@ -80,7 +83,8 @@ class DelegateTaskArguments(EmptyArguments):
     role: Literal["planner", "researcher"]
     objective: str = Field(min_length=1, max_length=4000)
     source_aliases: list[Annotated[str, Field(pattern=r"^S[0-9]+$")]] = Field(
-        default_factory=list, max_length=20,
+        default_factory=list,
+        max_length=20,
     )
 
 
@@ -116,107 +120,147 @@ class SubmitReviewArguments(EmptyArguments):
 
 
 SUBMIT_REVIEW_TOOL = RegisteredTool(
-    name="submit_review", version="1.0.0",
+    name="submit_review",
+    version="1.0.0",
     description="Submit decisions for exactly the current review_units. Use this call alone, "
     "without other tool calls in the same response. A saved valid submission finishes this batch; "
     "do not also write JSON prose. Candidate identity and policy are supplied by the server.",
-    arguments=SubmitReviewArguments, output=FileToolResult,
-    required_capabilities=frozenset({"review_submit"}), initially_loaded=True,
-    keywords=("审核", "review", "submit"), risk_level="task_write",
+    arguments=SubmitReviewArguments,
+    output=FileToolResult,
+    required_capabilities=frozenset({"review_submit"}),
+    initially_loaded=True,
+    keywords=("审核", "review", "submit"),
+    risk_level="task_write",
 )
 
 
 NOTE_TOOLS = (
     RegisteredTool(
-        name="save_task_note", version="1.0.0",
+        name="save_task_note",
+        version="1.0.0",
         description="Save a private immutable note: progress, unresolved items and next actions. "
         "Use short source_aliases from actual reads. This is provisional, not verified evidence "
         "or a final answer. Save corrections as a new note; original notes are never overwritten.",
-        arguments=SaveTaskNoteArguments, output=FileToolResult,
-        required_capabilities=frozenset({"task_notes"}), initially_loaded=True,
-        keywords=("笔记", "计划", "进度", "notes", "plan"), risk_level="task_write",
+        arguments=SaveTaskNoteArguments,
+        output=FileToolResult,
+        required_capabilities=frozenset({"task_notes"}),
+        initially_loaded=True,
+        keywords=("笔记", "计划", "进度", "notes", "plan"),
+        risk_level="task_write",
     ),
     RegisteredTool(
-        name="read_task_note", version="1.0.0",
+        name="read_task_note",
+        version="1.0.0",
         description="Read a saved note_id from this task only; sources are reauthorized. "
         "Notes are provisional and cannot replace rereading original file evidence.",
-        arguments=ReadTaskNoteArguments, output=FileToolResult,
-        required_capabilities=frozenset({"task_notes"}), initially_loaded=True,
+        arguments=ReadTaskNoteArguments,
+        output=FileToolResult,
+        required_capabilities=frozenset({"task_notes"}),
+        initially_loaded=True,
         keywords=("笔记", "notes", "read"),
     ),
     RegisteredTool(
-        name="list_task_notes", version="1.0.0",
+        name="list_task_notes",
+        version="1.0.0",
         description="List immutable note IDs and creation times in this task, oldest first. "
         "Read a selected note using read_task_note; other roles' notes are not shared.",
-        arguments=ListTaskNotesArguments, output=FileToolResult,
+        arguments=ListTaskNotesArguments,
+        output=FileToolResult,
         required_capabilities=frozenset({"task_notes"}),
         keywords=("笔记", "notes", "list"),
     ),
 )
 NOTE_NAMES = {tool.name for tool in NOTE_TOOLS}
 READING_PLAN_TOOLS = (
-    RegisteredTool(name="save_task_reading_plan", version="1.0.0",
+    RegisteredTool(
+        name="save_task_reading_plan",
+        version="1.0.0",
         description="Save an immutable reading scope for this task. Targets use zero-based parsed "
         "block ranges; omit block_count to include through the document end. This does not read "
         "source text or prove understanding. Save a new plan for changes, never overwrite one.",
-        arguments=SaveReadingPlanArguments, output=FileToolResult,
-        required_capabilities=frozenset({"task_notes", "read"}), risk_level="task_write",
-        keywords=("通读", "阅读计划", "reading", "plan")),
-    RegisteredTool(name="read_task_reading_plan", version="1.0.0",
+        arguments=SaveReadingPlanArguments,
+        output=FileToolResult,
+        required_capabilities=frozenset({"task_notes", "read"}),
+        risk_level="task_write",
+        keywords=("通读", "阅读计划", "reading", "plan"),
+    ),
+    RegisteredTool(
+        name="read_task_reading_plan",
+        version="1.0.0",
         description="Read this task's saved plan_id and actual returned-block progress. File "
         "permissions and versions are checked again. Complete coverage is not comprehension.",
-        arguments=ReadReadingPlanArguments, output=FileToolResult,
+        arguments=ReadReadingPlanArguments,
+        output=FileToolResult,
         required_capabilities=frozenset({"task_notes", "read"}),
-        keywords=("通读", "阅读计划", "reading", "plan", "progress")),
+        keywords=("通读", "阅读计划", "reading", "plan", "progress"),
+    ),
 )
 READING_PLAN_NAMES = {tool.name for tool in READING_PLAN_TOOLS}
 READ_COVERAGE_TOOL = RegisteredTool(
-    name="get_task_read_coverage", version="1.0.0",
+    name="get_task_read_coverage",
+    version="1.0.0",
     description="Inspect this task's actual returned blocks and remaining unread locations for "
     "one attached file. offset/limit page the unread list, NOT source blocks. This does not read "
     "source text, prove model understanding, or count a full-document search as full reading. "
     "Use returned read_arguments for targeted continuation when your objective needs more reading.",
-    arguments=PageArguments, output=FileToolResult,
+    arguments=PageArguments,
+    output=FileToolResult,
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("阅读", "未读", "进度", "coverage", "reading", "progress"),
 )
 INPUT_COVERAGE_TOOL = RegisteredTool(
-    name="get_task_input_coverage", version="1.0.0",
+    name="get_task_input_coverage",
+    version="1.0.0",
     description="Page this task's prepared model requests and per-file input counts/hashes. "
     "This is not tool-read coverage, provider receipt or understanding. Historical missing "
     "audits remain unknown. No source text is returned; deduplicate attempt IDs across pages.",
-    arguments=ListTaskNotesArguments, output=FileToolResult,
+    arguments=ListTaskNotesArguments,
+    output=FileToolResult,
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("输入", "上下文", "input", "coverage", "context"),
 )
 INPUT_SNAPSHOT_TOOL = RegisteredTool(
-    name="read_task_input_snapshot", version="1.0.0",
+    name="read_task_input_snapshot",
+    version="1.0.0",
     description="Read a fixed candidate task input page using an explicitly supplied snapshot_id. "
     "The page identifies its task and request set; later requests do not alter it. "
     "task_input_coverage summarizes the entire captured request set, not just this page; "
     "legacy missing summaries remain unknown. Do not add the same summary across pages. "
     "Use this to check another task's input claims. Your own live task coverage cannot "
     "disprove records from the candidate task. No source prose or private reasoning is returned.",
-    arguments=ReadTaskInputSnapshotArguments, output=FileToolResult,
+    arguments=ReadTaskInputSnapshotArguments,
+    output=FileToolResult,
     required_capabilities=frozenset({"task_notes", "read"}),
     keywords=("输入", "审核", "snapshot", "input", "review", "coverage"),
 )
 DELEGATE_TOOL = RegisteredTool(
-    name="delegate_task", version="1.0.0",
+    name="delegate_task",
+    version="1.0.0",
     description="Delegate a focused task to a configured planner or researcher and receive its "
     "full prose result and source references. Choose source_aliases to supply original excerpts. "
     "The child can read authorized attachments but cannot delegate again "
     "or approve the final answer. "
     "Use only when a separate analysis is useful; ordinary steps need no delegation.",
-    arguments=DelegateTaskArguments, output=FileToolResult,
-    required_capabilities=frozenset({"delegate"}), initially_loaded=True,
-    keywords=("委派", "planner", "researcher", "delegate"), risk_level="task_write",
-    timeout_seconds=None, max_result_bytes=2 * 1024 * 1024,
+    arguments=DelegateTaskArguments,
+    output=FileToolResult,
+    required_capabilities=frozenset({"delegate"}),
+    initially_loaded=True,
+    keywords=("委派", "planner", "researcher", "delegate"),
+    risk_level="task_write",
+    timeout_seconds=None,
+    max_result_bytes=2 * 1024 * 1024,
 )
 GENERAL_TOOL_CATALOG = ToolCatalog(
-    (*FILE_TOOL_CATALOG.entries, *NOTE_TOOLS, *READING_PLAN_TOOLS,
-     READ_COVERAGE_TOOL, INPUT_COVERAGE_TOOL, INPUT_SNAPSHOT_TOOL, DELEGATE_TOOL,
-     SUBMIT_REVIEW_TOOL)
+    (
+        *FILE_TOOL_CATALOG.entries,
+        *NOTE_TOOLS,
+        *READING_PLAN_TOOLS,
+        READ_COVERAGE_TOOL,
+        INPUT_COVERAGE_TOOL,
+        INPUT_SNAPSHOT_TOOL,
+        DELEGATE_TOOL,
+        SUBMIT_REVIEW_TOOL,
+    )
 )
 
 
@@ -224,8 +268,17 @@ class GeneralAgentToolService(AgentFileToolService):
     """Scope notes, input audits, delegation and review submission without enabling host writes."""
 
     def __init__(
-        self, db, storage, *, task_id, sources, allowed_task_ids,
-        delegate=None, input_snapshots=None, review_candidate_id=None, review_unit_ids=None,
+        self,
+        db,
+        storage,
+        *,
+        task_id,
+        sources,
+        allowed_task_ids,
+        delegate=None,
+        input_snapshots=None,
+        review_candidate_id=None,
+        review_unit_ids=None,
         review_unit_sources=None,
     ):
         """Bind the server-owned target and citations; models cannot broaden approval scope."""
@@ -240,7 +293,8 @@ class GeneralAgentToolService(AgentFileToolService):
         self.review_unit_sources = review_unit_sources
         self.catalog = GENERAL_TOOL_CATALOG
         self.capabilities = frozenset(
-            {"read", "task_notes"} | ({"delegate"} if delegate else set())
+            {"read", "task_notes"}
+            | ({"delegate"} if delegate else set())
             | ({"review_submit"} if review_candidate_id and self.review_unit_ids else set())
         )
         self.loaded_versions = {
@@ -261,9 +315,12 @@ class GeneralAgentToolService(AgentFileToolService):
             from nexuspilot_api.services.python_tool_service import PYTHON_TOOL, python_authorized
 
             enabled = await python_authorized(self.db, run_id, self.task_id)
-            self.catalog = ToolCatalog((
-                *GENERAL_TOOL_CATALOG.entries, *((PYTHON_TOOL,) if enabled else ()),
-            ))
+            self.catalog = ToolCatalog(
+                (
+                    *GENERAL_TOOL_CATALOG.entries,
+                    *((PYTHON_TOOL,) if enabled else ()),
+                )
+            )
             self.capabilities = (self.capabilities - {"python_execute"}) | (
                 {"python_execute"} if enabled else set()
             )
@@ -312,7 +369,12 @@ class GeneralAgentToolService(AgentFileToolService):
             from nexuspilot_api.services.python_tool_service import run_python
 
             return await run_python(
-                self.db, self.storage, self.task_id, attempt, record, arguments,
+                self.db,
+                self.storage,
+                self.task_id,
+                attempt,
+                record,
+                arguments,
             )
         from nexuspilot_api.services.application_tools import (
             STATIC_APP_TOOLS,
@@ -362,53 +424,83 @@ class GeneralAgentToolService(AgentFileToolService):
                 max_result_bytes=remote.max_result_bytes,
             )
         if name not in NOTE_NAMES | READING_PLAN_NAMES | {
-            READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
-            DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name,
+            READ_COVERAGE_TOOL.name,
+            INPUT_COVERAGE_TOOL.name,
+            INPUT_SNAPSHOT_TOOL.name,
+            DELEGATE_TOOL.name,
+            SUBMIT_REVIEW_TOOL.name,
         }:
             return await super()._execute_registered_tool(attempt, record, name, arguments)
         task = await self.db.get(LlmTask, self.task_id, populate_existing=True)
         run = await self.db.get(LlmRun, attempt.run_id, populate_existing=True)
-        if (task is None or attempt.task_id != self.task_id or task.run_id != attempt.run_id
-                or run is None or task.status != TaskStatus.RUNNING
-                or run.status.value not in {"pending", "running"}):
+        if (
+            task is None
+            or attempt.task_id != self.task_id
+            or task.run_id != attempt.run_id
+            or run is None
+            or task.status != TaskStatus.RUNNING
+            or run.status.value not in {"pending", "running"}
+        ):
             raise ToolOperationError("task_not_running", status="permission_denied")
         if name == "save_task_reading_plan":
-            return await build_reading_plan(self.db, self.storage, run_id=attempt.run_id,
-                plan_id=record.tool_call_id, arguments=arguments)
+            return await build_reading_plan(
+                self.db,
+                self.storage,
+                run_id=attempt.run_id,
+                plan_id=record.tool_call_id,
+                arguments=arguments,
+            )
         if name == "read_task_reading_plan":
-            return await reading_plan_progress(self.db, self.storage, run_id=attempt.run_id,
-                task_id=self.task_id, plan_id=arguments.plan_id)
+            return await reading_plan_progress(
+                self.db,
+                self.storage,
+                run_id=attempt.run_id,
+                task_id=self.task_id,
+                plan_id=arguments.plan_id,
+            )
         if name == SUBMIT_REVIEW_TOOL.name:
             if task.assigned_role != "reviewer":
                 raise ToolOperationError(
-                    "review_submission_not_allowed", status="permission_denied",
+                    "review_submission_not_allowed",
+                    status="permission_denied",
                 )
-            candidate = (await self.db.execute(select(
-                LlmAgentWorkflowNodeExecution.run_id,
-                LlmAgentWorkflowNodeExecution.output_type,
-                LlmAgentWorkflowNodeExecution.status,
-            ).where(
-                LlmAgentWorkflowNodeExecution.node_execution_id == self.review_candidate_id,
-            ))).one_or_none()
-            review_node = await self.db.scalar(select(LlmAgentWorkflowNodeExecution).where(
-                LlmAgentWorkflowNodeExecution.task_id == task.task_id,
-                LlmAgentWorkflowNodeExecution.run_id == attempt.run_id,
-                LlmAgentWorkflowNodeExecution.output_type == "general_review",
-            ))
-            if (candidate is None
-                    or candidate.run_id != attempt.run_id
-                    or candidate.output_type != "general_candidate"
-                    or candidate.status.value != "completed"
-                    or review_node is None or review_node.status.value != "running"
-                    or self.review_candidate_id not in (
-                        review_node.input_json.get("source_node_execution_ids", [])
-                    )):
+            candidate = (
+                await self.db.execute(
+                    select(
+                        LlmAgentWorkflowNodeExecution.run_id,
+                        LlmAgentWorkflowNodeExecution.output_type,
+                        LlmAgentWorkflowNodeExecution.status,
+                    ).where(
+                        LlmAgentWorkflowNodeExecution.node_execution_id == self.review_candidate_id,
+                    )
+                )
+            ).one_or_none()
+            review_node = await self.db.scalar(
+                select(LlmAgentWorkflowNodeExecution).where(
+                    LlmAgentWorkflowNodeExecution.task_id == task.task_id,
+                    LlmAgentWorkflowNodeExecution.run_id == attempt.run_id,
+                    LlmAgentWorkflowNodeExecution.output_type == "general_review",
+                )
+            )
+            if (
+                candidate is None
+                or candidate.run_id != attempt.run_id
+                or candidate.output_type != "general_candidate"
+                or candidate.status.value != "completed"
+                or review_node is None
+                or review_node.status.value != "running"
+                or self.review_candidate_id
+                not in (review_node.input_json.get("source_node_execution_ids", []))
+            ):
                 raise ToolOperationError(
-                    "review_submission_not_allowed", status="permission_denied",
+                    "review_submission_not_allowed",
+                    status="permission_denied",
                 )
             try:
                 decisions = parse_review_decisions(
-                    arguments.model_dump_json(), self.review_unit_ids, self.sources,
+                    arguments.model_dump_json(),
+                    self.review_unit_ids,
+                    self.sources,
                     candidate_sources=self.review_unit_sources,
                 )
             except ReviewDecisionError as error:
@@ -420,62 +512,97 @@ class GeneralAgentToolService(AgentFileToolService):
         if name == DELEGATE_TOOL.name:
             if self.delegate is None:
                 raise ToolOperationError("delegation_not_allowed", status="permission_denied")
-            return await self.delegate(arguments)
+            return await self.delegate(arguments, record)
         if name == READ_COVERAGE_TOOL.name:
             return await task_read_coverage(
-                self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
+                self.db,
+                self.storage,
+                run_id=attempt.run_id,
+                task_id=self.task_id,
                 arguments=arguments,
             )
         if name == INPUT_COVERAGE_TOOL.name:
             if task.assigned_role == "reviewer" and self.input_snapshots:
                 raise ToolOperationError("review_requires_read_task_input_snapshot")
             return await task_input_coverage(
-                self.db, self.storage, run_id=attempt.run_id, task_id=self.task_id,
+                self.db,
+                self.storage,
+                run_id=attempt.run_id,
+                task_id=self.task_id,
                 arguments=arguments,
             )
         if name == INPUT_SNAPSHOT_TOOL.name:
             return await read_task_input_snapshot(
-                self.db, self.storage, run_id=attempt.run_id, requester_task_id=self.task_id,
-                snapshot_id=arguments.snapshot_id, allowed_snapshot_ids=set(self.input_snapshots),
-                offset=arguments.offset, limit=arguments.limit,
+                self.db,
+                self.storage,
+                run_id=attempt.run_id,
+                requester_task_id=self.task_id,
+                snapshot_id=arguments.snapshot_id,
+                allowed_snapshot_ids=set(self.input_snapshots),
+                offset=arguments.offset,
+                limit=arguments.limit,
             )
         if name == "save_task_note":
             unknown = set(arguments.source_aliases) - self.sources.keys()
             if unknown:
                 raise ToolOperationError("unknown_note_source")
             note = TaskNote(
-                note_id=record.tool_call_id, note=arguments.note,
-                unresolved_items=arguments.unresolved_items, next_actions=arguments.next_actions,
-                sources={alias: FileEvidenceReference.model_validate(self.sources[alias])
-                         for alias in dict.fromkeys(arguments.source_aliases)},
+                note_id=record.tool_call_id,
+                note=arguments.note,
+                unresolved_items=arguments.unresolved_items,
+                next_actions=arguments.next_actions,
+                sources={
+                    alias: FileEvidenceReference.model_validate(self.sources[alias])
+                    for alias in dict.fromkeys(arguments.source_aliases)
+                },
             )
             await self._validate_note_sources(attempt.run_id, note)
             return note.model_dump(mode="json")
         if name == "read_task_note":
-            saved = await self.db.scalar(self._note_query(attempt.run_id).where(
-                LlmModelToolCall.tool_call_id == arguments.note_id,
-            ))
+            saved = await self.db.scalar(
+                self._note_query(attempt.run_id).where(
+                    LlmModelToolCall.tool_call_id == arguments.note_id,
+                )
+            )
             if saved is None:
                 raise ToolOperationError("note_unavailable", status="permission_denied")
             note = self._stored_note(saved)
             await self._validate_note_sources(attempt.run_id, note)
             return note.model_dump(mode="json")
-        notes = list(await self.db.scalars(self._note_query(attempt.run_id).order_by(
-            LlmModelToolCall.started_at, LlmModelToolCall.tool_call_id,
-        ).offset(arguments.offset).limit(arguments.limit + 1)))
+        notes = list(
+            await self.db.scalars(
+                self._note_query(attempt.run_id)
+                .order_by(
+                    LlmModelToolCall.started_at,
+                    LlmModelToolCall.tool_call_id,
+                )
+                .offset(arguments.offset)
+                .limit(arguments.limit + 1)
+            )
+        )
         return {
-            "notes": [{"note_id": saved.tool_call_id, "created_at": saved.started_at.isoformat()}
-                      for saved in notes[:arguments.limit]],
+            "notes": [
+                {"note_id": saved.tool_call_id, "created_at": saved.started_at.isoformat()}
+                for saved in notes[: arguments.limit]
+            ],
             "next_offset": arguments.offset + arguments.limit
-            if len(notes) > arguments.limit else None,
+            if len(notes) > arguments.limit
+            else None,
         }
 
     def _note_query(self, run_id):
         """Select only successful note saves from the exact task and Run, including after reload."""
-        return select(LlmModelToolCall).join(LlmModelAttempt).where(
-            LlmModelAttempt.run_id == run_id, LlmModelAttempt.task_id == self.task_id,
-            LlmModelToolCall.tool_name == "save_task_note", LlmModelToolCall.status == "completed",
-        ).execution_options(populate_existing=True)
+        return (
+            select(LlmModelToolCall)
+            .join(LlmModelAttempt)
+            .where(
+                LlmModelAttempt.run_id == run_id,
+                LlmModelAttempt.task_id == self.task_id,
+                LlmModelToolCall.tool_name == "save_task_note",
+                LlmModelToolCall.status == "completed",
+            )
+            .execution_options(populate_existing=True)
+        )
 
     def _stored_note(self, record):
         """Validate restored content and IDs; never guess an unknown historical schema."""
@@ -497,17 +624,31 @@ class GeneralAgentToolService(AgentFileToolService):
         await super().validate_history(run_id, records)
         await validate_python_history(self.db, run_id, self.task_id, records)
         for record in records:
-            if (record.tool_name not in NOTE_NAMES | READING_PLAN_NAMES | {
-                    READ_COVERAGE_TOOL.name, INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name,
-                    DELEGATE_TOOL.name, SUBMIT_REVIEW_TOOL.name}
-                    or record.status != "completed"):
+            if (
+                record.tool_name
+                not in NOTE_NAMES
+                | READING_PLAN_NAMES
+                | {
+                    READ_COVERAGE_TOOL.name,
+                    INPUT_COVERAGE_TOOL.name,
+                    INPUT_SNAPSHOT_TOOL.name,
+                    DELEGATE_TOOL.name,
+                    SUBMIT_REVIEW_TOOL.name,
+                }
+                or record.status != "completed"
+            ):
                 continue
             attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
             if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
                 raise ResourceConflictError("Task note history belongs to another task")
             if record.tool_name in READING_PLAN_NAMES:
-                await load_reading_plan(self.db, self.storage, run_id=run_id, task_id=self.task_id,
-                                       plan_id=record.output_json["result"]["plan_id"])
+                await load_reading_plan(
+                    self.db,
+                    self.storage,
+                    run_id=run_id,
+                    task_id=self.task_id,
+                    plan_id=record.output_json["result"]["plan_id"],
+                )
             if record.tool_name == SUBMIT_REVIEW_TOOL.name:
                 if record.output_json["result"]["candidate_node_id"] != self.review_candidate_id:
                     raise ResourceConflictError("Review history belongs to another candidate")
@@ -516,14 +657,52 @@ class GeneralAgentToolService(AgentFileToolService):
                 if result["snapshot_id"] not in self.input_snapshots or result["run_id"] != run_id:
                     raise ResourceConflictError("Input snapshot history is no longer granted")
                 captured = await load_task_input_snapshot_manifest(
-                    self.db, self.storage, run_id=run_id, snapshot_id=result["snapshot_id"],
+                    self.db,
+                    self.storage,
+                    run_id=run_id,
+                    snapshot_id=result["snapshot_id"],
                 )
                 if result["task_id"] != captured["task_id"]:
                     raise ResourceConflictError("Input snapshot history has a different task")
             if record.tool_name in {INPUT_COVERAGE_TOOL.name, INPUT_SNAPSHOT_TOOL.name}:
                 await authorize_input_coverage_history(
-                    self.db, run_id=run_id, result=record.output_json["result"],
+                    self.db,
+                    run_id=run_id,
+                    result=record.output_json["result"],
                 )
             if record.tool_name in {"save_task_note", "read_task_note"}:
                 note = TaskNote.model_validate(record.output_json["result"])
                 await self._validate_note_sources(run_id, note)
+
+    async def resume_delegation(self, record, call, offered_versions):
+        """Resume recorded internal delegation, not an arbitrary running tool."""
+        if (
+            self.delegate is None
+            or "delegate" not in self.capabilities
+            or record.tool_name != DELEGATE_TOOL.name
+            or call.name != record.tool_name
+            or record.input_json != call.arguments
+            or record.tool_version != DELEGATE_TOOL.version
+            or offered_versions.get(call.name) != DELEGATE_TOOL.version
+            or record.status not in {"requested", "running", "completed"}
+        ):
+            raise ResourceConflictError(
+                "Delegation cannot resume under the current tool permission"
+            )
+        arguments = DELEGATE_TOOL.arguments.model_validate(call.arguments)
+        try:
+            result = await self.delegate(arguments, record)
+            if record.status == "completed":
+                return record
+            if (
+                len(json.dumps(result, ensure_ascii=False).encode())
+                > DELEGATE_TOOL.max_result_bytes
+            ):
+                return await self._finish(
+                    record, "failed", error="result_too_large_use_smaller_page"
+                )
+            return await self._finish(record, "completed", result=result)
+        except asyncio.CancelledError:
+            if record.status != "completed":
+                await self._finish(record, "cancelled", error="tool_cancelled")
+            raise

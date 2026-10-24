@@ -85,6 +85,8 @@ class AgentWorkflowExecutionService:
                 workflow.workflow_execution_id,
             )
             return result, True
+        if workflow.execution_backend == "worker":
+            return await get_workflow_result(self.db_session, workflow.workflow_execution_id), False
         result = await self.execute_prepared_workflow(workflow, payload)
         return result, False
 

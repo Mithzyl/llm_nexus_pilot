@@ -760,6 +760,16 @@ class ModelInvocationService:
         """Persist raw response, physical attempts, accounting, and completed state atomically."""
 
         sanitized_raw_response = self._sanitize_raw_response_for_audit(response.raw_response)
+        if self.db_session.info.get("workflow_execution_claim") is not None:
+            # Persist the normalized response in the same object/transaction as COMPLETED.
+            # Recovery must not reconstruct native tool calls from provider-specific raw JSON.
+            sanitized_raw_response = {
+                **sanitized_raw_response,
+                "nexus_completed_response": self._to_result(
+                    model_attempt.attempt_id, ProviderName(model_attempt.provider),
+                    model_attempt.model, response,
+                ).model_dump(mode="json"),
+            }
         try:
             stored_raw_response = await self.storage.put_bytes(
                 f"{model_attempt.run_id}/{model_attempt.attempt_id}/raw-response.json",

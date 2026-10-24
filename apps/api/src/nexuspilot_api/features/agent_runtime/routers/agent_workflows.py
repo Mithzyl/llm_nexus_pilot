@@ -110,7 +110,7 @@ async def post_agent_workflow(
             payload,
             event_sink=publish,
         )
-        if replayed:
+        if replayed or workflow.execution_backend == "worker":
             events = await list_workflow_events(
                 service.db_session,
                 workflow.workflow_execution_id,
@@ -125,7 +125,7 @@ async def post_agent_workflow(
 
             return StreamingResponse(
                 replay_source(),
-                status_code=status.HTTP_200_OK,
+                status_code=status.HTTP_200_OK if replayed else status.HTTP_201_CREATED,
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )

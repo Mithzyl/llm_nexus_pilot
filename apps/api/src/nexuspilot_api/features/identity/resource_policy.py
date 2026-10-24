@@ -74,6 +74,7 @@ OWNED_ROUTES = frozenset(
         ("POST", "/sessions"),
         ("GET", "/sessions"),
         ("POST", "/sessions/{session_id}/turns"),
+        ("GET", "/sessions/{session_id}/turns/{submission_key}"),
         ("GET", "/sessions/{session_id}"),
         ("PATCH", "/sessions/{session_id}"),
         ("GET", "/sessions/{session_id}/latest-run"),

@@ -18,6 +18,7 @@ from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowCreate,
     FinalSynthesisOutput,
     GeneralCandidateOutput,
+    GeneralUnitReview,
     NodeEvidenceRead,
     NodeTransitionRead,
     NodeUsageRead,
@@ -52,7 +53,11 @@ from nexuspilot_api.features.agent_runtime.services.task_input_snapshot import (
     save_task_input_snapshot,
 )
 from nexuspilot_api.features.agent_runtime.services.task_note_tools import GeneralAgentToolService
+from nexuspilot_api.features.agent_runtime.services.tool_loop_checkpoint import encode_loop_state
 from nexuspilot_api.models import (
+    AgentWorkflowNodeStatus,
+    LlmAgentTurn,
+    LlmAgentWorkflowEvent,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
     LlmModelToolCall,
@@ -61,6 +66,7 @@ from nexuspilot_api.models import (
     new_id,
 )
 from nexuspilot_api.models.base import utc_now
+from nexuspilot_api.schemas.responses import ResponsesResult
 from nexuspilot_api.schemas.worker_evidence import FileEvidenceReference
 from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService, file_tool_guidance
 from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceService
@@ -69,9 +75,60 @@ from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceServic
 class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
-    async def execute(self, workflow, payload):
-        """Persist evidence and provide authorized input facts and current originals for review."""
+    async def resume_saved_finalization(self, workflow):
+        """Finish an already committed final answer without replaying any model or tool.
+
+        All preceding nodes must be complete with a saved final output. A started
+        completion node is reused; other active nodes are not recovered here.
+        Existing state methods recheck cancellation, limits and execution ownership.
+        """
+        nodes = list(
+            await self.db_session.scalars(
+                select(LlmAgentWorkflowNodeExecution)
+                .where(
+                    LlmAgentWorkflowNodeExecution.workflow_execution_id
+                    == workflow.workflow_execution_id,
+                )
+                .order_by(LlmAgentWorkflowNodeExecution.node_sequence)
+            )
+        )
+        final_nodes = [node for node in nodes if node.node_key == "final_synthesis"]
+        if (
+            not nodes
+            or not final_nodes
+            or any(
+                node.status != AgentWorkflowNodeStatus.COMPLETED
+                for node in nodes
+                if node.node_key != "workflow_completion"
+            )
+        ):
+            return False
+        final_node = final_nodes[-1]
+        final = FinalSynthesisOutput.model_validate(final_node.output_json)
+        self.workflow_round = final_node.input_json.get("workflow_round", 1)
+        run = await self._require_run(workflow.run_id)
+        tasks = list(
+            await self.db_session.scalars(
+                select(LlmTask).where(
+                    LlmTask.run_id == run.run_id,
+                )
+            )
+        )
+        await self._complete_workflow(
+            workflow,
+            run,
+            final_node_id=final_node.node_execution_id,
+            task_ids=[task.task_id for task in tasks],
+            agent_run_ids=final.source_agent_run_ids,
+            handoff_ids=final.source_handoff_ids,
+            evaluation_ids=final.source_evaluation_ids,
+        )
+        return True
+
+    async def execute(self, workflow, payload, *, resume=None):
+        """Resume a saved main/reviewer tool turn without changing its task, node or sources."""
         execution_id = workflow.workflow_execution_id
+        self.execution_identity = execution_id
         payload = AgentWorkflowCreate.model_validate(workflow.request_json)
         current_node = None
         self.sources = {}
@@ -80,14 +137,51 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         self.delegated_agent_run_ids = []
         self.delegated_handoff_ids = []
         self.input_snapshot_refs = {}
+        self.execution_frame = None
+        resume_review = resume if resume and resume["frame"].get("stage") == "review" else None
         try:
             run = await self._require_run(workflow.run_id)
-            main_task = await self._new_task(run, "controller", payload.role_bindings["controller"])
-            main_state = ToolLoopState()
-            feedback = ""
-            supplementary_aliases = set()
-            previous_node_ids = []
-            seen_revisions = set()
+            if resume:
+                from nexuspilot_api.features.agent_runtime.services.tool_loop_checkpoint import (
+                    restore_loop_state,
+                )
+
+                frame = resume["frame"]
+                current_node = await self.db_session.get(
+                    LlmAgentWorkflowNodeExecution, resume["node_id"]
+                )
+                main_node = (
+                    await self.db_session.get(LlmAgentWorkflowNodeExecution, frame["main_node_id"])
+                    if resume_review
+                    else current_node
+                )
+                main_task = await self.db_session.get(LlmTask, main_node.task_id)
+                main_state = await restore_loop_state(
+                    self.model_node_service,
+                    workflow,
+                    main_node,
+                    frame["main_state"] if resume_review else resume["loop"],
+                )
+                self.sources = frame["sources"]
+                self.source_by_call = frame["source_by_call"]
+                self.general_task_ids = set(frame["general_task_ids"])
+                self.delegated_agent_run_ids = frame["delegated_agent_run_ids"]
+                self.delegated_handoff_ids = frame["delegated_handoff_ids"]
+                self.input_snapshot_refs = frame["input_snapshot_refs"]
+                self.workflow_round = frame["workflow_round"]
+                feedback = frame["feedback"]
+                supplementary_aliases = set(frame["supplementary_aliases"])
+                previous_node_ids = frame["previous_node_ids"]
+                seen_revisions = set(frame["seen_revisions"])
+            else:
+                main_task = await self._new_task(
+                    run, "controller", payload.role_bindings["controller"]
+                )
+                main_state = ToolLoopState()
+                feedback = ""
+                supplementary_aliases = set()
+                previous_node_ids = []
+                seen_revisions = set()
             while True:
                 originals = await self._resolve_sources(workflow)
                 main_input = {
@@ -98,25 +192,43 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         alias: originals[alias] for alias in sorted(supplementary_aliases)
                     },
                 }
-                current_node = await self._general_node(
-                    workflow,
-                    main_task,
-                    "general_agent",
-                    main_input,
-                    source_node_ids=previous_node_ids,
-                )
-                candidate_response = await self._turn(
-                    workflow,
-                    current_node,
-                    payload,
-                    main_task,
-                    main_state,
-                    "Produce a useful natural-language answer, not JSON. "
-                    "Choose searches and reads yourself. Cite source_alias values as [S1]. "
-                    "Do not invent source IDs or claim unread content was checked. "
-                    "For requested full reading, continue through the agreed extracted scope; "
-                    "otherwise use targeted reads. State extraction and unread limitations.",
-                    main_input,
+                if resume:
+                    main_input = resume["frame"]["main_input"]
+                    if resume_review:
+                        current_node = main_node
+                    resume = None
+                else:
+                    current_node = await self._general_node(
+                        workflow,
+                        main_task,
+                        "general_agent",
+                        main_input,
+                        source_node_ids=previous_node_ids,
+                    )
+                self.execution_frame = {
+                    "stage": "main",
+                    "feedback": feedback,
+                    "supplementary_aliases": sorted(supplementary_aliases),
+                    "previous_node_ids": previous_node_ids,
+                    "seen_revisions": sorted(seen_revisions),
+                    "main_input": main_input,
+                }
+                candidate_response = (
+                    ResponsesResult.model_validate(resume_review["frame"]["candidate_response"])
+                    if resume_review
+                    else await self._turn(
+                        workflow,
+                        current_node,
+                        payload,
+                        main_task,
+                        main_state,
+                        "Produce a useful natural-language answer, not JSON. "
+                        "Choose searches and reads yourself. Cite source_alias values as [S1]. "
+                        "Do not invent source IDs or claim unread content was checked. "
+                        "For requested full reading, continue through the agreed extracted scope; "
+                        "otherwise use targeted reads. State extraction and unread limitations.",
+                        main_input,
+                    )
                 )
                 text = candidate_response.output_text or ""
                 self.model_node_service._require_complete_response(candidate_response)
@@ -147,22 +259,32 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     payload.review_policy == "on_verification_failure"
                     and bool(issues or uncited_unit_ids)
                 )
-                await self._finish_general_node(
-                    workflow,
-                    current_node,
-                    candidate,
-                    "general_review"
-                    if should_review
-                    else ("general_agent" if issues else "final_synthesis"),
-                    candidate_response.id,
-                )
+                if not resume_review:
+                    await self._finish_general_node(
+                        workflow,
+                        current_node,
+                        candidate,
+                        "general_review"
+                        if should_review
+                        else ("general_agent" if issues else "final_synthesis"),
+                        candidate_response.id,
+                    )
+                else:
+                    candidate = GeneralCandidateOutput.model_validate(
+                        resume_review["frame"]["candidate"]
+                    )
                 candidate_node_id = current_node.node_execution_id
-                main_state.history.append(Message(role=MessageRole.ASSISTANT, content=text))
+                if not resume_review:
+                    main_state.history.append(Message(role=MessageRole.ASSISTANT, content=text))
                 warnings = []
                 if should_review:
                     before_review = set(self.sources)
-                    reviewer_task = await self._new_task(
-                        run, "reviewer", payload.role_bindings["reviewer"]
+                    reviewer_task = (
+                        await self.db_session.get(LlmTask, resume_review["frame"]["review_task_id"])
+                        if resume_review
+                        else await self._new_task(
+                            run, "reviewer", payload.role_bindings["reviewer"]
+                        )
                     )
                     review_input = {
                         "candidate": text,
@@ -172,11 +294,14 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         # Supply necessary execution facts, not just a dereferenceable ID.
                         # The same authorized reader backs subsequent model-requested pages.
                         "candidate_input_evidence": await read_task_input_snapshot(
-                            self.db_session, self.storage, run_id=workflow.run_id,
+                            self.db_session,
+                            self.storage,
+                            run_id=workflow.run_id,
                             requester_task_id=reviewer_task.task_id,
                             snapshot_id=candidate.input_snapshot.snapshot_id,
                             allowed_snapshot_ids=set(self.input_snapshot_refs),
-                            offset=0, limit=10,
+                            offset=0,
+                            limit=10,
                         ),
                         "related_input_snapshots": list(self.input_snapshot_refs.values()),
                         "candidate_node_id": candidate_node_id,
@@ -190,12 +315,31 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                             alias: originals[alias] for alias in aliases if alias in originals
                         },
                     }
-                    current_node = await self._general_node(
-                        workflow,
-                        reviewer_task,
-                        "general_review",
-                        review_input,
-                        source_node_ids=[candidate_node_id],
+                    if resume_review:
+                        review_input = resume_review["frame"]["review_input"]
+                        current_node = await self.db_session.get(
+                            LlmAgentWorkflowNodeExecution, resume_review["node_id"]
+                        )
+                        before_review = set(resume_review["frame"]["before_review"])
+                    else:
+                        current_node = await self._general_node(
+                            workflow,
+                            reviewer_task,
+                            "general_review",
+                            review_input,
+                            source_node_ids=[candidate_node_id],
+                        )
+                    self.execution_frame.update(
+                        {
+                            "stage": "review",
+                            "main_node_id": candidate_node_id,
+                            "main_state": encode_loop_state(main_state),
+                            "candidate_response": candidate_response.model_dump(mode="json"),
+                            "candidate": candidate.model_dump(mode="json"),
+                            "review_task_id": reviewer_task.task_id,
+                            "review_input": review_input,
+                            "before_review": sorted(before_review),
+                        }
                     )
                     review, review_response = await self._review_candidate(
                         workflow,
@@ -203,7 +347,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                         payload,
                         reviewer_task,
                         review_input,
+                        resume=resume_review,
                     )
+                    resume_review = None
                     await self._resolve_sources(workflow)
                     # Keep all source mappings durable, but do not resend every historical
                     # reviewer excerpt on every revision. The current candidate, review
@@ -243,17 +389,27 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                             "Agent repeated the same candidate and correction without progress"
                         )
                     seen_revisions.add(marker)
-                    await self.workflow_state.append_event(
-                        workflow,
-                        event_type="agent.workflow.refinement.requested",
-                        public_summary="候选回答需要修订，继续由原 Agent 处理",
-                        public_payload={
-                            "workflow_round": self.workflow_round,
-                            "next_workflow_round": self.workflow_round + 1,
-                            "candidate_node_execution_id": candidate_node_id,
-                        },
-                        node=current_node,
+                    existing_refinement = await self.db_session.scalar(
+                        select(LlmAgentWorkflowEvent.event_id).where(
+                            LlmAgentWorkflowEvent.workflow_execution_id == execution_id,
+                            LlmAgentWorkflowEvent.node_execution_id
+                            == current_node.node_execution_id,
+                            LlmAgentWorkflowEvent.event_type
+                            == "agent.workflow.refinement.requested",
+                        )
                     )
+                    if not existing_refinement:
+                        await self.workflow_state.append_event(
+                            workflow,
+                            event_type="agent.workflow.refinement.requested",
+                            public_summary="候选回答需要修订，继续由原 Agent 处理",
+                            public_payload={
+                                "workflow_round": self.workflow_round,
+                                "next_workflow_round": self.workflow_round + 1,
+                                "candidate_node_execution_id": candidate_node_id,
+                            },
+                            node=current_node,
+                        )
                     self.workflow_round += 1
                     previous_node_ids = [candidate_node_id, current_node.node_execution_id]
                     main_state.history.append(
@@ -265,10 +421,26 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     continue
                 # The final answer and completion are two persisted nodes. Refuse
                 # before saving a message if the explicit node allowance cannot fit both.
-                node_count = await self.db_session.scalar(select(func.count()).select_from(
-                    LlmAgentWorkflowNodeExecution,
-                ).where(LlmAgentWorkflowNodeExecution.workflow_execution_id == execution_id))
-                if node_count + 2 > workflow.max_nodes:
+                node_count = await self.db_session.scalar(
+                    select(func.count())
+                    .select_from(
+                        LlmAgentWorkflowNodeExecution,
+                    )
+                    .where(LlmAgentWorkflowNodeExecution.workflow_execution_id == execution_id)
+                )
+                existing_final_nodes = await self.db_session.scalar(
+                    select(func.count())
+                    .select_from(
+                        LlmAgentWorkflowNodeExecution,
+                    )
+                    .where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id == execution_id,
+                        LlmAgentWorkflowNodeExecution.node_key.in_(
+                            ["final_synthesis", "workflow_completion"]
+                        ),
+                    )
+                )
+                if node_count + 2 - existing_final_nodes > workflow.max_nodes:
                     raise InvalidRequestError("Agent node limit cannot fit final answer completion")
                 main_task.status = TaskStatus.COMPLETED
                 main_task.completed_at = utc_now()
@@ -353,10 +525,42 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         finally:
             await self.workflow_state.reconcile_terminal_usage(execution_id)
 
-    async def _new_task(self, run, role, binding):
-        """Create a durable role task for existing tool ownership and accounting checks."""
+    async def _new_task(self, run, role, binding, *, task_id=None):
+        """Reuse a claimed node's role task or create one with the supplied durable identity."""
+        if task_id is not None:
+            existing = await self.db_session.get(LlmTask, task_id)
+            if existing is not None:
+                if existing.run_id != run.run_id or existing.assigned_role != role:
+                    raise InvalidRequestError("Recovered task scope mismatch")
+                self.general_task_ids.add(task_id)
+                return existing
+        if self.db_session.info.get("workflow_execution_claim") and role in {
+            "controller",
+            "reviewer",
+        }:
+            matching_nodes = list(
+                await self.db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id
+                        == self.execution_identity,
+                        LlmAgentWorkflowNodeExecution.node_key
+                        == ("general_agent" if role == "controller" else "general_review"),
+                    )
+                )
+            )
+            task_id = next(
+                (
+                    item.task_id
+                    for item in matching_nodes
+                    if item.input_json.get("workflow_round", 1) == self.workflow_round
+                ),
+                None,
+            )
+            if task_id:
+                self.general_task_ids.add(task_id)
+                return await self.db_session.get(LlmTask, task_id)
         task = LlmTask(
-            task_id=new_id(),
+            task_id=task_id or new_id(),
             run_id=run.run_id,
             task_type="general_agent",
             title="General Agent" if role == "controller" else "Independent review",
@@ -395,18 +599,55 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         delegated_roles = sorted({"planner", "researcher"} & payload.role_bindings.keys())
         can_delegate = task.assigned_role == "controller" and bool(delegated_roles)
 
-        async def delegate(arguments):
+        async def delegate(arguments, record):
             """Keep child execution within the parent's current deadline and fixed policy."""
             return await execute_general_delegation(
-                self, workflow, node, payload, task, state, arguments,
+                self,
+                workflow,
+                node,
+                payload,
+                task,
+                state,
+                arguments,
+                record=record,
             )
 
         async def checkpoint(phase, attempt_id, records, versions):
             """Record this task's real returns without copying model-private state."""
             await save_task_execution_checkpoint(
-                self.db_session, self.storage, run_id=workflow.run_id, task_id=task.task_id,
-                attempt_id=attempt_id, phase=phase, tool_records=records,
+                self.db_session,
+                self.storage,
+                run_id=workflow.run_id,
+                task_id=task.task_id,
+                attempt_id=attempt_id,
+                phase=phase,
+                tool_records=records,
                 loaded_versions=versions,
+            )
+
+        async def durable_checkpoint(phase, loop_state):
+            """Publish resumable main/reviewer state only under independent Worker ownership."""
+            from nexuspilot_api.features.agent_runtime.services import tool_loop_checkpoint
+
+            frame = {
+                **self.execution_frame,
+                "sources": self.sources,
+                "source_by_call": self.source_by_call,
+                "general_task_ids": sorted(self.general_task_ids),
+                "delegated_agent_run_ids": self.delegated_agent_run_ids,
+                "delegated_handoff_ids": self.delegated_handoff_ids,
+                "input_snapshot_refs": self.input_snapshot_refs,
+                "workflow_round": self.workflow_round,
+                "delegation": getattr(self, "active_delegation", None),
+            }
+            await tool_loop_checkpoint.save_loop_checkpoint(
+                self.db_session,
+                self.storage,
+                workflow,
+                node,
+                loop_state,
+                frame,
+                phase=phase,
             )
 
         loop = await run_file_tool_loop(
@@ -431,8 +672,12 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     "scope and inspect actual progress; they do not read the file for you. "
                     "Search/describe get_task_read_coverage to inspect this task's returned "
                     "and unread blocks; it reports tool delivery, not model understanding."
-                    + (" delegate_task is loaded for these configured roles only: "
-                       + ", ".join(delegated_roles) if can_delegate else "")
+                    + (
+                        " delegate_task is loaded for these configured roles only: "
+                        + ", ".join(delegated_roles)
+                        if can_delegate
+                        else ""
+                    )
                 ),
                 model_output=None,
                 model_input=values,
@@ -445,9 +690,21 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             present_result=self._present_result,
             before_model_call=self._validate_source_history,
             checkpoint=checkpoint,
+            durable_checkpoint=(
+                durable_checkpoint
+                if (
+                    node.node_key in {"general_agent", "general_review"}
+                    or node.node_key.startswith("general_delegate.")
+                )
+                and self.db_session.info.get("workflow_execution_claim")
+                else None
+            ),
             tool_service=GeneralAgentToolService(
-                self.db_session, self.storage, task_id=task.task_id,
-                sources=self.sources, allowed_task_ids=self.general_task_ids,
+                self.db_session,
+                self.storage,
+                task_id=task.task_id,
+                sources=self.sources,
+                allowed_task_ids=self.general_task_ids,
                 delegate=delegate if can_delegate else None,
                 input_snapshots=self.input_snapshot_refs,
                 review_candidate_id=(
@@ -455,12 +712,16 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 ),
                 review_unit_ids=(
                     [unit["unit_id"] for unit in values.get("review_units", [])]
-                    if task.assigned_role == "reviewer" else None
+                    if task.assigned_role == "reviewer"
+                    else None
                 ),
                 review_unit_sources=(
-                    {unit["unit_id"]: unit["source_aliases"]
-                     for unit in values.get("review_units", [])}
-                    if task.assigned_role == "reviewer" else None
+                    {
+                        unit["unit_id"]: unit["source_aliases"]
+                        for unit in values.get("review_units", [])
+                    }
+                    if task.assigned_role == "reviewer"
+                    else None
                 ),
             ),
             terminal_tool_name="submit_review" if task.assigned_role == "reviewer" else None,
@@ -533,8 +794,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             if attempt == 0 and submission_record is not None:
                 can_repair = (
                     submission_record.status == "failed"
-                    and submission_record.error_code in {
-                        "invalid_arguments", "invalid_review_submission",
+                    and submission_record.error_code
+                    in {
+                        "invalid_arguments",
+                        "invalid_review_submission",
                     }
                 )
                 if submission_record.status != "completed" and not can_repair:
@@ -554,12 +817,19 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 review_text = response.output_text or ""
             try:
                 decisions = parse_review_decisions(
-                    review_text, pending, self.sources,
-                    candidate_sources={unit["unit_id"]: unit["source_aliases"]
-                                       for unit in review_input["review_units"]},
+                    review_text,
+                    pending,
+                    self.sources,
+                    candidate_sources={
+                        unit["unit_id"]: unit["source_aliases"]
+                        for unit in review_input["review_units"]
+                    },
                 )
-                if (attempt == 0 and submission_record is not None
-                        and submission_record.status != "completed"):
+                if (
+                    attempt == 0
+                    and submission_record is not None
+                    and submission_record.status != "completed"
+                ):
                     raise ReviewDecisionError("Native submission was rejected", expected)
             except ReviewDecisionError as error:
                 if attempt:
@@ -574,7 +844,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     raise InvalidRequestError(
                         "Reviewer format repair wall-time is exhausted"
                     ) from error
-                await self.workflow_state.append_event(
+                await self._append_review_repair_event_once(
                     workflow,
                     event_type="agent.node.output_repair.requested",
                     public_summary="审核决定格式无效，正在进行一次格式修正",
@@ -617,7 +887,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 )
                 continue
             if attempt:
-                await self.workflow_state.append_event(
+                await self._append_review_repair_event_once(
                     workflow,
                     event_type="agent.node.output_repair.completed",
                     public_summary="审核决定格式修正已通过校验",
@@ -628,12 +898,52 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             return [accepted[identity] for identity in expected], response
         raise AssertionError("unreachable")
 
-    async def _review_candidate(self, workflow, node, payload, task, review_input):
-        """Consume saved native submissions or legacy JSON per batch under one shared deadline."""
-        state = ToolLoopState()
-        decisions = []
+    async def _append_review_repair_event_once(
+        self, workflow, *, event_type, public_summary, public_payload, node
+    ):
+        """Reuse a repair event for the same node and batch after checkpoint recovery."""
+        events = await self.db_session.scalars(
+            select(LlmAgentWorkflowEvent).where(
+                LlmAgentWorkflowEvent.workflow_execution_id == workflow.workflow_execution_id,
+                LlmAgentWorkflowEvent.node_execution_id == node.node_execution_id,
+                LlmAgentWorkflowEvent.event_type == event_type,
+            )
+        )
+        # Payloads may live in object storage, so inspect hydrated records, not SQL JSON paths.
+        if any(
+            event.public_payload_json.get("repair_index") == public_payload["repair_index"]
+            for event in events
+        ):
+            await self.workflow_state.ensure_workflow_running(workflow)
+            return
+        await self.workflow_state.append_event(
+            workflow,
+            event_type=event_type,
+            public_summary=public_summary,
+            public_payload=public_payload,
+            node=node,
+        )
+
+    async def _review_candidate(self, workflow, node, payload, task, review_input, *, resume=None):
+        """Resume the saved review batch and prior decisions without repeating completed batches."""
+        from nexuspilot_api.features.agent_runtime.services.tool_loop_checkpoint import (
+            restore_loop_state,
+        )
+
+        state = (
+            await restore_loop_state(self.model_node_service, workflow, node, resume["loop"])
+            if resume
+            else ToolLoopState()
+        )
+        decisions = (
+            [GeneralUnitReview.model_validate(item) for item in resume["frame"]["review_decisions"]]
+            if resume
+            else []
+        )
         units = review_input["candidate_units"]
-        for offset in range(0, len(units), REVIEW_BATCH_SIZE):
+        for offset in range(
+            resume["frame"]["review_offset"] if resume else 0, len(units), REVIEW_BATCH_SIZE
+        ):
             batch_index = offset // REVIEW_BATCH_SIZE + 1
             values = {
                 # Whole prose supplies context, but only this batch exposes unit IDs.
@@ -644,18 +954,36 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     for unit in units[offset : offset + REVIEW_BATCH_SIZE]
                 ],
             }
-            if offset:
+            if offset and not resume:
                 # A prior native submission ends with a tool result in history.
                 # Place the next assignment after it, not only before the old dialogue.
-                state.history.append(Message(
-                    role=MessageRole.USER,
-                    content=json.dumps({
-                        "instruction": "The previous batch is recorded. Review only this next "
-                        "batch using the current candidate and authorized sources.",
-                        "candidate_node_id": review_input["candidate_node_id"],
-                        "review_unit_ids": [unit["unit_id"] for unit in values["review_units"]],
-                    }, ensure_ascii=False),
-                ))
+                state.history.append(
+                    Message(
+                        role=MessageRole.USER,
+                        content=json.dumps(
+                            {
+                                "instruction": (
+                                    "The previous batch is recorded. Review only this next "
+                                    "batch using the current candidate and authorized sources."
+                                ),
+                                "candidate_node_id": review_input["candidate_node_id"],
+                                "review_unit_ids": [
+                                    unit["unit_id"] for unit in values["review_units"]
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                )
+            self.execution_frame.update(
+                {
+                    "review_offset": offset,
+                    "review_decisions": [
+                        decision.model_dump(mode="json") for decision in decisions
+                    ],
+                }
+            )
+            resume = None
             response = await self._turn(
                 workflow,
                 node,
@@ -675,20 +1003,37 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 review_input=values,
                 review_history=state.history,
                 batch_index=batch_index,
-                submission_record=next((
-                    record for record in state.records
-                    if record.attempt_id == response.id and record.tool_name == "submit_review"
-                ), None),
+                submission_record=next(
+                    (
+                        record
+                        for record in state.records
+                        if record.attempt_id == response.id and record.tool_name == "submit_review"
+                    ),
+                    None,
+                ),
             )
             await self._resolve_sources(workflow)
             decisions.extend(reviewed)
         return assemble_review(review_input["candidate_node_id"], decisions, self.sources), response
 
     async def _finish_general_node(self, workflow, node, output, next_node, attempt_id):
-        """Bind candidate input evidence before publishing its node or delegated Handoff."""
+        """Publish once, or reuse the original completed candidate's input evidence on recovery."""
+        if node.status == AgentWorkflowNodeStatus.COMPLETED:
+            await self.workflow_state.ensure_workflow_running(workflow)
+            if isinstance(output, GeneralCandidateOutput):
+                saved = GeneralCandidateOutput.model_validate(node.output_json)
+                if saved.text != output.text:
+                    raise InvalidRequestError("Recovered candidate differs from the committed node")
+                output.input_snapshot = saved.input_snapshot
+                reference = saved.input_snapshot.model_dump(mode="json")
+                self.input_snapshot_refs[reference["snapshot_id"]] = reference
+            return
         if isinstance(output, GeneralCandidateOutput):
             reference = await save_task_input_snapshot(
-                self.db_session, self.storage, run_id=workflow.run_id, task_id=node.task_id,
+                self.db_session,
+                self.storage,
+                run_id=workflow.run_id,
+                task_id=node.task_id,
                 candidate_node_id=node.node_execution_id,
             )
             output.input_snapshot = TaskInputSnapshotReference.model_validate(reference)
@@ -707,3 +1052,43 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             status_label="Result submitted",
             summary="Result submitted",
         )
+
+    async def _start_node(self, workflow, **kwargs):
+        """Reuse this round's persisted transition node after recovery, never create a duplicate."""
+        if self.db_session.info.get("workflow_execution_claim"):
+            matching_nodes = list(
+                await self.db_session.scalars(
+                    select(LlmAgentWorkflowNodeExecution).where(
+                        LlmAgentWorkflowNodeExecution.workflow_execution_id
+                        == workflow.workflow_execution_id,
+                        LlmAgentWorkflowNodeExecution.node_key == kwargs["node_key"],
+                        LlmAgentWorkflowNodeExecution.task_id == kwargs.get("task_id"),
+                    )
+                )
+            )
+            # Node input bodies are object-backed; SQL JSON extraction cannot read their round.
+            existing = next(
+                (
+                    item
+                    for item in matching_nodes
+                    if item.input_json.get("workflow_round", 1) == self.workflow_round
+                ),
+                None,
+            )
+            if existing is not None:
+                await self.workflow_state.ensure_workflow_running(workflow)
+                return existing
+        return await super()._start_node(workflow, **kwargs)
+
+    async def _start_agent_turn(self, agent, node):
+        """Reuse a child's recorded Turn after a process loss, preserving its sequence."""
+        if self.db_session.info.get("workflow_execution_claim"):
+            existing = await self.db_session.scalar(
+                select(LlmAgentTurn).where(
+                    LlmAgentTurn.agent_run_id == agent.agent_run_id,
+                    LlmAgentTurn.node_execution_id == node.node_execution_id,
+                )
+            )
+            if existing is not None:
+                return existing
+        return await super()._start_agent_turn(agent, node)

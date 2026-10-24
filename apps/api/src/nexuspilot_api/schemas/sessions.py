@@ -19,6 +19,7 @@ class SessionCreate(BaseModel):
 
     user_id: str = Field(min_length=1, max_length=128)
     title: str | None = Field(default=None, min_length=1, max_length=255)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class SessionUpdate(BaseModel):

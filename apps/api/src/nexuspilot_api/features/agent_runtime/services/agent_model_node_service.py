@@ -1,5 +1,6 @@
 """Invoke and validate model-backed Agent workflow nodes."""
 
+import asyncio
 import json
 from datetime import UTC
 from decimal import Decimal
@@ -23,6 +24,7 @@ from nexuspilot_api.features.agent_runtime.services.workflow_policy import (
 )
 from nexuspilot_api.models import (
     AgentWorkflowNodeStatus,
+    AttemptStatus,
     ContextSourceSelectionStatus,
     LlmAgentWorkflowExecution,
     LlmAgentWorkflowNodeExecution,
@@ -140,8 +142,12 @@ class AgentModelNodeService:
                     raw_output = json.loads(response.output_text or "")
                 except json.JSONDecodeError as error:
                     json_error = {
-                        "loc": [], "type": "json_invalid", "message": error.msg,
-                        "line": error.lineno, "column": error.colno, "position": error.pos,
+                        "loc": [],
+                        "type": "json_invalid",
+                        "message": error.msg,
+                        "line": error.lineno,
+                        "column": error.colno,
+                        "position": error.pos,
                     }
                     raw_output = response.output_text or ""
             if (
@@ -410,11 +416,15 @@ class AgentModelNodeService:
         plain_output = model_output is None
         prompted_json = not plain_output and binding.structured_output_mode == "prompted_json"
         tool_round = round_index is not None
-        instructions = purpose if plain_output else structured_model_instructions(
-            role=role,
-            purpose=purpose,
-            output_model=model_output,
-            prompted_json=prompted_json or tool_round,
+        instructions = (
+            purpose
+            if plain_output
+            else structured_model_instructions(
+                role=role,
+                purpose=purpose,
+                output_model=model_output,
+                prompted_json=prompted_json or tool_round,
+            )
         )
         if tool_round and not plain_output:
             instructions += (
@@ -431,9 +441,11 @@ class AgentModelNodeService:
                 "warnings. "
                 "Once sufficient evidence is available, return the final JSON object without tools."
             )
-            instructions += " Currently loaded: " + ", ".join(
-                definition.name for definition in (tool_definitions or [])
-            ) + ". Pass next_offset from results as offset in requests, never as next_offset."
+            instructions += (
+                " Currently loaded: "
+                + ", ".join(definition.name for definition in (tool_definitions or []))
+                + ". Pass next_offset from results as offset in requests, never as next_offset."
+            )
             instructions += (
                 " Search hits contain read_targets. Pass read_arguments to read_file_content "
                 "to jump directly to nearby text; never scan from the start to reach a hit. "
@@ -495,7 +507,8 @@ class AgentModelNodeService:
             ).for_node(node)
         serialized_model_input = serialize_agent_generated_json(provider_model_input)
         output_schema = (
-            None if plain_output or prompted_json or tool_round
+            None
+            if plain_output or prompted_json or tool_round
             else model_output.model_json_schema()
         )
         serialized_output_schema = (
@@ -505,6 +518,36 @@ class AgentModelNodeService:
         remaining_wall_time_ms = self.workflow_state.remaining_wall_time_ms(workflow)
         if remaining_wall_time_ms < 1_000:
             raise InvalidRequestError("Agent workflow wall-time limit is exhausted")
+        if self.model_invocation_service.db_session.info.get("workflow_execution_claim"):
+            request_key = (
+                f"agent:{workflow.workflow_execution_id}:{node.node_sequence}"
+                + (f":round:{round_index}" if tool_round else "")
+                + (":round:repair:1" if output_repair else "")
+            )
+            saved_attempt = await self.model_invocation_service.db_session.scalar(
+                select(LlmModelAttempt).where(LlmModelAttempt.request_key == request_key)
+            )
+            if saved_attempt is not None:
+                if (
+                    saved_attempt.run_id != workflow.run_id
+                    or saved_attempt.task_id != node.task_id
+                    or saved_attempt.provider != binding.provider.value
+                    or saved_attempt.model != binding.model
+                    or saved_attempt.status != AttemptStatus.COMPLETED
+                    or not saved_attempt.raw_response_uri
+                ):
+                    raise InvalidRequestError(
+                        "Saved model outcome cannot be replayed automatically"
+                    )
+                obj = await self.model_invocation_service.storage.open_object(
+                    saved_attempt.raw_response_uri
+                )
+                body = json.loads(await asyncio.to_thread(b"".join, obj.chunks))
+                saved_result = ResponsesResult.model_validate(body["nexus_completed_response"])
+                if saved_result.id != saved_attempt.attempt_id:
+                    raise InvalidRequestError("Saved model response identity mismatch")
+                await self._bind_context_evidence(node, saved_result.id, provider_model_input)
+                return saved_result
         reserved_estimated_cost = (
             self.model_invocation_service.prices.estimate_maximum(
                 binding.provider,
@@ -588,9 +631,16 @@ class AgentModelNodeService:
                 context_source_references=context_source_references,
                 defer_structured_validation=True,
                 tool_history_before_input=output_repair,
-                **({"runtime_source_input": RuntimeSourceInput(
-                    provider_model_input, runtime_source_paths,
-                )} if runtime_source_paths is not None else {}),
+                **(
+                    {
+                        "runtime_source_input": RuntimeSourceInput(
+                            provider_model_input,
+                            runtime_source_paths,
+                        )
+                    }
+                    if runtime_source_paths is not None
+                    else {}
+                ),
                 **({"tool_messages": tool_messages} if tool_messages is not None else {}),
             )
             await self._bind_context_evidence(node, response.id, provider_model_input)

@@ -135,6 +135,8 @@ import {
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
 import { RunArtifacts } from "../components/RunArtifacts";
+import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission,
+  type PendingSubmission } from "../lib/pending-submissions";
 import { formatCost, formatDurationMs, formatTokenCount } from "../lib/format";
 import { filterSessionsByTitle, groupSessionsByDate } from "../lib/session-list";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
@@ -408,6 +410,7 @@ export default function Home() {
   const draftStorageKey = useRef(conversationDraftStorageKey(initialDraftSessionId));
   const draftValue = useRef("");
   const submissionInProgress = useRef(false);
+  const recoveringSubmissions = useRef(new Set<string>());
   const conversationSyncChannel = useRef<BroadcastChannel | null>(null);
   const conversationSyncSenderId = useRef<string | null>(null);
   const remoteBusyTimers = useRef<Map<string, number>>(new Map());
@@ -1184,13 +1187,15 @@ export default function Home() {
 
   /**
    * Start the general tool loop with the selected model and review policy;
-   * consume the terminal snapshot without duplicating the backend-created final Message.
+   * Follow a finite Worker acknowledgement or inline stream through saved results;
+   * never duplicate the backend-created final Message when the connection ends.
    */
   async function executeAgentWorkflow(
     createdRun: Run,
     assistantMessage: LocalMessage,
     isCurrent: () => boolean,
     executionRequest: { current: AbortController | null },
+    preparedPayload?: Parameters<typeof openAgentWorkflowStream>[1],
   ): Promise<AgentWorkflowResult> {
     if (isCurrent()) resetAgentWorkflowFacts();
     const binding = {
@@ -1204,7 +1209,7 @@ export default function Home() {
     if (isCurrent()) activeRequestController.current = controller;
     const response = await openAgentWorkflowStream(
       createdRun.run_id,
-      createGeneralAgentWorkflowRequest({
+      preparedPayload ?? createGeneralAgentWorkflowRequest({
         binding,
         reviewPolicy,
         maxParallelAgents,
@@ -1260,7 +1265,7 @@ export default function Home() {
           }
         }
       },
-      { requireTerminalEvent: true },
+      { requireTerminalEvent: false },
     );
 
     const summary = await getRunAgentWorkflow(createdRun.run_id);
@@ -1269,6 +1274,9 @@ export default function Home() {
     if (isCurrent()) {
       applyAgentWorkflowResult(result, assistantMessage.local_id);
       setRun(updatedRun);
+      if (["pending", "running", "waiting_for_input"].includes(result.status)) {
+        await restoreAgentWorkflowForRun(createdRun.run_id, assistantMessage.local_id);
+      }
     }
     return result;
   }
@@ -1343,6 +1351,44 @@ export default function Home() {
       setHasMoreMessages(false);
       if (requestedRun !== undefined) restoreRunFacts(requestedRun);
     }
+  }
+
+  /** Resume the same persisted Agent intent; keyed writes cannot create replacement sessions/Runs. */
+  async function recoverPendingSubmission(pending: PendingSubmission) {
+    if (recoveringSubmissions.current.has(pending.id)) return;
+    recoveringSubmissions.current.add(pending.id);
+    const initialView = sessionRestoreRequestId.current;
+    try {
+      let saved = pending;
+      if (!saved.sessionId) {
+        const session = await createSession(saved.input.slice(0, 42), saved.sessionKey);
+        saved = { ...saved, sessionId: session.session_id };
+        savePendingSubmission(window.localStorage, saved);
+      }
+      const turn = await createConversationTurn(saved.sessionId!, {
+        content_text: saved.input, file_ids: saved.fileIds, idempotency_key: saved.turnKey,
+      });
+      if (sessionRestoreRequestId.current === initialView) {
+        window.history.replaceState(null, "", `/c/${saved.sessionId}`);
+        await restoreSession(saved.sessionId!);
+      }
+      if (["completed", "failed", "cancelled"].includes(turn.run.status)) {
+        finishPendingSubmission(window.localStorage, saved.owner, saved.id);
+        return;
+      }
+      const response = await openAgentWorkflowStream(turn.run.run_id, saved.workflow);
+      // An existing active execution returns a finite replay; existing polling observes its future.
+      await readAgentWorkflowEventStream(response, async () => {}, { requireTerminalEvent: false });
+      const summary = await getRunAgentWorkflow(turn.run.run_id);
+      if (["completed", "failed", "cancelled", "outcome_unknown"].includes(summary.status)) {
+        finishPendingSubmission(window.localStorage, saved.owner, saved.id);
+      }
+      if (activeSessionIdValue.current === saved.sessionId) await restoreSession(saved.sessionId!);
+    } catch (error) {
+      if (sessionRestoreRequestId.current === initialView || activeSessionIdValue.current === pending.sessionId) {
+        setErrorMessage(`原请求尚未确认，请勿重复提交。${error instanceof Error ? error.message : "恢复失败"}`);
+      }
+    } finally { recoveringSubmissions.current.delete(pending.id); }
   }
 
   /** Leave the running request alive while releasing controls for another conversation. */
@@ -1460,6 +1506,16 @@ export default function Home() {
     const restoreFrame = window.requestAnimationFrame(() => {
       if (restoredRouteKey.current === currentRouteKey) return;
       restoredRouteKey.current = currentRouteKey;
+      try {
+        const pending = workspacePrincipal && readPendingSubmissions(
+          window.localStorage, workspacePrincipal.user_id,
+        ).find((item) => workspaceRoute.kind === "home" ||
+          (workspaceRoute.kind === "conversation" && item.sessionId === workspaceRoute.sessionId));
+        if (pending) { void recoverPendingSubmission(pending); return; }
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "待恢复请求不可用");
+        return;
+      }
       setPendingUploadFiles([]);
       uploadedFileCache.current.clear();
 
@@ -1908,20 +1964,47 @@ export default function Home() {
       }
       if (uploadController.signal.aborted) return;
       view.setUploadProgress("");
+      let pendingSubmission: PendingSubmission | null = null;
+      if (submittedMode === "agent" && workspacePrincipal) {
+        const previous = readPendingSubmissions(window.localStorage, workspacePrincipal.user_id)
+          .find((item) => item.sessionId === (activeSession?.session_id ?? null));
+        if (previous) {
+          void recoverPendingSubmission(previous);
+          throw new Error("正在确认原提交，请勿重复发送。");
+        }
+        pendingSubmission = {
+          version: 1, id: crypto.randomUUID(), owner: workspacePrincipal.user_id,
+          sessionId: activeSession?.session_id ?? null,
+          sessionKey: crypto.randomUUID(), turnKey: crypto.randomUUID(), input, fileIds,
+          workflow: createGeneralAgentWorkflowRequest({
+            binding: { provider: selectedProvider as ProviderName, model: selectedModel,
+              structured_output_mode: agentStructuredOutputMode(selectedProvider as ProviderName),
+              timeout_seconds: 60 },
+            reviewPolicy, maxParallelAgents, idempotencyKey: crypto.randomUUID(),
+            reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
+          }),
+        };
+        savePendingSubmission(window.localStorage, pendingSubmission);
+      }
       view.setMessages((current) => [...current, userMessage]);
       let session = activeSession;
       if (!session) {
-        session = await createSession(input.slice(0, 42));
+        session = await createSession(input.slice(0, 42), pendingSubmission?.sessionKey);
         setSessions((current) => [session as Session, ...current]);
         view.setActiveSessionId(session.session_id);
         syncNotificationSessionId = session.session_id;
         publishConversationSyncEvent("submission-started", session.session_id);
       }
       submittedSessionId = session.session_id;
+      if (pendingSubmission) {
+        pendingSubmission = { ...pendingSubmission, sessionId: session.session_id };
+        savePendingSubmission(window.localStorage, pendingSubmission);
+      }
       localExecutions.current.set(submittedSessionId, executionRequest);
 
       const createdTurn = await createConversationTurn(session.session_id, {
         content_text: input,
+        ...(pendingSubmission ? { idempotency_key: pendingSubmission.turnKey } : {}),
         ...(fileIds.length ? { file_ids: fileIds } : {}),
       });
       // Upload failure must preserve the previous saved response and its no-workflow proof.
@@ -1964,7 +2047,11 @@ export default function Home() {
 
       if (submittedMode === "agent") {
         executionRequest.preparing = false;
-        const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage, isCurrent, executionRequest);
+        const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage, isCurrent,
+          executionRequest, pendingSubmission?.workflow);
+        if (pendingSubmission && ["completed", "failed", "cancelled", "outcome_unknown"].includes(workflowResult.status)) {
+          finishPendingSubmission(window.localStorage, pendingSubmission.owner, pendingSubmission.id);
+        }
         hasRestorableTerminalFacts = Boolean(workflowResult.final_output?.assistant_message_id);
         return;
       }

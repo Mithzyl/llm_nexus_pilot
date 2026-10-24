@@ -1,0 +1,25 @@
+{
+  "provider": "fixed local test provider; no paid calls",
+  "mysql": true,
+  "minio": true,
+  "scenarios": [
+    {
+      "run_id": "5980f6a2-08f8-4270-882d-fa4e859cefe5",
+      "workflow_id": "b53b6d91-a85e-426f-8e71-e5dc9a05c15f",
+      "status": "completed",
+      "model_attempt_count": 2,
+      "tool_call_count": 1,
+      "final_text_present": true,
+      "browser_verified": true
+    },
+    {
+      "run_id": "ce26909e-352f-496e-b8c8-07f46a10b1cf",
+      "workflow_id": "78c9d2cf-7d43-4bbc-b1f1-48011b19ba30",
+      "status": "cancelled",
+      "model_attempt_count": 1,
+      "tool_call_count": 0,
+      "final_text_present": false,
+      "browser_verified": true
+    }
+  ]
+}
