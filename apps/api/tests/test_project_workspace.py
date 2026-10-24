@@ -13,6 +13,13 @@ async def create_project(client, name="My project"):
     return response.json()["project_id"]
 
 
+async def test_unscoped_artifact_catalog_still_requires_parent(client):
+    """Legacy service sessions without an authenticated owner cannot enumerate all artifacts."""
+    response = await client.get("/api/v1/artifacts")
+    assert response.status_code == 422
+    assert response.json()["detail"] == "run_id or task_id is required"
+
+
 async def test_project_upload_copy_survives_source_deletion(resource_client, monkeypatch, tmp_path):
     """Save immutable bytes once, reject name conflicts and materialize only by explicit request."""
     client = resource_client
@@ -131,6 +138,11 @@ async def test_project_artifact_copy_and_cross_user_access(
             files={"file": ("result.csv", b"x,y\n1,2", "text/csv")},
         )
         assert artifact.status_code == 201, artifact.text
+        listing = await client.get("/api/v1/artifacts?limit=100")
+        assert listing.status_code == 200, listing.text
+        assert [item["artifact_id"] for item in listing.json()["items"]] == [
+            artifact.json()["artifact_id"]
+        ]
         saved = await client.post(
             f"/api/v1/projects/{project}/files",
             json={
@@ -153,6 +165,8 @@ async def test_project_artifact_copy_and_cross_user_access(
         assert (await login(client, email="project-b@example.test")).status_code == 200
         client.headers.update({"X-CSRF-Token": client.cookies["nexuspilot_csrf"]})
         other = await create_project(client)
+        listing = await client.get("/api/v1/artifacts?limit=100")
+        assert listing.status_code == 200 and listing.json()["items"] == []
         assert all(
             p["project_id"] != project
             for p in (await client.get("/api/v1/projects")).json()["items"]

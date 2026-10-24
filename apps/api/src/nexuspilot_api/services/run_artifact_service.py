@@ -126,9 +126,9 @@ async def list_run_artifacts(
     mime_type: str | None,
     limit: int,
 ) -> CursorPage[RunArtifactSummary]:
-    """Bind Artifact cursors to the authenticated owner and requested parent filters."""
+    """Page an authenticated owner's artifacts, or require a parent for unscoped service calls."""
 
-    if run_id is None and task_id is None:
+    if run_id is None and task_id is None and not db_session.info.get("authorized_user_id"):
         raise InvalidRequestError("run_id or task_id is required")
     if run_id is not None:
         await require_run(db_session, run_id)

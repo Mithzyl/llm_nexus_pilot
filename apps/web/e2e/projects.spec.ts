@@ -14,7 +14,10 @@ test("creates a project, saves a file and preserves an export error", async ({ p
     if (path === "files") return route.fulfill({ json: [{ file_id: "f1", filename: "notes.txt", status: "ready" }] });
     if (path === "artifacts") return route.fulfill({ json: { items: [], next_cursor: null } });
     if (path === "projects/p1/sessions") return route.fulfill({ json: [] });
-    if (path.endsWith("/materialize")) return route.fulfill({ status: 503, json: { detail: "项目本地目录尚未配置，MinIO中的文件仍可下载。" } });
+    if (path.endsWith("/materialize")) {
+      expect(route.request().postDataJSON()).toEqual({});
+      return route.fulfill({ status: 503, json: { detail: "项目本地目录尚未配置，MinIO中的文件仍可下载。" } });
+    }
     if (path === "projects/p1/files") {
       if (route.request().method() === "POST") {
         const body = route.request().postDataJSON();

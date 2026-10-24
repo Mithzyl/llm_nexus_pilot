@@ -1,0 +1,91 @@
+{
+  "database": "local MySQL",
+  "objects": "local MinIO",
+  "migration": "20261024_0029",
+  "migration_before": "20261023_0026",
+  "model_attempt_total_before": 523,
+  "model_attempt_total_after": 523,
+  "validation_accounts_disabled": true,
+  "validation_sessions_revoked": true,
+  "validation_services_stopped": true,
+  "automatic_deletion_enabled": false,
+  "checks": [
+    {
+      "project_file_id": "4ea0906c-114c-47bd-97c7-159cca4f72c9",
+      "source_type": "file",
+      "download": true,
+      "minio_bytes": true,
+      "local_readonly_copy": true
+    },
+    {
+      "project_file_id": "8e195a1a-508f-43a9-b7f8-f022132aee8f",
+      "source_type": "artifact",
+      "download": true,
+      "minio_bytes": true,
+      "local_readonly_copy": true
+    }
+  ],
+  "browser_downloads_match": true,
+  "project_id": "303353d3-846f-404a-8e0c-577a16489636",
+  "cross_user_denials": [
+    {
+      "method": "GET",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636",
+      "status": 404
+    },
+    {
+      "method": "GET",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/files",
+      "status": 404
+    },
+    {
+      "method": "PATCH",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636",
+      "status": 404
+    },
+    {
+      "method": "GET",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/sessions",
+      "status": 404
+    },
+    {
+      "method": "POST",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/sessions",
+      "status": 404
+    },
+    {
+      "method": "GET",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/files/4ea0906c-114c-47bd-97c7-159cca4f72c9/content",
+      "status": 404
+    },
+    {
+      "method": "POST",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/files/4ea0906c-114c-47bd-97c7-159cca4f72c9/materialize",
+      "status": 404
+    },
+    {
+      "method": "GET",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/files/8e195a1a-508f-43a9-b7f8-f022132aee8f/content",
+      "status": 404
+    },
+    {
+      "method": "POST",
+      "path": "/projects/303353d3-846f-404a-8e0c-577a16489636/files/8e195a1a-508f-43a9-b7f8-f022132aee8f/materialize",
+      "status": 404
+    }
+  ],
+  "project_memory": "disabled",
+  "filename_conflict": 409,
+  "model_attempt_count": 0,
+  "browser": {
+    "driver": "Playwright CLI; real API and BFF without HTTP mocks",
+    "project_created": true,
+    "file_and_artifact_saved": true,
+    "downloads_completed": true,
+    "local_copies_created": true,
+    "files_present_after_reload": true,
+    "other_user_project_list_empty": true,
+    "other_user_download_status": 404,
+    "screenshots": ["output/playwright/project-workspace-real-a.png", "output/playwright/project-workspace-real-b.png"]
+  }
+}

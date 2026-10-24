@@ -89,7 +89,7 @@ Python已沿用任务容器执行器接入owner授权与MinIO产物；Shell仍�
 
 | 顺序与交付能力 | 状态 | 接下来做什么 | 完成时必须看到什么 | 主计划 |
 |---|---|---|---|---|
-| 优先：个人项目与文件工作区 | 进行中；项目页面、会话归属、MinIO独立副本与显式本地只读物化已有首批实现，业务库未迁移 | 后续补可编辑工作区、逻辑版本/替换和保存文件直接用于对话；项目记忆不接入 | 固定输入可复现，冲突明确，跨用户拒绝；首批与完整长期工作区分开验收 | [当前最小实现](#个人项目最小实现2026-10-24) |
+| 优先：个人项目与文件工作区 | 进行中；本地库已升级0029，固定文件/产物副本、下载、本地只读物化和跨用户隔离通过真实MySQL/MinIO及浏览器验证 | 后续补可编辑工作区、逻辑版本/替换和保存文件直接用于对话；项目记忆不接入 | 首批固定副本与完整长期工作区分开验收，服务器未部署 | [当前最小实现](#个人项目最小实现2026-10-24) |
 | 优先：必要MCP与联网工具 | 未开始；现有PA静态远程只读工具保留 | 先受控网页搜索/读取和已批准MCP只读连接，统一目录、调用记录、来源与取消 | 连接及每次操作授权；外部内容不变系统指令；错误不变空结果，撤销后禁止新调用 | [工具主计划](../implementation/phase-7-tool-runtime-plan.md#必要mcp与联网工具优先交付2026-10-24) |
 | 优先：动态任务工具与个人复用 | 未开始；已有Python执行器可复用 | 先当前任务内生成/验证/执行，再显式授权持久复用；不等完整项目系统或MCP做完 | 固定工具版本、验证记录、owner、停止和结果保存可核对；到期禁用，不启用自动删除 | [工具主计划](../implementation/phase-7-tool-runtime-plan.md) |
 | 优先规划：Assistant用户记忆 | 未开始；已有实验代码不等于可用产品 | 用户明确保存/确认偏好和事实，跨会话按需读取，提供纠正/忘记/关闭；不读取项目记忆 | 真实用户及App范围隔离，实际使用版本有记录，撤销后不再注入；不自动挖掘全部历史 | [用户记忆设计](../implementation/phase-2-llm-core-capabilities.md#assistant用户记忆规划2026-10-24) |
@@ -175,7 +175,7 @@ MySQL 保存身份、会话/消息归属和顺序、标题、运行状态、toke
 
 本地目录未配置时明确503；MinIO文件仍可下载。没有自动扫描、源文件写回、代码执行、
 项目记忆或自动删除。原先的文件读取工具/Python执行器保持不变，不自动获得项目目录权限。
-当前业务数据库未执行0027—0029升级，不声称现有运行服务已可直接使用；启用方式见README。
+首批编码时未升级业务库；随后本地0027—0029迁移及真实验证已执行，见下节。服务器未部署。
 
 验证记录：测试先复现公开项目创建被内部凭据拦截、项目会话附件被旧规则拒绝、对象写失败
 返回500，再修改实现。`apps/api`运行项目/迁移/Session/轮次/上传回归49项通过、1项真实MySQL
@@ -186,6 +186,44 @@ Web `npm test`178项通过；项目桌面/手机Playwright固定HTTP验证2项�
 截图检查发现全局body禁止滚动会影响新页面，已使用独立滚动容器并验证回到顶部。
 首轮因定位器匹配Next路由公告和页面错误两处而失败，修正定位后通过，不修改业务错误断言。
 TypeScript、相关ESLint、Ruff及git diff --check通过。截图存output/playwright，不提交图像。
+
+### 项目工作区真实本地验证（2026-10-24）
+
+实现/测试/规划先提交为`346586c`，未推送。随后备份本地`nexuspilot`库（15,435,503字节SQL，
+位于忽略的私有`deployments/data/workspace-validation-backups`），按`make api-migrate`升级
+0026→0027→0028→0029。81条历史工作流保持inline；本机未发现Nexus执行进程，2条历史RUNNING
+记录原样保留，未按状态推测成功、失败或自动重试。
+没有启动Worker或RabbitMQ；不将这次迁移等同于阶段10全部恢复验收通过。
+
+真实验证使用本地MySQL3306、MinIO9000和正常应用API/BFF。认证API8002与前端3100为独立
+验证实例，日常authentication_enabled=false未改。两个随机合成账号通过真实密码登录，私有
+浏览器Cookie状态只留在忽略且0700的验证目录，不写入报告。Playwright CLI未设置HTTP模拟。
+
+浏览器实际创建项目`303353d3-846f-404a-8e0c-577a16489636`，分别从真实上传和Run Artifact
+保存TXT/CSV副本，点击下载及生成本地副本；刷新后重新选择项目仍有两条ready记录。原始
+上传/Artifact由手动验证脚本通过真实API建立，Artifact不依赖模型生成。脚本核对浏览器下载、
+API下载、MinIO对象和本地文件字节一致，本地副本权限0400，根目录0700。
+账号B列表不含A项目，浏览器直接访问A下载返回404；API层9项跨用户读/改/建会话/下载/物化
+均404。同名另存409。项目memory_status保持disabled。
+
+发现并修复两处真实缺陷：
+1. 页面无Run筛选列出本人产物被后端拒绝。新增测试先复现422；现仅当存在已认证owner时
+   允许按owner分页列出，仍在SQL中先过滤owner；无主体的内部查询仍必须提供Run/Task。
+2. 本地副本按钮原空POST被BFF拒绝为非法JSON。前端改发空对象，浏览器真实复验生成成功；
+   固定HTTP回归增加请求体断言，不改变BFF的JSON校验。
+
+当前修复后后端命令：`cd apps/api && .venv/bin/pytest -q tests/test_project_workspace.py tests/test_model_attempt_run_artifact_queries.py --tb=short`，最终18项通过（10.87秒），包含无主体查询仍要求父级的回归。相关Ruff通过。
+固定HTTP浏览器回归：`PLAYWRIGHT_BASE_URL=http://127.0.0.1:3100 npx playwright test e2e/projects.spec.ts`，
+桌面/手机2项通过（19.0秒）；与上述真实CLI操作分开计数。TypeScript/相关ESLint通过。
+手动实际验证入口：`PYTHONPATH=src .venv/bin/python tests/manual_project_workspace_validation.py prepare|verify|disable`
+（分步执行，prepare与verify之间使用真实浏览器；凭据只存在私有目录）。验证脚本首次导入顺序
+及对象URI前缀假设错误已修正，不将失败运行算作通过；最终verify通过。
+
+结果：[结构化报告](../../output/security/project-workspace-real-20261024.json)，
+[账号A工作区](../../output/playwright/project-workspace-real-a.png)、
+[账号B隔离列表](../../output/playwright/project-workspace-real-b.png)。本次测试账号模型Attempt为0，
+全库Attempt验证前后均523。结束后禁用两个合成账号、撤销其会话并停止验证实例，保留所有
+测试文件、产物、本地副本和备份，不自动删除。现场修复、测试和本段记录尚未提交或推送。
 
 ### 目标与当前事实（2026 年 9 月 5 日）
 

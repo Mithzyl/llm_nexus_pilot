@@ -162,7 +162,7 @@ export default function ProjectsPage() {
             <ul className={styles.list}>{files.map(file => <li key={file.project_file_id} className={styles.file}>
               <span>{file.filename}<small>{(file.size_bytes / 1024).toFixed(1)} KB · {file.status === "ready" ? "已保存" : "保存未完成"}</small></span>
               {file.status === "ready" && <div className={styles.row}><a href={`/api/nexus/projects/${selected}/files/${file.project_file_id}/content`}>下载</a><button disabled={busy} onClick={() => void act(async () => {
-                await nexusFetch(`projects/${selected}/files/${file.project_file_id}/materialize`, { method: "POST" }); setNotice("已生成受控本地副本。");
+                await nexusFetch(`projects/${selected}/files/${file.project_file_id}/materialize`, { method: "POST", body: JSON.stringify({}) }); setNotice("已生成受控本地副本。");
               })}>生成本地副本</button></div>}
             </li>)}</ul>
             {!files.length && <p>尚未保存项目文件。</p>}
