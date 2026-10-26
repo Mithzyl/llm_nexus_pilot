@@ -33,12 +33,20 @@ def model_evidence_bundle(bundle: dict) -> dict:
     projected = dict(bundle)
     for field in ("claims", "unresolved_items"):
         projected[field] = [
-            {**item, "sources": [
-                {**{key: value for key, value in source.items()
-                    if key != "all_parsed_block_ids"},
-                 "parsed_document_block_count": len(source["all_parsed_block_ids"])}
-                for source in item["sources"]
-            ]}
+            {
+                **item,
+                "sources": [
+                    {
+                        **{
+                            key: value
+                            for key, value in source.items()
+                            if key != "all_parsed_block_ids"
+                        },
+                        "parsed_document_block_count": len(source["all_parsed_block_ids"]),
+                    }
+                    for source in item["sources"]
+                ],
+            }
             for item in bundle[field]
         ]
     return projected
@@ -89,10 +97,47 @@ class WorkerEvidenceService:
             or attempt.task_id not in task_ids
             or record.status != "completed"
             or record.tool_name
-            not in {"read_file_content", "read_file_table", "search_file_content"}
+            not in {
+                "read_file_content",
+                "read_file_table",
+                "search_file_content",
+                "web_fetch",
+                "web_search",
+            }
             or reference.result_id != f"tool-result:{record.tool_call_id}"
         ):
             raise InvalidRequestError("Evidence reference is unavailable")
+        if reference.source_kind == "web":
+            from nexuspilot_api.services.web_tools import read_web_result
+
+            result = (record.output_json or {}).get("result") or {}
+            if record.tool_name not in {"web_fetch", "web_search"} or any(
+                result.get(key) != getattr(reference, key)
+                for key in ("source_kind", "web_result_id")
+            ):
+                raise InvalidRequestError("Web evidence tool result mismatch")
+            saved = await read_web_result(self.db, run_id, reference.web_result_id)
+            returned = {b["block_id"]: b for b in result["data"]["blocks"]}
+            originals = {b["block_id"]: b for b in saved["data"]["blocks"]}
+            if any(
+                identity not in returned or returned[identity] != originals.get(identity)
+                for identity in reference.block_ids
+            ):
+                raise EvidenceOutputError("Web evidence block was not read")
+            return {
+                "reference": reference.model_dump(mode="json", exclude_none=True),
+                "filename": saved.get("title") or saved.get("url") or "Web search results",
+                "source_kind": "web",
+                "url": saved.get("url"),
+                "blocks": [originals[i] for i in reference.block_ids],
+                "read_scope": result["read_scope"],
+                "warnings": ["Search summaries or page excerpts only; not complete page coverage"],
+                "extraction_status": "partial",
+                "all_parsed_block_ids": list(originals),
+                "content_verified": False,
+            }
+        if record.tool_name in {"web_fetch", "web_search"}:
+            raise InvalidRequestError("Web reference must declare source kind")
         await AgentFileToolService(self.db, self.storage).validate_history(run_id, [record])
         result = (record.output_json or {}).get("result") or {}
         for key in ("file_id", "source_hash", "parsed_hash", "parser_version"):
@@ -139,6 +184,10 @@ class WorkerEvidenceService:
         for claim in bundle.claims:
             sources = [await self.resolve(run_id, task_ids, ref) for ref in claim.evidence_refs]
             if claim.scope == "parsed_document":
+                if any(source["reference"].get("source_kind") == "web" for source in sources):
+                    raise EvidenceOutputError(
+                        "Web extraction cannot establish full document coverage"
+                    )
                 files = {source["reference"]["file_id"] for source in sources}
                 if not files:
                     raise EvidenceOutputError("Document-wide claims require read evidence")
@@ -184,7 +233,9 @@ class WorkerEvidenceService:
                 {key: output[key] for key in ("claims", "unresolved_items", "hypotheses")}
             )
             results.append(
-                {"task_id": source.task_id,
-                 **model_evidence_bundle(await self.resolve_bundle(node.run_id, tasks, bundle))}
+                {
+                    "task_id": source.task_id,
+                    **model_evidence_bundle(await self.resolve_bundle(node.run_id, tasks, bundle)),
+                }
             )
         return results

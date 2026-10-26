@@ -23,6 +23,8 @@ class SourceBlockRead(BaseModel):
     """Expose text and actual parser locations, excluding private storage metadata."""
 
     text: str
+    url: str | None = None
+    title: str | None = None
     line_start: int | None = None
     line_end: int | None = None
     paragraph_number: int | None = None
@@ -39,6 +41,8 @@ class ClaimSourceRead(BaseModel):
     """Describe one validated read scope; this does not certify semantic correctness."""
 
     filename: str
+    source_kind: Literal["file", "web"] = "file"
+    url: str | None = None
     read_by: Literal["worker", "reviewer"]
     blocks: list[SourceBlockRead]
     has_more: bool | None
@@ -134,10 +138,14 @@ async def read_claim_sources(db, storage, workflow_id: str, node_id: str, claim_
         sources.append(
             ClaimSourceRead(
                 filename=source["filename"],
+                source_kind=source.get("source_kind", "file"),
+                url=source.get("url"),
                 read_by=role,
                 blocks=[SourceBlockRead.model_validate(block) for block in source["blocks"]],
-                has_more=source["read_scope"]["has_more"],
-                total_blocks=source["read_scope"]["parsed_document_blocks"],
+                has_more=source["read_scope"].get("has_more"),
+                total_blocks=source["read_scope"].get(
+                    "parsed_document_blocks", len(source["blocks"])
+                ),
                 extraction_status=source["extraction_status"],
                 warnings=source["warnings"],
             )

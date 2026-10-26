@@ -88,12 +88,16 @@ def build_candidate_units(text: str, known_aliases: set[str]) -> list[GeneralCan
 def build_read_coverage(originals: dict) -> list[GeneralReadCoverage]:
     """Union authorized returned blocks by exact snapshot, keeping extraction limitations.
 
-    Search scope is deliberately ignored: searching the entire document is not
+    Web excerpts are excluded; they are not parsed files. Search scope is deliberately ignored:
+    searching the entire document is not
     returning its entire text. This is not model-input or comprehension coverage.
     """
     grouped = {}
     for alias, source in originals.items():
         ref = source["reference"]
+        if ref.get("source_kind") == "web":
+            # Web excerpts are citations, not parsed-file coverage or content fingerprints.
+            continue
         key = tuple(
             ref[name] for name in ("file_id", "source_hash", "parsed_hash", "parser_version")
         )

@@ -4,6 +4,31 @@ NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行
 
 ## 当前能力
 
+### 本地联网工具（默认关闭）
+
+快速回复和原生 Agent 共用 `web_search`、`web_fetch`。搜索优先 DeepSeek，读取优先 Nexus 本机
+HTTP 抓取及 HTML 正文提取；搜索或抓取普通失败后分别调用一次 Tavily Search/Extract。
+空搜索结果不是失败；取消、非法参数、权限拒绝、内网目标不触发回退。API 与独立 Worker 读取私有配置：
+`NEXUSPILOT_WEB_SEARCH_API_KEY`（DeepSeek）、
+`NEXUSPILOT_TAVILY_API_KEY` 和 `NEXUSPILOT_WEB_TOOL_ALLOWED_USER_IDS`（逗号分隔的 Nexus 用户 ID）。
+用户授权缺失时不提供工具；本地抓取不依赖供应商Key，DeepSeek Key缺失时搜索可改用Tavily，
+备用Key也缺失则明确失败。已移除`WEB_SEARCH_PROVIDER`手动切换项；修改配置后重启相应进程。
+App Run 暂不开放。工具定义引导模型先搜索，再按目标读取选中的URL，不自动抓取全部搜索结果。
+搜索摘要与抓取片段直接作为 Tool 消息进入上下文，Agent 引用保留 URL、标题和片段；不创建
+独立网页全文快照或网页内容哈希。结果随既有对话正文存储，仍由 MinIO 保存对话，不改变文件校验。
+Fetch 默认返回8000字符、最多12000字符；offset 是另一次实际抓取后的片段选择，不是假分页缓存，
+备用服务可能计费，网页也可能变化。只读公网80/443端口、最多3次重定向，每跳检查DNS且连接固定
+公网IP，保留原域名做TLS验证，不携带登录信息、不执行JavaScript；最多读取2MiB解压后响应。
+每条路由最多30秒、工具总上限75秒，取消传播；路由及错误原因记录在原Tool结果中，不另建记录表。
+本批新本机适配器真实读取Gmail帮助页成功，其他新路由/回退通过模拟测试，未新增付费模型调用。
+此前已通过两种模式的 OpenCode Go + DeepSeek
+Search、真实 MySQL/MinIO 本地联调。后续真实Fetch在DeepSeek首页成功，Gmail帮助页404、Python
+文档超时；Tavily适配器搜索及两页提取成功。浏览器快速回复Fetch和刷新通过，但Agent来源抽屉
+仍使用文件文案、未逐条展示网页URL/标题，展示验收未通过。
+详见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#联网工具本地实现与待验事项2026-10-26)。
+
+### 已有平台能力
+
 - FastAPI 健康检查和版本化 REST API；
 - 部署级 API Key 认证，以及面向已预置账户的本地密码登录、不透明浏览器会话、退出、会话撤销和密码修改；
 - 受信 API 调用方可以创建、查询、分页筛选和受限更新用户及会话；分页 cursor 与完整筛选条件绑定；

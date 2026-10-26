@@ -6,16 +6,39 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class FileEvidenceReference(BaseModel):
-    """Pin one persisted tool result and the subset of blocks actually returned by that call."""
+    """Pin file or web read blocks; retain the legacy type name and default file semantics."""
 
     model_config = ConfigDict(extra="forbid")
     tool_call_id: str = Field(min_length=36, max_length=36)
     result_id: str = Field(min_length=1, max_length=64)
-    file_id: str = Field(min_length=36, max_length=36)
-    source_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    parsed_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
-    parser_version: str = Field(min_length=1, max_length=512)
+    source_kind: Literal["file", "web"] = "file"
+    file_id: str | None = Field(default=None, min_length=36, max_length=36)
+    web_result_id: str | None = Field(default=None, min_length=36, max_length=36)
+    source_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parsed_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parser_version: str | None = Field(default=None, min_length=1, max_length=512)
     block_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def require_source_identity(self):
+        """Require existing file checks, but web references use only tool identity and excerpts."""
+        if self.source_kind == "file" and (
+            not self.file_id
+            or self.web_result_id
+            or not self.source_hash
+            or not self.parsed_hash
+            or not self.parser_version
+        ):
+            raise ValueError("File identity required")
+        if self.source_kind == "web" and (
+            self.web_result_id != self.tool_call_id
+            or self.file_id
+            or self.source_hash
+            or self.parsed_hash
+            or self.parser_version
+        ):
+            raise ValueError("Web tool result identity required; file hashes are not applicable")
+        return self
 
 
 class WorkerClaim(BaseModel):

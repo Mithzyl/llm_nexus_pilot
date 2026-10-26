@@ -304,7 +304,7 @@ class GeneralAgentToolService(AgentFileToolService):
             self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
     async def refresh_catalog(self, run_id):
-        """Attach App reads or explicitly granted native Python; Apps cannot execute code."""
+        """Refresh App/Python/web grants without restoring withdrawn native tool versions."""
         from nexuspilot_api.services.application_tools import (
             STATIC_APP_TOOLS,
             authorized_application_context,
@@ -315,15 +315,28 @@ class GeneralAgentToolService(AgentFileToolService):
             from nexuspilot_api.services.python_tool_service import PYTHON_TOOL, python_authorized
 
             enabled = await python_authorized(self.db, run_id, self.task_id)
+            from nexuspilot_api.services.web_tools import web_authorized, web_entries
+
+            web_enabled = await web_authorized(self.db, run_id)
+            refreshed_names = {PYTHON_TOOL.name, *(entry.name for entry in web_entries())}
+            retained = tuple(
+                entry for entry in self.catalog.entries if entry.name not in refreshed_names
+            )
             self.catalog = ToolCatalog(
                 (
-                    *GENERAL_TOOL_CATALOG.entries,
+                    *retained,
                     *((PYTHON_TOOL,) if enabled else ()),
+                    *(web_entries() if web_enabled else ()),
                 )
             )
             self.capabilities = (self.capabilities - {"python_execute"}) | (
                 {"python_execute"} if enabled else set()
             )
+            self.capabilities = (self.capabilities - {"web_read"}) | (
+                {"web_read"} if web_enabled else set()
+            )
+            if web_enabled:
+                self.loaded_versions.update({entry.name: entry.version for entry in web_entries()})
             return
         context, mapping, config = resolved
         if set(context.allowed_tool_versions) - set(config.operations):
@@ -364,7 +377,7 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize App reads, Python and task operations before saving durable results."""
+        """Authorize App, Python, native web and task operations before saving durable results."""
         if name == "run_command":
             from nexuspilot_api.services.python_tool_service import run_python
 

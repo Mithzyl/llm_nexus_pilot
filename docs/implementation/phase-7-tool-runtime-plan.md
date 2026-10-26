@@ -9,13 +9,14 @@
 ## 后续实施依赖与优先级（2026-10-24）
 
 保留既有工具循环、Python执行器和Artifact保存下载实现，不把它们重新列为待开发。
-下一批优先推进个人项目/文件工作区、必要MCP/联网只读工具及动态任务工具，后台恢复扩展
+2026-10-26最新决定：下一批最高优先推进批准MCP服务、动态任务工具，以及阶段2负责的Assistant
+用户记忆设计。可编辑项目工作区和联网展示修复不作为三项前置；后台恢复扩展
 验收持续推进，不作为全部功能编码的串行前置。独立Worker与浏览器提交身份已有实现和限定
 联合验证；长时间无人值守任务仍必须通过适用恢复验收才开放，RabbitMQ暂不接入。
 
 2026-10-26：项目固定副本显式附加、快速回复与Agent续聊/刷新已通过真实MySQL/MinIO和浏览器
-验证（固定模型，无供应商调用）。联网工具进入官方API研究与设计，首个适配器建议DeepSeek，
-Tavily保留第二候选，业务实现未开始；选择理由与待验事项见本文联网API供应商研究节。
+验证（固定模型，无供应商调用）。联网工具已实现统一入口、DeepSeek/Tavily适配器和限定本地验收，
+默认DeepSeek搜索、本机Fetch，普通失败时Tavily备用，须明确用户授权。取消独立网页快照和新增网页哈希；当前范围见本文联网工具本地实现节。
 
 当前恢复实现与故障测试统一维护在[阶段10](phase-10-rabbitmq-task-execution-plan.md)：
 已补充节点切换、Reviewer格式修正响应复用和委派父子检查点。内部委派依据原工具调用ID
@@ -1135,6 +1136,44 @@ SDK 子调用仍通过同一执行服务，记录父调用、子调用序号、�
 5. 默认生成临时工具，仅当前任务可用；失败草稿不自动发布。任务结束后不可再调用，代码及临时文件按任务清理策略处理，必要的测试/调用元数据保留。
 6. 首版保存为个人持久工具需明确授权及使用期限，到期禁用，不自动续期或删除；项目共享后续单独授权。全平台发布不自动开放。个人工具代码不得内嵌用户文件、凭据或样本正文作为默认值。
 
+#### 动态任务工具首版实施细化（2026-10-26）
+
+优先级：最高；实现状态：未开始。上文定义生命周期，本节补充可独立验收的首版执行步骤。
+现有`python_tool_service.py`接受受控Python源码和授权输入ID；现有`RegisteredTool`仅支持静态
+类型化定义。不能把“能运行一段Python”或“已保存代码Artifact”写成“动态工具已登记可调用”。
+
+首版仅当前原生Agent任务可用，不同时开放App、项目共享、Shell、网络、任意pip或长期个人工具。
+授权复用已有Python执行许可；提交草稿不授权执行，验证和正式调用都重新检查owner、Task及许可。
+
+| 步骤 | 拟输入及服务端动作（尚未实现） | 结果与失败行为 |
+|---|---|---|
+| 创建草稿 | 现有规划名`create_tool_draft`；用途、输入/输出JSON Schema、代码Artifact ID、预装依赖及示例；owner/task来自运行记录 | 返回草稿ID和不可变版本；拒绝其他用户或任务的代码、内置工具同名遮蔽、未知依赖；不直接加载 |
+| 验证草稿 | `validate_tool_draft`引用固定版本；先检查Schema与受限Python入口，再经现有容器在隔离目录运行正常/错误样例 | 返回验证记录ID、通过项/失败项和产物引用；失败、超时、取消均不可注册；测试通过不等于安全证明 |
+| 注册任务工具 | `register_task_tool`引用同一版本和成功验证记录；服务端确认验证对象、当前权限及任务状态 | 发布当前任务专属目录条目，下轮可发现/加载；重复同版本注册返回原结果，禁止热替换在途版本 |
+| 调用 | 模型只提交工具别名和业务参数；执行服务解析固定代码版本、按输入Schema校验并调用现有Python执行器 | JSON输出经输出Schema校验后作为Tool消息返回；输出文件复用Artifact，失败不返回成功空数据 |
+| 任务结束/撤销 | 每次发现、加载、执行及恢复重新检查任务终态和许可 | 终态任务不可再次调用；取消终止实际容器；记录保留，不自动删除代码、产物或目录 |
+
+拟定代码入口为单个Python模块的`run(input: dict)`返回JSON兼容值；具体包装器由服务端维护，
+不能把业务参数拼成Shell命令或Python源码。首版JSON Schema支持范围必须列明并以测试固定，
+不支持的关键字/外部引用明确拒绝，不以忽略约束代替兼容。样例测试使用独立输出目录，不读取真实
+业务文件；正式调用所用文件/Artifact仍逐项按现有归属检查。缺库返回需求，不自动安装。
+
+存储设计（拟新增逻辑记录，表名/迁移编号实施时核对）：草稿/版本保存owner、run/task、名称、
+Schema、固定环境、代码Artifact引用、状态；验证记录保存版本、执行调用ID、测试范围、结果；
+任务绑定保存任务和可用版本。代码与大结果复用MinIO/Artifact，MySQL不保存源码全文。不可变版本
+与验证结果绑定，同版本幂等注册用唯一约束保证；对象保存失败不发布，数据库失败保留可诊断的
+未引用对象，不启用自动清理。现有Tool Call和检查点只增加必要版本引用，不另建调用账本。
+
+实施顺序：先复用Python入口并设计上述记录/迁移与输入校验 → 完成验证和不可调用状态测试 →
+接入当前任务目录和循环 → 实现取消/恢复及Artifact → 最小前端验证结果展示。任务登记持久化必须
+支持API/Worker重启后恢复定义；复用已完成Tool Call，不自动重跑结果未知的验证/执行。
+长期个人保存、期限调整与跨任务复用按下一节后续实施，不作为首版完成条件。
+
+验收：固定模型请求创建一个数据汇总工具，验证后调用两次不同参数，结果进入后续模型消息并
+产生可下载产物；包含未验证调用拒绝、代码变化需重新验证、错误输出Schema、跨任务/用户拒绝、
+重复注册、依赖缺失、SQL/MinIO单侧失败、取消实际容器、重启后固定版本和已完成调用不重复。
+单元/模拟先行，再用真实Docker/MySQL/MinIO和固定模型验收；真实付费模型另行授权。
+
 #### 临时工具与限期持久工具（2026-10-24，待实现）
 
 | 类型 | 可用范围 | 使用期限与删除 |
@@ -1171,11 +1210,13 @@ SDK 子调用仍通过同一执行服务，记录父调用、子调用序号、�
 - 保存个人工具展示用途、测试范围、权限变化和使用期限，不暗示“自测通过即可信”；记录停用、版本升级和到期禁用。自动删除保持关闭；未来显式删除需另行确认范围，不连带删除调用产物。
 - 长任务使用[阶段10执行机制](phase-10-rabbitmq-task-execution-plan.md)。保存每轮模型/工具引用、目录检查点及产物后推进游标；浏览器只观察，断开不取消。Worker 重启不得重复执行结果未知的写操作；显式取消才停止后续工作并清理实际进程。
 
-当前程序仍由 HTTP/SSE 请求持有执行任务；首批工具提交进度与刷新展示已实现，批准、工具保存和独立执行尚未实现。同步循环必须标明断线/进程重启限制，不能将事件回放当成执行恢复。
+当前已有API后台执行与可选独立Worker及限定检查点恢复，默认运行配置仍按阶段10说明；不能继续
+将其描述为全部由浏览器HTTP/SSE连接持有。人工批准与动态工具保存尚未实现，扩展故障位置仍需
+验证；新工具必须复用已有执行所有权和记录，不能把事件回放本身当成执行恢复。
 
 ## 必要MCP与联网工具优先交付（2026-10-24）
 
-状态：进行中（2026-10-26官方资料研究与接口设计），业务实现及供应商实测未开始；以下不是已开放工具。保留Personal Assistant三个静态只读
+当前状态：联网实现及限定验收见下节；MCP实现未开始，本次补齐首版规划并提高优先级。保留Personal Assistant三个静态只读
 业务工具和既有Remote HTTP Adapter，不更改JSON信封，不用MCP替换已工作的App接入。
 
 首版交付两类能力：受控网页搜索/读取；用户或管理员明确批准的MCP只读工具。业务写入、
@@ -1205,8 +1246,8 @@ Phase9编号保留作专业索引，详细规则仅在本节维护；代码索�
 
 ### 联网API供应商研究与首版建议（2026-10-26）
 
-研究仅访问公开官方文档，未发送带Key的Search/Fetch/Extract请求，没有实测召回、延迟、稳定性
-或费用，也没有修改业务代码。建议先实现DeepSeek适配器，Tavily作为可替换的第二候选；这是基于
+前次研究仅访问公开官方文档，未发送带Key的Search/Fetch/Extract请求，没有实测召回、延迟、稳定性
+或费用；本批实现状态见下一节。建议先实现DeepSeek适配器，Tavily作为可替换的第二候选；这是基于
 当前接口/价格和项目接入成本的建议，不是用户已批准的永久选型，也不证明中文或英文检索谁更好。
 
 | 项目 | DeepSeek | Tavily |
@@ -1225,24 +1266,25 @@ Phase9编号保留作专业索引，详细规则仅在本节维护；代码索�
 [计费](https://docs.tavily.com/documentation/api-credits)。价格为查询日文档信息，调用前再次确认。
 DeepSeek指南提及部分Server端工具调用2026-11-01开始计费的过渡安排，不能推断本平台直接调用免费。
 
-首版建议（待实现）：
+当前设计（以下已按用户确认修改，不沿用此前独立网页快照方案）：
 
 1. 将搜索供应商与生成模型分开配置。Strata/OpenCode/其他模型均可请求同一联网工具；不因
    当前模型为某provider就选择同名搜索服务，不向聊天completion请求强塞response_format。
    工具名称和调用结果统一，provider由服务端选择，不能由模型传入Key、owner或任意base URL。
-2. 建议工具名web_search、web_fetch（尚未登记）。搜索默认少量条目、只传查询及必要筛选；
+2. 工具名web_search、web_fetch。搜索默认少量条目、只传查询及必要筛选；
    DeepSeek默认need_content=false，不自动发送整段用户问题、附件内容或用户IP；Tavily默认
    include_answer=false、include_raw_content=false、auto_parameters=false，避免引入另一层
    生成答案和隐式参数选择。超过供应商查询长度时明确要求改写，不静默截断改变搜索意图。
-3. 模型先获得搜索结果引用和摘要，再选择URL读取。全文由MinIO保存固定快照，模型拿受限片段
-   和平台分页引用；后续读取已保存结果不再次抓取网页。分页是平台快照读取，不假称供应商原生
-   搜索/抓取游标。搜索摘要、查询相关提取片段和网页正文分别标注，不能合称全文。
-4. 后端保存请求URL、供应商、平台获取时间、来源类型、内容版本/哈希及调用关联。发布日期缺失
+3. 模型先获得搜索结果引用和摘要，再选择URL读取。摘要与受限原文片段直接成为Tool消息；
+   不保存独立网页全文快照，不新增网页哈希，不保留web_read_saved工具。已有上下文优先复用，
+   offset读取会重新抓取并可能变化/计费，返回truncated、next_offset明确范围，不假称缓存分页。
+   普通对话正文仍按现有方式保存至MinIO，不新增另一套存储。搜索摘要与原文片段不能合称全文。
+4. 后端保存请求URL、标题、供应商、获取时间、来源类型、引用片段及工具调用ID。发布日期缺失
    保持未知。DeepSeek Fetch公开响应只有title/content，不能伪造最终重定向URL或完整抓取范围；
    未提供的final_url/usage保持未知。供应商排序分数不是内容真实性证明。
 5. 公网URL读取拒绝内网/本机/凭据URL。平台自行抓取才有能力逐次校验实际DNS/连接/重定向；
-   托管Fetch的内部请求不可见，需要保留供应商安全保证和不可验证限制，不能宣称平台已经检查了
-   供应商每一跳。不自动改为本机直接抓取以绕过403/404，也不自动跨供应商重发私有查询。
+   本地Fetch逐跳检查DNS并固定连接IP，托管备用Fetch内部请求不可见，不能宣称平台已检查供应商
+   每一跳。普通网络/HTTP/解析失败可调用一次Tavily；内网地址、权限拒绝和取消不能换路由绕过。
 6. 本地取消中断等待并阻止下一步工具/模型调用；不能承诺供应商已停止执行或不会计费。失败、
    空结果、部分提取、限流、余额不足和结果未知分别保存，缺失usage不按0费用处理。凭据仅服务端。
 
@@ -1251,7 +1293,142 @@ DeepSeek指南提及部分Server端工具调用2026-11-01开始计费的过渡�
 抓取失败，记录相关来源命中、抓取成功、延迟分布和实际用量。小样本只作为选型依据，不作质量保证。
 本轮不新增其他搜索供应商或Research代答产品，不把MCP作为REST工具接入的前置。
 
+### 联网工具本地实现与待验事项（2026-10-26）
+
+状态：进行中，当前最小联网功能已实现；通过模拟测试及两种模式的真实Search联调，未部署。
+
+- `services/web_tools.py` 统一两个工具，复用现有目录、快速回复与Agent循环和Tool消息记录。
+  配置项均带 `NEXUSPILOT_` 前缀：已移除`WEB_SEARCH_PROVIDER`手动切换项；
+  `WEB_SEARCH_API_KEY` 是DeepSeek搜索Key，`TAVILY_API_KEY` 是Tavily Key。
+  `WEB_TOOL_ALLOWED_USER_IDS` 须包含实际有效用户。使用现有Cookie/本地身份/个人np_ Key解析的
+  Run owner，不接收模型指定owner；不增加个人供应商Key管理或映射表，App Run暂不开放。
+- DeepSeek 搜索仅发送 query/count/need_content=false，默认5条、最多10条；查询最长128字符。
+  不自动附带原问题、附件或用户IP。空结果与失败明确区分，HTTP错误及非法响应不会变成成功空数据。
+- Fetch仅返回所选片段，默认8000字符、最多12000字符，按1000字符分块；未选正文不单独保存。
+  搜索每条保留最多2000字符摘要。结果进入Tool消息，Agent来源用web_result_id对应实际工具记录，
+  包含URL/标题/块ID/片段，Reviewer读取同一记录；不建立网页哈希，不加入文件完整度统计。
+  FileEvidenceReference沿用旧类型名，file分支保留原哈希要求，web分支禁止携带文件哈希。
+- 供应商及本地解压后响应最多2MiB，每个适配器等待上限30秒、工具75秒，各路由不重复尝试。
+  DeepSeek Search失败/未配置时调用一次Tavily Search，本地Fetch失败时调用一次Tavily Extract。
+  正常空结果不触发回退，非法参数、权限拒绝、内网目标、用户取消直接停止。取消传播到在途HTTP等待，
+  保存取消状态；不承诺上游同步停止或免计费。只允许公网HTTP(S)、80/443端口，禁止凭据URL，
+  本地每跳检查所有DNS地址，仅连接已检查的公网IP，保留原域名作Host和TLS证书校验，最多3次跳转；
+  不转发Cookie/Authorization或读取环境代理。本地返回实际final_url；托管备用重定向链仍未知。
+- 工具历史不以文件压缩规则删除网页片段；恢复复用现有对话消息记录并重新鉴权。不启用自动删除。
+- Tavily Search/Extract适配器已实现，basic搜索/提取；HTTP200包含failed_results不视为成功。
+  已按最新授权作为自动备用，可能消耗Tavily额度；`route_attempts`记录实际路由、错误、耗时及返回用量。
+  两次均失败仍为失败，不能变成空成功，不新增数据库表。两组授权Key仅在被Git忽略的
+  API .env，本地nexuspilot-web已获联网权限，不在响应/测试/文档中记录凭据。
+- 此前curl直接比较同一Gmail查询：DeepSeek两次0.666/0.519秒，Tavily2.847/2.165秒，各5条；
+  Tavily返回2credits，DeepSeek用量未知。两家均有噪声，Tavily还返回不相关退订操作链接，
+  未打开这些链接；不是适配器验收或整体质量排名。默认DeepSeek是本次明确选择。
+
+此前供应商Fetch版本验证（历史证据，不代表新的本机Fetch路由已完成真实模型验收；apps/api目录运行）：
+
+```bash
+.venv/bin/pytest -q tests/test_web_tools.py tests/test_general_agent.py tests/test_worker_evidence.py tests/test_task_input_coverage.py tests/test_model_input_manifest.py tests/test_claim_sources.py tests/test_general_candidate.py tests/test_tool_context.py tests/test_personal_api_keys.py --tb=short
+# 130 passed，含最后新增的来源片段接口断言，32.24秒
+.venv/bin/python -m nexuspilot_api.commands.verify_web_tools --run-paid
+.venv/bin/python -m nexuspilot_api.commands.verify_web_tools --verify-saved
+```
+
+模拟测试验证快速回复/Agent搜索或抓取→Tool消息→回答/审核、无独立对象及哈希、来源片段接口、
+跨用户/跨Run拒绝、撤销授权和在途取消；真实本地HTTP只验证协议，不等于供应商实测。
+真实本地API使用OpenCode Go deepseek-v4.1-flash与DeepSeek Search、MySQL/MinIO：快速回复
+7.265秒，输入5471/输出527 token；Agent（always审核）25.654秒，输入13373/输出3128 token。
+各成功搜索一次并取得最终文本，Agent事件及结果重新读取成功。快速回复脚本初次漏了现有Web
+客户端的保存消息步骤，之后从已保存模型响应补执行并复查，无新增付费调用；不是后端保存缺陷。
+元数据记录见[真实联网联调记录](../../output/security/web-tools-opencode-go-20261026.json)。
+后续真实Fetch/Tavily/浏览器验收（同日追加；本批仅验证并记录问题，不修改业务代码）：
+
+| 同一公开URL | 本机HTTP GET（trust_env=false） | DeepSeek Fetch适配器 | Tavily Extract适配器 |
+|---|---|---|---|
+| support.google.com/mail/answer/56256?hl=en | 200，1,614,412字节HTML，2.742秒 | 404，0.509秒 | 2,022字符Markdown，1.184秒 |
+| docs.python.org/3/library/json.html | 200，116,112字节HTML，0.766秒 | 本地适配器30秒超时，上游终态未知 | 36,491字符Markdown，1.397秒 |
+| www.deepseek.com/ | 200，115,730字节HTML，0.177秒 | 成功，252字符提取文本，0.554秒 | 未再次调用 |
+
+Tavily两次Extract返回usage.credits=0，另一次真实Search返回3条、2.130秒、1credit；只记录供应商
+返回值，不承诺提取免费。DeepSeek没有usage，不能写为0费用。Tavily提取不提供title，适配器保留
+空值，不虚构标题。本机能直接访问Google不代表大陆服务器能访问；可能受当前网络/系统路由影响，
+本次没有验证部署网络。HTML大小与Markdown字符数单位不同，不用于计算提取准确率；本次没有
+逐段完整性评估，也没有证明供应商执行了JavaScript或获得原站实时内容。
+
+浏览器新建快速回复，选择OpenCode Go deepseek-v4.1-flash，调用一次web_fetch读取DeepSeek首页，
+最终回答可见、保存、刷新恢复及模型选择保留通过。Run `3738556a-535b-4ad4-8c4c-e1a24eafac89`，
+数据库秒精度耗时6秒，2次模型请求，输入4422/输出252 token，reasoning44/cached1920（不重复相加）。
+没有独立网页对象。截图：[刷新后回答](../../output/playwright/web-fetch-browser-restored.png)。
+
+浏览器重新打开此前Agent结果，片段加载成功，但网页来源展示验收失败。当前修复要求与验收条件
+统一维护在[Phase 4待处理问题](../frontend/phase-4-web-ui-plan.md#当前待处理问题2026-10-26)，
+包括文件文案误用、逐片段URL/标题未显示，以及不阻塞生成的工作流探测404待核查项。
+本节保留当时截图证据：[来源展示](../../output/playwright/web-source-excerpts.png)，不宣称页面已修复。
+
+本机Fetch与自动备用实现（同日后续修改）：
+
+- `local_web_fetch.py` 实现检查后固定IP连接、逐跳校验、流式大小限制、HTML文本提取与取消。
+  `web_fetch` 为对模型公开的统一工具名，不再额外增加同义工具；它优先调用本机适配器。
+  已登记的输入：`web_search(query, count=5)`，query最多128字符、count最多10；
+  `web_fetch(url, offset=0, max_characters=8000)`，片段最多12000字符。模型不能传Key、owner或供应商。
+  输出保留provider、route_attempts、URL/标题/片段/read_scope；本地返回final_url及静态提取标识。
+- HTML优先保留main/article，剔除script/style/nav/footer/form等；保留基本段落、列表、表格行文本，
+  支持纯文本/Markdown；不执行JS、不读取PDF或图片，不保证复杂排版与CSS可见性完全还原。
+  结果只保存到既有Tool消息，URL/标题/片段进入引用，无新增网页哈希或独立对象。
+- 工具循环可执行DeepSeek搜索→选定URL→本机读取；每次失败只启用一个Tavily备用请求。
+  自动模型测试包含快速回复/Agent、搜索后读取、两条主路由分别失败、来源接口、取消与跨用户拒绝。
+- 新适配器真实读取公开Gmail帮助页：2.131秒，标题正确、1782字符、包含账号创建内容、未执行JS。
+  该次没有搜索/模型/Tavily付费调用；不把旧的DeepSeek Fetch成功记录当作新本机路由实测。
+- 新版本回归分组156项通过（39.79秒）、工具兼容90项通过（26.56秒）、最终目录修复后79项通过
+  （13.05秒）；分组重叠，不相加。先新增测试确认旧实现缺少本地模块；兼容检查随后发现刷新联网
+  目录恢复了已撤下文件工具，修改为保留当前原生目录、只刷新授权工具，旧流程和general_agent
+  的撤下版本测试均通过。Ruff及git diff --check通过。前端来源展示缺陷仍待修复，本批未改页面。
+
+```bash
+# apps/api；固定模型和模拟供应商，本地HTTP测试需允许监听loopback
+.venv/bin/pytest -q tests/test_local_web_fetch.py tests/test_web_tools.py tests/test_general_agent.py tests/test_worker_evidence.py tests/test_task_input_coverage.py tests/test_model_input_manifest.py tests/test_claim_sources.py tests/test_general_candidate.py tests/test_tool_context.py tests/test_personal_api_keys.py --tb=short
+.venv/bin/pytest -q tests/test_agent_tool_discovery.py tests/test_response_file_tools.py tests/test_agent_file_tools.py tests/test_tool_catalog.py tests/test_general_delegation.py tests/test_delegation_recovery.py --tb=short
+.venv/bin/pytest -q tests/test_local_web_fetch.py tests/test_web_tools.py tests/test_agent_tool_discovery.py tests/test_general_agent.py --tb=short
+```
+
 ## 后续代码检索与 MCP 工具来源
+
+### MCP首版详细实施规划（2026-10-26）
+
+优先级：最高；实现状态：未开始。已有Remote HTTP Adapter是App固定JSON信封，不是MCP客户端；
+保持PA协议不变。当前仓库没有独立Phase 9实现计划文件，本节是首版定义位置，原Phase 9编号仅作索引。
+
+首版只接入一个由用户明确批准的只读MCP服务，不自动安装服务、运行远端命令或从网页发现并连接。
+拟优先选择HTTP型远程服务；实际服务地址、传输方式、认证方式、允许工具及目标环境需在实施前确认。
+协议与SDK版本依据所选服务和项目依赖锁定；本规划不虚构已经支持的协议版本。选定真实服务是
+联调前置，不妨碍先做本地模拟协议测试。个人Key仍只用于Nexus认证，不成为MCP供应商凭据。
+
+| 步骤 | 首版服务端行为（尚未实现） | 必须保留的限制 |
+|---|---|---|
+| 配置及批准连接 | 服务端保存连接ID、owner/适用App、显示名、已批准地址、凭据配置引用、允许工具和启用状态 | 凭据仅私有服务端配置；模型/浏览器请求不能替换地址、owner或认证头；本地服务只按明确地址授权 |
+| 建立会话与发现 | 按选定协议完成初始化/能力确认，分页发现工具；记录实际协商版本与安全能力摘要 | 发现不是授权，不因远端自称read-only就允许调用；仅批准清单内工具可进入目录 |
+| 转换目录定义 | 给远端名称分配带连接作用域的稳定别名，校验输入Schema、描述长度及本地支持范围 | 工具描述是不可信数据；不允许遮蔽内置工具，不支持的Schema拒绝加载而不是忽略校验 |
+| 执行及接收结果 | 由现有循环产生Tool Call，执行时复查连接/owner/版本；通过MCP适配器调用并转换为现有结果格式 | 普通空结果、远端错误、协议错误、断连、超时区分；资源链接不自动下载，非文本内容首版明确不支持 |
+| 变更与撤销 | 工具定义变化形成新发现版本；已有调用固定原版本。连接禁用后拒绝新调用并清理本地会话 | 变化后的工具重新批准/验证，不在恢复时静默替换；远端工具消失明确不可用 |
+| 取消与恢复 | 按所选协议能力传递取消，同时停止本地等待和后续调用；重启后复查连接和目录版本 | 不承诺远端已经停止；结果未知不盲目重发。已完成调用复用保存结果，撤销后仍须拒绝读取受限正文 |
+
+拟新增逻辑记录：连接元数据、发现版本/允许工具快照、任务使用的连接版本绑定。具体表名与迁移号
+实施时核对，数据库不写认证secret；大型定义和调用正文沿用MinIO对话存储。Tool Call继续是执行
+记录，关联连接/远端请求标识，不另建一套模型循环。对象写入与元数据发布分开处理：发布前失败
+不开放目录，历史版本保留以便解释旧调用；不启用自动删除。
+
+管理操作首版只需创建已批准连接、列出安全元数据、显式刷新发现、启停/撤销；复用当前登录主体
+和写操作保护，不开放模型管理连接。App接入需明确范围，原生用户连接不隐式共享给App；暂不
+实施OAuth账号管理平台、MCP市场或用户上传任意进程启动命令。具体REST路由尚未登记，不按本节
+推断已有接口。Web最小页面只显示连接状态、批准工具和安全错误，不暴露认证材料。
+
+实施位置：复用`tool_catalog.py`与`agent_file_tool_service.py`的登记/执行/结果记录；新增独立
+MCP协议适配职责，不更改`remote_tool_adapter.py`的PA协议；Phase5负责主体、Phase4负责必要
+连接/授权展示，Phase10复用既有结果恢复。实际修改前先核对现有类型，不能仅放宽execution_type
+枚举就宣称MCP已可调用。
+
+验收顺序：本地模拟服务覆盖初始化失败、发现分页、名称冲突、坏Schema、工具变化、正常文本/空结果、
+远端错误、断连/超时、取消、撤销和跨用户/App拒绝；然后用一个批准的真实服务完成发现→调用→
+Tool消息→最终回答及重启恢复。默认固定模型，不新增付费调用；真实模型/收费服务另行授权。
+完成条件是这一条用户路径可重复运行，不要求第一批支持所有MCP传输或资源类型。
 
 原 Phase 8/9 编号保留作专业实现索引，需求、排期和工具调用验收统一在本计划，不另建工具协议、权限或循环。
 

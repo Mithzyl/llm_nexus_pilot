@@ -31,9 +31,13 @@ from nexuspilot_api.services.tool_context import ToolProgressTracker, allow_tool
 async def has_automatic_file_tools(
     service: ModelInvocationService, payload: ResponsesRequest
 ) -> bool:
-    """Enable native file reads for saved conversation turns, not external tool orchestration."""
+    """Enable attached-file or explicitly authorized web reads for saved conversation turns."""
     if payload.task_id or not payload.current_user_message_id or payload.tools:
         return False
+    from nexuspilot_api.services.web_tools import web_authorized
+
+    if await web_authorized(service.db_session, payload.run_id):
+        return True
     return bool(
         await conversation_file_ids(
             service.db_session,
@@ -145,6 +149,7 @@ class ResponseFileToolService:
                 remaining = deadline - monotonic() if deadline is not None else None
                 if remaining is not None and remaining < 1:
                     raise InvalidRequestError("文件读取已超时，请缩小问题范围后重试。")
+                await self.tools.refresh_catalog(payload.run_id)
                 definitions = self.tools.definitions()
                 versions = {
                     tool.name: self.tools.loaded_versions[tool.name] for tool in definitions
@@ -157,10 +162,18 @@ class ResponseFileToolService:
                         "tools": definitions,
                         "timeout_seconds": remaining,
                         "idempotency_key": key,
-                        "instructions": "\n".join(filter(None, [payload.instructions,
-                            file_tool_guidance(final_format="a user-facing answer"),
-                            "For quick replies submit a user-facing answer, not node JSON. "
-                            "Cite actual blocks; state unread/unsupported points explicitly."])),
+                        "instructions": "\n".join(
+                            filter(
+                                None,
+                                [
+                                    payload.instructions,
+                                    file_tool_guidance(final_format="a user-facing answer"),
+                                    "For quick replies submit a user-facing answer, not node JSON. "
+                                    "Cite actual blocks; state unread/unsupported points "
+                                    "explicitly.",
+                                ],
+                            )
+                        ),
                     }
                 )
                 response = None

@@ -36,11 +36,25 @@ from nexuspilot_api.services.user_file_service import read_parsed_file
 def tool_argument_validation_errors(error: ValidationError, schema: type[BaseModel]) -> list[dict]:
     """Expose eight declared-field errors at most, never input values or arbitrary extra keys."""
     allowed_types = {
-        "missing", "extra_forbidden", "string_type", "string_pattern_mismatch",
-        "string_too_short", "string_too_long", "int_type", "int_parsing",
-        "greater_than", "greater_than_equal", "less_than", "less_than_equal",
-        "list_type", "dict_type", "bool_type", "bool_parsing", "literal_error",
-        "too_long", "too_short",
+        "missing",
+        "extra_forbidden",
+        "string_type",
+        "string_pattern_mismatch",
+        "string_too_short",
+        "string_too_long",
+        "int_type",
+        "int_parsing",
+        "greater_than",
+        "greater_than_equal",
+        "less_than",
+        "less_than_equal",
+        "list_type",
+        "dict_type",
+        "bool_type",
+        "bool_parsing",
+        "literal_error",
+        "too_long",
+        "too_short",
     }
     result = []
     for item in error.errors(include_input=False, include_url=False, include_context=False)[:8]:
@@ -112,10 +126,19 @@ def content_start_offset(document, arguments: ContentArguments) -> int:
 def search_read_targets(document, page, file_id: str) -> list[dict]:
     """Return exact source positions and bounded reread arguments only for delivered matches."""
     positions = {block.block_id: index for index, block in enumerate(document.blocks)}
-    return [{"block_id": block.block_id, "source_offset": positions[block.block_id],
-             "read_arguments": {"file_id": file_id, "block_id": block.block_id,
-                                "before": 5, "limit": 20}}
-            for block in page.blocks]
+    return [
+        {
+            "block_id": block.block_id,
+            "source_offset": positions[block.block_id],
+            "read_arguments": {
+                "file_id": file_id,
+                "block_id": block.block_id,
+                "before": 5,
+                "limit": 20,
+            },
+        }
+        for block in page.blocks
+    ]
 
 
 class FileToolResult(BaseModel):
@@ -242,7 +265,18 @@ class AgentFileToolService:
         }
 
     async def refresh_catalog(self, run_id: str) -> None:
-        """Keep native tools unchanged; application-aware subclasses reauthorize their additions."""
+        """Refresh web grants without resurrecting removed file-tool versions or granting Apps."""
+        from nexuspilot_api.services.web_tools import web_authorized, web_entries
+
+        enabled = await web_authorized(self.db, run_id)
+        web_names = {entry.name for entry in web_entries()}
+        retained = tuple(entry for entry in self.catalog.entries if entry.name not in web_names)
+        self.catalog = ToolCatalog((*retained, *(web_entries() if enabled else ())))
+        self.capabilities = (self.capabilities - {"web_read"}) | (
+            {"web_read"} if enabled else set()
+        )
+        if enabled:
+            self.loaded_versions.update({entry.name: entry.version for entry in web_entries()})
 
     def definitions(self) -> list[ToolDefinition]:
         """Resolve loaded versions against current policy before each Provider request."""
@@ -318,10 +352,15 @@ class AgentFileToolService:
                 arguments = tool.arguments.model_validate(call.arguments)
             except ValidationError as error:
                 return await self._finish(
-                    record, "failed", error="invalid_arguments",
-                    result={"validation_errors": tool_argument_validation_errors(
-                        error, tool.arguments,
-                    )},
+                    record,
+                    "failed",
+                    error="invalid_arguments",
+                    result={
+                        "validation_errors": tool_argument_validation_errors(
+                            error,
+                            tool.arguments,
+                        )
+                    },
                 )
             record.permission_decision = "allowed"
             record.status = "running"
@@ -358,6 +397,10 @@ class AgentFileToolService:
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
         """Dispatch default file operations; subclasses can use server-owned call/task IDs."""
+        if name in {"web_search", "web_fetch"}:
+            from nexuspilot_api.services.web_tools import execute_web
+
+            return await execute_web(self.db, self.storage, attempt, record, name, arguments)
         return await self._read(attempt.run_id, name, arguments)
 
     async def _read(self, run_id: str, name: str, arguments: EmptyArguments) -> dict:
@@ -424,8 +467,11 @@ class AgentFileToolService:
                 reader = read_file_table if name == "read_file_table" else read_file_content
                 page = reader(document, offset=source_offset, limit=arguments.limit)
             page = bound_file_page(page, offset=source_offset)
-            if (isinstance(arguments, ContentArguments) and arguments.block_id is not None
-                    and arguments.block_id not in {block.block_id for block in page.blocks}):
+            if (
+                isinstance(arguments, ContentArguments)
+                and arguments.block_id is not None
+                and arguments.block_id not in {block.block_id for block in page.blocks}
+            ):
                 # Large preceding blocks must not displace the requested anchor.
                 source_offset = content_start_offset(
                     document, arguments.model_copy(update={"before": 0})
@@ -465,7 +511,8 @@ class AgentFileToolService:
         }
 
     async def validate_history(self, run_id: str, records: list[LlmModelToolCall]) -> None:
-        """Reject deleted, reassigned or changed files before sending previous tool data again."""
+        """Reauthorize file/web snapshots and current grants before reusing saved tool history."""
+        await self.refresh_catalog(run_id)
         run = await self.db.get(LlmRun, run_id, populate_existing=True)
         allowed = await conversation_file_ids(self.db, run_id)
         for record in records:
@@ -476,6 +523,10 @@ class AgentFileToolService:
                 if record.status == "completed":
                     raise ResourceConflictError("Previously used tool is no longer available")
             result = (record.output_json or {}).get("result") or {}
+            if result.get("source_kind") == "web" and record.status == "completed":
+                from nexuspilot_api.services.web_tools import read_web_result
+
+                await read_web_result(self.db, run_id, result["web_result_id"])
             if record.tool_name == "describe_tools" and record.status == "completed":
                 if self.catalog.get(result["name"], result["version"], self.capabilities) is None:
                     raise ResourceConflictError("Previously described tool is no longer available")
@@ -503,14 +554,20 @@ class AgentFileToolService:
                     raise ResourceConflictError("Previously read file is no longer available")
 
     async def _finish(self, record, status, *, result=None, error=None):
-        """Publish the result and citable snapshot identity before model continuation."""
+        """Publish file snapshot or web excerpt references before model continuation."""
         if status == "completed" and result and result.get("data", {}).get("blocks"):
             result["evidence_ref"] = {
+                **(
+                    {"source_kind": "web", "web_result_id": result["web_result_id"]}
+                    if result.get("source_kind") == "web"
+                    else {}
+                ),
                 "tool_call_id": record.tool_call_id,
                 "result_id": f"tool-result:{record.tool_call_id}",
                 **{
                     key: result[key]
                     for key in ("file_id", "source_hash", "parsed_hash", "parser_version")
+                    if result.get("source_kind") != "web"
                 },
                 "block_ids": [block["block_id"] for block in result["data"]["blocks"]],
             }
@@ -532,7 +589,8 @@ def file_tool_guidance(*, final_format: str = "final JSON") -> str:
     loaded = sorted(entry.name for entry in FILE_TOOL_CATALOG.entries if entry.initially_loaded)
     return (
         "Already loaded tools: " + ", ".join(loaded) + ". Call these directly; "
-        "do NOT search or describe them first. Only discover/describe tools not in this list. "
+        "do NOT search or describe them first. Other tools already present in this request's "
+        "tool schemas are also callable directly. Discover only absent tools. "
         f"Continue useful reads until evidence supports the task, then submit {final_format}. "
         "For pagination pass the returned next_offset as the next request's offset parameter. "
         "Search matches may be incomplete lines; read surrounding source before inferring meaning."

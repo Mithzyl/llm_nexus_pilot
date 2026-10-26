@@ -803,11 +803,13 @@ type AgentWorkflowNodeBase = {
 export type FileEvidenceReference = {
   tool_call_id: string;
   result_id: string;
-  file_id: string;
+  source_kind?: "file" | "web";
+  web_result_id?: string | null;
+  file_id?: string | null;
   block_ids: string[];
-  source_hash: string;
-  parsed_hash: string;
-  parser_version: string;
+  source_hash?: string | null;
+  parsed_hash?: string | null;
+  parser_version?: string | null;
 };
 
 export type WorkerClaim = {
@@ -830,6 +832,8 @@ export type ClaimAssessment = {
 export type ClaimSources = {
   sources: Array<{
     filename: string;
+    source_kind?: "file" | "web";
+    url?: string | null;
     read_by: "worker" | "reviewer";
     source_valid: true;
     has_more: boolean | null;
@@ -838,6 +842,8 @@ export type ClaimSources = {
     warnings: string[];
     blocks: Array<{
       text: string;
+      url?: string | null;
+      title?: string | null;
       cells: string[] | null;
       line_start: number | null;
       line_end: number | null;

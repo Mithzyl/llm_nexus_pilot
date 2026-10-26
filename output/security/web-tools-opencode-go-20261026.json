@@ -1,0 +1,218 @@
+{
+  "date": "2026-10-26",
+  "environment": "local HTTP API, real MySQL/MinIO",
+  "model_provider": "opencode",
+  "model": "deepseek-v4.1-flash",
+  "search_provider": "deepseek",
+  "local_fetch_implementation": {
+    "current_search_route": ["deepseek", "tavily_on_failure"],
+    "current_fetch_route": ["local", "tavily_on_failure"],
+    "tool_names": ["web_search", "web_fetch"],
+    "new_paid_calls": 0,
+    "new_web_hashes": false,
+    "separate_web_objects": false,
+    "local_real_get": {
+      "url": "https://support.google.com/mail/answer/56256?hl=en",
+      "success": true,
+      "elapsed_seconds": 2.131,
+      "title": "Create a Google Account for Gmail - Gmail Help",
+      "characters": 1782,
+      "contains_create_account": true,
+      "javascript_executed": false,
+      "connection": "Resolved public IP pinned; original domain retained for TLS and Host"
+    },
+    "test_runs": [
+      {"scope": "web/local fetch, general Agent, sources, context, personal keys", "passed": 156, "seconds": 39.79},
+      {"scope": "file loop, tool discovery, catalog, delegation and recovery after catalog fix", "passed": 90, "seconds": 26.56},
+      {"scope": "final local/web, old discovery and general Agent after both catalog fixes", "passed": 79, "seconds": 13.05}
+    ],
+    "test_note": "Runs overlap; do not add their counts. Fixed model/provider fixtures and local HTTP, not a new paid model acceptance.",
+    "regression_fixed": "Web catalog refresh restored withdrawn native tool versions; preserved remaining native catalog instead. Old and general-agent regression tests now pass.",
+    "limitations": ["No browser JavaScript or login", "Static HTML extraction is not a completeness guarantee", "New fallback chain was tested with simulated suppliers, not paid replays", "Previously recorded Agent web-source UI defects remain"]
+  },
+  "fetch_acceptance": {
+    "method": "Real adapter calls and local HTTP GET; HTTP client trust_env=false, no browser login",
+    "comparisons": [
+      {
+        "url": "https://support.google.com/mail/answer/56256?hl=en",
+        "local_http": {"status": 200, "seconds": 2.742, "bytes": 1614412, "format": "HTML"},
+        "deepseek": {"success": false, "seconds": 0.509, "error": "web_http_404"},
+        "tavily": {"success": true, "seconds": 1.184, "characters": 2022, "format": "Markdown", "returned_credits": 0}
+      },
+      {
+        "url": "https://docs.python.org/3/library/json.html",
+        "local_http": {"status": 200, "seconds": 0.766, "bytes": 116112, "format": "HTML"},
+        "deepseek": {"success": false, "seconds": 30.076, "error": "web_timeout", "upstream_final_result": "unknown"},
+        "tavily": {"success": true, "seconds": 1.397, "characters": 36491, "format": "Markdown", "returned_credits": 0}
+      },
+      {
+        "url": "https://www.deepseek.com/",
+        "local_http": {"status": 200, "seconds": 0.177, "bytes": 115730, "format": "HTML"},
+        "deepseek": {"success": true, "seconds": 0.554, "characters": 252, "title": "DeepSeek | 深度求索", "format": "extracted_text"}
+      }
+    ],
+    "tavily_adapter_search": {"success": true, "query": "site:support.google.com/mail Gmail create account", "count": 3, "seconds": 2.130, "returned_credits": 1},
+    "limitations": ["No whole-document fidelity review", "Local reachability does not establish mainland server reachability", "Tavily Extract does not provide a title in the current adapter result", "Missing DeepSeek usage is unknown, not zero"]
+  },
+  "browser_fetch_acceptance": {
+    "model_provider": "opencode",
+    "model": "deepseek-v4.1-flash",
+    "session_id": "aa074d93-586a-4aaf-a72f-e6153aa19cbd",
+    "run_id": "3738556a-535b-4ad4-8c4c-e1a24eafac89",
+    "status": "completed",
+    "run_duration_seconds_from_database": 6.0,
+    "duration_precision": "database timestamps have second precision",
+    "model_requests": 2,
+    "input_tokens": 4422,
+    "output_tokens": 252,
+    "reasoning_tokens": 44,
+    "cached_tokens": 1920,
+    "tool": "web_fetch",
+    "tool_status": "completed",
+    "tool_calls": 1,
+    "separate_result_uri": false,
+    "final_answer_visible": true,
+    "answer_restored_after_reload": true,
+    "model_selection_restored": true,
+    "screenshot": "output/playwright/web-fetch-browser-restored.png",
+    "console_note": "Quick reply queries agent-workflow and receives 404; response generation and restoration still succeed"
+  },
+  "browser_source_acceptance": {
+    "workflow_id": "55aabec9-e2cf-443e-af7c-98a3a9596d05",
+    "evidence_origin": "Prior successful Agent run, freshly opened in browser; no new Agent generation",
+    "excerpts_loaded": true,
+    "display_acceptance": "failed",
+    "issues": ["Web excerpts use file-conclusion and file-snapshot wording", "Per-excerpt URL and title returned by API are not rendered"],
+    "component": "apps/web/components/agent-workflow/ClaimEvidencePanel.tsx",
+    "screenshot": "output/playwright/web-source-excerpts.png"
+  },
+  "runs": [
+    {
+      "mode": "quick_reply",
+      "session_id": "e28254da-7d8c-4d3c-81a7-abd3c3763278",
+      "run_id": "35e270f9-63a5-40de-9a1c-250f7b91351a",
+      "http_status": 200,
+      "status": "completed",
+      "final_text_present": true,
+      "messages_restored": true,
+      "elapsed_seconds": 7.265,
+      "attempts": [
+        {
+          "attempt_id": "33579c5f-2edd-4074-b7e5-3cd952a69cbb",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "completed",
+          "input_tokens": 1927,
+          "output_tokens": 72,
+          "cached_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        {
+          "attempt_id": "e54f56ae-9717-4d41-8386-34e8e8caccb6",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "completed",
+          "input_tokens": 3544,
+          "output_tokens": 455,
+          "cached_tokens": 0,
+          "reasoning_tokens": 54
+        }
+      ],
+      "usage_totals": {
+        "input_tokens": 5471,
+        "output_tokens": 527,
+        "cached_tokens": 0,
+        "reasoning_tokens": 54
+      },
+      "tool_calls": [
+        {
+          "tool_call_id": "061bded7-209c-4ac8-acfa-4d9af6c1ba17",
+          "tool_name": "web_search",
+          "status": "completed",
+          "error_code": null,
+          "separate_result_uri": false,
+          "web_hash_present": false,
+          "excerpt_count": 3
+        }
+      ],
+      "client_saved_answer": true,
+      "verification_note": "Initial script omitted the Web client's save; recovered from the saved response without a new model call.",
+      "saved_recheck_without_model_calls": true
+    },
+    {
+      "mode": "agent",
+      "session_id": "43fbdf22-6df2-4062-b90c-253426310445",
+      "run_id": "14141822-ee73-4cd6-9395-a3e1e2e5d993",
+      "http_status": 201,
+      "status": "completed",
+      "final_text_present": true,
+      "workflow_id": "55aabec9-e2cf-443e-af7c-98a3a9596d05",
+      "result_restored": true,
+      "events_replayed": true,
+      "web_source_reference_count": 2,
+      "messages_restored": true,
+      "elapsed_seconds": 25.654,
+      "attempts": [
+        {
+          "attempt_id": "39af0d4f-f882-4459-adf6-34a6df2cad57",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "completed",
+          "input_tokens": 2626,
+          "output_tokens": 64,
+          "cached_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        {
+          "attempt_id": "481898c6-476c-4cb1-bbf6-592aca126353",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "completed",
+          "input_tokens": 4228,
+          "output_tokens": 372,
+          "cached_tokens": 2688,
+          "reasoning_tokens": 106
+        },
+        {
+          "attempt_id": "9d19bc1a-af76-4b91-8baa-88e9d018d829",
+          "provider": "opencode",
+          "model": "deepseek-v4.1-flash",
+          "status": "completed",
+          "input_tokens": 6519,
+          "output_tokens": 2692,
+          "cached_tokens": 0,
+          "reasoning_tokens": 2365
+        }
+      ],
+      "usage_totals": {
+        "input_tokens": 13373,
+        "output_tokens": 3128,
+        "cached_tokens": 2688,
+        "reasoning_tokens": 2471
+      },
+      "tool_calls": [
+        {
+          "tool_call_id": "89da49b1-ce96-493f-b078-0da12f798958",
+          "tool_name": "web_search",
+          "status": "completed",
+          "error_code": null,
+          "separate_result_uri": false,
+          "web_hash_present": false,
+          "excerpt_count": 3
+        },
+        {
+          "tool_call_id": "ae21bcfb-8afb-4077-a954-6bca7a8f61b8",
+          "tool_name": "submit_review",
+          "status": "completed",
+          "error_code": null,
+          "separate_result_uri": false,
+          "web_hash_present": false,
+          "excerpt_count": 0
+        }
+      ],
+      "saved_recheck_without_model_calls": true,
+      "source_read_http_status": 200,
+      "source_url_title_excerpt_restored": true
+    }
+  ]
+}

@@ -91,7 +91,7 @@ def build_runtime_source_manifest(
 
 
 def _source_bundle_records(values: dict, paths: tuple[tuple[str, ...], ...]) -> list[dict]:
-    """Hash exact originals at trusted paths; reject mismatched reference/block membership."""
+    """Audit file originals at trusted paths; web citations remain ordinary message excerpts."""
     sources = []
     for path in paths:
         value = values
@@ -103,6 +103,9 @@ def _source_bundle_records(values: dict, paths: tuple[tuple[str, ...], ...]) -> 
             raise ValueError("Runtime source bundle is not a mapping")
         for alias, source in value.items():
             reference, blocks = source["reference"], source["blocks"]
+            if reference.get("source_kind") == "web":
+                # Web excerpts stay in messages, not the parsed-file hash inventory.
+                continue
             ids = [block["block_id"] for block in blocks]
             if len(set(ids)) != len(ids) or set(ids) != set(reference["block_ids"]):
                 raise ValueError("Runtime original blocks differ from source reference")
@@ -179,6 +182,7 @@ def build_tool_input_manifest(messages: list[Message]) -> dict:
     """Record exact post-projection file block occurrences without copying their text.
 
     Only successful internal native file results with well-formed text blocks count.
+    Web excerpts remain in messages but do not receive per-page or per-block hashes here.
     An omitted result retains its reference IDs separately; those IDs never count as
     included text. Malformed historical envelopes are marked unrecognized rather
     than blocking an otherwise valid request or inventing coverage.
@@ -220,6 +224,11 @@ def build_tool_input_manifest(messages: list[Message]) -> dict:
             continue
         result = envelope.get("result")
         if not isinstance(result, dict):
+            continue
+        if result.get("source_kind") == "web":
+            entry["source_kind"] = "web"
+            entry["web_result_id"] = result.get("web_result_id")
+            entry["body_status"] = "web_excerpt"
             continue
         for name in ("file_id", "source_hash", "parsed_hash", "parser_version", "source_alias"):
             if isinstance(result.get(name), str):
