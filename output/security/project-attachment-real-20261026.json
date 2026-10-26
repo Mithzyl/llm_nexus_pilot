@@ -1,0 +1,47 @@
+{
+  "database": "real local MySQL",
+  "storage": "real local MinIO",
+  "provider": "fixed in-process; no paid requests",
+  "session_id": "736f474b-8c9e-4534-8499-4685d7d6c72b",
+  "checks": {
+    "two_persisted_turns": true,
+    "message_bodies_in_minio": true,
+    "selected_source_preserved": true,
+    "followup_without_reattachment": true,
+    "parsed_object_read_from_minio": true,
+    "cross_user_api_denied": true
+  },
+  "migration": "20261024_0029",
+  "run_ids": [
+    "7f3be889-0103-4256-aef9-7ba96a1fe3ca",
+    "c319e767-8bde-4d9a-9dec-701d7a23b755"
+  ],
+  "tool_calls": [
+    {
+      "run_id": "7f3be889-0103-4256-aef9-7ba96a1fe3ca",
+      "calls": [
+        {
+          "tool_name": "read_file_content",
+          "status": "completed"
+        },
+        {
+          "tool_name": "list_run_files",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "run_id": "c319e767-8bde-4d9a-9dec-701d7a23b755",
+      "calls": [
+        {
+          "tool_name": "list_run_files",
+          "status": "completed"
+        },
+        {
+          "tool_name": "read_file_content",
+          "status": "completed"
+        }
+      ]
+    }
+  ]
+}

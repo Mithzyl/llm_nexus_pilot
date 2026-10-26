@@ -235,6 +235,38 @@ Web `npm test`178项通过；项目桌面/手机Playwright固定HTTP验证2项�
 首轮因定位器匹配Next路由公告和页面错误两处而失败，修正定位后通过，不修改业务错误断言。
 TypeScript、相关ESLint、Ruff及git diff --check通过。截图存output/playwright，不提交图像。
 
+### 项目附件真实存储与浏览器验证（2026-10-26）
+
+项目附件、权限测试及相关规划已提交`ea4c624`，未推送。随后使用原有本地MySQL/MinIO容器、
+实际API/BFF和Chromium完成以下验证；仅模型Provider为固定进程内响应，不创建供应商HTTP适配器。
+真实模型调用数为0，界面120 tokens/轮是固定测试用量，不是供应商账单。
+
+- 用户A在项目会话中点击“项目文件”并附加`selected.txt`，首轮生成、保存回答及附件下载链接。
+- 刷新后附件/回答恢复；第二轮不附加文件，仍通过现有工具读取第一轮附件并保存最终回答。
+  再次刷新可见两条回答。两轮各有`list_run_files`及`read_file_content`成功记录。
+- 真实SQL确认四条消息正文列为空且有body_ref_json；ORM从MinIO恢复正文。附件解析结果从
+  真实MinIO读取成功，首轮来源保留project_file_id，第二轮没有重复绑定文件。
+- 用户B真实登录后无法看到A的会话或回答；项目列表、项目副本下载、附件准备、会话读取、
+  已绑定附件下载接口均404。浏览器直接打开A会话显示Resource not found，不显示A正文。
+
+证据：`output/security/project-attachment-real-20261026.json`；截图
+`output/playwright/project-attachment-real-20261026.png`和
+`output/playwright/project-attachment-cross-user-20261026.png`（本地截图不提交）。
+会话`736f474b-8c9e-4534-8499-4685d7d6c72b`；两轮Run ID在JSON中记录。
+本批验证入口`apps/api/tests/manual_project_attachment_validation.py`，运行方式见文件头；
+依次执行serve、prepare，浏览器操作后verify、disable。服务仅监听8002，前端3100，验证进程
+精确允许该本地Origin；未修改持久.env。启动前本地容器已停止，本次启动原容器，无重建/迁移。
+数据库版本仍为20261024_0029。
+
+验证脚本修正：最初未配置测试Origin导致登录403；内部Key须从SecretStr取值；ORM正文自动
+加载不能等同SQL内联保存；MySQL秒级时间相同的工具行不能用时间排序断言先后。均修正验证入口，
+没有为通过验证更改业务权限、文件或存储逻辑。首轮复用已有固定Provider，续聊改用允许历史答案
+的固定Provider，并仍断言工具读取前不出现完整源文本。不是实际模型理解或长PDF/Office验收，
+本次真实浏览器只执行快速回复模式；Agent已有确定性测试未冒充本次真实Agent执行。
+
+结束后禁用两名合成账号、撤销其登录、禁用专用固定模型，保留验证记录和MinIO对象，不删除数据。
+本次脚本、报告及文档留在工作区未提交；没有推送或部署。
+
 ### 项目工作区真实本地验证（2026-10-24）
 
 实现/测试/规划先提交为`346586c`，未推送。随后备份本地`nexuspilot`库（15,435,503字节SQL，
