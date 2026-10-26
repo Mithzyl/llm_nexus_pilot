@@ -5,6 +5,7 @@ serve|prepare|verify|disable. Set NEXUSPILOT_AUTHENTICATION_ENABLED=true,
 NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=inline, and for serve set
 NEXUSPILOT_AUTHENTICATION_ALLOWED_ORIGINS=http://127.0.0.1:3100.
 Serve binds 127.0.0.1:8002; browser BFF uses port3100.
+Add --agent to every action for separate general_agent fixtures with always-review and citations.
 Private generated accounts/cookies stay in ignored deployments/data. No existing records are
 overwritten, no objects are deleted, and disable only revokes generated users and fixture model.
 """
@@ -14,6 +15,7 @@ import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import httpx
 import manual_project_workspace_validation as base
@@ -23,6 +25,7 @@ from nexuspilot_models.registry import ProviderRegistry
 from sqlalchemy import select, text, update
 from sqlalchemy.engine import make_url
 from test_agent_workflows import registered_agent_test_model
+from test_general_agent import unit_review_text
 from test_response_file_tools import QuickFileProvider
 
 from nexuspilot_api.core.config import get_settings
@@ -38,6 +41,7 @@ base.MANIFEST = base.PRIVATE / "manifest.json"
 base.REPORT = base.ROOT / "output/security/project-attachment-real-20261026.json"
 base.UPLOAD = b"UNIQUE_FILE_TEXT_2718\nSynthetic selected project file.\n"
 MODEL = "project-attachment-fixture-20261026"
+AGENT_MODE = False
 
 
 class FollowupFileProvider(QuickFileProvider):
@@ -45,6 +49,17 @@ class FollowupFileProvider(QuickFileProvider):
 
     async def generate(self, request):
         """Request list/read tools and reject automatic source-text injection before reading."""
+        if AGENT_MODE and request.metadata.get("agent_role") == "reviewer":
+            original = "\n".join(message.content or "" for message in request.messages)
+            assert "source_hash" in original and "UNIQUE_FILE_TEXT_2718" in original
+            return ModelResponse(
+                text=unit_review_text(request, "supported", "Checked synthetic original"),
+                finish_reason="stop",
+                input_tokens=30,
+                output_tokens=10,
+                latency_ms=1,
+                raw_response={"fixture": True},
+            )
         results = [message for message in request.messages if message.role.value == "tool"]
         if not results:
             assert all(
@@ -65,7 +80,7 @@ class FollowupFileProvider(QuickFileProvider):
         else:
             assert "UNIQUE_FILE_TEXT_2718" in results[-1].content
             return ModelResponse(
-                text="File answer: UNIQUE_FILE_TEXT_2718",
+                text="File answer: UNIQUE_FILE_TEXT_2718" + (" [S1]" if AGENT_MODE else ""),
                 finish_reason="stop",
                 input_tokens=30,
                 output_tokens=10,
@@ -288,6 +303,43 @@ async def verify():
             await client.get(f"/api/v1/sessions/{sid}/messages/latest?limit=100")
         )
         assert sum("File answer: UNIQUE_FILE_TEXT_2718" in str(m) for m in response["items"]) == 2
+        if AGENT_MODE:
+            report["mode"] = "general_agent, review_policy=always"
+            report["workflows"] = []
+            for run_id in report["run_ids"]:
+                summary = base.checked(await client.get(f"/api/v1/runs/{run_id}/agent-workflow"))
+                wid = summary["workflow_execution_id"]
+                result = base.checked(await client.get(f"/api/v1/agent-workflows/{wid}/result"))
+                assert result["status"] == "completed"
+                assert result["workflow_name"] == "general_agent"
+                assert "UNIQUE_FILE_TEXT_2718" in result["final_output"]["final_text"]
+                async with database_session_factory() as db:
+                    policy = await db.scalar(
+                        text(
+                            "SELECT review_policy FROM llm_agent_workflow_executions "
+                            "WHERE workflow_execution_id=:wid"
+                        ),
+                        {"wid": wid},
+                    )
+                    assert policy == "always"
+                events = await client.get(f"/api/v1/agent-workflows/{wid}/events")
+                assert events.status_code == 200 and "id:" in events.text
+                report["workflows"].append(
+                    {
+                        "workflow_id": wid,
+                        "status": result["status"],
+                        "final_text_present": True,
+                        "saved_events_replayed": True,
+                        "review_policy": policy,
+                        "model_call_count": result["model_call_count"],
+                        "node_count": result["node_count"],
+                        "elapsed_seconds": (
+                            datetime.fromisoformat(result["completed_at"])
+                            - datetime.fromisoformat(result["started_at"])
+                        ).total_seconds(),
+                        "synthetic_usage": result["aggregate_usage"],
+                    }
+                )
         client.cookies.clear()
         await base.login(client, manifest["accounts"][1])
         checks = [
@@ -330,7 +382,15 @@ async def main(action):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["serve", "prepare", "verify", "disable"])
-    action = parser.parse_args().action
+    parser.add_argument("--agent", action="store_true", help="Separate Agent fixtures and report")
+    args = parser.parse_args()
+    action = args.action
+    AGENT_MODE = args.agent
+    if AGENT_MODE:
+        base.PRIVATE = base.ROOT / "deployments/data/project-attachment-agent-validation-20261026"
+        base.MANIFEST = base.PRIVATE / "manifest.json"
+        base.REPORT = base.ROOT / "output/security/project-attachment-agent-real-20261026.json"
+        MODEL = "project-attachment-agent-fixture-20261026"
     if action == "serve":
         app.router.lifespan_context = fixture_lifespan
         uvicorn.run(app, host="127.0.0.1", port=8002, access_log=False)

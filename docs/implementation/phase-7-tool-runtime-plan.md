@@ -2,7 +2,7 @@
 
 **2026-10-18 上传大小更新：** 原文件上限现为 20 MiB，解析 Socket 最大请求为 `ceil(20 MiB / 3) * 4 + 4096` 字节，包含 base64 和协议字段。下文固定执行器旧 1 MiB/1,500,000 字节为历史限制；输出 4 MiB、OOXML 总解压 20 MiB、压缩比、块数、超时和并发限制不变。此修改不涉及任务工作目录的读写配额，也不等于模型自动读取整份文件。
 
-**文档日期：** 2026 年 10 月 18 日
+**文档日期：** 2026 年 10 月 26 日
 **文档状态：** 进行中；Office/PDF解析、附件工具与目录已有实现。2026-10-23 Python最小接入通过本地真实Docker执行、MinIO产物保存和工作流在途取消验证；固定测试模型与SQLite不代表真实Provider或MySQL联合验收，运行配置默认未启用。Shell入口不开放。2026-10-12附件版本发布是历史事实，不代表本批代码已部署。动态工具、受控SDK、Git仍未实现或暂停。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
@@ -12,6 +12,10 @@
 下一批优先推进个人项目/文件工作区、必要MCP/联网只读工具及动态任务工具，后台恢复扩展
 验收持续推进，不作为全部功能编码的串行前置。独立Worker与浏览器提交身份已有实现和限定
 联合验证；长时间无人值守任务仍必须通过适用恢复验收才开放，RabbitMQ暂不接入。
+
+2026-10-26：项目固定副本显式附加、快速回复与Agent续聊/刷新已通过真实MySQL/MinIO和浏览器
+验证（固定模型，无供应商调用）。联网工具进入官方API研究与设计，首个适配器建议DeepSeek，
+Tavily保留第二候选，业务实现未开始；选择理由与待验事项见本文联网API供应商研究节。
 
 当前恢复实现与故障测试统一维护在[阶段10](phase-10-rabbitmq-task-execution-plan.md)：
 已补充节点切换、Reviewer格式修正响应复用和委派父子检查点。内部委派依据原工具调用ID
@@ -1171,7 +1175,7 @@ SDK 子调用仍通过同一执行服务，记录父调用、子调用序号、�
 
 ## 必要MCP与联网工具优先交付（2026-10-24）
 
-状态：未开始，恢复为优先规划；以下不是已开放工具。保留Personal Assistant三个静态只读
+状态：进行中（2026-10-26官方资料研究与接口设计），业务实现及供应商实测未开始；以下不是已开放工具。保留Personal Assistant三个静态只读
 业务工具和既有Remote HTTP Adapter，不更改JSON信封，不用MCP替换已工作的App接入。
 
 首版交付两类能力：受控网页搜索/读取；用户或管理员明确批准的MCP只读工具。业务写入、
@@ -1198,6 +1202,54 @@ SDK 子调用仍通过同一执行服务，记录父调用、子调用序号、�
 超时/非法结果、客户端断开和在途停止；恢复已保存结果不再次访问远端。公网访问、具体第三方
 服务选择及可能计费调用在实施时说明并取得相应授权，本次不访问服务或新增付费请求。
 Phase9编号保留作专业索引，详细规则仅在本节维护；代码索引/Git继续后置。
+
+### 联网API供应商研究与首版建议（2026-10-26）
+
+研究仅访问公开官方文档，未发送带Key的Search/Fetch/Extract请求，没有实测召回、延迟、稳定性
+或费用，也没有修改业务代码。建议先实现DeepSeek适配器，Tavily作为可替换的第二候选；这是基于
+当前接口/价格和项目接入成本的建议，不是用户已批准的永久选型，也不证明中文或英文检索谁更好。
+
+| 项目 | DeepSeek | Tavily |
+|---|---|---|
+| 搜索 | POST https://api.deepseek.com/v1/tools/search | POST https://api.tavily.com/search |
+| 网页提取 | POST https://api.deepseek.com/v1/tools/fetch，单URL Markdown | POST https://api.tavily.com/extract，单个或批量最多20个URL |
+| 集成关注点 | query最多128 Unicode字符，count 1—50；snippet/summary/content分开，need_content默认false | 搜索提供深度、域名/时间筛选及可选usage；提取有results与failed_results，HTTP200不等于全部成功 |
+| 公布计费 | 搜索、抓取分别5元/千次有效成功请求；无结果/失败不计费 | 每月1000免费credits；按量$0.008/credit；basic/advanced搜索1/2credits，提取每5个成功URL为1/2credits |
+| 当前适配判断 | 字段较少，适合先做搜索→按需读原文 | 参数和批量提取更多，适合作为第二实现验证平台是否真正可替换 |
+
+依据：[DeepSeek指南](https://api-docs.deepseek.com/zh-cn/guides/search/)、
+[搜索字段](https://api-docs.deepseek.com/zh-cn/api/search/)、
+[抓取字段](https://api-docs.deepseek.com/zh-cn/api/fetch/)、
+[Tavily Search](https://docs.tavily.com/documentation/api-reference/endpoint/search)、
+[Extract](https://docs.tavily.com/documentation/api-reference/endpoint/extract)、
+[计费](https://docs.tavily.com/documentation/api-credits)。价格为查询日文档信息，调用前再次确认。
+DeepSeek指南提及部分Server端工具调用2026-11-01开始计费的过渡安排，不能推断本平台直接调用免费。
+
+首版建议（待实现）：
+
+1. 将搜索供应商与生成模型分开配置。Strata/OpenCode/其他模型均可请求同一联网工具；不因
+   当前模型为某provider就选择同名搜索服务，不向聊天completion请求强塞response_format。
+   工具名称和调用结果统一，provider由服务端选择，不能由模型传入Key、owner或任意base URL。
+2. 建议工具名web_search、web_fetch（尚未登记）。搜索默认少量条目、只传查询及必要筛选；
+   DeepSeek默认need_content=false，不自动发送整段用户问题、附件内容或用户IP；Tavily默认
+   include_answer=false、include_raw_content=false、auto_parameters=false，避免引入另一层
+   生成答案和隐式参数选择。超过供应商查询长度时明确要求改写，不静默截断改变搜索意图。
+3. 模型先获得搜索结果引用和摘要，再选择URL读取。全文由MinIO保存固定快照，模型拿受限片段
+   和平台分页引用；后续读取已保存结果不再次抓取网页。分页是平台快照读取，不假称供应商原生
+   搜索/抓取游标。搜索摘要、查询相关提取片段和网页正文分别标注，不能合称全文。
+4. 后端保存请求URL、供应商、平台获取时间、来源类型、内容版本/哈希及调用关联。发布日期缺失
+   保持未知。DeepSeek Fetch公开响应只有title/content，不能伪造最终重定向URL或完整抓取范围；
+   未提供的final_url/usage保持未知。供应商排序分数不是内容真实性证明。
+5. 公网URL读取拒绝内网/本机/凭据URL。平台自行抓取才有能力逐次校验实际DNS/连接/重定向；
+   托管Fetch的内部请求不可见，需要保留供应商安全保证和不可验证限制，不能宣称平台已经检查了
+   供应商每一跳。不自动改为本机直接抓取以绕过403/404，也不自动跨供应商重发私有查询。
+6. 本地取消中断等待并阻止下一步工具/模型调用；不能承诺供应商已停止执行或不会计费。失败、
+   空结果、部分提取、限流、余额不足和结果未知分别保存，缺失usage不按0费用处理。凭据仅服务端。
+
+验证计划：先用本地HTTP样本和固定模型验证上述规则、来源保存、取消及跨用户拒绝；随后经明确
+授权，对两家使用相同公开查询比较中文业务/技术资料、英文文档、时效问题、指定站点、空结果和
+抓取失败，记录相关来源命中、抓取成功、延迟分布和实际用量。小样本只作为选型依据，不作质量保证。
+本轮不新增其他搜索供应商或Research代答产品，不把MCP作为REST工具接入的前置。
 
 ## 后续代码检索与 MCP 工具来源
 

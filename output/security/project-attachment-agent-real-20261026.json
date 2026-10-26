@@ -1,0 +1,86 @@
+{
+  "database": "real local MySQL",
+  "storage": "real local MinIO",
+  "provider": "fixed in-process; no paid requests",
+  "session_id": "40eabbd2-7f69-4c6c-958f-68d1e9654d36",
+  "checks": {
+    "two_persisted_turns": true,
+    "message_bodies_in_minio": true,
+    "selected_source_preserved": true,
+    "followup_without_reattachment": true,
+    "parsed_object_read_from_minio": true,
+    "cross_user_api_denied": true
+  },
+  "migration": "20261024_0029",
+  "run_ids": [
+    "298d1343-686a-4ae9-a24e-20c5e2a8529f",
+    "9e4ccb43-3b46-4254-82c8-fb6a53a981d7"
+  ],
+  "tool_calls": [
+    {
+      "run_id": "298d1343-686a-4ae9-a24e-20c5e2a8529f",
+      "calls": [
+        {
+          "tool_name": "list_run_files",
+          "status": "completed"
+        },
+        {
+          "tool_name": "read_file_content",
+          "status": "completed"
+        }
+      ]
+    },
+    {
+      "run_id": "9e4ccb43-3b46-4254-82c8-fb6a53a981d7",
+      "calls": [
+        {
+          "tool_name": "list_run_files",
+          "status": "completed"
+        },
+        {
+          "tool_name": "read_file_content",
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "mode": "general_agent, review_policy=always",
+  "workflows": [
+    {
+      "workflow_id": "be440131-fc74-40ee-b56a-837478e6d62f",
+      "status": "completed",
+      "final_text_present": true,
+      "saved_events_replayed": true,
+      "review_policy": "always",
+      "model_call_count": 4,
+      "node_count": 4,
+      "elapsed_seconds": 2.0,
+      "synthetic_usage": {
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "cached_tokens": 0,
+        "estimated_cost": "0",
+        "model_call_count": 4,
+        "tool_call_count": 2
+      }
+    },
+    {
+      "workflow_id": "9229fa4f-1368-47e1-b369-3992fc22e384",
+      "status": "completed",
+      "final_text_present": true,
+      "saved_events_replayed": true,
+      "review_policy": "always",
+      "model_call_count": 4,
+      "node_count": 4,
+      "elapsed_seconds": 2.0,
+      "synthetic_usage": {
+        "input_tokens": 120,
+        "output_tokens": 40,
+        "cached_tokens": 0,
+        "estimated_cost": "0",
+        "model_call_count": 4,
+        "tool_call_count": 2
+      }
+    }
+  ]
+}
