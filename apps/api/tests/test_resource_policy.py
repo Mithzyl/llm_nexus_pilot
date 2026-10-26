@@ -4,23 +4,59 @@ import asyncio
 import hashlib
 import json
 import re
+from itertools import combinations
 
 import httpx
 import pytest
 import pytest_asyncio
+from fastapi.routing import APIRoute
 from sqlalchemy import func, select
 from test_authentication import login, provision_user
 from test_context_builds import create_model_capability
 
 from nexuspilot_api.core.config import get_settings
+from nexuspilot_api.features.identity.dependencies import get_authenticated_principal
 from nexuspilot_api.features.identity.resource_access import RESOURCES
 from nexuspilot_api.features.identity.resource_policy import (
     INTERNAL_ROUTES,
     OWNED_ROUTES,
     SHARED_ROUTES,
 )
+from nexuspilot_api.features.identity.routers.application_runs import authenticate_application
 from nexuspilot_api.main import app
 from nexuspilot_api.models import LlmMessage, LlmModelAttempt, LlmRun, LlmTask, User
+
+# Explicit test inventories, not runtime grants. New independent endpoints require review here.
+APPLICATION_ROUTES = frozenset(
+    {
+        ("POST", "/app/runs"),
+        ("POST", "/app/runs/{run_id}/cancel"),
+        ("POST", "/app/runs/{run_id}/agent-workflows"),
+        ("GET", "/app/runs/{run_id}/agent-workflow"),
+        ("GET", "/app/agent-workflows/{workflow_execution_id}"),
+        ("GET", "/app/agent-workflows/{workflow_execution_id}/events"),
+        ("GET", "/app/agent-workflows/{workflow_execution_id}/nodes"),
+        ("GET", "/app/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}"),
+        (
+            "GET",
+            "/app/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources",
+        ),
+        ("GET", "/app/agent-workflows/{workflow_execution_id}/result"),
+        ("POST", "/app/agent-workflows/{workflow_execution_id}/cancel"),
+    }
+)
+PERSONAL_KEY_MANAGEMENT_ROUTES = frozenset(
+    {
+        ("GET", "/me/api-keys"),
+        ("POST", "/me/api-keys"),
+        ("DELETE", "/me/api-keys/{api_key_id}"),
+    }
+)
+
+
+def dependency_calls(dependant):
+    """Inspect installed FastAPI dependencies, including nested authentication dependencies."""
+    return {dependant.call}.union(*(dependency_calls(item) for item in dependant.dependencies))
 
 
 @pytest.fixture(autouse=True)
@@ -46,16 +82,104 @@ def test_all_business_methods_have_exactly_one_policy():
         for method in operations
         if method in {"get", "post", "patch", "put", "delete"}
     }
-    assert actual == INTERNAL_ROUTES | OWNED_ROUTES | SHARED_ROUTES
-    assert not INTERNAL_ROUTES & OWNED_ROUTES
-    assert not INTERNAL_ROUTES & SHARED_ROUTES
-    assert not OWNED_ROUTES & SHARED_ROUTES
+    groups = (
+        INTERNAL_ROUTES,
+        OWNED_ROUTES,
+        SHARED_ROUTES,
+        APPLICATION_ROUTES,
+        PERSONAL_KEY_MANAGEMENT_ROUTES,
+    )
+    assert actual == set().union(*groups)
+    for left, right in combinations(groups, 2):
+        assert not left & right
     for _, path in OWNED_ROUTES:
-        assert set(re.findall(r"\{([^}]+)\}", path)) <= RESOURCES.keys(), path
+        parameters = set(re.findall(r"\{([^}]+)\}", path))
+        # This is a lookup key within an already owner-checked session, not a resource ID.
+        if path == "/sessions/{session_id}/turns/{submission_key}":
+            parameters.remove("submission_key")
+        assert parameters <= RESOURCES.keys(), path
+
+
+def test_independent_routes_install_their_required_authentication():
+    """A classified route must actually retain the required App or browser dependency."""
+    expected = {
+        **dict.fromkeys(APPLICATION_ROUTES, authenticate_application),
+        **dict.fromkeys(PERSONAL_KEY_MANAGEMENT_ROUTES, get_authenticated_principal),
+    }
+    found = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        for method in route.methods:
+            key = method, route.path.removeprefix("/api/v1")
+            if key in expected:
+                assert expected[key] in dependency_calls(route.dependant), key
+                found.add(key)
+    assert found == expected.keys()
+
+
+@pytest.mark.parametrize("credential", ["missing", "invalid_bearer"])
+async def test_independent_routes_reject_missing_identity(resource_client, credential):
+    """Deployment/internal keys never replace App credentials or a browser login."""
+    headers = {"X-Internal-API-Key": "test-internal-key-long-enough"}
+    if credential == "invalid_bearer":
+        headers["Authorization"] = "Bearer invalid-identity"
+    for method, path in sorted(APPLICATION_ROUTES | PERSONAL_KEY_MANAGEMENT_ROUTES):
+        response = await resource_client.request(
+            method,
+            concrete_path(path),
+            headers=headers,
+            json={"name": "fixture", "scopes": ["read"]} if method == "POST" else None,
+        )
+        assert response.status_code == 401, (method, path, response.text)
+
+
+async def test_browser_identity_cannot_enter_any_app_route(
+    resource_client, test_database_session_factory
+):
+    """Even a genuine login must not silently select an App user or bypass App authentication."""
+    await provision_user(test_database_session_factory)
+    assert (await login(resource_client)).status_code == 200
+    for method, path in sorted(APPLICATION_ROUTES):
+        response = await resource_client.request(
+            method,
+            concrete_path(path),
+            json={} if method == "POST" else None,
+        )
+        assert response.status_code == 400, (method, path, response.text)
+
+
+async def test_personal_key_cannot_manage_any_key_route(
+    resource_client, test_database_session_factory
+):
+    """A valid personal key cannot create, list or revoke credentials."""
+    await provision_user(test_database_session_factory)
+    assert (await login(resource_client)).status_code == 200
+    created = await resource_client.post(
+        "/api/v1/me/api-keys",
+        json={"name": "fixture", "scopes": ["read", "execute"]},
+        headers={
+            "Origin": "http://test",
+            "X-CSRF-Token": resource_client.cookies["nexuspilot_csrf"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    resource_client.cookies.clear()
+    headers = {"Authorization": "Bearer " + created.json()["key"]}
+    assert (await resource_client.get("/api/v1/auth/me", headers=headers)).status_code == 200
+    for method, path in sorted(PERSONAL_KEY_MANAGEMENT_ROUTES):
+        path = path.replace("{api_key_id}", created.json()["api_key_id"])
+        response = await resource_client.request(
+            method,
+            concrete_path(path),
+            headers=headers,
+            json={"name": "fixture", "scopes": ["read"]} if method == "POST" else None,
+        )
+        assert response.status_code == 401, (method, path, response.text)
 
 
 async def test_all_methods_reject_service_key_without_required_identity(resource_client):
-    """Check every classified method rejects missing user or internal-service credentials."""
+    """Check generic resource methods reject missing user or internal-service credentials."""
     for method, path in sorted(INTERNAL_ROUTES | OWNED_ROUTES | SHARED_ROUTES):
         response = await resource_client.request(
             method, concrete_path(path), json={} if method != "GET" else None

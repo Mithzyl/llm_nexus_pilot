@@ -19,6 +19,7 @@ const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "POST", pattern: ["projects", ":id", "files"] },
   { method: "GET", pattern: ["projects", ":id", "files", ":id", "content"] },
   { method: "POST", pattern: ["projects", ":id", "files", ":id", "materialize"] },
+  { method: "POST", pattern: ["projects", ":id", "files", ":id", "attachments"] },
   { method: "GET", pattern: ["projects", ":id", "sessions"] },
   { method: "POST", pattern: ["projects", ":id", "sessions"] },
   { method: "GET", pattern: ["artifacts"] },

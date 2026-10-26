@@ -89,7 +89,7 @@ Python已沿用任务容器执行器接入owner授权与MinIO产物；Shell仍�
 
 | 顺序与交付能力 | 状态 | 接下来做什么 | 完成时必须看到什么 | 主计划 |
 |---|---|---|---|---|
-| 优先：个人项目与文件工作区 | 进行中；本地库已升级0029，固定文件/产物副本、下载、本地只读物化和跨用户隔离通过真实MySQL/MinIO及浏览器验证 | 后续补可编辑工作区、逻辑版本/替换和保存文件直接用于对话；项目记忆不接入 | 首批固定副本与完整长期工作区分开验收，服务器未部署 | [当前最小实现](#个人项目最小实现2026-10-24) |
+| 优先：个人项目与文件工作区 | 进行中；本地库已升级0029，固定副本真实验证通过；显式附加保存文件及续聊通过确定性测试 | 后续补可编辑工作区、逻辑版本/替换；项目记忆不接入 | 固定副本真实验证与新增附件模拟验证分别记录，服务器未部署 | [当前最小实现](#个人项目最小实现2026-10-24) |
 | 优先：必要MCP与联网工具 | 未开始；现有PA静态远程只读工具保留 | 先受控网页搜索/读取和已批准MCP只读连接，统一目录、调用记录、来源与取消 | 连接及每次操作授权；外部内容不变系统指令；错误不变空结果，撤销后禁止新调用 | [工具主计划](../implementation/phase-7-tool-runtime-plan.md#必要mcp与联网工具优先交付2026-10-24) |
 | 优先：动态任务工具与个人复用 | 未开始；已有Python执行器可复用 | 先当前任务内生成/验证/执行，再显式授权持久复用；不等完整项目系统或MCP做完 | 固定工具版本、验证记录、owner、停止和结果保存可核对；到期禁用，不启用自动删除 | [工具主计划](../implementation/phase-7-tool-runtime-plan.md) |
 | 优先规划：Assistant用户记忆 | 未开始；已有实验代码不等于可用产品 | 用户明确保存/确认偏好和事实，跨会话按需读取，提供纠正/忘记/关闭；不读取项目记忆 | 真实用户及App范围隔离，实际使用版本有记录，撤销后不再注入；不自动挖掘全部历史 | [用户记忆设计](../implementation/phase-2-llm-core-capabilities.md#assistant用户记忆规划2026-10-24) |
@@ -157,7 +157,7 @@ MySQL 保存身份、会话/消息归属和顺序、标题、运行状态、toke
 ### 个人项目最小实现（2026-10-24）
 
 状态：进行中，已实现以下最小功能，不宣称完整可编辑长期工作区已完成。
-之前恢复/保留实现及规划已提交`dc0df76`，本批项目修改未提交、未推送、未部署。
+之前恢复/保留实现及规划已提交`dc0df76`，项目实现已提交`346586c`，真实验证修复和记录已提交`10c0bd3`。未推送、未部署。
 
 - 复用`llm_projects`及Session.project_id，创建/重命名按当前主体授权；保留旧内部调用兼容，
   Memory策略/任意宿主目录绑定不向浏览器开放。项目对话可显式上传附件，不自动注入目录。
@@ -171,7 +171,55 @@ MySQL 保存身份、会话/消息归属和顺序、标题、运行状态、toke
   无调用方的用户存储命名空间迁移。用户归属仍由数据库及API校验，不靠UUID保密授权。
 - Web `/projects`支持项目选择、创建/重命名、上传或选择现有文件/产物保存、下载、显式本地
   副本及项目会话。侧栏入口另开标签页以保留原对话执行；保存身份在发送前存sessionStorage，
-  同一标签页刷新后可用原输入重试。未实现跨设备恢复、项目创建幂等和项目文件一键附加。
+  同一标签页刷新后可用原输入重试。未实现跨设备恢复和项目创建幂等。
+
+#### 已保存项目文件附加到对话（2026-10-24）
+
+本次新增 `POST /projects/{project_id}/files/{project_file_id}/attachments`，请求仅含
+`session_id`、`idempotency_key`，返回现有UserFileRead。要求当前用户拥有项目和会话，且
+会话属于该项目并处于active状态。读取已保存MinIO副本，不依赖原上传仍然存在。
+复用上传大小、类型、解析器可用性和用户配额检查；同键已准备完成时返回同一附件，不重复解析。
+来源记录保存project_id、project_file_id、session_id、content_hash，并与ready状态共同提交。
+轮次绑定再次检查会话归属，消息元数据保留来源；其他用户不能准备或绑定该附件。
+
+项目会话输入框“项目文件”只列元数据；显式选择后在发送时准备附件，并使用现有file_ids轮次接口。
+快速回复和Agent只获得选中文件清单，由现有工具搜索/分页读取；未选择文件、目录和其他会话内容
+不自动进入提示词。续聊复用已绑定附件的解析结果，不再次读取项目目录或解析整个文件。
+每条消息合计最多10个附件。准备失败保留选择和草稿；切换会话清空未发送的项目选择。
+当前未发送选择不支持刷新恢复；已提交消息仍使用既有消息/附件持久恢复。不新增表或迁移。
+
+本批已实现、确定性验证通过；新增附件修改尚未提交。本批不调用付费模型，不启用项目记忆和自动删除。
+
+本次验证命令与结果（不要与下节此前真实MySQL/MinIO结果混同）：
+- `cd apps/api && .venv/bin/pytest -q tests/test_project_attachments.py tests/test_project_workspace.py tests/test_user_files.py tests/test_response_file_tools.py --tb=short`：49项通过，12.33秒。
+  新附件测试5项覆盖首轮/续聊按需读、同键返回同一附件、原上传删除后保存副本可用、同用户跨会话
+  和跨用户拒绝，以及Agent/Reviewer原文补读。使用SQLite、测试对象存储和固定Provider，无付费调用。
+  首次3项因新接口不存在404失败；接入后发现reserve_file调用漏传storage并修正；Agent测试初版
+  使用不存在的POST models接口405，改用已有数据库模型fixture，未降低业务断言。
+- `cd apps/web && npm test`：178项通过；`npm run typecheck`和相关文件ESLint通过。
+  最初tsx本地IPC被沙箱拒绝，获执行权限后重跑通过。
+- `cd apps/web && npx playwright test e2e/web-shell.spec.ts --grep 'project conversation attaches'`：
+  桌面/移动2项通过，6.7秒；HTTP模拟验证选择时不准备、发送时仅提交选中file_id、失败保留、
+  新对话清空选择。首轮移动用例未先打开侧栏导致点击超时，修正操作后通过。
+  已查看截图`output/playwright/project-attachment-{chromium,mobile-chromium}.png`。
+- Ruff与`git diff --check`通过。新增附件没有执行新的真实MySQL/MinIO/付费模型联调；没有部署。
+- 扩大检查`tests/test_resource_policy.py tests/test_resource_authorization.py`：20项通过、1项失败。
+  失败为既有`test_all_business_methods_have_exactly_one_policy`只比较通用三类路由清单，却同时
+  纳入采用独立身份认证的App/个人Key路由。只读比较HEAD清单和当前清单，两者均有相同14条差异；
+  当时新增attachments路由已正确分类；该清单问题已于2026-10-26修正，见下段，保留上述历史失败记录。
+
+2026-10-26权限测试清单修正：`test_resource_policy.py`明确增加11条App路由和3条个人Key管理
+路由清单，不以路径前缀整体豁免。所有业务接口仍须完整且互斥分类；独立路由还检查实际FastAPI
+依赖树中的应用认证或浏览器认证函数。新增无有效身份、浏览器身份进入App、有效个人Key管理
+凭据的拒绝测试。续聊恢复接口的submission_key按精确路径识别为会话内查询键，session_id仍须
+通过资源归属检查。运行时权限和既有项目附件代码没有因此修改。
+
+实际执行：`cd apps/api && .venv/bin/pytest -q tests/test_resource_policy.py tests/test_personal_api_keys.py tests/test_application_identity.py tests/test_application_tool_loop.py tests/test_project_attachments.py --tb=short`
+为62项通过（32.76秒）；`tests/test_conversation_turn_idempotency.py`另9项通过、1项跳过
+（2.01秒，未配置真实MySQL并发测试）。Ruff和git diff检查通过。测试使用隔离SQLite、内存对象
+存储、固定Provider和本地模拟HTTP，不是新真实模型/MySQL/MinIO联调。未调用付费模型，未提交、
+推送或部署。初次检查复现旧清单失败；首轮全文件执行另出现6项Context预览500，单独复跑及最终
+联合执行均通过，本次未定位其暂时失败原因，也未修改断言或业务代码来绕过。
 
 本地目录未配置时明确503；MinIO文件仍可下载。没有自动扫描、源文件写回、代码执行、
 项目记忆或自动删除。原先的文件读取工具/Python执行器保持不变，不自动获得项目目录权限。

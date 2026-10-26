@@ -120,6 +120,7 @@ OWNED_ROUTES = frozenset(
         ("POST", "/projects/{project_id}/files"),
         ("GET", "/projects/{project_id}/files/{project_file_id}/content"),
         ("POST", "/projects/{project_id}/files/{project_file_id}/materialize"),
+        ("POST", "/projects/{project_id}/files/{project_file_id}/attachments"),
         ("GET", "/projects/{project_id}/sessions"),
         ("POST", "/projects/{project_id}/sessions"),
         ("GET", "/projects/{project_id}"),

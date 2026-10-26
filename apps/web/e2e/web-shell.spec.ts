@@ -143,6 +143,47 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => installApiMocks(page));
 
+/** Select metadata, prepare only that copy at send time, and clear selection on navigation. */
+test("project conversation attaches only the selected snapshot at send time", async ({ page }) => {
+  let prepares = 0;
+  const session = { session_id: "session-1", project_id: "p1", user_id: "nexuspilot-web", title: "Project chat", status: "active",
+    created_at: "2026-10-24T00:00:00Z", updated_at: "2026-10-24T00:00:00Z" };
+  await page.route("**/api/nexus/sessions?*", route => fulfillJson(route, { items: [session], next_cursor: null, has_more: false }));
+  await page.route("**/api/nexus/sessions", route => fulfillJson(route, { items: [session], next_cursor: null, has_more: false }));
+  await page.route("**/api/nexus/projects/p1/files", route => fulfillJson(route, [
+    {project_file_id:"selected", filename:"selected.txt", status:"ready"},
+    {project_file_id:"not-selected", filename:"private-other.txt", status:"ready"},
+  ]));
+  await page.route("**/api/nexus/projects/p1/files/selected/attachments", route => {
+    prepares += 1;
+    expect(route.request().postDataJSON().session_id).toBe("session-1");
+    expect(route.request().postDataJSON().idempotency_key).toBeTruthy();
+    return fulfillJson(route, { file_id:"prepared-file", filename:"selected.txt", status:"ready" }, 201);
+  });
+  let turnFiles: string[] = [];
+  await page.route("**/api/nexus/sessions/session-1/turns", route => {
+    turnFiles = route.request().postDataJSON().file_ids;
+    // Stop before model invocation; this test verifies submission assembly only.
+    return fulfillJson(route, {detail:"Fixture stops before execution"}, 409);
+  });
+  await page.goto("/c/session-1");
+  await page.getByRole("button", {name:"项目文件",exact:true}).click();
+  await expect(page.getByRole("region", {name:"选择项目文件"})).toBeVisible();
+  await page.getByRole("region", {name:"选择项目文件"}).locator("li").filter({hasText:"selected.txt"}).getByRole("button",{name:"附加",exact:true}).click();
+  expect(prepares).toBe(0);
+  await page.locator("textarea").fill("Read the selected file");
+  await page.locator("textarea").press("Enter");
+  await expect.poll(() => prepares).toBe(1);
+  await expect.poll(() => turnFiles).toEqual(["prepared-file"]);
+  await expect(page.getByLabel("待附加项目文件")).toContainText("selected.txt");
+  await page.screenshot({ path: `../../output/playwright/project-attachment-${test.info().project.name}.png`, fullPage: true });
+  const menu = page.getByRole("button", {name:"打开会话列表",exact:true});
+  if (await menu.isVisible()) await menu.click();
+  await page.getByRole("button", {name:/新对话/}).first().click();
+  await expect(page.getByLabel("待附加项目文件")).toHaveCount(0);
+  await expect(page.getByRole("button", {name:"项目文件",exact:true})).toHaveCount(0);
+});
+
 /** A Worker acknowledgement ends the stream before completion; polling must deliver the answer. */
 test("queued Agent acknowledgement follows saved result without reporting stream failure", async ({ page }) => {
   let finished = false;

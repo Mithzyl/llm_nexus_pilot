@@ -39,6 +39,14 @@ class ProjectFileSave(BaseModel):
         return self
 
 
+class ProjectAttachmentCreate(BaseModel):
+    """Prepare one saved snapshot for an explicitly selected project conversation."""
+
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(min_length=1, max_length=36)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+
+
 class ProjectFileRead(ApiModel):
     """Expose saved copy metadata without internal object keys or absolute paths."""
 

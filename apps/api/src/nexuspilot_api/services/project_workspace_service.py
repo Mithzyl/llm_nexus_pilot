@@ -19,7 +19,7 @@ from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
 from nexuspilot_api.features.identity.resource_access import require_resource_owner
 from nexuspilot_api.infrastructure.object_storage import ObjectStorageError
-from nexuspilot_api.models import LlmProject, LlmRunArtifact, UserFile, new_id
+from nexuspilot_api.models import LlmProject, LlmRunArtifact, LlmSession, UserFile, new_id
 from nexuspilot_api.models.project_file import ProjectFile
 from nexuspilot_api.services.user_file_service import read_verified_bytes
 
@@ -49,6 +49,62 @@ async def owned_project_file(db, project_id, file_id, owner):
     if entry is None:
         raise ResourceNotFoundError("Project file")
     return entry
+
+
+async def prepare_project_attachment(db, storage, project_id, file_id, owner, payload):
+    """Parse only the selected saved snapshot into a retry-stable, session-scoped attachment.
+
+    Reuse upload quotas and immutable MinIO parsing; no project text enters model context here.
+    """
+    from nexuspilot_api.schemas.user_files import UserFileCreate
+    from nexuspilot_api.services.user_file_service import (
+        begin_upload,
+        finish_upload,
+        interrupt_upload,
+        reserve_file,
+    )
+
+    entry = await owned_project_file(db, project_id, file_id, owner)
+    session = await db.get(LlmSession, payload.session_id)
+    if session is None or session.user_id != owner:
+        raise ResourceNotFoundError("Session")
+    if session.project_id != project_id or session.status.value != "active":
+        raise ResourceConflictError("Choose an active conversation in this project")
+    if entry.status != "ready":
+        raise ResourceConflictError("Project file is not ready")
+    if not entry.size_bytes:
+        raise HTTPException(422, "Empty files cannot be attached")
+    provenance = {
+        "project_id": project_id,
+        "project_file_id": file_id,
+        "session_id": payload.session_id,
+        "content_hash": entry.content_hash,
+    }
+    key = hashlib.sha256(
+        json.dumps([project_id, file_id, payload.session_id, payload.idempotency_key]).encode()
+    ).hexdigest()
+    file = await reserve_file(
+        db,
+        storage,
+        owner,
+        UserFileCreate(
+            filename=entry.filename,
+            size_bytes=entry.size_bytes,
+            content_hash=entry.content_hash,
+            idempotency_key=f"project-attachment:{key}",
+        ),
+    )
+    file = await begin_upload(db, file.file_id, owner)
+    if file.status == "ready":
+        if file.parse_summary.get("project_attachment") != provenance:
+            raise ResourceConflictError("Attachment provenance mismatch")
+        return file
+    try:
+        content = await project_file_bytes(storage, entry)
+        return await finish_upload(db, storage, file, content, project_attachment=provenance)
+    except BaseException:
+        await interrupt_upload(db, file.file_id)
+        raise
 
 
 async def save_project_file(db, storage, project_id, owner, payload):

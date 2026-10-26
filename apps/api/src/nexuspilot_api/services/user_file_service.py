@@ -18,7 +18,7 @@ from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import ResourceConflictError, ResourceNotFoundError
 from nexuspilot_api.infrastructure.file_runtime_client import file_runtime_status
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage, ObjectStorageError
-from nexuspilot_api.models import LlmRunArtifact, User, UserFile, new_id
+from nexuspilot_api.models import LlmRun, LlmRunArtifact, User, UserFile, new_id
 from nexuspilot_api.schemas.file_parsing import FileParseRequest, ParsedFileDocument
 from nexuspilot_api.schemas.user_files import FileUploadCapabilities, UserFileCreate
 from nexuspilot_api.services.file_parsing_service import FileParsingError, parse_file_content
@@ -246,12 +246,18 @@ async def read_verified_bytes(storage: ObjectStorage, uri: str, size: int, diges
 
 
 async def finish_upload(
-    db: AsyncSession, storage: ObjectStorage, file: UserFile, content: bytes
+    db: AsyncSession,
+    storage: ObjectStorage,
+    file: UserFile,
+    content: bytes,
+    *,
+    project_attachment: dict[str, str] | None = None,
 ) -> UserFile:
     """Save the complete bounded parse in MinIO; never couple upload size to SQL Context.
 
     Reservations cover the largest allowed parse; readiness records its verified
     actual size. Failed publication retains the existing exact-key cleanup state.
+    Internal project provenance is published atomically with the ready state.
     """
 
     from nexuspilot_api.services.parsed_artifact_service import FILE_PARSE_LIMITER
@@ -296,6 +302,7 @@ async def finish_upload(
                 parsed_size=len(parsed),
                 error=None,
                 parse_summary={
+                    **({"project_attachment": project_attachment} if project_attachment else {}),
                     "status": document.status,
                     "warnings": document.warnings,
                     "block_count": len(document.blocks),
@@ -379,7 +386,7 @@ async def delete_file(
 async def bind_files(
     db: AsyncSession, user_id: str, run_id: str, file_ids: list[str]
 ) -> list[dict]:
-    """Bind ready immutable files once, in the same transaction as their Run and User Message."""
+    """Bind ready files with the turn, keeping project copies in their chosen session."""
 
     if len(file_ids) != len(set(file_ids)):
         raise ResourceConflictError("Duplicate file references")
@@ -397,6 +404,11 @@ async def bind_files(
             raise ResourceNotFoundError("File")
         if file.status != "ready" or file.run_id is not None:
             raise ResourceConflictError("文件未就绪或已用于其他消息，请重新上传。")
+        provenance = (file.parse_summary or {}).get("project_attachment")
+        if provenance:
+            run = await db.get(LlmRun, run_id)
+            if run is None or run.session_id != provenance["session_id"]:
+                raise ResourceConflictError("Project attachment belongs to another conversation")
         file.run_id = run_id
         db.add(
             LlmRunArtifact(
@@ -411,7 +423,12 @@ async def bind_files(
             )
         )
         metadata.append(
-            {"file_id": file_id, "filename": file.filename, "size_bytes": file.size_bytes}
+            {
+                "file_id": file_id,
+                "filename": file.filename,
+                "size_bytes": file.size_bytes,
+                **({"project_attachment": provenance} if provenance else {}),
+            }
         )
     return metadata
 

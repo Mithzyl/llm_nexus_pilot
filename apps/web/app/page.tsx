@@ -3,12 +3,14 @@
 import { guardViewUpdate } from "../lib/view-updates";
 import { useFileDrop } from "../components/composer/useFileDrop";
 import { FileLibrary } from "../components/composer/FileLibrary";
+import { ProjectAttachmentPicker, type SelectedProjectFile } from "../components/composer/ProjectAttachmentPicker";
 import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
 import { selectClaimEntries } from "../lib/claim-evidence";
 import { messageFiles, uploadUserFile, validateUploadFiles, type UserFile } from "../lib/user-files";
 
 import {
   browserCsrfHeaders,
+  nexusFetch,
   cancelAgentWorkflow,
   cancelPreparedRun,
   createMessage,
@@ -312,6 +314,7 @@ export default function Home() {
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | "">("");
   const [selectedModel, setSelectedModel] = useState("");
   const [pendingUploadFiles, setPendingUploadFiles] = useState<File[]>([]);
+  const [pendingProjectFiles, setPendingProjectFiles] = useState<SelectedProjectFile[]>([]);
   const [uploadProgress, setUploadProgress] = useState("");
   const uploadedFileCache = useRef(new Map<string, UserFile>());
   const [runModelFacts, setRunModelFacts] = useState<{ provider: string; model: string } | null>(
@@ -1412,6 +1415,7 @@ export default function Home() {
   async function handleSelectSession(sessionId: string) {
     if (activeSessionId === sessionId) return;
     setPendingUploadFiles([]);
+    setPendingProjectFiles([]);
     uploadedFileCache.current.clear();
     showCurrentRunEvidence();
     switchDraftContext(sessionId);
@@ -1493,6 +1497,7 @@ export default function Home() {
   /** Navigate to the stable empty-workspace route without deleting persisted data. */
   function handleNewConversation() {
     setPendingUploadFiles([]);
+    setPendingProjectFiles([]);
     uploadedFileCache.current.clear();
     switchDraftContext(null);
     restoredRouteKey.current = "home";
@@ -1517,6 +1522,7 @@ export default function Home() {
         return;
       }
       setPendingUploadFiles([]);
+      setPendingProjectFiles([]);
       uploadedFileCache.current.clear();
 
       if (workspaceRoute.kind === "home") {
@@ -1889,6 +1895,9 @@ export default function Home() {
       isPersistedConversationExecutionActive ||
       !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)
     ) return;
+    if (pendingProjectFiles.length + pendingUploadFiles.length > 10) {
+      setErrorMessage("每条消息最多附加 10 个文件。"); return;
+    }
     try { validateUploadFiles(pendingUploadFiles); }
     catch (error) { setErrorMessage(error instanceof Error ? error.message : "文件不符合要求。"); return; }
     sessionRestoreRequestId.current += 1;
@@ -1905,6 +1914,7 @@ export default function Home() {
       setAssistantSaved: guardViewUpdate(isCurrent, setAssistantSaved),
       setAssistantSaveFailed: guardViewUpdate(isCurrent, setAssistantSaveFailed),
       setPendingUploadFiles: guardViewUpdate(isCurrent, setPendingUploadFiles),
+      setPendingProjectFiles: guardViewUpdate(isCurrent, setPendingProjectFiles),
       setRun: guardViewUpdate(isCurrent, setRun),
       setRunModelFacts: guardViewUpdate(isCurrent, setRunModelFacts),
       setAttemptId: guardViewUpdate(isCurrent, setAttemptId),
@@ -1951,6 +1961,21 @@ export default function Home() {
       executionRequest.current = uploadController;
       if (isCurrent()) activeRequestController.current = uploadController;
       const fileIds: string[] = [];
+      for (const file of pendingProjectFiles) {
+        if (!activeSession?.project_id) throw new Error("请选择项目会话。");
+        view.setUploadProgress(`正在准备：${file.filename}`);
+        const key = `project:${file.requestKey}`;
+        let uploaded = uploadCache.get(key);
+        if (!uploaded) {
+          uploaded = await nexusFetch<UserFile>(`projects/${activeSession.project_id}/files/${file.project_file_id}/attachments`, {
+            method: "POST", signal: uploadController.signal,
+            body: JSON.stringify({ session_id: activeSession.session_id, idempotency_key: file.requestKey }),
+          });
+          uploadCache.set(key, uploaded);
+          if (isCurrent()) uploadedFileCache.current.set(key, uploaded);
+        }
+        fileIds.push(uploaded.file_id);
+      }
       for (const file of pendingUploadFiles) {
         view.setUploadProgress(`正在上传并解析：${file.name}`);
         const key = pendingUploadFileKey(file);
@@ -2022,6 +2047,7 @@ export default function Home() {
         assistantProjectionFrame.current = null;
       }
       view.setPendingUploadFiles([]);
+      view.setPendingProjectFiles([]);
       if (isCurrent()) uploadedFileCache.current.clear();
       if (isCurrent()) view.clearCommittedDraft();
       else clearConversationDraft(window.sessionStorage, savedDraftKey);
@@ -2633,6 +2659,13 @@ export default function Home() {
                 disabled={isSending}
                 onRemove={handlePendingFileRemove}
               />
+              {pendingProjectFiles.length > 0 && <ul aria-label="待附加项目文件" className="project-attachment-chips">
+                {pendingProjectFiles.map(file => <li key={file.project_file_id}>
+                  <span>{file.filename}</span><button type="button" disabled={isSending} aria-label={`移除项目文件 ${file.filename}`}
+                    onClick={() => setPendingProjectFiles(current => current.filter(item => item.project_file_id !== file.project_file_id))}>×</button>
+                </li>)}
+              </ul>}
+              {pendingProjectFiles.length > 0 && uploadProgress && <p role="status">{uploadProgress}</p>}
               {pendingUploadFiles.length > 0 && (
                 <p className="composer-file-notice" role="status">
                   {uploadProgress || "发送时上传并解析 · 每个文件不超过 20 MiB · 暂不支持扫描件与图片"}
@@ -2692,6 +2725,10 @@ export default function Home() {
                       onFilesSelected={handlePendingFilesSelected}
                     />
                     <FileLibrary disabled={isSending} compact />
+                    {activeSession?.project_id && <ProjectAttachmentPicker key={activeSession.session_id}
+                      projectId={activeSession.project_id} selected={pendingProjectFiles}
+                      disabled={isSending || pendingProjectFiles.length + pendingUploadFiles.length >= 10}
+                      onSelect={file => setPendingProjectFiles(current => [...current, file])} />}
                   </div>
                   {selectedReasoningPolicy && (selectedReasoningPolicy.supported_efforts.length > 0 || selectedReasoningPolicy.supports_disable) && (
                     <ReasoningSettings

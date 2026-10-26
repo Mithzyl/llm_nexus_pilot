@@ -10,15 +10,18 @@ from nexuspilot_api.models.project_file import ProjectFile
 from nexuspilot_api.routers.common import DatabaseSessionDependency, ObjectStorageDependency
 from nexuspilot_api.routers.user_files import Principal
 from nexuspilot_api.schemas.project_files import (
+    ProjectAttachmentCreate,
     ProjectFileRead,
     ProjectFileSave,
     ProjectSessionCreate,
 )
 from nexuspilot_api.schemas.sessions import SessionCreate, SessionRead
+from nexuspilot_api.schemas.user_files import UserFileRead
 from nexuspilot_api.services.project_workspace_service import (
     materialize_saved_file,
     owned_project,
     owned_project_file,
+    prepare_project_attachment,
     project_file_bytes,
     save_project_file,
 )
@@ -51,6 +54,26 @@ async def post_project_file(
 ):
     """Explicitly save one owned upload or artifact as an independent immutable project copy."""
     return await save_project_file(db, storage, project_id, principal.user_id, payload)
+
+
+@router.post("/files/{project_file_id}/attachments", response_model=UserFileRead, status_code=201)
+async def attach_project_file(
+    project_id: str,
+    project_file_id: str,
+    payload: ProjectAttachmentCreate,
+    db: DatabaseSessionDependency,
+    storage: ObjectStorageDependency,
+    principal: Principal,
+):
+    """Prepare an explicitly selected saved copy for the owner's project conversation."""
+    return await prepare_project_attachment(
+        db,
+        storage,
+        project_id,
+        project_file_id,
+        principal.user_id,
+        payload,
+    )
 
 
 @router.get("/files/{project_file_id}/content")

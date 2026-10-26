@@ -149,6 +149,7 @@ export type CursorPage<T> = {
 };
 
 export type Session = {
+  project_id?: string | null;
   session_id: string;
   user_id: string;
   title: string | null;
