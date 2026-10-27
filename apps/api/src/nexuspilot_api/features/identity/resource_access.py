@@ -197,7 +197,7 @@ async def authorize_resource_request(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_database_session)],
 ) -> None:
-    """Require classified service or final-user authority before each versioned business route."""
+    """Authorize classified routes and derive memory eligibility without expanding personal Keys."""
     route_definition = request.scope["route"]
     route = route_definition.path.removeprefix("/api/v1")
     policy = (request.method, route)
@@ -220,6 +220,11 @@ async def authorize_resource_request(
         return
     principal = await get_workspace_principal(request, db, get_settings())
     db.info[OWNER_SESSION_KEY] = principal.user_id
+    # Personal execute keys do not implicitly grant persistent memory mutation.
+    db.info["memory_tools_allowed"] = principal.authentication_method != "personal_api_key"
+    db.info["memory_api_entry"] = "native"
+    if policy == ("POST", "/runs/{run_id}/user-memories") and not db.info["memory_tools_allowed"]:
+        raise HTTPException(403, "个人 Key 尚未授予记忆管理权限。")
     if principal.authentication_method == "personal_api_key":
         required = "read" if request.method in {"GET", "HEAD"} else "execute"
         if required not in principal.scopes:
@@ -240,6 +245,9 @@ async def authorize_resource_request(
     if policy in SHARED_ROUTES:
         return
     await validate_resource_references(db, request.path_params, principal.user_id)
+    if (principal.authentication_method == "personal_api_key"
+            and policy == ("POST", "/runs/{run_id}/agent-workflows")):
+        await reject_personal_key_memory_execution(db, request.path_params.get("run_id"))
     # Check every repeated query value rather than trusting first/last parameter precedence.
     for key, value in request.query_params.multi_items():
         await validate_resource_references(db, {key: value}, principal.user_id)
@@ -269,3 +277,18 @@ async def authorize_resource_request(
             ):
                 raise HTTPException(403, "不允许直接指定存储地址。")
             await validate_resource_references(db, payload, principal.user_id)
+            if (principal.authentication_method == "personal_api_key"
+                    and policy == ("POST", "/responses")):
+                await reject_personal_key_memory_execution(db, payload.get("run_id"))
+
+
+async def reject_personal_key_memory_execution(db, run_id):
+    """Prevent execute-only Keys from borrowing a browser-created Run's persistent memory grant."""
+    from nexuspilot_api.features.memory.models.product_memory import MemoryRunPermission
+
+    if run_id:
+        permission = await db.get(MemoryRunPermission, run_id, populate_existing=True)
+        if permission and permission.allowed:
+            raise HTTPException(
+                403, "个人 Key 不可启动带有用户记忆授权的 Run；请使用 Key 创建新的 Run。"
+            )

@@ -29,6 +29,9 @@ from nexuspilot_api.models import LlmMessage, LlmModelAttempt, LlmRun, LlmTask, 
 # Explicit test inventories, not runtime grants. New independent endpoints require review here.
 APPLICATION_ROUTES = frozenset(
     {
+        ("GET", "/app/runs/{run_id}/memory-settings"),
+        ("GET", "/app/runs/{run_id}/user-memories"),
+        ("POST", "/app/runs/{run_id}/user-memories"),
         ("POST", "/app/runs"),
         ("POST", "/app/runs/{run_id}/cancel"),
         ("POST", "/app/runs/{run_id}/agent-workflows"),

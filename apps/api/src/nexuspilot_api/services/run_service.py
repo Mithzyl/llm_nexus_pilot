@@ -21,6 +21,7 @@ from nexuspilot_api.core.pagination import (
 from nexuspilot_api.models import (
     LlmModelAttempt,
     LlmModelTransportAttempt,
+    LlmProject,
     LlmRun,
     LlmRunArtifact,
     LlmSession,
@@ -53,7 +54,7 @@ async def create_run(
     *,
     commit: bool = True,
 ) -> LlmRun:
-    """Persist a validated user request, optionally inside a caller-owned transaction."""
+    """Persist the request and authentication-derived memory permission in one transaction."""
 
     user = await db_session.get(User, payload.user_id)
     if user is None or not user.is_active:
@@ -61,6 +62,7 @@ async def create_run(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Run user must exist and be active",
         )
+    project_id = None
     if payload.session_id:
         conversation = await db_session.get(LlmSession, payload.session_id)
         if conversation is None:
@@ -78,8 +80,20 @@ async def create_run(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Run session must be active",
             )
-    run = LlmRun(**payload.model_dump(), status=RunStatus.PENDING)
+        project_id = conversation.project_id
+        if project_id:
+            project = await db_session.get(LlmProject, project_id)
+            if (project is None or project.owner_user_id != payload.user_id
+                    or project.status.value != "active"):
+                raise ResourceNotFoundError("Project")
+    run = LlmRun(**payload.model_dump(), project_id=project_id, status=RunStatus.PENDING)
     db_session.add(run)
+    from nexuspilot_api.features.memory.models.product_memory import MemoryRunPermission
+
+    await db_session.flush()
+    db_session.add(MemoryRunPermission(
+        run_id=run.run_id, allowed=bool(db_session.info.get("memory_tools_allowed", False)),
+    ))
     if commit:
         await db_session.commit()
         await db_session.refresh(run)

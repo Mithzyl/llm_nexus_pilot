@@ -304,21 +304,34 @@ class GeneralAgentToolService(AgentFileToolService):
             self.loaded_versions[INPUT_SNAPSHOT_TOOL.name] = INPUT_SNAPSHOT_TOOL.version
 
     async def refresh_catalog(self, run_id):
-        """Refresh App/Python/web grants without restoring withdrawn native tool versions."""
+        """Refresh native extension grants without restoring withdrawn static tool versions."""
         from nexuspilot_api.services.application_tools import (
             STATIC_APP_TOOLS,
             authorized_application_context,
         )
 
         resolved = await authorized_application_context(self.db, run_id)
+        from nexuspilot_api.features.memory.services.memory_tools import (
+            MEMORY_NAMES,
+            install_memory_tools,
+        )
         if resolved is None:
             from nexuspilot_api.services.python_tool_service import PYTHON_TOOL, python_authorized
 
             enabled = await python_authorized(self.db, run_id, self.task_id)
+            from nexuspilot_api.services.dynamic_python_tools import (
+                DYNAMIC_ENTRIES,
+                dynamic_authorized,
+            )
+            from nexuspilot_api.services.mcp_tools import MCP_ENTRIES, approved_connections
             from nexuspilot_api.services.web_tools import web_authorized, web_entries
 
             web_enabled = await web_authorized(self.db, run_id)
-            refreshed_names = {PYTHON_TOOL.name, *(entry.name for entry in web_entries())}
+            dynamic_enabled = await dynamic_authorized(self.db, run_id, self.task_id)
+            mcp_configs = await approved_connections(self.db, run_id, self.task_id)
+            refreshed_names = {PYTHON_TOOL.name, *(entry.name for entry in web_entries()),
+                               *(entry.name for entry in DYNAMIC_ENTRIES),
+                               *(entry.name for entry in MCP_ENTRIES)}
             retained = tuple(
                 entry for entry in self.catalog.entries if entry.name not in refreshed_names
             )
@@ -327,6 +340,8 @@ class GeneralAgentToolService(AgentFileToolService):
                     *retained,
                     *((PYTHON_TOOL,) if enabled else ()),
                     *(web_entries() if web_enabled else ()),
+                    *(DYNAMIC_ENTRIES if dynamic_enabled else ()),
+                    *(MCP_ENTRIES if mcp_configs else ()),
                 )
             )
             self.capabilities = (self.capabilities - {"python_execute"}) | (
@@ -337,6 +352,17 @@ class GeneralAgentToolService(AgentFileToolService):
             )
             if web_enabled:
                 self.loaded_versions.update({entry.name: entry.version for entry in web_entries()})
+            for capability, active, entries in (
+                ("dynamic_python", dynamic_enabled, DYNAMIC_ENTRIES),
+                ("mcp_read", bool(mcp_configs), MCP_ENTRIES),
+            ):
+                self.capabilities = (self.capabilities - {capability}) | (
+                    {capability} if active else set()
+                )
+                if active:
+                    self.loaded_versions.update({entry.name: entry.version for entry in entries})
+            self.mcp_aliases = {key: config.version for key, config in mcp_configs.items()}
+            await install_memory_tools(self, run_id)
             return
         context, mapping, config = resolved
         if set(context.allowed_tool_versions) - set(config.operations):
@@ -351,17 +377,22 @@ class GeneralAgentToolService(AgentFileToolService):
         previously_allowed = {
             t.name
             for t in self.catalog.entries
-            if t.name not in {native.name for native in GENERAL_TOOL_CATALOG.entries}
+            if t.name not in {native.name for native in GENERAL_TOOL_CATALOG.entries} | MEMORY_NAMES
         }
         if previously_allowed - {t.name for t in entries}:
             raise ResourceNotFoundError("Application tool grant")
         self.catalog = ToolCatalog((*GENERAL_TOOL_CATALOG.entries, *entries))
         self.capabilities = self.capabilities | {"app_read"}
+        await install_memory_tools(self, run_id)
 
     def definitions(self):
-        """Constrain native review schemas to the server-selected batch, not model-supplied IDs."""
+        """Publish permitted MCP aliases and constrain review to the server-selected batch."""
         definitions = super().definitions()
         for definition in definitions:
+            if definition.name in {"mcp_list_tools", "mcp_call_tool"}:
+                definition.description += " Approved connections: " + json.dumps(
+                    getattr(self, "mcp_aliases", {}), ensure_ascii=False,
+                )
             if definition.name == SUBMIT_REVIEW_TOOL.name:
                 schema = definition.input_schema
                 schema["$defs"]["GeneralUnitReview"]["properties"]["unit_id"]["enum"] = (
@@ -377,7 +408,16 @@ class GeneralAgentToolService(AgentFileToolService):
         return definitions
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Authorize App, Python, native web and task operations before saving durable results."""
+        """Authorize native extensions and existing App/task operations before persistence."""
+        from nexuspilot_api.services.dynamic_python_tools import DYNAMIC_ENTRIES, execute_dynamic
+        from nexuspilot_api.services.mcp_tools import MCP_ENTRIES, execute_mcp
+
+        if name in {entry.name for entry in DYNAMIC_ENTRIES}:
+            return await execute_dynamic(
+                self.db, self.storage, self.task_id, attempt, record, name, arguments,
+            )
+        if name in {entry.name for entry in MCP_ENTRIES}:
+            return await execute_mcp(self.db, self.task_id, attempt, record, name, arguments)
         if name == "run_command":
             from nexuspilot_api.services.python_tool_service import run_python
 
@@ -631,11 +671,29 @@ class GeneralAgentToolService(AgentFileToolService):
             await resolver.resolve(run_id, self.allowed_task_ids, reference)
 
     async def validate_history(self, run_id, records):
-        """Recheck task ownership, Python inputs and source grants before reusing history."""
+        """Recheck task ownership and extension grants before reusing persisted results."""
+        from nexuspilot_api.services.dynamic_python_tools import DYNAMIC_ENTRIES
+        from nexuspilot_api.services.mcp_tools import MCP_ENTRIES, approved_connections
         from nexuspilot_api.services.python_tool_service import validate_python_history
 
         await super().validate_history(run_id, records)
         await validate_python_history(self.db, run_id, self.task_id, records)
+        extension_names = {entry.name for entry in (*DYNAMIC_ENTRIES, *MCP_ENTRIES)}
+        for record in records:
+            if record.status != "completed" or record.tool_name not in extension_names:
+                continue
+            attempt = await self.db.get(LlmModelAttempt, record.attempt_id)
+            if attempt is None or attempt.task_id != self.task_id or attempt.run_id != run_id:
+                raise ResourceConflictError("Extension history belongs to another task")
+            if record.tool_name in {entry.name for entry in MCP_ENTRIES}:
+                configs = await approved_connections(self.db, run_id, self.task_id)
+                config = configs.get(record.input_json.get("connection"))
+                if config is None or config.version != record.input_json.get("version"):
+                    raise ResourceConflictError("MCP connection grant was withdrawn")
+                if record.tool_name == "mcp_call_tool" and (
+                    record.input_json.get("tool_name") not in config.tools
+                ):
+                    raise ResourceConflictError("MCP tool grant was withdrawn")
         for record in records:
             if (
                 record.tool_name

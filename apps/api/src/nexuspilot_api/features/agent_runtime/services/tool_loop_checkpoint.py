@@ -27,11 +27,13 @@ SCHEMA = "agent_loop_resume.v1"
 
 
 def encode_loop_state(state):
-    """Save dialogue and progress, referencing private continuation instead of copying it."""
+    """Save dialogue and progress, keeping private continuation and memory query text as refs."""
+    from nexuspilot_api.features.memory.services.memory_tools import memory_checkpoint_message
+
     return {
         "history": [
             {
-                "message": message.model_dump(mode="json"),
+                "message": memory_checkpoint_message(message),
                 "continuation_attempt_id": message._provider_continuation_parent_attempt_id,
             }
             for message in state.history

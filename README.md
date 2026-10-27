@@ -1,6 +1,6 @@
 # NexusPilot LLM Platform
 
-NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已经完成；阶段4 Web 与阶段5身份认证正在实施，阶段6可观测性随后进行。阶段7工具已开始本地实现，阶段8代码搜索、阶段9 MCP 后置，阶段10消息队列按可靠后台执行需求触发。Memory 当前只保留规划和实验性准备代码，Knowledge 等待独立知识库规划，二者都不进入实际 `/responses` 或 Agent 工作流调用链。
+NexusPilot 是一个统一调用模型、管理运行与调用证据，并执行可审计 Agent 工作流的 LLM 平台。阶段1数据与控制平面、阶段2 LLM 核心能力、阶段3 `model_only_v1` Agent 工作流已有完成记录；后续扩展的当前状态以路线图为准。MCP 与动态 Python 已有最小本地实现。个人记忆与 Nexus 项目记忆已接入共用工具循环，启用需新增迁移及私有密钥，当前验证和限制见[产品记忆](docs/implementation/phase-2-llm-core-capabilities.md#产品记忆后端实现与运行要求2026-10-27)。旧实验 Memory 不自动激活，Knowledge 尚未接入正式调用。
 
 ## 当前能力
 
@@ -48,8 +48,9 @@ Search、真实 MySQL/MinIO 本地联调。后续真实Fetch在DeepSeek首页成
 - 可配置的通用 OpenAI Chat Completions 兼容 Provider；
 - 单一 `POST /api/v1/responses` 普通生成和 SSE 流式接口；
 - 文件执行环境：`deployments/file-runtime` 提供 Office/Poppler Linux 镜像，以及本机 Unix Socket 执行器。API 不直接访问 Docker；PDF/DOCX/XLSX/PPTX 在独立无网络容器中提取正文、表格及位置。构建、配置与云端验收要求见[文件执行环境说明](docs/implementation/phase-7-tool-runtime-plan.md#预装文件执行环境)；
-- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除。两种模式均自动向模型提供当前回合允许读取的附件工具，由模型决定是否调用，无需选择“读取附件”；本地验证范围见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。OCR、跨版本解析缓存和 Agent Python/Shell 接入尚未实现。上传限制见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
-- 本地任务执行器：`deployments/task-runtime` 提供隔离 Python/Shell 与同任务文件快照；使用 `make task-runtime-build`、`make task-runtime-test` 构建和检查。仅供受信本地调用，尚未接入 Agent/数据库归属/Artifact，不能直接供浏览器或模型使用。目录、资源限制与运行方式见[任务执行器说明](docs/implementation/phase-7-tool-runtime-plan.md#本地执行器实现与运行2026-10-09)；
+- 文件输入：浏览器可上传 UTF-8 文本、CSV/TSV、JSON，以及配置执行器后的 PDF 正文和 DOCX/XLSX/PPTX；原件与固定解析结果保存在 MinIO，同一会话后续快速回复和 Agent 节点可复用之前附件的文字/表格，每轮保存来源与内容快照。支持私有文件列表、下载与删除。两种模式均自动向模型提供当前回合允许读取的附件工具，由模型决定是否调用，无需选择“读取附件”；本地验证范围见[工具主计划](docs/implementation/phase-7-tool-runtime-plan.md#首批附件工具实现与运行2026-10-09)。OCR、跨版本解析缓存尚未实现；Python接入见下项，Shell不向模型开放。上传限制见[文件上传说明](docs/implementation/phase-2-llm-core-capabilities.md#正式文件上传2026-年-9-月-16-日)；
+- 本地任务执行器：`deployments/task-runtime` 提供隔离执行环境；原生 Agent 已通过显式用户授权接入 Python、调用记录和 Artifact，Shell 不向模型开放。使用 `make task-runtime-build`、`make task-runtime-test` 构建和检查。目录、资源限制与运行方式见[任务执行器说明](docs/implementation/phase-7-tool-runtime-plan.md#本地执行器实现与运行2026-10-09)；
+- 原生 Agent 扩展：MCP 只读 HTTP 桥接和当前任务动态 Python 已有最小实现，默认关闭，只完成固定响应/模拟执行器测试。连接与启用方法见[工具扩展最小实现](docs/implementation/phase-7-tool-runtime-plan.md#工具扩展最小实现与配置2026-10-26)。不等于真实 MCP 服务或新增动态容器验收；产品记忆已开始本地实现，两个 App 项目映射仍仅规划。
 - `model_only_v1` Agent 工作流支持 Controller 规划、工作 Agent、Handoff、确定性验证、独立审核和最终汇总，并可返回或查询每个完整节点结果；
 - `POST /api/v1/runs/{run_id}/agent-workflows` 支持同步 JSON 和实时 SSE；Workflow、完整 Result、Node 及持久化事件回放提供独立查询接口；
 - 供应商注册发现、超时、重试、结构化输出、工具调用和费用估算；

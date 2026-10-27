@@ -60,6 +60,9 @@ SHARED_ROUTES = frozenset(
 )
 OWNED_ROUTES = frozenset(
     {
+        ("GET", "/runs/{run_id}/memory-settings"),
+        ("GET", "/runs/{run_id}/user-memories"),
+        ("POST", "/runs/{run_id}/user-memories"),
         ("POST", "/responses"),
         ("GET", "/users"),
         ("GET", "/users/{user_id}"),

@@ -40,8 +40,10 @@ class RegisteredTool:
             raise ValueError("Invalid tool description")
         if not issubclass(self.arguments, BaseModel) or not issubclass(self.output, BaseModel):
             raise ValueError("Tool input and output require typed schemas")
-        if self.risk_level not in {"read_only", "task_write", "code_execution"}:
+        if self.risk_level not in {"read_only", "task_write", "code_execution", "memory_write"}:
             raise ValueError("Unsupported built-in tool risk level")
+        if self.risk_level == "memory_write" and "memory_use" not in self.required_capabilities:
+            raise ValueError("Persistent memory writes require explicit memory eligibility")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError("Tool timeout must be positive or inherited from its caller")
         if not 1 <= self.max_result_bytes <= 16 * 1024 * 1024:

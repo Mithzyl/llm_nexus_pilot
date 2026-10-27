@@ -31,9 +31,14 @@ from nexuspilot_api.services.tool_context import ToolProgressTracker, allow_tool
 async def has_automatic_file_tools(
     service: ModelInvocationService, payload: ResponsesRequest
 ) -> bool:
-    """Enable attached-file or explicitly authorized web reads for saved conversation turns."""
+    """Use the shared tool loop for files, web or authenticated memory-enabled chat turns."""
     if payload.task_id or not payload.current_user_message_id or payload.tools:
         return False
+    from nexuspilot_api.features.memory.models.product_memory import MemoryRunPermission
+
+    memory_permission = await service.db_session.get(MemoryRunPermission, payload.run_id)
+    if memory_permission and memory_permission.allowed:
+        return True
     from nexuspilot_api.services.web_tools import web_authorized
 
     if await web_authorized(service.db_session, payload.run_id):
@@ -136,7 +141,7 @@ class ResponseFileToolService:
         return public
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
-        """Continue useful tools with cancellation and protected continuation parent references."""
+        """Continue tools with cancellation and removal of revoked memory text before generation."""
         deadline = (
             monotonic() + payload.timeout_seconds if payload.timeout_seconds is not None else None
         )
@@ -146,6 +151,11 @@ class ResponseFileToolService:
                 index += 1
                 await asyncio.sleep(0)
                 await self.tools.validate_history(payload.run_id, self.records)
+                from nexuspilot_api.features.memory.services.memory_tools import (
+                    sanitize_memory_history,
+                )
+
+                await sanitize_memory_history(self.tools, payload.run_id, self.records, self.history)
                 remaining = deadline - monotonic() if deadline is not None else None
                 if remaining is not None and remaining < 1:
                     raise InvalidRequestError("文件读取已超时，请缩小问题范围后重试。")

@@ -265,7 +265,7 @@ class AgentFileToolService:
         }
 
     async def refresh_catalog(self, run_id: str) -> None:
-        """Refresh web grants without resurrecting removed file-tool versions or granting Apps."""
+        """Refresh web and memory grants without resurrecting removed file-tool versions."""
         from nexuspilot_api.services.web_tools import web_authorized, web_entries
 
         enabled = await web_authorized(self.db, run_id)
@@ -277,6 +277,9 @@ class AgentFileToolService:
         )
         if enabled:
             self.loaded_versions.update({entry.name: entry.version for entry in web_entries()})
+        from nexuspilot_api.features.memory.services.memory_tools import install_memory_tools
+
+        await install_memory_tools(self, run_id)
 
     def definitions(self) -> list[ToolDefinition]:
         """Resolve loaded versions against current policy before each Provider request."""
@@ -348,6 +351,11 @@ class AgentFileToolService:
                 return await self._finish(record, "permission_denied", error="tool_not_allowed")
             if offered_versions.get(tool.name) != tool.version:
                 return await self._finish(record, "permission_denied", error="tool_not_loaded")
+            from nexuspilot_api.features.memory.services.memory_tools import (
+                check_memory_external_disclosure,
+            )
+
+            await check_memory_external_disclosure(self.db, attempt.run_id, tool)
             try:
                 arguments = tool.arguments.model_validate(call.arguments)
             except ValidationError as error:
@@ -396,7 +404,14 @@ class AgentFileToolService:
             raise
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
-        """Dispatch default file operations; subclasses can use server-owned call/task IDs."""
+        """Dispatch shared file, web and scoped memory operations with saved call identities."""
+        from nexuspilot_api.features.memory.services.memory_tools import (
+            MEMORY_NAMES,
+            execute_memory,
+        )
+
+        if name in MEMORY_NAMES:
+            return await execute_memory(self, attempt, record, name, arguments)
         if name in {"web_search", "web_fetch"}:
             from nexuspilot_api.services.web_tools import execute_web
 

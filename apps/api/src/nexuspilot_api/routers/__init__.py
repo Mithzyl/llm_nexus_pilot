@@ -9,6 +9,7 @@ from nexuspilot_api.features.memory.routers import (
     internal_agent_working_memory,
     internal_collaboration_memory,
     memories,
+    product_memory,
     projects,
     session_memory,
     user_memory,
@@ -43,6 +44,7 @@ api_router.include_router(sessions.router)
 api_router.include_router(session_memory.router)
 api_router.include_router(session_memory.internal_router)
 api_router.include_router(memories.router)
+api_router.include_router(product_memory.router)
 api_router.include_router(runs.router)
 api_router.include_router(tasks.router)
 api_router.include_router(model_attempts.router)

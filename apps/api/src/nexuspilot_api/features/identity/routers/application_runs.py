@@ -21,6 +21,7 @@ from nexuspilot_api.features.identity.resource_access import (
     validate_resource_references,
 )
 from nexuspilot_api.features.identity.services.application_identity import resolve_application_user
+from nexuspilot_api.features.memory.routers.product_memory import router as memory_router
 from nexuspilot_api.models import LlmAgentWorkflowExecution
 from nexuspilot_api.routers.common import DatabaseSessionDependency
 from nexuspilot_api.schemas.runs import RunCreate, RunRead
@@ -32,7 +33,7 @@ from nexuspilot_api.services.run_service import cancel_run, create_run
 
 
 async def authenticate_application(request: Request, db: DatabaseSessionDependency):
-    """Verify the backend and subject, then authorize route resources before execution."""
+    """Verify App ownership and record memory entry eligibility from the authenticated backend."""
     if request.cookies.get("nexuspilot_session"):
         raise HTTPException(400, "Browser and application identities cannot be combined")
     app_id = request.headers.get("x-application-id", "")
@@ -67,6 +68,8 @@ async def authenticate_application(request: Request, db: DatabaseSessionDependen
         await db.commit()
     mapping = await resolve_application_user(db, application_id=app_id, external_user_id=subject)
     db.info[OWNER_SESSION_KEY] = mapping.pilot_principal_id
+    db.info["memory_tools_allowed"] = True
+    db.info["memory_api_entry"] = mapping.application_id
     await validate_resource_references(db, request.path_params, mapping.pilot_principal_id)
     for key, value in request.query_params.multi_items():
         await validate_resource_references(db, {key: value}, mapping.pilot_principal_id)
@@ -154,3 +157,5 @@ async def cancel_application_run(
 
 # Reuse JSON, SSE, replay and result handlers instead of creating an App-specific loop.
 router.include_router(workflows)
+
+router.include_router(memory_router)

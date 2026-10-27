@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     api_key: str = Field(default="local-development-key-change-me", min_length=16)
     app_tools_json: SecretStr = SecretStr("{}")
+    mcp_connections_json: SecretStr = SecretStr("{}")
+    dynamic_python_enabled: bool = False
+    memory_encryption_key: SecretStr | None = None
     web_search_api_key: SecretStr | None = None
     tavily_api_key: SecretStr | None = None
     web_tool_allowed_user_ids: str = ""
