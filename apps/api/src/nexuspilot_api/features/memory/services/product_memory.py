@@ -20,6 +20,7 @@ from nexuspilot_api.features.memory.models.product_memory import (
     UserMemoryOperation,
     UserMemoryScope,
 )
+from nexuspilot_api.features.memory.schemas.product_memory import AppMemoryData
 from nexuspilot_api.features.memory.services.credential_guard import scan_for_sensitive_input
 from nexuspilot_api.models import LlmProject, User
 from nexuspilot_api.models.base import new_id
@@ -215,6 +216,8 @@ class MemoryService:
                 if query and query.casefold() not in body["text"].casefold():
                     continue
                 item["text"] = body["text"]
+                if body.get("app_data") is not None:
+                    item["app_data"] = body["app_data"]
             items.append(item)
         return {"items": items, "next_offset": offset + limit if len(rows) > limit else None}
 
@@ -255,18 +258,24 @@ class MemoryService:
             await self.db.commit()
             return result
         action = request["action"]
+        app_data = request.get("app_data")
+        if app_data is not None:
+            app_data = AppMemoryData.model_validate(app_data).model_dump(mode="json")
+            if app_data["namespace"] != self.entry or self.project_id:
+                raise MemoryFailure("memory_app_scope_mismatch")
         if action in {"save", "propose", "confirm"} and not (parent.enabled and own.enabled):
             raise MemoryFailure("memory_disabled")
         text = request.get("text", "")
-        if text and (
-            scan_for_sensitive_input(text)
+        scanned = text + (json.dumps(app_data, ensure_ascii=False) if app_data else "")
+        if scanned and (
+            scan_for_sensitive_input(scanned)
             or re.search(
                 r"\b(?:sk-|oc_sk_|tvly-|np_)[A-Za-z0-9_-]{12,}|密码\s*[:：=]",
-                text,
+                scanned,
             )
         ):
             raise MemoryFailure("memory_credentials_forbidden")
-        sensitive = bool(request.get("sensitive") or sensitive_text(text))
+        sensitive = bool(request.get("sensitive") or sensitive_text(text) or app_data is not None)
         if (
             action in {"save", "propose", "correct"}
             and sensitive
@@ -300,7 +309,9 @@ class MemoryService:
                 version=1,
                 status="candidate" if action == "propose" else "active",
                 sensitive=sensitive,
-                body_uri=await self.put({"text": text}),
+                body_uri=await self.put(
+                    {"text": text, **({"app_data": app_data} if app_data else {})}
+                ),
                 source_run_id=self.run_id,
             )
             self.db.add(row)
@@ -322,7 +333,11 @@ class MemoryService:
             if action == "correct":
                 if row.sensitive and not request.get("confirmed_sensitive"):
                     raise MemoryFailure("memory_confirmation_required")
-                row.body_uri = await self.put({"text": text})
+                body = await self.read(row.body_uri)
+                body["text"] = text
+                if app_data is not None:
+                    body["app_data"] = app_data
+                row.body_uri = await self.put(body)
                 row.sensitive = row.sensitive or sensitive
                 row.disclosure_run_id = None
             elif action == "forget":

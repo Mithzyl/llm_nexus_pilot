@@ -1,5 +1,21 @@
 export type SessionDateGroupKey = "today" | "yesterday" | "earlier";
 
+/** Block sends until the session identified by the route is loaded. */
+export function isActiveSessionReadyForSubmission(
+  activeId: string | null, activeSession: { session_id: string } | null,
+): boolean {
+  return !activeId || activeSession?.session_id === activeId;
+}
+
+/** Resolve the independently fetched route session without relying on sidebar pagination. */
+export function resolveActiveSession<T extends { session_id: string }>(
+  sessions: readonly T[], activeId: string | null, loaded: T | null,
+): T | null {
+  if (!activeId) return null;
+  return loaded?.session_id === activeId
+    ? loaded : sessions.find((session) => session.session_id === activeId) ?? null;
+}
+
 export type SessionDateGroup<T> = {
   key: SessionDateGroupKey;
   label: string;

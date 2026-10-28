@@ -1,8 +1,49 @@
 """Public product memory operations, with no caller-supplied ownership fields."""
 
+import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+class AppMemoryData(BaseModel):
+    """Bound versioned App values without letting them override platform identity or permissions."""
+
+    model_config = ConfigDict(extra="forbid")
+    namespace: Literal["personal_assistant", "retail"]
+    schema_version: Literal[1] = 1
+    fields: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def validate_fields(self):
+        """Reject oversized/deep payloads and reserved platform fields at any nesting level."""
+        if len(json.dumps(self.fields, ensure_ascii=False, allow_nan=False).encode()) > 8192:
+            raise ValueError("App memory fields exceed 8192 bytes")
+        reserved = {
+            "user_id",
+            "owner_user_id",
+            "application_id",
+            "external_user_id",
+            "project_id",
+            "scope",
+            "status",
+            "confirmed_sensitive",
+            "enabled",
+            "body_uri",
+            "permissions",
+        }
+        pending = [(self.fields, 0)]
+        while pending:
+            value, depth = pending.pop()
+            if depth > 6:
+                raise ValueError("App memory fields are too deeply nested")
+            if isinstance(value, dict):
+                if any(key in reserved for key in value):
+                    raise ValueError("App memory fields cannot override platform fields")
+                pending.extend((item, depth + 1) for item in value.values())
+            elif isinstance(value, list):
+                pending.extend((item, depth + 1) for item in value)
+        return self
 
 
 class MemoryCommand(BaseModel):
@@ -18,6 +59,7 @@ class MemoryCommand(BaseModel):
     enabled: bool | None = None
     sensitive: bool = False
     confirmed_sensitive: bool = False
+    app_data: AppMemoryData | None = None
 
     @model_validator(mode="after")
     def fields_for_action(self):

@@ -16,6 +16,40 @@ export type WorkspacePrincipal = {
   scopes: string[];
 };
 
+export type PersonalApiKey = {
+  api_key_id: string;
+  name: string;
+  masked_key: string;
+  scopes: Array<"read" | "execute">;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+};
+
+export type PersonalApiKeyCreated = PersonalApiKey & {
+  key: string;
+};
+
+export type PersonalMemory = {
+  entry_id: string;
+  version: number;
+  status: "active" | "candidate" | "forgotten";
+  text?: string;
+  sensitive: boolean;
+};
+export type MemorySettings = {
+  enabled: boolean; entry_enabled: boolean; version: number;
+  mode: "entry" | "inherit" | "disabled";
+};
+export type MemoryCommand = {
+  action: "save" | "correct" | "forget" | "confirm" | "settings";
+  key: string; scope?: "personal" | "project";
+  text?: string; entry_id?: string; expected_version?: number;
+  enabled?: boolean; sensitive?: boolean; confirmed_sensitive?: boolean;
+};
+export type MemoryPage = { items: PersonalMemory[]; next_offset: number | null };
+
 export type ProviderName =
   | "openai"
   | "deepseek"

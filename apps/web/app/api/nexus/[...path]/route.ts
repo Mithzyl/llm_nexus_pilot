@@ -246,6 +246,7 @@ async function fetchOwnedMessage(
   return fetchOwnedSession(message.session_id, request, currentUserId);
 }
 
+
 /**
  * Parse and bound JSON bodies before applying the authenticated-user ownership
  * policy. Invalid or oversized bodies never reach the upstream service.
@@ -334,6 +335,7 @@ async function validateOwnership(
     const attemptOwnershipError = await fetchOwnedModelAttempt(path[1], request, currentUserId);
     if (attemptOwnershipError) return attemptOwnershipError;
   }
+
 
   const referencedRunId = typeof payload?.run_id === "string" ? payload.run_id : undefined;
   if (referencedRunId) {
@@ -526,6 +528,7 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     payload = { ...payload, user_id: currentUserId };
     body = JSON.stringify(payload);
   }
+
 
   if (
     path[0] === "sessions" &&

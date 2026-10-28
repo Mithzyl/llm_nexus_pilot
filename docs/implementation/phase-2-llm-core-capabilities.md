@@ -788,6 +788,20 @@ Run/Session明确关联的项目并复查访问权限。模型只可表达“个
 已确认：三个入口为 Nexus/Personal Assistant/Retail，项目继承入口或关闭，各入口默认开启。
 后续再确定 PA/Retail 项目业务ID映射和设置/确认UI接入，不单方面改 App 协议。
 
+##### 设置管理与App字段兼容（2026-10-28）
+
+在下述产品记忆实现上新增原生用户管理入口：GET `/me/memory-settings`、GET/POST `/me/user-memories`；项目对应GET `/projects/{project_id}/memory-settings`、GET/POST `/projects/{project_id}/user-memories`。复用MemoryService及现有表，不创建虚构Run，不改变App Run接口。用户身份取认证主体，项目检查归属；请求scope必须与路径一致，不能用查询参数把个人入口改为项目入口。个人Key不因此获得记忆写入许可。
+
+App Run的MemoryCommand可选携带 `app_data={namespace,schema_version:1,fields:{...}}`。namespace仅允许与已认证入口相同的personal_assistant或retail；fields是App业务字段，不得携带owner/user/入口/项目/权限覆盖字段。最多8192字节、嵌套6层；本批所有此类载荷按敏感内容要求明确保存确认。载荷随text加密保存到私有MinIO，不增加SQL列或内容哈希；纠正省略app_data时保留旧载荷。工具记录与检查点不保留载荷正文，恢复时重新检查当前权限。此功能只是字段保存与读取兼容，不执行日历/地图动作，不映射App项目，也没有完成真实App业务页面验收。
+
+测试先新增用例，曾因管理路由缺失及app_data被拒绝失败，修改后通过。本次执行：
+
+- `TIKTOKEN_CACHE_DIR=/tmp/nexuspilot-tokenizer-cache .venv/bin/pytest tests/test_product_memory.py tests/test_resource_policy.py -q --tb=short`：49项通过（apps/api目录）。随后增加同一用例中的项目管理及App HTTP断言，定向 `-k 'settings_management_without_run or app_fields or app_memory_isolation'`：4项通过、21项未选择。
+- `npx tsx --test tests/personal-settings.test.ts tests/personal-settings-api.test.ts tests/session-list.test.ts tests/proxy-policy.test.ts`：最终14项通过；默认沙箱曾禁止tsx的本地IPC管道，经授权执行通过。
+- 前端TypeScript、定向ESLint及后端定向Ruff通过。浏览器对真实本地MySQL/MinIO执行个人记忆新增、纠正、关闭、忘记、重新开启及刷新恢复，原有记忆保留；合成条目忘记，不物理删除对象。未发送模型请求。截图及UI范围见阶段4当前整合记录。
+
+App实验使用测试认证、隔离测试数据库/对象存储与HTTP接口，不是Personal Assistant或Retail正式业务联调。本次没有重复付费模型测试、提交、推送或部署。
+
 ##### 产品记忆后端实现与运行要求（2026-10-27）
 
 - 新迁移 `20261027_0030` 接续 `20261024_0029`，创建 `user_memory_scopes`、
@@ -843,6 +857,40 @@ MySQL回退曾先删外键需要的索引；MySQL旧读取事务曾在另一个�
 运行中的API/Worker未重启，真实私有记忆密钥未写入`.env`，没有改变App业务代码。
 因此本批最小后端与限定本地存储验证已完成；实际开发服务启用、设置/确认页面、任意自然语言
 授权解释、密钥轮换、类型化日历/地点和App项目映射仍不应宣称可用。
+
+**后续本地启用与浏览器验收（2026-10-27）。** 上述后端已提交为 `9589fdd`，没有推送。
+本次随后将开发业务库从 `20261024_0029` 升级到 `20261027_0030`；私有记忆密钥仅写入
+`apps/api/.env`（0600），API/Worker使用同一文件，未输出密钥、未新增哈希。
+重启前确认没有正常API/Worker执行进程；两条running工作流是9月1日/4日的inline历史记录，
+没有租约和对应执行者，保持原状态不重放。27条pending Run不等于有27个执行中的任务。
+
+浏览器使用真实前端/BFF/API/开发MySQL/MinIO，API与独立Worker通过
+`deployments/verification/serve_memory_fixture.py`将全部模型适配器替换为无网络固定实现；
+并非BFF mock。Provider名称仍显示数据库登记的DeepSeek，但本次没有发送供应商请求。
+
+| 行为 | Run | 结果 |
+|---|---|---|
+| 快速回复保存个人记忆 | `4266bb1b-e9c7-439c-9bc6-44314e412e67` | completed，save_memory completed；刷新回复保留 |
+| 另一会话查询个人记忆 | `986fd567-e95e-434f-9d8e-390773ed6469` | completed，query_memory返回同一条记忆 |
+| 项目Agent保存 | `a33b0c0f-e3a5-47f1-b723-e671a154a222` | completed，独立worker；Workflow `2d2e933f-9b15-4613-88f3-8a8c7afd1bac`，save_memory completed |
+| 刷新后项目续聊读取 | `60ac97e1-38a3-4a7b-9764-38575fd1deec` | completed，API快速回复解密读取Worker写入内容；再次刷新保存和读取回复均存在 |
+
+项目为合成验收项目 `55420cbf-8584-479d-b45a-d7bd1f8c742c`，项目会话
+`89636f6a-c095-4c72-8e46-8e6dbdd4afec`。测试数据保留，不自动删除。
+截图：`output/playwright/memory-project-refresh-20261027.png`（本地忽略目录）。
+固定模型用量为测试值，不记录成供应商真实Token消耗；外部模型调用为0。
+
+首次项目验收失败不是加密或工具身份绕过：页面仅从侧栏首批Session查找当前会话，未找到时
+另建普通会话，Run `1bb53519-aa84-4a33-8bd7-7e852795436b` 的save_memory正确拒绝
+`memory_project_required`。现已按URL独立加载Session并保留项目归属，恢复未完成不另建普通会话；
+修复后通过上述项目保存/读取。新增前端单测，TypeScript、ESLint及179项前端测试通过。
+本次修复和验收脚本发生在9589fdd之后，尚未再次提交。
+
+仍复现既有详情面板遮挡发送按钮；关闭详情后继续验收，未声称布局已修复。快速回复查询
+Agent工作流出现预期404的控制台记录仍存在。未运行移动端或独立进程中途故障矩阵。
+验收后确认worker非终态任务为0，停止固定模型进程，恢复正常API和Worker；两进程启动时均使用
+`NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=worker`，该覆盖仅在本次进程环境生效，未改私有配置中的
+原默认执行模式。前端3000、API8000保留运行；恢复后仅检查health，不发起真实模型请求。
 
 以下Store/L0～L4、Profile、Packet与旧接口说明保留为历史实验及后续参考，不是2026-10-27首批必做清单；旧默认值、受信调用方批准策略和无App的查询规则不能覆盖上方当前产品规则。下方“Memory后续规划工作项”表按当前范围更新。
 

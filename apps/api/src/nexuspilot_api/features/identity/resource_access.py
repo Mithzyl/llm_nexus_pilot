@@ -223,7 +223,9 @@ async def authorize_resource_request(
     # Personal execute keys do not implicitly grant persistent memory mutation.
     db.info["memory_tools_allowed"] = principal.authentication_method != "personal_api_key"
     db.info["memory_api_entry"] = "native"
-    if policy == ("POST", "/runs/{run_id}/user-memories") and not db.info["memory_tools_allowed"]:
+    if (policy in {("POST", "/runs/{run_id}/user-memories"), ("POST", "/me/user-memories"),
+                   ("POST", "/projects/{project_id}/user-memories")}
+            and not db.info["memory_tools_allowed"]):
         raise HTTPException(403, "个人 Key 尚未授予记忆管理权限。")
     if principal.authentication_method == "personal_api_key":
         required = "read" if request.method in {"GET", "HEAD"} else "execute"

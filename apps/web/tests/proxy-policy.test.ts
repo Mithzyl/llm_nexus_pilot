@@ -46,6 +46,15 @@ test("allows only the UI resource and method combinations", () => {
   assert.equal(isAllowedProxyRoute("PATCH", ["sessions", "session-1"]), true);
   assert.equal(isAllowedProxyRoute("PATCH", ["sessions", "session-1", "messages"]), false);
   assert.equal(isAllowedProxyRoute("GET", ["memory", "facts"]), false);
+  assert.equal(isAllowedProxyRoute("GET", ["me", "api-keys"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["me", "api-keys"]), true);
+  assert.equal(isAllowedProxyRoute("DELETE", ["me", "api-keys", "key-1"]), true);
+  assert.equal(isAllowedProxyRoute("PATCH", ["me", "api-keys", "key-1"]), false);
+  assert.equal(isAllowedProxyRoute("GET", ["memories"]), false);
+  assert.equal(isAllowedProxyRoute("POST", ["memories"]), false);
+  assert.equal(isAllowedProxyRoute("PATCH", ["memories", "memory-1"]), false);
+  assert.equal(isAllowedProxyRoute("DELETE", ["memories", "memory-1"]), false);
+  assert.equal(isAllowedProxyRoute("GET", ["memories", "memory-1"]), false);
   assert.equal(isAllowedProxyRoute("POST", ["projects"]), true);
 });
 

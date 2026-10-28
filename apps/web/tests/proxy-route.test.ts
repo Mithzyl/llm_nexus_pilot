@@ -31,7 +31,6 @@ test("artifact downloads retain attachment headers and authorization failures", 
     } finally { globalThis.fetch = originalFetch; }
   }
 });
-
 /** Prepared Run cancellation must check ownership before forwarding the bodyless mutation. */
 test("prepared Run cancellation is forwarded only for the current user", async () => {
   for (const owner of ["nexuspilot-web", "other-user"]) {
@@ -752,6 +751,91 @@ test("rejects cross-user Workflow cancellation before the mutation is forwarded"
       "https://nexus.test/api/v1/agent-workflows/foreign-workflow",
       "https://nexus.test/api/v1/runs/foreign-run",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("creates personal API keys without exposing another owner field", async () => {
+  const upstreamCalls: Array<{ url: string; method: string | undefined; body: string }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    upstreamCalls.push({
+      url,
+      method: init?.method,
+      body: String(init?.body ?? ""),
+    });
+    if (url.endsWith("/me/api-keys") && init?.method === "POST") {
+      return Response.json({
+        api_key_id: "key-1",
+        name: "Script",
+        masked_key: "np_key-1…1234",
+        scopes: ["read"],
+        created_at: "2026-10-27T00:00:00Z",
+        expires_at: null,
+        last_used_at: null,
+        revoked_at: null,
+        key: "np_key-1.secret",
+      }, { status: 201 });
+    }
+    throw new Error(`unexpected upstream request: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const response = await POST(
+      createRequest("me/api-keys", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Script",
+          scopes: ["read"],
+          expires_at: null,
+        }),
+      }),
+      createContext("me/api-keys"),
+    );
+
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).key, "np_key-1.secret");
+    assert.deepEqual(upstreamCalls, [{
+      url: "https://nexus.test/api/v1/me/api-keys",
+      method: "POST",
+      body: JSON.stringify({
+        name: "Script",
+        scopes: ["read"],
+        expires_at: null,
+      }),
+    }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("keeps legacy Memory browser routes closed after personal settings stops using them", async () => {
+  let upstreamCalls = 0;
+  globalThis.fetch = (async () => {
+    upstreamCalls += 1;
+    return Response.json({ detail: "unexpected upstream call" }, { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const responses = await Promise.all([
+      GET(createRequest("memories"), createContext("memories")),
+      POST(createRequest("memories", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content_text: "not reachable" }),
+      }), createContext("memories")),
+      PATCH(createRequest("memories/memory-1", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content_text: "not reachable" }),
+      }), createContext("memories/memory-1")),
+      DELETE(createRequest("memories/memory-1", { method: "DELETE" }),
+        createContext("memories/memory-1")),
+    ]);
+    assert.deepEqual(responses.map((response) => response.status), [404, 404, 404, 404]);
+    assert.equal(upstreamCalls, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

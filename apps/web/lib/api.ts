@@ -10,6 +10,11 @@ import type {
   Message,
   ModelDirectoryEntry,
   ModelResponseEventPage,
+  PersonalApiKey,
+  PersonalApiKeyCreated,
+  MemoryCommand,
+  MemoryPage,
+  MemorySettings,
   ProviderCatalog,
   ReasoningBlockSnapshot,
   Run,
@@ -56,8 +61,9 @@ export async function nexusFetch<T>(path: string, init?: RequestInit): Promise<T
   if (!response.ok) {
     let message = `NexusPilot API 请求失败（${response.status}）`;
     try {
-      const body = (await response.json()) as { detail?: string; error?: { message?: string } };
-      message = body.detail ?? body.error?.message ?? message;
+      const body = (await response.json()) as { detail?: string | { code?: string }; error?: { message?: string } };
+      message = typeof body.detail === "string" ? body.detail
+        : body.detail?.code ?? body.error?.message ?? message;
     } catch {
       // Keep the stable status message when the upstream body is not JSON.
     }
@@ -88,6 +94,53 @@ export function getCurrentWorkspacePrincipal(): Promise<WorkspacePrincipal> {
 /** Revoke the current browser session and expire both authentication cookies. */
 export function logoutCurrentUser(): Promise<void> {
   return nexusFetch<void>("auth/logout", { method: "POST" });
+}
+
+/** Load only credential metadata owned by the browser-authenticated user. */
+export function listPersonalApiKeys(): Promise<PersonalApiKey[]> {
+  return nexusFetch<PersonalApiKey[]>("me/api-keys");
+}
+
+/** Create one personal credential; the plaintext response is never persisted by this module. */
+export function createPersonalApiKey(payload: {
+  name: string;
+  scopes: Array<"read" | "execute">;
+  expires_at: string | null;
+}): Promise<PersonalApiKeyCreated> {
+  return nexusFetch<PersonalApiKeyCreated>("me/api-keys", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Revoke one owned personal credential without affecting already-running work. */
+export function revokePersonalApiKey(apiKeyId: string): Promise<void> {
+  return nexusFetch<void>(`me/api-keys/${encodeURIComponent(apiKeyId)}`, {
+    method: "DELETE",
+  });
+}
+
+/** Build the current-user or explicitly owned project management path without a fake Run. */
+function memoryBase(projectId?: string): string {
+  return projectId ? `projects/${encodeURIComponent(projectId)}` : "me";
+}
+
+/** Read the persisted entry/project memory setting. */
+export function getMemorySettings(projectId?: string): Promise<MemorySettings> {
+  return nexusFetch<MemorySettings>(`${memoryBase(projectId)}/memory-settings`);
+}
+
+/** Read one bounded management page, including unconfirmed candidates. */
+export function listProductMemories(projectId?: string, offset = 0): Promise<MemoryPage> {
+  return nexusFetch<MemoryPage>(`${memoryBase(projectId)}/user-memories?offset=${offset}&limit=20`);
+}
+
+/** Submit an explicit versioned user action; no identity or source-trust flags are accepted. */
+export function mutateProductMemory(command: MemoryCommand, projectId?: string): Promise<unknown> {
+  return nexusFetch(`${memoryBase(projectId)}/user-memories`, {
+    method: "POST",
+    body: JSON.stringify({ ...command, scope: projectId ? "project" : "personal" }),
+  });
 }
 
 /**

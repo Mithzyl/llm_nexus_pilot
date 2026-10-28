@@ -11,6 +11,12 @@ type AllowedRoute = {
  * the platform API key cannot become a general-purpose browser proxy.
  */
 const ALLOWED_ROUTES: readonly AllowedRoute[] = [
+  { method: "GET", pattern: ["me", "memory-settings"] },
+  { method: "GET", pattern: ["me", "user-memories"] },
+  { method: "POST", pattern: ["me", "user-memories"] },
+  { method: "GET", pattern: ["projects", ":id", "memory-settings"] },
+  { method: "GET", pattern: ["projects", ":id", "user-memories"] },
+  { method: "POST", pattern: ["projects", ":id", "user-memories"] },
   { method: "GET", pattern: ["projects"] },
   { method: "POST", pattern: ["projects"] },
   { method: "GET", pattern: ["projects", ":id"] },
@@ -40,6 +46,9 @@ const ALLOWED_ROUTES: readonly AllowedRoute[] = [
   { method: "DELETE", pattern: ["auth", "sessions", ":id"] },
   { method: "POST", pattern: ["auth", "sessions", "revoke-all"] },
   { method: "POST", pattern: ["auth", "password", "change"] },
+  { method: "GET", pattern: ["me", "api-keys"] },
+  { method: "POST", pattern: ["me", "api-keys"] },
+  { method: "DELETE", pattern: ["me", "api-keys", ":id"] },
   { method: "GET", pattern: ["providers"] },
   { method: "GET", pattern: ["models"] },
   { method: "GET", pattern: ["context-builds", ":id", "evidence"] },

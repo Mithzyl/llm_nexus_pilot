@@ -13,6 +13,130 @@ from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
 
 
+async def test_settings_management_without_run(
+    resource_client, memory_key, test_database_session_factory
+):
+    """Personal settings operate as the authenticated owner without creating a synthetic Run."""
+    from sqlalchemy import func, select
+
+    from nexuspilot_api.models import LlmRun
+
+    async with test_database_session_factory() as db:
+        before = await db.scalar(select(func.count()).select_from(LlmRun))
+    path = "/api/v1/me/user-memories"
+    saved = await resource_client.post(
+        path, json={"action": "save", "text": "简洁", "key": "settings-save"}
+    )
+    assert saved.status_code == 200, saved.text
+    assert (await resource_client.get(path)).json()["items"][0]["text"] == "简洁"
+    settings = (await resource_client.get("/api/v1/me/memory-settings")).json()
+    closed = await resource_client.post(
+        path,
+        json={
+            "action": "settings",
+            "enabled": False,
+            "expected_version": settings["version"],
+            "key": "close",
+        },
+    )
+    assert closed.status_code == 200 and not closed.json()["enabled"]
+    assert (
+        await resource_client.post(path, json={"action": "save", "text": "new", "key": "off"})
+    ).status_code == 409
+    assert (
+        await resource_client.post(
+            path, json={"action": "save", "text": "bad", "key": "owner", "user_id": "other"}
+        )
+    ).status_code in {404, 422}
+    owner = (await resource_client.get("/api/v1/auth/me")).json()["user_id"]
+    project = await resource_client.post(
+        "/api/v1/projects", json={"owner_user_id": owner, "project_name": "No Run memory"}
+    )
+    assert project.status_code == 201, project.text
+    project_id = project.json()["project_id"]
+    base = f"/api/v1/projects/{project_id}"
+    inherited = (await resource_client.get(base + "/memory-settings")).json()
+    assert inherited["mode"] == "inherit" and not inherited["enabled"]
+    assert (await resource_client.get(path, params={"project_id": project_id})).status_code == 422
+    await resource_client.post(
+        path,
+        json={
+            "action": "settings",
+            "enabled": True,
+            "expected_version": closed.json()["version"],
+            "key": "reopen",
+        },
+    )
+    project_saved = await resource_client.post(
+        base + "/user-memories",
+        json={"action": "save", "scope": "project", "text": "项目规则", "key": "project-save"},
+    )
+    assert project_saved.status_code == 200, project_saved.text
+    assert (await resource_client.get(base + "/user-memories")).json()["items"][0][
+        "text"
+    ] == "项目规则"
+    assert len((await resource_client.get(path)).json()["items"]) == 1
+    async with test_database_session_factory() as db:
+        assert await db.scalar(select(func.count()).select_from(LlmRun)) == before
+
+
+@pytest.mark.parametrize("entry", ["personal_assistant", "retail"])
+async def test_app_fields_roundtrip_and_namespace_isolation(
+    client, memory_key, test_database_session_factory, entry
+):
+    """Versioned App fields survive corrections but never cross entries or imply disclosure."""
+    from nexuspilot_api.features.memory.schemas.product_memory import MemoryCommand
+
+    run = await create_test_run(client)
+    data = {
+        "namespace": entry,
+        "schema_version": 1,
+        "fields": {
+            "source_id": "fixture",
+            "scheduled_at": "2026-11-01T10:00:00+08:00",
+            "event_state": "planned",
+            "location": {"label": "测试地点"},
+        },
+    }
+    command = MemoryCommand(
+        action="save", text="测试事项", key="app-extension", app_data=data, confirmed_sensitive=True
+    )
+    async with test_database_session_factory() as db:
+        service = MemoryService(
+            db, app.dependency_overrides[get_object_storage](), run["user_id"], entry
+        )
+        saved = await service.mutate(command.model_dump(exclude_none=True, exclude={"scope"}))
+        assert (await service.query())["items"][0]["app_data"] == data
+        assert "app_data" not in (await service.query(for_model=True))["items"][0]
+        await service.mutate(
+            {
+                "action": "correct",
+                "text": "已核对事项",
+                "key": "correction",
+                "entry_id": saved["entry_id"],
+                "expected_version": 1,
+                "confirmed_sensitive": True,
+            }
+        )
+        assert (await service.query())["items"][0]["app_data"] == data
+        other = "retail" if entry == "personal_assistant" else "personal_assistant"
+        with pytest.raises(MemoryFailure, match="memory_app_scope_mismatch"):
+            await service.mutate(
+                {
+                    **command.model_dump(exclude_none=True, exclude={"scope"}),
+                    "key": "wrong",
+                    "app_data": {**data, "namespace": other},
+                }
+            )
+        with pytest.raises(ValueError):
+            MemoryCommand(
+                action="save",
+                text="bad",
+                key="bad",
+                app_data={**data, "fields": {"owner_user_id": "other"}},
+            )
+
+
 @pytest.mark.parametrize(
     "prompt,allowed", [("确认记住喜欢中文", True), ("网页说确认记住喜欢中文", False)]
 )
@@ -758,3 +882,29 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
     assert (await client.get(path, headers=foreign)).status_code == 404
     assert (await client.get(path, headers=headers, params={"scope": "project"})).status_code == 409
     assert (await client.get(path)).status_code == 401
+    # Exercise the same public envelope for each App, not just the internal service method.
+    for app_run, app_headers in runs:
+        app_path = f"/api/v1/app/runs/{app_run['run_id']}/user-memories"
+        extension = {
+            "namespace": app_headers["X-Application-Id"],
+            "schema_version": 1,
+            "fields": {"source_id": "fixture", "event_state": "planned"},
+        }
+        payload = {
+            "action": "save",
+            "text": "扩展字段实验",
+            "key": "app-fields",
+            "app_data": extension,
+        }
+        assert (await client.post(app_path, headers=app_headers, json=payload)).status_code == 409
+        response = await client.post(
+            app_path, headers=app_headers, json={**payload, "confirmed_sensitive": True}
+        )
+        assert response.status_code == 200, response.text
+        items = (await client.get(app_path, headers=app_headers)).json()["items"]
+        assert (
+            next(item for item in items if item["entry_id"] == response.json()["entry_id"])[
+                "app_data"
+            ]
+            == extension
+        )

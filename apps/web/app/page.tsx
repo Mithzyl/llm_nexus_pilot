@@ -5,7 +5,12 @@ import { useFileDrop } from "../components/composer/useFileDrop";
 import { FileLibrary } from "../components/composer/FileLibrary";
 import { ProjectAttachmentPicker, type SelectedProjectFile } from "../components/composer/ProjectAttachmentPicker";
 import { ClaimEvidencePanel } from "../components/agent-workflow/ClaimEvidencePanel";
-import { selectClaimEntries } from "../lib/claim-evidence";
+import {
+  citationTargetsForContent,
+  selectClaimEntries,
+  type ClaimCitationTarget,
+} from "../lib/claim-evidence";
+import { projectWorkspacePath, type ProjectSummary } from "../lib/project-workspace";
 import { messageFiles, uploadUserFile, validateUploadFiles, type UserFile } from "../lib/user-files";
 
 import {
@@ -94,6 +99,7 @@ import {
 } from "../components/composer/FilePickerButton";
 import { ContextEvidencePanel } from "../components/context/ContextEvidencePanel";
 import { AuthenticationGate } from "../components/auth/AuthenticationGate";
+import { PersonalSettingsDialog } from "../components/settings/PersonalSettingsDialog";
 import Link from "next/link";
 import {
   composerConversationClearance,
@@ -140,7 +146,12 @@ import { RunArtifacts } from "../components/RunArtifacts";
 import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission,
   type PendingSubmission } from "../lib/pending-submissions";
 import { formatCost, formatDurationMs, formatTokenCount } from "../lib/format";
-import { filterSessionsByTitle, groupSessionsByDate } from "../lib/session-list";
+import {
+  filterSessionsByTitle,
+  groupSessionsByDate,
+  isActiveSessionReadyForSubmission,
+  resolveActiveSession,
+} from "../lib/session-list";
 import { runEvidenceTargetForMessage } from "../lib/run-evidence";
 import { usePathname } from "next/navigation";
 import { readModelPreference, writeModelPreference } from "../lib/model-catalog";
@@ -297,6 +308,7 @@ export default function Home() {
     ? workspaceRoute.sessionId
     : null;
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [routeSession, setRouteSession] = useState<Session | null>(null);
   const [workspacePrincipal, setWorkspacePrincipal] =
     useState<WorkspacePrincipal | null>(null);
   const [authenticationState, setAuthenticationState] = useState<
@@ -304,6 +316,10 @@ export default function Home() {
   >("checking");
   const [workspaceAccessError, setWorkspaceAccessError] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeProject, setActiveProject] = useState<ProjectSummary | null>(null);
+  const [focusedClaim, setFocusedClaim] = useState<
+    (ClaimCitationTarget & { workflowExecutionId: string }) | null
+  >(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [providerCatalog, setProviderCatalog] = useState<ProviderCatalog>(
     EMPTY_PROVIDER_CATALOG,
@@ -359,6 +375,7 @@ export default function Home() {
   const [inspectedRunEvidenceError, setInspectedRunEvidenceError] =
     useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isPersonalSettingsOpen, setIsPersonalSettingsOpen] = useState(false);
   const [sessionQuery, setSessionQuery] = useState("");
   const [isDark, setIsDark] = useState(false);
   const [isThemeTransitioning, setIsThemeTransitioning] = useState(false);
@@ -458,10 +475,21 @@ export default function Home() {
   const evidenceWorkflow = isInspectingHistoricalRun
     ? inspectedRunEvidence?.workflow ?? null
     : agentWorkflow;
-  const evidenceWorkflowNodes = isInspectingHistoricalRun
-    ? inspectedRunEvidence?.nodes ?? []
-    : agentWorkflowNodes;
-  const evidenceClaimCount = evidenceWorkflow ? selectClaimEntries(evidenceWorkflowNodes).length : 0;
+  const evidenceWorkflowNodes = useMemo(
+    () => isInspectingHistoricalRun
+      ? inspectedRunEvidence?.nodes ?? []
+      : agentWorkflowNodes,
+    [agentWorkflowNodes, inspectedRunEvidence?.nodes, isInspectingHistoricalRun],
+  );
+  const evidenceClaimEntries = useMemo(
+    () => selectClaimEntries(evidenceWorkflowNodes),
+    [evidenceWorkflowNodes],
+  );
+  const currentClaimEntries = useMemo(
+    () => selectClaimEntries(agentWorkflowNodes),
+    [agentWorkflowNodes],
+  );
+  const evidenceClaimCount = evidenceWorkflow ? evidenceClaimEntries.length : 0;
   const visibleSessions = filterSessionsByTitle(sessions, sessionQuery);
   const sessionGroups = groupSessionsByDate(visibleSessions);
   const evidenceEventState = isInspectingHistoricalRun
@@ -906,9 +934,29 @@ export default function Home() {
   }, [applyInitialModelSelection, authenticationState, startProviderCatalogRequest]);
 
   const activeSession = useMemo(
-    () => sessions.find((session) => session.session_id === activeSessionId) ?? null,
-    [activeSessionId, sessions],
+    () => resolveActiveSession(sessions, activeSessionId, routeSession),
+    [activeSessionId, sessions, routeSession],
   );
+
+  useEffect(() => {
+    const projectId = activeSession?.project_id;
+    if (!projectId) return;
+    const controller = new AbortController();
+    void nexusFetch<ProjectSummary>(`projects/${encodeURIComponent(projectId)}`, {
+      signal: controller.signal,
+    }).then((project) => {
+      if (!controller.signal.aborted) setActiveProject(project);
+    }).catch(() => {
+      if (!controller.signal.aborted) {
+        setActiveProject({ project_id: projectId, project_name: "所属项目" });
+      }
+    });
+    return () => controller.abort();
+  }, [activeSession?.project_id]);
+  const conversationProject = activeSession?.project_id
+    && activeProject?.project_id === activeSession.project_id
+    ? activeProject
+    : null;
   const conversationStatus: { label: string; tone: "muted" | "running" | "danger" } =
     isInspectingHistoricalRun
       ? { label: "历史回复", tone: "muted" }
@@ -1287,6 +1335,7 @@ export default function Home() {
   /**
    * Load one immutable conversation history and either its latest or explicitly requested Run.
    * Ignore late reads after another conversation, Run route or submission replaces this view.
+   * Restore route identity separately from the sidebar page so project ownership survives refresh.
    * Restored cancellation is confirmed by the persisted Run, not a local response abort.
    */
   async function restoreSession(sessionId: string, requestedRun?: RunDetail | null) {
@@ -1296,6 +1345,8 @@ export default function Home() {
     if (draftStorageKey.current !== nextDraftStorageKey) switchDraftContext(sessionId);
     setErrorMessage(null);
     setActiveSessionId(sessionId);
+    setActiveProject(null);
+    setFocusedClaim(null);
     setIsSidebarOpen(false);
     setRun(null);
     resetAgentWorkflowFacts();
@@ -1308,7 +1359,7 @@ export default function Home() {
     setMessageCursor(null);
     setHasMoreMessages(false);
     try {
-      const [page, latestRun] = await Promise.all([
+      const [page, latestRun, restoredSession] = await Promise.all([
         listLatestMessagePage(sessionId),
         requestedRun !== undefined
           ? Promise.resolve(requestedRun)
@@ -1316,8 +1367,17 @@ export default function Home() {
               if (error instanceof NexusApiError && error.status === 404) return null;
               throw error;
             }),
+        nexusFetch<Session>(`sessions/${encodeURIComponent(sessionId)}`),
       ]);
       if (sessionRestoreRequestId.current !== requestId) return;
+      setRouteSession(restoredSession);
+      setSessions((current) => current.some(
+        (session) => session.session_id === restoredSession.session_id,
+      )
+        ? current.map((session) => (
+            session.session_id === restoredSession.session_id ? restoredSession : session
+          ))
+        : [restoredSession, ...current]);
       const restoredMessages = page.items.map(messageFromMessage);
       const projection = assistantProjectionForLatestTurn(page.items, latestRun);
       const pendingAssistant = projection
@@ -1644,6 +1704,7 @@ export default function Home() {
   /** Open evidence for the clicked Assistant response without changing the workspace route. */
   async function handleOpenRunEvidence(message: LocalMessage, tab: "sources" | "process" = "process") {
     const targetRunId = runEvidenceTargetForMessage(message);
+    setFocusedClaim(null);
     setEvidenceTab(tab);
     setIsInspectorOpen(true);
     if (!targetRunId) {
@@ -1669,6 +1730,29 @@ export default function Home() {
       );
       setInspectedRunEvidenceState("error");
     }
+  }
+
+  /**
+   * Return the inspector to the loaded current Workflow before focusing one persisted claim.
+   * Incrementing the request id also ignores any older independent evidence read still in flight.
+   */
+  function handleOpenCitation(target: ClaimCitationTarget) {
+    if (
+      !agentWorkflow
+      || !currentClaimEntries.some((entry) => (
+        entry.nodeId === target.nodeId && entry.claim.claim_key === target.claimKey
+      ))
+    ) {
+      setErrorMessage("这条引用缺少可定位的当前运行来源。");
+      return;
+    }
+    showCurrentRunEvidence();
+    setEvidenceTab("sources");
+    setIsInspectorOpen(true);
+    setFocusedClaim({
+      ...target,
+      workflowExecutionId: agentWorkflow.workflow_execution_id,
+    });
   }
 
   /**
@@ -1795,6 +1879,7 @@ export default function Home() {
     setErrorMessage(null);
     try {
       const updatedSession = await updateSessionTitle(activeSession.session_id, title);
+      setRouteSession(updatedSession);
       setSessions((current) => current.map((session) =>
         session.session_id === updatedSession.session_id ? updatedSession : session,
       ));
@@ -1957,6 +2042,9 @@ export default function Home() {
     const userMessage = createLocalMessage("user", input);
 
     try {
+      if (!isActiveSessionReadyForSubmission(activeSessionId, activeSession)) {
+        throw new Error("当前会话尚未读取完成，请稍后重试。");
+      }
       const uploadController = new AbortController();
       executionRequest.current = uploadController;
       if (isCurrent()) activeRequestController.current = uploadController;
@@ -2013,6 +2101,9 @@ export default function Home() {
       }
       view.setMessages((current) => [...current, userMessage]);
       let session = activeSession;
+      if (!session && activeSessionId) {
+        throw new Error("当前会话尚未读取完成，请稍后重试。");
+      }
       if (!session) {
         session = await createSession(input.slice(0, 42), pendingSubmission?.sessionKey);
         setSessions((current) => [session as Session, ...current]);
@@ -2365,6 +2456,11 @@ export default function Home() {
     }
   }
 
+  /** Close personal settings while preserving the trigger element for focus restoration. */
+  const closePersonalSettings = useCallback(() => {
+    setIsPersonalSettingsOpen(false);
+  }, []);
+
   if (authenticationState !== "authenticated" || !workspacePrincipal) {
     return (
       <AuthenticationGate
@@ -2379,7 +2475,11 @@ export default function Home() {
   }
 
   return (
-    <main className={`app-shell ${isDark ? "theme-dark" : ""} ${isThemeTransitioning ? "is-theme-transitioning" : ""}`} {...fileDrop.handlers}>
+    <main
+      className={`app-shell ${isDark ? "theme-dark" : ""} ${isThemeTransitioning ? "is-theme-transitioning" : ""}`}
+      style={{ "--composer-clearance": `${composerClearancePx}px` } as CSSProperties}
+      {...fileDrop.handlers}
+    >
       {fileDrop.active && <div className="file-drop-overlay" role="status">
         {isSending ? "当前对话正在运行，请切换到其他对话添加文件" : "松开以添加文件，发送消息时上传"}
       </div>}
@@ -2396,7 +2496,7 @@ export default function Home() {
           <kbd>⌘ K</kbd>
         </button>
 
-        <a className="session-link" href="/projects" target="_blank" rel="noopener noreferrer">项目与文件 ↗</a>
+        <Link className="session-link" href="/projects">项目与文件</Link>
 
         <div className="session-group">
           <div className="session-group-heading">
@@ -2450,13 +2550,32 @@ export default function Home() {
         </div>
 
         <div className="sidebar-footer">
-          <div className="authenticated-user">
-            <span>{workspacePrincipal.display_name}</span>
-            {workspacePrincipal.authentication_method === "browser_session" && (
-              <button type="button" onClick={() => void handleLogout()}>退出</button>
-            )}
+          <button
+            type="button"
+            className="account-settings-trigger"
+            aria-haspopup="dialog"
+            aria-expanded={isPersonalSettingsOpen}
+            onClick={() => setIsPersonalSettingsOpen(true)}
+          >
+            <span className="account-settings-avatar" aria-hidden="true">
+              {Array.from(workspacePrincipal.display_name.trim())[0]?.toUpperCase() ?? "N"}
+            </span>
+            <span className="account-settings-copy">
+              <strong>{workspacePrincipal.display_name}</strong>
+              <small>个人设置</small>
+            </span>
+            <span className="account-settings-chevron" aria-hidden="true">⌘</span>
+          </button>
+          <div className="sidebar-settings-links">
+            <button
+              type="button"
+              className="settings-link"
+              onClick={() => setIsPersonalSettingsOpen(true)}
+            >
+              设置
+            </button>
+            <Link className="settings-link" href="/settings/models">模型目录</Link>
           </div>
-          <Link className="settings-link" href="/settings/models">模型目录</Link>
           <div className="environment-dot"><span />开发环境</div>
           <span className={`connection-label ${connectionState}`}>
             {connectionState === "connected" ? "API 已连接" : connectionState === "checking" ? "检查中" : "API 未连接"}
@@ -2474,6 +2593,18 @@ export default function Home() {
             <div className="conversation-title-block">
               <div className="conversation-kicker">
                 <span>{activeSession ? "会话" : "工作台"}</span>
+                {activeSession?.project_id && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <Link
+                      className="conversation-project-link"
+                      href={projectWorkspacePath(activeSession.project_id)}
+                      title="返回所属项目"
+                    >
+                      {conversationProject?.project_name ?? "所属项目"} ↗
+                    </Link>
+                  </>
+                )}
                 {activeSession && <span className="conversation-kicker-time">· {formatTime(activeSession.updated_at)}</span>}
               </div>
               {isRenamingSession && activeSession ? (
@@ -2509,6 +2640,15 @@ export default function Home() {
               </span>
             )}
             <button className="icon-button" onClick={toggleTheme} aria-label="切换明暗主题">{isDark ? "☀" : "◐"}</button>
+            <button
+              className="icon-button"
+              onClick={() => setIsPersonalSettingsOpen(true)}
+              aria-label="打开个人设置"
+              aria-haspopup="dialog"
+              aria-expanded={isPersonalSettingsOpen}
+            >
+              ⚙
+            </button>
             <button className={`detail-toggle ${isInspectorOpen ? "active" : ""}`} onClick={() => setIsInspectorOpen((current) => !current)}>
               <span className="status-dot" />运行详情
             </button>
@@ -2592,7 +2732,13 @@ export default function Home() {
                           <span>正在生成最终回答…</span>
                         </div>
                       ) : message.content ? (
-                        <MarkdownContent content={message.content} />
+                        <MarkdownContent
+                          content={message.content}
+                          citationTargets={message.agentWorkflow && message.run_id === run?.run_id
+                            ? citationTargetsForContent(message.content, currentClaimEntries)
+                            : []}
+                          onCitationClick={handleOpenCitation}
+                        />
                       ) : (
                         <p className="typing-line"><span /> <span /> <span /></p>
                       )}
@@ -2609,7 +2755,7 @@ export default function Home() {
                         <button onClick={() => void handleCopy(message)}>{copiedMessageId === message.local_id ? "已复制" : "复制"}</button>
                         <button onClick={() => handleRepeatQuestion(message)}>再次提问</button>
                         {message.agentWorkflow && <button onClick={() => void handleOpenRunEvidence(message, "sources")}>
-                          查看结论与来源{message.run_id === run?.run_id && selectClaimEntries(agentWorkflowNodes).length > 0 ? ` · ${selectClaimEntries(agentWorkflowNodes).length} 条` : ""}
+                          查看结论与来源{message.run_id === run?.run_id && currentClaimEntries.length > 0 ? ` · ${currentClaimEntries.length} 条` : ""}
                         </button>}
                         <button onClick={() => void handleOpenRunEvidence(message)}>查看运行证据 ↗</button>
                       </div>
@@ -2787,6 +2933,15 @@ export default function Home() {
         </div>
       </section>
 
+      {isPersonalSettingsOpen && (
+        <PersonalSettingsDialog
+          projectId={activeSession?.project_id ?? undefined}
+          principal={workspacePrincipal}
+          onClose={closePersonalSettings}
+          onLogout={handleLogout}
+        />
+      )}
+
       <aside className={`inspector ${isInspectorOpen ? "is-open" : ""}`} aria-label="运行详情" inert={!isInspectorOpen}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -2829,7 +2984,14 @@ export default function Home() {
           {isInspectorOpen && evidenceTab === "sources" && <>
             {["failed", "cancelled", "outcome_unknown"].includes(evidenceWorkflow.status) && <p className="claim-source-warning claim-execution-warning" role="status">本次执行未正常完成。以下仅展示已提交的阶段结论，详情请查看运行过程。</p>}
             <ClaimEvidencePanel key={evidenceWorkflow.workflow_execution_id} workflowId={evidenceWorkflow.workflow_execution_id}
-              nodes={evidenceWorkflowNodes} running={["pending", "running"].includes(evidenceWorkflow.status)} />
+              nodes={evidenceWorkflowNodes}
+              running={["pending", "running"].includes(evidenceWorkflow.status)}
+              activeCitation={
+                focusedClaim?.workflowExecutionId === evidenceWorkflow.workflow_execution_id
+                  ? focusedClaim
+                  : null
+              }
+            />
             <button type="button" className="claim-technical-button" onClick={() => setEvidenceTab("process")}>运行过程与技术记录</button>
           </>}
         </>}

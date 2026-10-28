@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { filterSessionsByTitle, groupSessionsByDate, type SessionDateGroupKey } from "../lib/session-list";
+import { filterSessionsByTitle, groupSessionsByDate, resolveActiveSession, isActiveSessionReadyForSubmission, type SessionDateGroupKey } from "../lib/session-list";
+
+/** Direct routes must not create a replacement conversation before identity loads. */
+test("only submits after the route session identity has loaded", () => {
+  assert.equal(isActiveSessionReadyForSubmission(null, null), true);
+  assert.equal(isActiveSessionReadyForSubmission("session-1", null), false);
+  assert.equal(isActiveSessionReadyForSubmission("session-1", { session_id: "session-2" }), false);
+  assert.equal(isActiveSessionReadyForSubmission("session-1", { session_id: "session-1" }), true);
+});
+
+test("route session retains its project outside the sidebar page and never leaks to another route", () => {
+  const loaded = { session_id: "project-session", project_id: "project-a" };
+  assert.equal(resolveActiveSession([], "project-session", loaded)?.project_id, "project-a");
+  assert.equal(resolveActiveSession([], "another-session", loaded), null);
+  assert.equal(resolveActiveSession([], null, loaded), null);
+});
 
 const now = new Date(2026, 9, 21, 12, 0, 0);
 

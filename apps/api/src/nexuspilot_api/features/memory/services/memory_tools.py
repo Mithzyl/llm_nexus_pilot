@@ -184,7 +184,7 @@ async def execute_memory(tools, attempt, record, name, arguments):
                 # Persist only locators. Rehydrate authorized text immediately before generation,
                 # so forgotten content cannot be recovered from a saved Tool Call or checkpoint.
                 result["items"] = [
-                    {key: value for key, value in item.items() if key != "text"}
+                    {key: value for key, value in item.items() if key not in {"text", "app_data"}}
                     for item in result["items"]
                 ]
                 return {**result, "memory_scope": arguments.scope, "management": management}
@@ -289,9 +289,14 @@ async def restore_current_memory_messages(db, storage, run_id, records, messages
                 and row.version == item["version"]
                 and (enabled or result.get("management"))
             ):
-                restored = {key: value for key, value in item.items() if key != "text"}
+                restored = {
+                    key: value for key, value in item.items() if key not in {"text", "app_data"}
+                }
                 if not row.sensitive or row.disclosure_run_id == run_id:
-                    restored["text"] = (await service.read(row.body_uri))["text"]
+                    body = await service.read(row.body_uri)
+                    restored["text"] = body["text"]
+                    if body.get("app_data") is not None:
+                        restored["app_data"] = body["app_data"]
                     restored.pop("disclosure_required", None)
                 else:
                     restored["disclosure_required"] = True
@@ -309,7 +314,7 @@ def memory_checkpoint_message(message):
         payload = json.loads(message.content)
         result = payload.get("result") or {}
         result["items"] = [
-            {key: value for key, value in item.items() if key != "text"}
+            {key: value for key, value in item.items() if key not in {"text", "app_data"}}
             for item in result.get("items", [])
         ]
         payload["result"] = result
