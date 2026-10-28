@@ -285,6 +285,28 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .new-chat span { font-size: 19px; font-weight: 300; }
 .new-chat kbd { margin-left: auto; font-size: 10px; font-weight: 500; opacity: .62; }
 .new-chat:hover { transform: translateY(-1px); box-shadow: 0 9px 24px var(--shadow); }
+.session-link {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 7px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 620;
+  text-decoration: none;
+  transition: background-color 160ms var(--ease-out-soft), color 160ms var(--ease-out-soft);
+}
+.session-link::after {
+  content: "→";
+  margin-left: auto;
+  color: var(--muted);
+  font: 500 11px var(--font-geist-mono);
+  opacity: .7;
+}
+.session-link:hover { background: var(--panel-strong); color: var(--text); }
 
 .eyebrow { margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .file-drop-overlay { position: fixed; inset: 16px; z-index: 100; display: grid; place-items: center; pointer-events: none; border: 1px dashed var(--muted); border-radius: 16px; background: color-mix(in srgb, var(--page) 94%, transparent); color: var(--text); font-size: 18px; padding: 24px; text-align: center; }
@@ -328,7 +350,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .session-copy small { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-item time { margin-left: auto; flex: 0 0 auto; font-size: 9px; color: var(--muted); }
 .empty-sessions { padding: 0 9px; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.sidebar-footer { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin-top: auto; padding: 14px 7px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.sidebar-footer { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin-top: auto; padding: 10px 7px 0; color: var(--muted); font-size: 11px; }
 .account-settings-trigger {
   grid-column: 1 / -1;
   display: grid;
@@ -975,8 +997,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 }
 .settings-status[data-pending="true"] { border-style: dashed; color: var(--text); }
 .settings-lead { max-width: 690px; margin: 0 0 22px; color: var(--muted); font-size: 12px; line-height: 1.65; }
-.settings-definition-list { display: grid; margin: 0 0 22px; border-top: 1px solid var(--line); }
-.settings-definition-list > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 18px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.settings-definition-list { display: grid; margin: 0 0 22px; padding: 7px 15px; border-radius: 14px; background: var(--panel); }
+.settings-definition-list > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 18px; padding: 10px 0; }
 .settings-definition-list dt { color: var(--muted); font-size: 10px; }
 .settings-definition-list dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.55; }
 .settings-definition-list code { font: 500 11px var(--font-geist-mono); }
@@ -1039,11 +1061,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settings-once strong { font-size: 13px; }
 .settings-once code { overflow-wrap: anywhere; border-radius: 8px; padding: 10px; background: var(--panel-strong); font: 500 11px/1.6 var(--font-geist-mono); }
 .settings-once > p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 9px; }
-.settings-list { border-top: 1px solid var(--line); }
+.settings-list { display: grid; gap: 3px; margin-top: 3px; }
 .settings-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0 8px; }
 .settings-list-heading strong { font-size: 11px; }
 .settings-list-heading span { color: var(--muted); font-size: 9px; }
-.settings-list-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 18px; padding: 16px 0; border-top: 1px solid var(--line); }
+.settings-list-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 18px; padding: 14px 13px; border-radius: 11px; background: var(--panel); }
 .settings-list-row > div:first-child { display: grid; min-width: 0; gap: 5px; }
 .settings-list-row strong { font-size: 12px; }
 .settings-list-row code { color: var(--muted); font: 500 10px var(--font-geist-mono); overflow-wrap: anywhere; }
@@ -1067,12 +1089,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settings-memory-type { width: fit-content; border-radius: 6px; padding: 4px 6px; background: var(--soft); color: var(--muted); font-size: 8px; font-weight: 680; }
 .settings-memory-row textarea { margin: 2px 0; }
 .settings-danger-action { margin-top: 8px; border-color: color-mix(in srgb, var(--danger) 48%, var(--line)); background: transparent; color: var(--danger); }
-.settings-empty-state { padding: 26px 0; border-top: 1px solid var(--line); }
+.settings-empty-state { padding: 20px 16px; border-radius: 12px; background: var(--panel); }
 .settings-empty-state strong { font-size: 12px; }
 .settings-empty-state p { max-width: 620px; margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .settings-error { margin: 0 0 18px; border-radius: 9px; padding: 10px 12px; background: var(--danger-soft); color: var(--danger); font-size: 10px; line-height: 1.55; }
-.settings-locked-panel { display: flex; align-items: flex-start; gap: 15px; margin-top: 4px; padding: 22px; border: 1px dashed var(--line); border-radius: 14px; background: var(--panel); }
-.settings-locked-panel > span { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: var(--soft); color: var(--muted); font-size: 20px; }
+.settings-locked-panel { display: flex; align-items: flex-start; gap: 15px; margin-top: 4px; padding: 22px; border: 1px solid color-mix(in srgb, var(--text) 10%, var(--line)); border-radius: 15px; background: var(--panel); }
+.settings-locked-panel > span { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: var(--text); color: var(--accent-contrast); font-size: 20px; }
 .settings-locked-panel strong { font-size: 13px; }
 .settings-locked-panel p { max-width: 680px; margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
 

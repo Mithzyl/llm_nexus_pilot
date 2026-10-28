@@ -175,7 +175,6 @@
 .backToChat {
   margin-top: auto;
   padding: 14px 9px 2px;
-  border-top: 1px solid var(--project-line);
   color: var(--project-muted);
   font-size: 10px;
   text-decoration: none;
@@ -199,8 +198,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding: 28px 32px 22px;
-  border-bottom: 1px solid var(--project-line);
+  padding: 28px 32px 24px;
 }
 .projectTitle { flex: 1 1 0; min-width: 0; }
 .projectTitle h1 { max-width: 100%; margin: 6px 0 0; overflow: hidden; font-size: clamp(24px, 2.8vw, 36px); line-height: 1.08; letter-spacing: -.04em; text-overflow: ellipsis; white-space: nowrap; }
@@ -252,10 +250,8 @@
 .sectionIntro { max-width: 620px; margin: 10px 0 18px; color: var(--project-muted); font-size: 10px; line-height: 1.65; }
 .regionLoading { margin: 16px 0; color: var(--project-muted); font-size: 11px; line-height: 1.6; }
 .sidebar .regionLoading { padding: 0 9px; }
-.regionEmpty, .sidebarEmpty, .sourceEmpty {
-  padding: 22px 0;
-  border-top: 1px solid var(--project-line);
-}
+.regionEmpty { padding: 20px; border-radius: 12px; background: var(--project-panel); }
+.sidebarEmpty, .sourceEmpty { padding: 12px 0; }
 .regionEmpty strong, .sidebarEmpty strong, .sourceEmpty strong { font-size: 12px; }
 .regionEmpty p, .sidebarEmpty p, .sourceEmpty p { max-width: 560px; margin: 7px 0 13px; color: var(--project-muted); font-size: 10px; line-height: 1.65; }
 .regionEmpty button, .sidebarEmpty button {
@@ -268,17 +264,19 @@
   font-size: 10px;
   cursor: pointer;
 }
-.sidebarEmpty { border-top: 0; padding: 8px 9px 10px; }
-.fileList { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--project-line); }
+.sidebarEmpty { padding: 8px 9px 10px; }
+.fileList { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
 .fileList > li {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   min-height: 74px;
-  padding: 13px 0;
-  border-bottom: 1px solid var(--project-line);
+  padding: 13px 11px;
+  border-radius: 12px;
+  transition: background-color 150ms var(--ease-out-soft);
 }
+.fileList > li:hover { background: var(--project-panel); }
 .fileBadge {
   display: grid;
   width: 42px;
@@ -300,17 +298,19 @@
 .rowMenu { position: relative; }
 .rowMenu summary { display: grid; min-height: 32px; place-items: center; border-color: transparent; padding: 0 8px; color: var(--project-muted); }
 .rowMenu > div { min-width: 145px; }
-.conversationList { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--project-line); }
-.conversationList li + li { border-top: 1px solid var(--project-line); }
+.conversationList { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
 .conversationList a {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 14px 0;
+  padding: 14px 11px;
+  border-radius: 10px;
   color: var(--project-text);
   text-decoration: none;
+  transition: background-color 150ms var(--ease-out-soft);
 }
+.conversationList a:hover { background: var(--project-panel); }
 .conversationList a:hover strong { text-decoration: underline; text-underline-offset: 3px; }
 .conversationList span { display: grid; min-width: 0; gap: 4px; }
 .conversationList strong { overflow: hidden; font-size: 12px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
@@ -508,7 +508,7 @@
   .projectHeader { padding: 28px 24px 20px; }
   .projectGrid { grid-template-columns: 1fr; padding: 0 24px 44px; }
   .filesSection { padding-right: 0; }
-  .conversationsSection { margin-top: 20px; padding: 26px 0 0; border-top: 1px solid var(--project-line); border-left: 0; }
+  .conversationsSection { margin-top: 20px; padding: 26px 0 0; border-left: 0; }
   .actionError, .regionFailure { margin-left: 24px; margin-right: 24px; }
 }
 
