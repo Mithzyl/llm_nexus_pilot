@@ -12,6 +12,47 @@ let DELETE: typeof import("../app/api/nexus/[...path]/route").DELETE;
 let PUT: typeof import("../app/api/nexus/[...path]/route").PUT;
 const originalFetch = globalThis.fetch;
 
+/** Registration has no session cookie yet but still requires the browser's exact Origin. */
+test("registration forwarding requires same origin without a login cookie", async () => {
+  const calls: string[] = [];
+  globalThis.fetch = (async (url) => {calls.push(String(url)); return Response.json({message: "accepted"});}) as typeof fetch;
+  try {
+    for (const action of ["request", "verify"]) {
+      const path = `auth/registration/${action}`;
+      const accepted = await POST(new NextRequest(`http://localhost/api/nexus/${path}`, {method: "POST", headers: {"content-type": "application/json", origin: "http://localhost"},
+        body: JSON.stringify({email: "fixture@example.test"})}), createContext(path));
+      assert.equal(accepted.status, 200);
+      const denied = await POST(new NextRequest(`http://localhost/api/nexus/${path}`, {method: "POST", headers: {origin: "https://foreign.example"}}), createContext(path));
+      assert.equal(denied.status, 403);
+    }
+    assert.equal(calls.length, 2);
+  } finally {globalThis.fetch = originalFetch;}
+});
+
+/** Disclosure grants must check the saved Run owner before forwarding any mutation. */
+test("memory disclosure is forwarded only for an owned Run", async () => {
+  for (const owner of ["nexuspilot-web", "other-user"]) {
+    let mutations = 0;
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.method === "POST") {
+        mutations++;
+        assert.equal(JSON.parse(String(init.body)).action, "disclose");
+        return Response.json({status: "active"});
+      }
+      return Response.json({run_id: "prepared", user_id: owner});
+    }) as typeof fetch;
+    try {
+      const response = await POST(createRequest("runs/prepared/user-memories", {
+        method: "POST", headers: {"content-type": "application/json"},
+        body: JSON.stringify({action: "disclose", entry_id: "entry", expected_version: 1,
+          scope: "personal", confirmed_sensitive: true, key: "grant"}),
+      }), createContext("runs/prepared/user-memories"));
+      assert.equal(response.status, owner === "nexuspilot-web" ? 200 : 404);
+      assert.equal(mutations, owner === "nexuspilot-web" ? 1 : 0);
+    } finally { globalThis.fetch = originalFetch; }
+  }
+});
+
 /** Forward download headers and bytes while retaining backend owner-denial responses. */
 test("artifact downloads retain attachment headers and authorization failures", async () => {
   for (const status of [200, 404, 503]) {

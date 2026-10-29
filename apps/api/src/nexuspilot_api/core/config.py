@@ -63,6 +63,14 @@ class Settings(BaseSettings):
         le=2_592_000,
     )
     authentication_enabled: bool = False
+    registration_enabled: bool = False
+    registration_verification_key: SecretStr | None = None
+    registration_smtp_host: str = ""
+    registration_smtp_port: int = Field(default=587, ge=1, le=65535)
+    registration_smtp_username: str = ""
+    registration_smtp_password: SecretStr | None = None
+    registration_smtp_sender: str = ""
+    registration_smtp_starttls: bool = True
     authentication_cookie_secure: bool = False
     authentication_allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     authentication_session_idle_seconds: int = Field(default=43_200, ge=300, le=604_800)

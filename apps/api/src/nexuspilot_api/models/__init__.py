@@ -12,6 +12,7 @@ from nexuspilot_api.features.identity.models.authentication import (
     UserPasswordCredential,
 )
 from nexuspilot_api.features.identity.models.personal_api_key import UserApiKey  # noqa: F401
+from nexuspilot_api.features.identity.models.registration import RegistrationChallenge  # noqa: F401
 from nexuspilot_api.features.memory.models.product_memory import (  # noqa: F401
     MemoryRunPermission,
     UserMemoryEntry,

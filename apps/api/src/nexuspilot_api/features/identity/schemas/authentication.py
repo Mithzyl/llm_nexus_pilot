@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from nexuspilot_api.schemas.base import ApiModel
 
@@ -16,6 +16,21 @@ class BrowserLoginRequest(BaseModel):
     email: str = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=1_024)
     device_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class RegistrationEmailRequest(BaseModel):
+    """Request a verification email without accepting account IDs or privilege flags."""
+
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=1, max_length=320)
+
+
+class RegistrationVerifyRequest(RegistrationEmailRequest):
+    """Create credentials only when the caller presents the emailed proof."""
+
+    code: SecretStr = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+    password: SecretStr = Field(min_length=12, max_length=1024)
 
 
 class PasswordChangeRequest(BaseModel):

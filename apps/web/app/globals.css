@@ -1086,6 +1086,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settings-memory-panel .settings-form-footer p { font-size: 13px; }
 .settings-memory-panel .settings-memory-row { padding-block: 14px; border-bottom: 1px solid var(--border); }
 .settings-memory-panel .settings-memory-row p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.composer-memory-disclosure { margin-block: 8px; }
+.composer-memory-disclosure button {
+  border: 0; border-radius: 8px; padding: 7px 10px;
+  background: var(--soft); color: var(--text); font: inherit;
+  cursor: pointer;
+}
+.composer-memory-disclosure button:disabled { opacity: .5; cursor: default; }
+.composer-memory-disclosure section {
+  max-height: 240px; overflow-y: auto; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+}
+.composer-memory-disclosure p, .composer-memory-disclosure label { overflow-wrap: anywhere; }
 .settings-memory-type { width: fit-content; border-radius: 6px; padding: 4px 6px; background: var(--soft); color: var(--muted); font-size: 8px; font-weight: 680; }
 .settings-memory-row textarea { margin: 2px 0; }
 .settings-danger-action { margin-top: 8px; border-color: color-mix(in srgb, var(--danger) 48%, var(--line)); background: transparent; color: var(--danger); }

@@ -2,20 +2,152 @@
 
 import asyncio
 import json
+import os
+import tempfile
+import threading
+from pathlib import Path
 
 import httpx
 import pytest
 from test_agent_workflows import register_default_agent_test_model  # noqa: F401
 from test_general_agent import general_model_catalog  # noqa: F401
+from test_python_runtime import python_server  # noqa: F401
 
 from nexuspilot_api.services.agent_file_tool_service import ToolOperationError
 from nexuspilot_api.services.mcp_tools import MCPConnection, MCPTransport
 from nexuspilot_api.services.tool_schema import check_schema, validate_value
 
 
-@pytest.mark.parametrize("case", ["success", "wrong_result", "revoked", "unvalidated"])
-async def test_dynamic_python_lifecycle(client, monkeypatch, test_database_session_factory, case):
-    """Run draft/validate/register/invoke in the real loop with a fixed model and fake container."""
+async def test_mcp_private_query_credential_transport(caplog):
+    """Query-key services receive private credentials without Bearer or response leakage."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="httpx")
+    config = MCPConnection(
+        url="https://mcp.example/mcp",
+        token="private-test-credential",
+        credential_mode="query_key",
+        user_ids=["owner"],
+        tools={
+            "lookup": {
+                "description": "Read public data",
+                "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            }
+        },
+    )
+
+    def respond(request):
+        """Assert exact wire credentials and deliberately echo a secret in a remote result."""
+        assert request.url.params["key"] == "private-test-credential"
+        assert "Authorization" not in request.headers
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"text": "private-test-credential"},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ToolOperationError, match="mcp_credential_in_response"):
+            await MCPTransport(config, client).request("tools/list", {}, "check")
+    assert "private-test-credential" not in repr(config)
+    assert "private-test-credential" not in caplog.text
+
+
+async def test_mcp_notification_failure_does_not_expose_query_credential():
+    """A failed initialization notification must not leak the credential-bearing request URL."""
+    config = connection().model_copy(update={"credential_mode": "query_key"})
+
+    def fail(request):
+        """Model an HTTP transport exception whose message includes its full request URL."""
+        raise httpx.ConnectError(str(request.url), request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(fail)) as client:
+        with pytest.raises(ToolOperationError, match="mcp_notification_failed") as error:
+            await MCPTransport(config, client).notify("notifications/initialized")
+    assert config.token.get_secret_value() not in str(error.value)
+
+
+async def test_mcp_remote_open_schema_keeps_local_arguments_closed():
+    """Pin a provider's omitted additionalProperties while still rejecting extra model fields."""
+    remote = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+    config = MCPConnection(
+        url="https://mcp.example/mcp",
+        token="credential",
+        user_ids=["owner"],
+        tools={"weather": {"description": "Public weather", "input_schema": remote}},
+    )
+
+    def respond(request):
+        """Serve real JSON-RPC shapes, including a deliberately changed second definition."""
+        body = json.loads(request.content)
+        method = body["method"]
+        if method.startswith("notifications/"):
+            return httpx.Response(204)
+        result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}}
+        if method == "tools/list":
+            result = {"tools": [{"name": "weather", "inputSchema": remote}]}
+        elif method == "tools/call":
+            assert body["params"]["arguments"] == {"city": "北京"}
+            result = {"content": [{"type": "text", "text": "Weather sample"}]}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        adapter = MCPTransport(config, client)
+        with pytest.raises(ToolOperationError, match="mcp_invalid_arguments"):
+            await adapter.call("weather", {"city": "北京", "owner": "other"}, "extra")
+        assert (await adapter.call("weather", {"city": "北京"}, "ok"))["content"]
+        remote["required"] = []
+        with pytest.raises(ToolOperationError, match="mcp_definition_changed"):
+            await adapter.call("weather", {"city": "北京"}, "changed")
+
+
+@pytest.fixture
+def dynamic_runtime_socket(case, request, tmp_path):
+    """Start a real isolated executor only for explicitly enabled Docker acceptance."""
+    if not case.startswith("real_"):
+        yield {"socket": "/tmp/test-python.sock", "runtime": None}
+        return
+    server_module = request.getfixturevalue("python_server")
+    runtime = server_module.PythonRuntime(
+        tmp_path / "workspaces", server_module.resolve_image("nexuspilot-task-runtime:local")
+    )
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+        socket = Path(directory) / "p.sock"
+        server = server_module.Server(socket, runtime)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield {"socket": str(socket), "runtime": runtime}
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "success",
+        "wrong_result",
+        "revoked",
+        "unvalidated",
+        pytest.param(
+            "real_success",
+            marks=pytest.mark.skipif(
+                os.environ.get("NEXUSPILOT_TEST_TASK_RUNTIME") != "1",
+                reason="Requires local Docker image",
+            ),
+        ),
+    ],
+)
+async def test_dynamic_python_lifecycle(
+    client, monkeypatch, test_database_session_factory, case, dynamic_runtime_socket
+):
+    """Exercise saved draft/validation/registration with fixed models and opt-in actual Docker."""
     from nexuspilot_models.contracts import ModelResponse, ToolCall
     from test_agent_workflows import scripted_registry
     from test_api import create_test_run
@@ -27,15 +159,18 @@ async def test_dynamic_python_lifecycle(client, monkeypatch, test_database_sessi
     from nexuspilot_api.services import python_tool_service
 
     run = await create_test_run(client)
-    monkeypatch.setattr(get_settings(), "python_runtime_socket", "/tmp/test-python.sock")
+    monkeypatch.setattr(get_settings(), "python_runtime_socket", dynamic_runtime_socket["socket"])
     monkeypatch.setattr(get_settings(), "python_execution_user_ids", [run["user_id"]])
     monkeypatch.setattr(get_settings(), "dynamic_python_enabled", True)
     executions = []
+    real_execute = python_tool_service.execute_python_request
 
     async def execute(socket, request):
         """Return strict JSON output while asserting code reached the existing executor."""
         executions.append(request)
         assert "def run" in request["command"]["stdin"]
+        if case == "real_success":
+            return await real_execute(socket, request)
         return {
             "status": "completed",
             "exit_code": 0,
@@ -123,7 +258,10 @@ async def test_dynamic_python_lifecycle(client, monkeypatch, test_database_sessi
         response.text
     )
     assert (
-        len(executions) == {"success": 2, "wrong_result": 1, "revoked": 1, "unvalidated": 0}[case]
+        len(executions)
+        == {"success": 2, "real_success": 2, "wrong_result": 1, "revoked": 1, "unvalidated": 0}[
+            case
+        ]
     )
     if case == "success":
         from sqlalchemy import select
@@ -185,7 +323,10 @@ def test_python_wrapper_transports_json_without_code_interpolation(value):
     source = "def run(data):\n print('diagnostic')\n return data['value']"
     result = subprocess.run(
         [sys.executable, "-I", "-c", program(source, {"value": value})],
-        capture_output=True, text=True, timeout=5, check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=True,
     )
     assert json.loads(result.stdout) == value
     assert result.stderr.strip() == "diagnostic"
@@ -351,8 +492,30 @@ async def test_native_extension_scope_rejects_app_and_inactive_user():
     assert await native_task_owner(db, "run", "task") is None
 
 
-async def test_dynamic_validation_cancel_uses_existing_python_stop(client, monkeypatch):
-    """Cancelling validation interrupts the container transport and never registers a tool."""
+@pytest.mark.parametrize(
+    "case",
+    [
+        "simulated_cancel",
+        pytest.param(
+            "real_cancel",
+            marks=pytest.mark.skipif(
+                os.environ.get("NEXUSPILOT_TEST_TASK_RUNTIME") != "1",
+                reason="Requires local Docker image",
+            ),
+        ),
+        pytest.param(
+            "real_call_cancel",
+            marks=pytest.mark.skipif(
+                os.environ.get("NEXUSPILOT_TEST_TASK_RUNTIME") != "1",
+                reason="Requires local Docker image",
+            ),
+        ),
+    ],
+)
+async def test_dynamic_validation_cancel_uses_existing_python_stop(
+    client, monkeypatch, case, dynamic_runtime_socket
+):
+    """Cancel validation or a registered call without allowing a later model turn."""
     from nexuspilot_models.contracts import ModelResponse, ToolCall
     from test_agent_workflows import scripted_registry
     from test_api import create_test_run
@@ -364,17 +527,53 @@ async def test_dynamic_validation_cancel_uses_existing_python_stop(client, monke
     from nexuspilot_api.services import python_tool_service
 
     run = await create_test_run(client)
-    monkeypatch.setattr(get_settings(), "python_runtime_socket", "/tmp/fixture-python.sock")
+    monkeypatch.setattr(get_settings(), "python_runtime_socket", dynamic_runtime_socket["socket"])
     monkeypatch.setattr(get_settings(), "python_execution_user_ids", [run["user_id"]])
     monkeypatch.setattr(get_settings(), "dynamic_python_enabled", True)
     started, stopped = asyncio.Event(), asyncio.Event()
+    real_execute = python_tool_service.execute_python_request
+    execution_count = 0
 
     async def execute(socket, request):
-        """Represent an in-flight container that acknowledges local cancellation."""
-        started.set()
+        """Observe a real container process when enabled; otherwise simulate transport waiting."""
+        nonlocal execution_count
+        execution_count += 1
+        if case == "real_call_cancel" and execution_count == 1:
+            return await real_execute(socket, request)
+        pending_execution = None
         try:
+            if case.startswith("real_"):
+                from task_runtime import docker
+
+                pending_execution = asyncio.create_task(real_execute(socket, request))
+                for _ in range(200):
+                    if pending_execution.done():
+                        pytest.fail(
+                            f"Execution finished before cancellation: {pending_execution.result()}"
+                        )
+                    for state_file in dynamic_runtime_socket["runtime"].store.root.glob(
+                        "*/state.json"
+                    ):
+                        state = json.loads(state_file.read_text())
+                        if state.get("container"):
+                            top = await asyncio.to_thread(
+                                docker, ["top", state["container"], "-eo", "pid,args"], check=False
+                            )
+                            if b"python -I" in top.stdout:
+                                started.set()
+                                break
+                    if started.is_set():
+                        break
+                    await asyncio.sleep(0.05)
+                assert started.is_set(), "Actual Python process was not observed"
+                return await pending_execution
+            started.set()
             await asyncio.Event().wait()
         finally:
+            if pending_execution is not None:
+                if not pending_execution.done():
+                    pending_execution.cancel()
+                await asyncio.gather(pending_execution, return_exceptions=True)
             stopped.set()
 
     monkeypatch.setattr(python_tool_service, "execute_python_request", execute)
@@ -385,25 +584,43 @@ async def test_dynamic_validation_cancel_uses_existing_python_stop(client, monke
         async def generate(self, request):
             """Use real persisted draft identity with a synthetic model."""
             previous = [json.loads(m.content) for m in request.messages if m.role.value == "tool"]
-            assert len(previous) <= 1
+            assert len(previous) <= (3 if case == "real_call_cancel" else 1)
             if not previous:
                 name, args = (
                     "create_tool_draft",
                     {
                         "description": "Fixture",
-                        "source": "def run(data):\n return 1",
+                        "source": (
+                            "def run(data):\n import time\n time.sleep(data['delay'])\n return 1"
+                        ),
                         "input_schema": {
                             "type": "object",
-                            "properties": {},
+                            "properties": {"delay": {"type": "integer"}},
+                            "required": ["delay"],
                             "additionalProperties": False,
                         },
                         "output_schema": {"type": "integer"},
-                        "sample_input": {},
+                        "sample_input": {"delay": 0 if case == "real_call_cancel" else 120},
                         "expected_output": 1,
                     },
                 )
-            else:
+            elif len(previous) == 1:
                 name, args = "validate_tool_draft", {"draft_id": previous[0]["result"]["draft_id"]}
+            elif len(previous) == 2:
+                assert previous[-1]["status"] == "completed"
+                name, args = (
+                    "register_task_tool",
+                    {"validation_id": previous[-1]["result"]["validation_id"]},
+                )
+            else:
+                assert previous[-1]["status"] == "completed"
+                name, args = (
+                    "call_task_tool",
+                    {
+                        "registration_id": previous[-1]["result"]["registration_id"],
+                        "arguments": {"delay": 120},
+                    },
+                )
             return ModelResponse(
                 tool_calls=[ToolCall(id=f"call-{len(previous)}", name=name, arguments=args)],
                 finish_reason="tool_calls",
@@ -419,14 +636,19 @@ async def test_dynamic_validation_cancel_uses_existing_python_stop(client, monke
         )
     )
     try:
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 20)
         summary = (await client.get(f"/api/v1/runs/{run['run_id']}/agent-workflow")).json()
         workflow = summary["workflow_execution_id"]
         assert (await client.post(f"/api/v1/agent-workflows/{workflow}/cancel")).status_code == 200
-        await asyncio.wait_for(pending, 5)
+        await asyncio.wait_for(pending, 30)
         result = (await client.get(f"/api/v1/agent-workflows/{workflow}/result")).json()
         assert result["status"] == "cancelled" and result["final_output"] is None
         assert stopped.is_set()
+        assert execution_count == (2 if case == "real_call_cancel" else 1)
+        if case.startswith("real_"):
+            for state_file in dynamic_runtime_socket["runtime"].store.root.glob("*/state.json"):
+                state = json.loads(state_file.read_text())
+                assert state["state"] == "ready" and state["container"] is None
     finally:
         if not pending.done():
             pending.cancel()
@@ -466,7 +688,32 @@ def test_mcp_sse_preserves_fragmented_unicode_and_ignores_progress():
     assert MCPTransport.sse_reply(b'data: {"method":"progress"}\n\n', "x") is None
 
 
-@pytest.mark.parametrize("case", ["success", "foreign_owner", "revoked", "cancel"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "success",
+        "foreign_owner",
+        "revoked",
+        "cancel",
+        pytest.param(
+            "live_amap",
+            marks=pytest.mark.skipif(
+                not os.environ.get("NEXUSPILOT_TEST_AMAP_KEY"),
+                reason="Requires explicit approved Amap credential",
+            ),
+        ),
+        *[
+            pytest.param(
+                value,
+                marks=pytest.mark.skipif(
+                    not os.environ.get("NEXUSPILOT_TEST_AMAP_KEY"),
+                    reason="Requires explicit approved Amap credential",
+                ),
+            )
+            for value in ("live_amap_cancel", "live_amap_revoked")
+        ],
+    ],
+)
 async def test_mcp_in_general_agent(client, monkeypatch, case):
     """Exercise saved identity, tool messages and revocation inside the existing Agent loop."""
     from nexuspilot_models.contracts import ModelResponse, ToolCall
@@ -480,19 +727,63 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
     from nexuspilot_api.main import app
 
     run = await create_test_run(client)
+    live = case.startswith("live_amap")
+    cancelling = case in {"cancel", "live_amap_cancel"}
     config = connection().model_dump(mode="json")
     config["token"] = "test-private-token"
     config["user_ids"] = ["foreign" if case == "foreign_owner" else run["user_id"]]
+    if live:
+        import logging
+
+        monkeypatch.setattr(logging.getLogger("httpx"), "disabled", True)
+        config.update(
+            url="https://mcp.amap.com/mcp",
+            credential_mode="query_key",
+            token=os.environ["NEXUSPILOT_TEST_AMAP_KEY"],
+            tools={
+                "maps_weather": {
+                    "description": "Read public city weather only",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "description": "城市名称或者adcode"}
+                        },
+                        "required": ["city"],
+                    },
+                }
+            },
+        )
     monkeypatch.setattr(
         get_settings(), "mcp_connections_json", SecretStr(json.dumps({"demo": config}))
     )
     entered = asyncio.Event()
     cancelled = asyncio.Event()
     calls = []
+    actual_call = MCPTransport.call
 
     async def invoke(self, name, arguments, execution_id):
         """Replace the external service only; authorization and Tool Call persistence stay real."""
         calls.append(execution_id)
+        if live:
+
+            async def trace(event, info):
+                """Observe actual request-body transmission; never delay or fake remote work."""
+                if event.endswith("send_request_body.complete"):
+                    entered.set()
+                    if case == "live_amap_revoked":
+                        monkeypatch.setattr(get_settings(), "mcp_connections_json", SecretStr("{}"))
+
+            async def observe(request):
+                """Trace the actual invocation only, not discovery or cancellation."""
+                if json.loads(request.content).get("method") == "tools/call":
+                    request.extensions["trace"] = trace
+
+            self.client.event_hooks["request"].append(observe)
+            try:
+                return await actual_call(self, name, arguments, execution_id)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
         if case in {"revoked", "cancel"}:
             entered.set()
             if case == "revoked":
@@ -520,8 +811,8 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
                             arguments={
                                 "connection": "demo",
                                 "version": "1.0.0",
-                                "tool_name": "lookup",
-                                "arguments": {},
+                                "tool_name": "maps_weather" if live else "lookup",
+                                "arguments": {"city": "北京"} if live else {},
                             },
                         )
                     ],
@@ -532,11 +823,14 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
             result = json.loads(previous[-1].content)
             if case == "foreign_owner":
                 assert result["status"] == "permission_denied"
-            elif case == "revoked":
+            elif case in {"revoked", "live_amap_revoked"}:
                 assert result["status"] == "permission_denied"
                 assert result["result"] is None
             elif case == "success":
                 assert result["result"]["content"][0]["text"] == "fixture result"
+            elif case == "live_amap":
+                assert result["status"] == "completed", result.get("error")
+                assert result["result"]["content"][0]["text"]
             return ModelResponse(
                 text="Fixture finished", finish_reason="stop", latency_ms=1, raw_response={}
             )
@@ -545,17 +839,17 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
     pending = asyncio.create_task(
         client.post(
             f"/api/v1/runs/{run['run_id']}/agent-workflows",
-            json=general_payload("never", stream=case == "cancel"),
+            json=general_payload("never", stream=cancelling),
         )
     )
-    if case == "cancel":
-        await asyncio.wait_for(entered.wait(), 5)
+    if cancelling:
+        await asyncio.wait_for(entered.wait(), 30 if live else 5)
         summary = (await client.get(f"/api/v1/runs/{run['run_id']}/agent-workflow")).json()
         workflow_id = summary["workflow_execution_id"]
         response = await client.post(f"/api/v1/agent-workflows/{workflow_id}/cancel")
         assert response.status_code == 200, response.text
-    response = await asyncio.wait_for(pending, 10)
-    if case == "cancel":
+    response = await asyncio.wait_for(pending, 60 if live else 10)
+    if cancelling:
         response = await client.get(f"/api/v1/agent-workflows/{workflow_id}/result")
         assert response.status_code == 200
         assert response.json()["status"] == "cancelled"

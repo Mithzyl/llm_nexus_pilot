@@ -1,6 +1,8 @@
 "use client";
 
 import { guardViewUpdate } from "../lib/view-updates";
+import { MemoryDisclosurePicker } from "../components/composer/MemoryDisclosurePicker";
+import { grantSelectedMemories, type MemoryDisclosureSelection } from "../lib/memory-disclosure";
 import { useFileDrop } from "../components/composer/useFileDrop";
 import { FileLibrary } from "../components/composer/FileLibrary";
 import { ProjectAttachmentPicker, type SelectedProjectFile } from "../components/composer/ProjectAttachmentPicker";
@@ -344,6 +346,12 @@ export default function Home() {
   const [reasoningEffort, setReasoningEffort] =
     useState<ModelReasoningSelection>("medium");
   const [draft, setDraft] = useState("");
+  const memoryDisclosures = useRef<{sessionId: string | null; items: MemoryDisclosureSelection[]}>({sessionId: null, items: []});
+  const [disclosureRevision, setDisclosureRevision] = useState(0);
+  useEffect(() => {
+    // Switching away and back must not revive a selection hidden by the remounted picker.
+    memoryDisclosures.current = {sessionId: activeSessionId, items: []};
+  }, [activeSessionId]);
   const [run, setRun] = useState<Run | RunDetail | null>(null);
   const [agentWorkflow, setAgentWorkflow] = useState<
     AgentWorkflowSummary | AgentWorkflowResult | null
@@ -1439,6 +1447,9 @@ export default function Home() {
         finishPendingSubmission(window.localStorage, saved.owner, saved.id);
         return;
       }
+      if (turn.run.status === "pending") {
+        await grantSelectedMemories(turn.run.run_id, saved.memoryDisclosures ?? []);
+      }
       const response = await openAgentWorkflowStream(turn.run.run_id, saved.workflow);
       // An existing active execution returns a finite replay; existing polling observes its future.
       await readAgentWorkflowEventStream(response, async () => {}, { requireTerminalEvent: false });
@@ -1974,6 +1985,8 @@ export default function Home() {
    */
   async function submitCurrentDraft() {
     const input = draft.trim();
+    const selectedDisclosures = memoryDisclosures.current.sessionId === activeSessionId
+      ? [...memoryDisclosures.current.items] : [];
     if (
       !input ||
       isSending ||
@@ -2089,6 +2102,7 @@ export default function Home() {
           version: 1, id: crypto.randomUUID(), owner: workspacePrincipal.user_id,
           sessionId: activeSession?.session_id ?? null,
           sessionKey: crypto.randomUUID(), turnKey: crypto.randomUUID(), input, fileIds,
+          memoryDisclosures: selectedDisclosures,
           workflow: createGeneralAgentWorkflowRequest({
             binding: { provider: selectedProvider as ProviderName, model: selectedModel,
               structured_output_mode: agentStructuredOutputMode(selectedProvider as ProviderName),
@@ -2155,6 +2169,17 @@ export default function Home() {
         throw new DOMException("Preparation cancelled", "AbortError");
       }
       view.setRunModelFacts({ provider: selectedProvider, model: selectedModel });
+      try {
+        await grantSelectedMemories(createdRun.run_id, selectedDisclosures, uploadController.signal);
+      } catch (error) {
+        // No model has started; end this prepared Run instead of leaving the conversation locked.
+        await cancelPreparedRun(createdRun.run_id);
+        throw error;
+      }
+      if (isCurrent()) {
+        memoryDisclosures.current = {sessionId: null, items: []};
+        setDisclosureRevision(value => value + 1);
+      }
 
       const assistantMessage = createLocalMessage("assistant", "", createdRun.run_id);
       submittedAssistantLocalId = assistantMessage.local_id;
@@ -2790,6 +2815,9 @@ export default function Home() {
                 aria-label="消息内容"
                 rows={1}
               />
+              <MemoryDisclosurePicker key={`${activeSessionId ?? "new"}:${disclosureRevision}`}
+                projectId={activeSession?.project_id ?? undefined} disabled={isSending || isPersistedConversationExecutionActive}
+                onChange={items => { memoryDisclosures.current = {sessionId: activeSessionId, items}; }} />
               {isActiveSessionBusyInAnotherTab && (
                 <p className="composer-sync-note" role="status">
                   此会话正在另一个标签页生成；完成后会自动读取最新消息。

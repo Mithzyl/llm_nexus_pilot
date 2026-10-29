@@ -2,6 +2,111 @@
 
 ## 当前最小用户后端范围（2026-10-23）
 
+### 当前状态与新增账号能力（2026-10-29）
+
+状态：进行中。已实现登录、退出、密码修改、会话撤销、个人Key管理后端和原生个人设置入口。
+2026-10-28合成Assistant映射用户通过登录创建Key、一次OpenCode Go生成、跨用户拒绝与撤销验证，
+见[实际记录](../../output/security/assistant-personal-key-live-20261028.json)。映射由测试准备显式建立，
+不是自助账号绑定。当前主本地API关闭登录，不支持个人Key；验收临时登录实例已停止。
+注册及邮件验证本地实现进行中，当前证据见下节；找回密码、App自助关联尚未实现。下列新增规划替代历史“公开注册不在范围”
+的永久排除含义；原先最小登录阶段完成记录保持，不追溯改成未完成。
+
+### Nexus注册与App账号关联（注册进行中，App关联暂停）
+
+2026-10-29：用户确认使用通用SMTP、默认关闭注册、先用本地邮件服务验收。已新增：
+
+- `GET /api/v1/auth/registration`只返回enabled；`POST .../registration/request`接收email；
+  `POST .../registration/verify`接收email、code、display_name、password。三个接口不接收owner或权限字段。
+- 请求验证码不创建账号，也不保存密码。验证正确后在一个事务内创建User、已验证登录身份、
+  现有Argon2id密码记录，并消费验证码；注册不会自动登录，继续使用原login/Cookie/CSRF接口。
+- 迁移`20261029_0031`只增加registration_challenges，验证码使用独立私有Fernet密钥加密保存，
+  15分钟有效、最多5次错误；每邮箱60秒内不能重发，同客户端15分钟最多申请5封。
+  客户端计数复用原认证审计标识算法，不新增内容哈希、哈希字段或账号关联。
+- SMTP失败或结果未知不能激活账号；不自动重发。已有账号不被注册覆盖，也不发送重置密码邮件。
+  注册请求与验证均检查Origin；只有这两个登录前动作无需登录Cookie，其他操作权限保持。
+- 登录页按后端开关显示注册入口，验证码和密码只在组件状态中保存，不进入URL或浏览器持久存储。
+
+配置均为服务端`apps/api/.env`，示例已更新：`NEXUSPILOT_REGISTRATION_ENABLED=false`、
+`NEXUSPILOT_REGISTRATION_VERIFICATION_KEY`（独立Fernet密钥）、`REGISTRATION_SMTP_HOST/PORT/SENDER/USERNAME/PASSWORD/STARTTLS`
+（后六项同样加`NEXUSPILOT_`前缀）。非loopback SMTP必须STARTTLS；本地协议测试才允许明文。
+启用前按项目流程执行`cd apps/api && .venv/bin/alembic upgrade head`，配置邮件及密钥，并启用原有登录。
+不要把真实凭据放入示例或报告。本批未升级现用数据库、未启用公开注册或真实外部邮件服务。
+
+验证：新增测试先因缺少服务失败，随后覆盖未验证不能登录、一次性验证、过期、错误次数、
+请求频率、Origin拒绝、投递失败、验证后登录。真实loopback SMTP测试使用标准SMTP客户端和
+合成邮箱，不是外部邮箱投递通过；BFF定向37项通过，TypeScript和相关ESLint通过。
+实际命令：`cd apps/api && .venv/bin/pytest tests/test_registration.py tests/test_resource_policy.py -q`，
+30项通过；其中迁移在临时SQLite中验证不修改已有owner。Ruff通过。
+Playwright固定BFF响应验证申请验证码、填写后注册、返回登录及390px窄屏；检查合成验证码和
+密码未进入URL/localStorage/sessionStorage。截图`output/playwright/registration-mobile.png`。
+固定响应不是浏览器与真实后端联合验收。随后使用现有`resource_infrastructure`隔离库流程，
+在本机MySQL运行`tests/test_registration.py -q --tb=short`，6项通过（含实际迁移、SMTP协议与登录）；
+测试库按原测试流程释放，没有修改现用nexuspilot库。随后独立实例从空库迁移至0031，浏览器
+实际申请本地SMTP验证码、验证注册并登录通过；固定模型替换所有供应商调用，没有使用BFF mock。
+记录见[注册与记忆浏览器联合验收](../../output/security/identity-memory-browser-20261029.json)。
+公网邮件投递未验收；默认注册开关保持关闭，不将本地SMTP通过当作公网邮件可投递。
+
+**2026-10-29最新范围：** P1只实施Nexus注册／验证／登录；下文App双端确认、关联和解除设计
+保留为暂停方案，本期不实施，不是注册的前置。现有App服务凭据和用户映射继续工作，不改owner。
+
+本地只读核对：personal_assistant共有12条映射，10条映射及owner启用，均没有Nexus登录身份；
+另2条有登录身份的映射属于10月28日合成个人Key实验，映射与用户均已停用。因此现有有效映射
+证明App用户有Nexus资源owner，不证明已绑定可登录的Nexus账号。数据库包含历史测试映射，
+不能仅凭数量将某条认定为用户当前Assistant账号；具体账号需以App当前external_user_id核对。
+本次未修改映射、注册用户、签发凭据或调用模型，仅验证本地库，不代表服务器状态。
+
+后续同日只读核对当前Assistant进程：8010服务实际打开
+`services/assistant-api/data/air-commute-20261028/assistant.db`，不是默认assistant-dev.db。
+该库3个有效用户均匹配启用的personal_assistant映射；24条已有Nexus Run的owner、
+run_application_context.mapping_id及workflow.run_id逐条一致（24/24），没有重新执行模型。
+Assistant的nexus_identity_links为空、24条本地nexus_principal_id均为空：当前run_service
+明确初始化该字段为None，并将认证user.user_id作为X-External-User-Id发送，由Nexus解析owner。
+所以该缓存为空不代表App身份映射缺失；它也不代表已绑定Nexus登录账号。
+这是当前运行库所有账号的保存记录核查，未读取登录令牌，不能指认浏览器此刻登录其中哪一个。
+App源码/数据库未修改；只记录本地事实，不扩展为新调用、服务器或完整权限矩阵验收。
+
+**交付目标与依赖。** 用户可注册Nexus账号，再明确关联其已登录的Personal Assistant或Retail身份，
+理解关联后可以使用什么功能。复用单MySQL现有users/认证身份/会话/个人Key和App映射；不分库，
+不复制App业务数据，不实现App项目映射。邮件服务、允许的App回调地址及凭据须在实施前确定；
+本次不登记真实外部邮件服务；已实现的注册路由见上节，App关联路由仍未定义或实施。
+
+**注册第一项交付。** 注册默认关闭，由部署明确启用；建议首发使用管理员邀请配合邮箱验证，
+开放注册由部署策略明确选择。账号在完成验证前不能调用付费模型或创建Key。复用现有密码与
+Cookie/CSRF处理，新增邮箱验证、重复注册处理、过期/重复使用拒绝和注册/邮件发送频率限制。
+邮箱投递失败不得显示已激活；重发不创建多个用户。密码找回以验证邮箱为依赖，不能靠知道邮箱
+直接重置。上线前必须确定滥用控制及付费资源额度政策，不能默认无限公共注册调用。
+凭据/验证值不写浏览器持久存储、URL日志或报告；复用已有认证存储方式，本规划不新增哈希方案。
+
+**App关联第二项交付。** Nexus登录用户发起关联，选定App并看到能力范围；App服务端验证其当前
+登录用户，通过受控回调证明该App身份，Nexus再让用户确认两端身份和申请能力。关联请求必须
+短时有效、一次使用、绑定发起登录会话及App；模型参数、浏览器提交的external_user_id或邮箱
+相同不能证明身份。关联完成后可列出、撤销；失败/取消不产生半完成的可用关系，重复回调只生效一次。
+
+**历史身份兼容是必需实施项。** 当前application_user_mappings为App创建独立owner，且
+pilot_principal_id有唯一约束；不能把关联直接实现成修改owner或覆盖已有映射。首批新增单独的
+账号关联关系（表名和迁移字段实施时定义），保留原映射、历史Run/会话/文件/记忆归属。关联只
+证明两个账号由同一用户控制；它本身不赋予一个账号读取另一个owner全部资源的权限。跨入口访问
+必须有明确能力授权与服务端范围检查。未来合并历史数据是独立迁移项目，不在首批静默执行。
+
+**个人Key与两类调用保持分开。** 已有个人Key代表签发它的Nexus用户，通过Nexus登录页面创建，
+不是App入站凭据或模型Provider Key。App代用户调用继续使用App凭据和已认证外部用户映射；
+关联不能让App凭据创建/读取个人Key。若用户把自己的Key配置到Assistant，应仅在Assistant服务端
+保存并按个人Key身份调用普通接口，不同时发送App身份头；该外部凭据保管和界面需App另行授权。
+关联后“无需用户粘贴Key”的委托调用属于后续独立授权设计，不能宣称当前read/execute已支持。
+
+**解除与权限撤销。** 解除后拒绝新的跨入口授权访问，不删除两端账号或历史数据，不撤销用户其他
+独立个人Key。已发出的调用不能宣称已撤回；在途行为必须沿用当前任务权限复查和显式取消规则。
+重新关联不能自动恢复旧共享授权。记忆仍按owner/入口/项目隔离；共享记忆和敏感向Provider披露
+需要分别确认，不因账号关联自动开启。家址、日历等敏感业务信息不进入关联元数据。
+
+实施位置：identity认证服务/路由/模型与迁移、App身份服务、资源权限检查；Web个人设置的账户与
+关联入口；App仅按后续授权修改。后端先定义协议，不能单方面改现有App Run或远程工具JSON信封。
+
+验收：注册未验证/重复/过期/邮件失败；双端身份证明、错误会话/重放/跨用户拒绝；并发关联与
+解除；旧App映射及owner不变；一个App用户被其他账号占用时明确拒绝；解除后拒绝新访问；普通
+个人Key和App调用不混用；记忆不自动跨入口共享。先本地模拟及真实MySQL测试，再按授权做两端
+联合验收，不为身份测试默认增加付费模型调用。
+
 2026-10-24规划补充：个人项目/文件工作区、必要MCP/联网工具、动态工具及Assistant用户记忆
 按路线图提高优先级。现有Cookie、个人Key、App映射继续作为身份来源，不因工具发现或模型
 参数增加权限。项目文件、工具定义/连接和记忆都需在服务端检查owner及适用App范围；新增
@@ -39,7 +144,7 @@ DeepSeek Search→本机Fetch，普通失败可调用一次Tavily；权限拒绝
   Key 到期、撤销或用户停用拒绝新请求。已接受任务不因此自动取消，停止沿用显式取消及 owner 检查。
 - 模型仍依据现有登记/启用规则选择平台 Provider Registry；凭据仍由服务端环境配置读取，
   不复制到用户表、Key 表、响应或模型消息。没有新增逐用户供应商权限或凭据系统。
-- 本次不实施找回密码、公开注册、第三方登录、MFA、近期重新认证、全局个人 Key 撤销接口及账户设置页面。
+- 原10月23日最小批次未实施找回密码、公开注册、第三方登录、MFA、近期重新认证、全局个人Key撤销及账户设置页面；账户/Key页面随后已接入，注册已纳入上方新增规划，其他扩展仍未实现。
   用户 Provider 凭据继续暂停。每次成功个人 Key 认证更新 last_used_at；限频更新属于后续性能工作。
 - 迁移 `20261023_0026` 依赖 App 迁移 `20261023_0025`，只新增 Key 表及索引，不改历史 owner，
   不创建默认账号/Key。不拆库，不新增用户 bucket。具体启用步骤见仓库 README 的个人 Key 说明。
@@ -130,7 +235,7 @@ API使用进程环境 `NEXUSPILOT_AUTHENTICATION_ENABLED=true` 启动在127.0.0.
 
 - 系统最终需要具备的能力：识别当前登录用户，为浏览器和程序调用分别建立可撤销身份，并让用户安全管理 NexusPilot 个人 API Key 与模型供应商凭据。
 - 系统最终需要具备的能力：所有 User、Session、Run、Task、Attempt、Artifact、Memory 和后续 Knowledge/MCP 资源都从已认证主体派生归属，不再信任请求正文或查询参数自行声明的 `user_id`。
-- 本阶段明确不处理：公开注册、组织、多租户 Membership、企业单点登录、模型供应商计费代理、密钥共享、管理员控制台和供应商账户代购。
+- 早期最小范围不处理组织、多租户 Membership、企业单点登录、模型供应商计费代理、密钥共享、管理员控制台和供应商账户代购。
 - 本阶段不回退阶段1、阶段2的完成状态；它是最终用户公开访问和用户自带供应商密钥的新增能力。
 - 阶段2现有 Prompt 是平台 System Prompt，不是用户资源，不进入阶段5用户授权接口。若未来提出用户自定义 Prompt，必须建立独立表、当前用户归属、共享范围和跨用户授权测试，不能把 `llm_prompt_templates` 或内部 Prompt 管理接口直接开放给最终用户。
 
@@ -141,7 +246,8 @@ API使用进程环境 `NEXUSPILOT_AUTHENTICATION_ENABLED=true` 启动在127.0.0.
 - Web 业务请求先通过 `/auth/me` 解析后端选定的访问主体：开发环境关闭登录时为固定本地 owner，启用登录后为会话用户。BFF 校验归属，FastAPI 公共业务 Router 同时挂载 `authorize_resource_request`，不再仅依靠客户端 `user_id`。部署级 Key 作为服务认证继续保留，不能单独代替生产登录主体。
 - 当前模型供应商密钥来自 `apps/api/.env`，Base URL 来自部署级 `llm_provider_endpoints`；应用启动时组合“启用地址 + 部署凭据”注册 Provider。地址表不保存密钥，数据库仍没有用户级供应商凭据。
 - 阶段2、阶段3及后续内部能力可以使用测试 fixture、受控 seed、假 Provider 和环境变量完成验证，不应为了测试增加绕过认证的公开接口。
-- 当前决定：第一版只允许管理员通过可信终端预置账户，不开放注册；密码找回邮件服务和生产用户 Provider 密钥管理服务仍待确认。
+- 可信终端预置账户保持可用；10月29日新增默认关闭的SMTP注册实现及限定测试，当前状态和配置见文首。
+  外部邮箱投递尚未验收，找回密码未实施；用户Provider凭据管理仍暂停。
 
 ### 数据库边界决定
 

@@ -81,14 +81,21 @@ MEMORY_TOOLS = tuple(
             "query_memory",
             QueryArguments,
             "Read relevant personal/current-project memories on demand. "
-            "Sensitive results require user disclosure confirmation. disclosure_required means saved memory exists but this conversation is not authorized; ask the user to authorize it in the UI, never claim there is no memory. Answer naturally from authorized facts without internal correction narratives or file citation aliases. "
+            "Sensitive results require user disclosure confirmation. disclosure_required means "
+            "saved memory exists but this conversation is not authorized; "
+            "ask the user to authorize it in the UI, never claim there is no memory. "
+            "Answer naturally from authorized facts "
+            "without internal correction narratives or file citation aliases. "
             "Do not fetch all memory routinely.",
         ),
         (
             "save_memory",
             SaveArguments,
             "Save the user's exact explicit remember request. Do not use for "
-            "inferred preferences. Report saved only after success; "
+            "inferred preferences. Reworded content becomes a candidate "
+            "requiring user confirmation; "
+            "inspect result.status and never report a candidate as active. "
+            "Report saved only after success; "
             "sensitive saving needs confirmation.",
         ),
         (
@@ -151,7 +158,7 @@ async def install_memory_tools(tools, run_id):
 
 
 async def execute_memory(tools, attempt, record, name, arguments):
-    """Verify actual user text in an isolated transaction, never a model's consent flag."""
+    """Check user authority; stage rewritten save text for explicit confirmation."""
     factory = async_sessionmaker(tools.db.bind, class_=type(tools.db), expire_on_commit=False)
     async with factory() as db:
         db.info.update(tools.db.info)
@@ -194,8 +201,12 @@ async def execute_memory(tools, attempt, record, name, arguments):
                     match = re.fullmatch(
                         r"(?:请)?(?:记住|记一下|remember)\s*[:：]?\s*(.+)", prompt, re.I
                     )
-                    if not match or match[1] != arguments.text.strip().rstrip("。.!！"):
+                    if not match:
                         raise MemoryFailure("memory_clarification_required")
+                    if match[1] != arguments.text.strip().rstrip("。.!！"):
+                        # Rewriting is not consent: preserve the proposed text as an inactive
+                        # candidate under the same tool operation key, never a second active save.
+                        request["action"] = "propose"
                 request.update(text=arguments.text, sensitive=arguments.sensitive)
             elif name == "set_memory_settings":
                 expected = (

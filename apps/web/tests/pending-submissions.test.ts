@@ -22,6 +22,12 @@ test("stable submission survives new-session response loss and remains until ter
       reviewPolicy: "never", maxParallelAgents: 1, idempotencyKey: "workflow-key"}) } as PendingSubmission;
   savePendingSubmission(db, request);
   assert.deepEqual(readPendingSubmissions(db, "alice"), JSON.parse(JSON.stringify([request])));
+  const disclosed = {...request, memoryDisclosures: [{entry_id: "12345678-1234-1234-1234-123456789abc",
+    version: 2, scope: "personal" as const}]};
+  savePendingSubmission(db, disclosed);
+  assert.deepEqual(readPendingSubmissions(db, "alice")[0].memoryDisclosures, disclosed.memoryDisclosures);
+  assert.equal(JSON.stringify(disclosed.memoryDisclosures).includes("text"), false);
+  savePendingSubmission(db, request);
   assert.deepEqual(readPendingSubmissions(db, "bob"), []);
   savePendingSubmission(db, { ...request, sessionId: "returned-session" });
   assert.equal(readPendingSubmissions(db, "alice").length, 1);

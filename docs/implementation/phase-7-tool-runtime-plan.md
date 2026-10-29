@@ -3,7 +3,7 @@
 **2026-10-18 上传大小更新：** 原文件上限现为 20 MiB，解析 Socket 最大请求为 `ceil(20 MiB / 3) * 4 + 4096` 字节，包含 base64 和协议字段。下文固定执行器旧 1 MiB/1,500,000 字节为历史限制；输出 4 MiB、OOXML 总解压 20 MiB、压缩比、块数、超时和并发限制不变。此修改不涉及任务工作目录的读写配额，也不等于模型自动读取整份文件。
 
 **文档日期：** 2026 年 10 月 26 日
-**文档状态：** 进行中；Office/PDF解析、附件工具与目录已有实现。2026-10-23 Python最小接入通过本地真实Docker执行、MinIO产物保存和工作流在途取消验证；固定测试模型与SQLite不代表真实Provider或MySQL联合验收，运行配置默认未启用。2026-10-26 MCP HTTP桥接和任务内动态Python已有最小实现及模拟测试，真实服务验收仍未执行。Shell入口不开放，受控SDK、Git仍未实现或暂停。2026-10-12附件版本发布是历史事实，不代表本批代码已部署。
+**文档状态：** 进行中；Office/PDF解析、附件工具与目录已有实现。2026-10-23 Python最小接入通过本地真实Docker执行、MinIO产物保存和工作流在途取消验证；固定测试模型与SQLite不代表真实Provider或MySQL联合验收，运行配置默认未启用。2026-10-26 MCP HTTP桥接和任务内动态Python只有模拟验证；2026-10-29已补高德真实发现/调用/撤销/取消及动态Python真实Docker生命周期/停止，限定证据见最小实现节。Shell入口不开放，受控SDK、Git仍未实现或暂停。2026-10-12附件版本发布是历史事实，不代表本批代码已部署。
 **总体规划：** [`platform-roadmap.md`](../architecture/platform-roadmap.md)
 
 ## 后续实施依赖与优先级（2026-10-24）
@@ -1437,6 +1437,11 @@ Tool消息→最终回答及重启恢复。默认固定模型，不新增付费�
 
 ### 个人与项目记忆工具规划（2026-10-27）
 
+2026-10-29优先级：P0修正保存确认表达和敏感披露交互，原生记忆工具及设置已实现，不重做。
+save_memory逐字匹配现状与替代确认流程以阶段2“记忆保存确认与披露改进计划”为准；本次不改工具代码。
+MCP批准服务真实验收为P1、动态Python真实执行为P2。新增注册/App关联由阶段5定义，不让工具参数
+选择owner，不让账号关联自动赋予跨App记忆或外发权限。默认关闭的MCP/动态工具不因规划自动开启。
+
 2026-10-28补充：原生设置页面已通过独立管理接口复用同一MemoryService，不为管理记忆创建Run。
 App可选业务字段随正文加密保存；工具结果/检查点不持久复制该载荷，恢复仍按当前权限读取。
 接口、限制和本次最小实验以[阶段2当前记录](phase-2-llm-core-capabilities.md#设置管理与app字段兼容2026-10-28)为准；不改变App项目映射和敏感向外披露的后续范围。
@@ -1509,8 +1514,35 @@ App general_agent独立验证身份，关闭时仍可管理但不能新增；跨
 
 ### 工具扩展最小实现与配置（2026-10-26）
 
+2026-10-29状态：进行中。用户批准高德MCP作为首个真实服务，
+[官方说明](https://lbs.amap.com/api/mcp-server/gettingstarted)的Streamable HTTP入口为
+`https://mcp.amap.com/mcp`。本批仅批准公开城市天气`maps_weather`，不调用导航、打车或传输私人位置。
+
+- 认证：MCPConnection支持`credential_mode=bearer`（兼容默认值）和`query_key`。
+  token保持SecretStr，仅在HTTP请求时附加，配置url禁止查询串。不将凭据写入文档、工具定义或结果。
+  远端结果回显凭据时拒绝；初始化通知的传输错误也转换为不包含请求URL的错误。
+- 定义：保留远端原始inputSchema做严格相等比较；仅在本地参数校验及模型定义中，为省略的
+  additionalProperties补false。不接受显式开放对象，不删除未知关键字，不全局放宽工具参数。
+- 真实协议与调用：初始化HTTP200，协商2025-03-26，发现15项工具，无nextCursor；
+  MCPTransport.call通过批准定义检查后查询北京天气，返回1个文本块、888字符。没有调用模型。
+- 本地回归：`cd apps/api && TIKTOKEN_CACHE_DIR=/tmp/nexuspilot-tokenizer-cache .venv/bin/pytest tests/test_task_extensions.py -q -k mcp`
+  本次19项通过、10项未选择；包含模拟协议、Agent循环、跨用户拒绝、撤销、取消及异常脱敏。
+  通知异常测试先复现原始URL可能出现在异常中，修正后通过；Ruff通过。
+- 随后完整Agent循环：显式提供测试凭据后执行`pytest tests/test_task_extensions.py -q -k live_amap --tb=short`，
+  1项通过、32项未选择（1.27秒）。固定模型发起`mcp_call_tool`，经过已保存owner授权、真实发现和
+  高德天气查询，真实Tool文本进入下一轮模型消息，工作流completed且有最终文本。数据库/对象存储
+  为测试实现，不算真实MySQL/MinIO联合验收；未持久保存凭据，未调用付费模型。
+- 真实在途撤销/取消：`pytest tests/test_task_extensions.py -q -k 'live_amap_cancel or live_amap_revoked' --tb=short`
+  2项通过、33项未选择（2.84秒）。HTTPX追踪实际tools/call请求体发送完成后触发，不人为拖延远端。
+  显式取消得到cancelled终态并中断本地HTTP；撤销后返回permission_denied且无成功结果。
+  取消通知尽力发送，未取得远端停止确认，不承诺远端停止计算。
+- 最后发现HTTPX INFO日志可能包含查询Key，用假凭据先复现，再添加请求诊断过滤器，仅遮蔽key值，
+  不关闭正常状态日志、不改变请求。修正后19项MCP测试通过（3.36秒），Ruff通过。
+- 本批批准服务的限定验收已完成。持久启用仍由服务端私有配置及明确owner批准决定，管理页面后续；
+  不把这些记录当所有MCP服务、传输类型或远端停止行为的保证。
+
 本批范围：原生`general_agent`；默认不启用，App和快速回复不继承原生授权。没有新增表或迁移，
-没有新增内容哈希，没有部署或真实MCP/付费模型调用。下列实现不替代上文尚未完成的完整产品验收。
+没有新增内容哈希或付费模型调用，没有部署。真实MCP限定结果见上文；下列最小实现不替代完整产品验收。
 
 **MCP调用路径。** `mcp_list_tools`、`mcp_call_tool`是现有工具目录中的两个桥接定义；不是给每个
 远端工具动态安装插件。前者接收连接别名和批准版本，初始化、分页发现并返回批准工具的名称及
@@ -1555,9 +1587,24 @@ owner和凭据。HTTP只允许显式`allow_local_http=true`的loopback测试服�
 修改批准工具/schema/身份范围时增加`version`，不要在同一批准版本下替换定义。撤销可移除连接或
 owner；API和独立Worker都必须加载新配置（环境文件修改需要重启对应进程，不宣称即时热更新）。
 执行开始、在途等待和历史复用都会检查当前进程加载的批准配置。取消停止本地等待并尽力通知远端；
-不把“通知已发送”说成远端已经终止。选定真实服务、管理API/UI、独立工具别名和批准版本快照仍后续。
+不把“通知已发送”说成远端已经终止。高德服务已选定；管理API/UI、独立工具别名和批准版本快照仍后续。
 
 **动态Python调用路径。** `services/dynamic_python_tools.py`提供四个固定工具：
+
+2026-10-29真实执行器验证：复用`test_dynamic_python_lifecycle`增加显式启用的
+`real_success`用例。固定模型在现有Agent循环创建源代码草稿，真实Docker执行样例验证，
+保存注册引用，再次真实执行并将结果6交回模型。两次代码执行均经过现有Unix Socket服务，
+没有新增执行器或调用付费模型。普通4项生命周期用例通过；真实联合命令
+`cd apps/api && NEXUSPILOT_TEST_TASK_RUNTIME=1 TIKTOKEN_CACHE_DIR=/tmp/nexuspilot-tokenizer-cache .venv/bin/pytest tests/test_task_extensions.py tests/test_python_runtime.py -q -k 'real_success or real_python_socket_execution_and_stop'`
+结果2项通过、34项未选择。第二项实际观察到容器Python进程后取消，检查工作目录状态已就绪且
+不再关联容器；还验证CSV产物和失败退出。测试使用SQLite、测试对象存储和临时任务目录，不是
+真实MySQL/MinIO验收。随后`test_dynamic_validation_cancel_uses_existing_python_stop[real_cancel]`
+通过：固定模型创建草稿并调用验证，观察真实容器Python进程后调用工作流cancel接口；
+结果cancelled、final_output为空，未继续注册工具，任务目录恢复ready且无容器关联。
+实际命令为设置`NEXUSPILOT_TEST_TASK_RUNTIME=1`后运行`pytest tests/test_task_extensions.py -q -k real_cancel`，
+1项通过、30项未选择。随后`real_call_cancel`也通过（1项、31项未选择）：样例验证实际执行成功、
+工具注册后，以延时参数调用同一工具；观察到第二次Python进程后取消，结果cancelled且容器释放。
+默认开关和用户授权未改；两项真实取消仍使用固定模型与测试数据库，不声称付费模型或MySQL联合验收。
 
 1. `create_tool_draft`：保存`description/source/input_schema/output_schema/sample_input/expected_output`。
    代码必须定义`run(data)`并返回JSON值。草稿ID是现有Tool Call ID，源代码保存在既有调用输入正文；

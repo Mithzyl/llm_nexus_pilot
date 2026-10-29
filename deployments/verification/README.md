@@ -1,5 +1,22 @@
 # Docker 部署验证
 
+## 注册与敏感记忆本地联合验收
+
+`serve_identity_memory_fixture.py`使用已有本机MySQL/MinIO容器，创建独有验收库并运行实际
+Alembic迁移；不读取用户正文，不改现用数据库。API绑定18011，前端3117，合成SMTP绑定18012。
+所有模型实现固定，无供应商HTTP请求。运行：
+
+```bash
+PYTHONPATH=apps/api/src:packages/models/src TIKTOKEN_CACHE_DIR=/tmp/nexuspilot-tokenizer-cache \
+apps/api/.venv/bin/python deployments/verification/serve_identity_memory_fixture.py
+```
+
+浏览器打开3117注册合成邮箱，从脚本提示的私有临时收件目录取得测试验证码，不打印或截图验证码。
+注册后登录，在设置中确认保存合成敏感记忆，再在输入框明确选择本次披露。Agent固定模型验收
+选择“不审核”，该固定Provider不实现Reviewer；这不修改产品审核策略。可用浏览器路由拦截
+保留实际授权写入、丢弃其响应，再刷新检查稳定提交身份。按Ctrl-C停止本次服务；测试库与对象
+保留，不启用自动删除。当前证据见`output/security/identity-memory-browser-20261029.json`。
+
 ## Strata 真实附件调用（2026-10-18）
 
 `check_live_strata_file.py` 对本机 MySQL/MinIO 与真实 Strata 执行一次快速回复。仅上传随机核验编号的合成 TXT，不更改模型参数、不模拟工具、不自动重复付费测试。使用下文既有本地隔离服务与 `apps/api/.env` 中的私有 Key：

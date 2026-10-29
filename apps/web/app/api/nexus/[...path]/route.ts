@@ -441,7 +441,9 @@ async function proxy(request: NextRequest, context: RouteContext): Promise<Respo
     if (!hasSameRequestOrigin(request)) {
       return Response.json({ detail: "请求来源未获授权。" }, { status: 403 });
     }
-    if (isAuthenticationRoute && !["login", "logout"].includes(path[1])) {
+    // Enrollment precedes a login cookie; exact Origin remains required above.
+    const isRegistration = path[1] === "registration" && ["request", "verify"].includes(path[2]);
+    if (isAuthenticationRoute && !["login", "logout"].includes(path[1]) && !isRegistration) {
       const csrfCookie = request.cookies.get("nexuspilot_csrf")?.value;
       if (!csrfCookie || request.headers.get("x-csrf-token") !== csrfCookie) {
         return Response.json({ detail: "跨站请求伪造校验失败。" }, { status: 403 });

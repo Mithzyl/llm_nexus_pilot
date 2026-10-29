@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { loginWithPassword } from "../../lib/api";
+import { loginWithPassword, nexusFetch } from "../../lib/api";
+import { RegistrationForm } from "./RegistrationForm";
 import type { WorkspacePrincipal } from "../../lib/types";
 
 type AuthenticationGateProps = {
@@ -21,6 +22,16 @@ export function AuthenticationGate({
   const [password, setPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
+  const [registering, setRegistering] = useState(false);
+  const [registrationNotice, setRegistrationNotice] = useState("");
+  useEffect(() => {
+    let active = true;
+    void nexusFetch<{enabled: boolean}>("auth/registration").then(result => {
+      if (active) setRegistrationEnabled(result.enabled === true);
+    }).catch(() => { if (active) setRegistrationEnabled(false); });
+    return () => {active = false;};
+  }, []);
 
   /** Submit local credentials and hand the committed browser principal to the workspace. */
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -64,8 +75,12 @@ export function AuthenticationGate({
         ) : (
           <>
             <p className="eyebrow">受保护的对话工作台</p>
-            <h1 id="authentication-title">登录</h1>
-            <p className="authentication-intro">使用管理员预置的账号继续。</p>
+            <h1 id="authentication-title">{registering ? "注册" : "登录"}</h1>
+            {registrationNotice && <p role="status">{registrationNotice}</p>}
+            {registering ? <RegistrationForm onBack={() => setRegistering(false)} onComplete={() => {
+              setRegistering(false); setRegistrationNotice("注册成功，请使用新账号登录。");
+            }} /> : <>
+            <p className="authentication-intro">使用你的账号继续。</p>
             <form className="authentication-form" onSubmit={handleSubmit}>
               <label>
                 <span>邮箱</span>
@@ -96,6 +111,9 @@ export function AuthenticationGate({
                 {isSubmitting ? "正在登录…" : "登录"}
               </button>
             </form>
+            {registrationEnabled && <button type="button" disabled={isSubmitting}
+              onClick={() => {setPassword(""); setRegistering(true); setRegistrationNotice("");}}>注册账号</button>}
+            </>}
           </>
         )}
       </section>

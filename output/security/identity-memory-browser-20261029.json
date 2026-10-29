@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-29",
+  "environment": "isolated local MySQL, MinIO, SMTP, actual BFF and browser",
+  "database": "identity_acceptance_c6ebcf85ac01",
+  "migration_head": "20261029_0031",
+  "provider_mode": "fixed MemoryFixtureProvider; no provider HTTP requests",
+  "registration": {
+    "email_request": "passed via browser and actual loopback SMTP",
+    "verification": "passed via browser and actual API",
+    "login": "passed via existing Cookie login",
+    "external_email_delivery": "not executed"
+  },
+  "session_id": "517ab70e-bccd-433e-be19-0536ad60034d",
+  "runs": [
+    {
+      "mode": "quick",
+      "run_id": "985176c8-72fa-43fb-b0ba-5c1d93192874",
+      "status": "completed",
+      "query_memory_completed": 1,
+      "disclosure_operations": 1,
+      "final_text_visible": true,
+      "refresh_restored": true
+    },
+    {
+      "mode": "agent",
+      "run_id": "d1f17bdf-8771-4891-8c72-7c2522059e42",
+      "review_policy": "never",
+      "status": "completed",
+      "query_memory_completed": 1,
+      "disclosure_operations": 1,
+      "workflows": 1,
+      "final_text_visible": true,
+      "refresh_restored": true
+    },
+    {
+      "mode": "agent_response_loss_initial_attempt",
+      "run_id": "d3e82986-f858-4883-ad0b-1d82564677db",
+      "review_policy": "always",
+      "status": "failed",
+      "error_code": "node_output_invalid",
+      "reason": "The fixed fixture provider does not implement Reviewer JSON; cannot count this as successful end-to-end recovery",
+      "query_memory_completed": 2,
+      "disclosure_operations": 1,
+      "workflows": 1
+    },
+    {
+      "mode": "agent_response_loss_verified",
+      "run_id": "dd090109-757b-466a-9ce3-cc9a11ee7753",
+      "review_policy": "never",
+      "fault": "Forwarded real disclosure request, withheld successful response, reloaded browser",
+      "status": "completed",
+      "query_memory_completed": 1,
+      "disclosure_operations": 1,
+      "workflows": 1,
+      "final_text_visible": true
+    }
+  ],
+  "evidence": [
+    "output/playwright/identity-memory-live.png",
+    "output/playwright/memory-grant-recovery-live.png"
+  ],
+  "limits": [
+    "No real model quality or provider billing acceptance",
+    "No change to normal development database or App identity mappings",
+    "No deployment, push, commit or automatic data deletion"
+  ]
+}

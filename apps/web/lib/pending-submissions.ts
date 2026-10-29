@@ -1,9 +1,11 @@
 import type { AgentWorkflowCreate } from "./types";
+import type { MemoryDisclosureSelection } from "./memory-disclosure";
 
 export type PendingSubmission = {
   version: 1; id: string; owner: string; sessionId: string | null;
   sessionKey: string; turnKey: string; input: string; fileIds: string[];
   workflow: AgentWorkflowCreate;
+  memoryDisclosures?: MemoryDisclosureSelection[];
 };
 type SubmissionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "length" | "key">;
 
@@ -19,7 +21,12 @@ function parseRecords(raw: string | null, owner: string): PendingSubmission[] {
     !item || item.version !== 1 || item.owner !== owner || typeof item.id !== "string" ||
     typeof item.input !== "string" || typeof item.sessionKey !== "string" ||
     typeof item.turnKey !== "string" || !Array.isArray(item.fileIds) ||
-    !item.workflow?.idempotency_key || !(item.sessionId === null || typeof item.sessionId === "string")
+    !item.workflow?.idempotency_key || !(item.sessionId === null || typeof item.sessionId === "string") ||
+    (item.memoryDisclosures !== undefined && (!Array.isArray(item.memoryDisclosures) ||
+      item.memoryDisclosures.length > 400 || item.memoryDisclosures.some(grant =>
+        !grant || typeof grant.entry_id !== "string" || grant.entry_id.length !== 36 ||
+        !Number.isInteger(grant.version) || grant.version < 1 ||
+        !["personal", "project"].includes(grant.scope))))
   )) throw new Error("无法读取待恢复请求，请勿重复提交。");
   return values;
 }

@@ -7,6 +7,9 @@ server configuration, not model-supplied URLs. No stdio, OAuth or automatic down
 import asyncio
 import codecs
 import json
+import logging
+import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -27,6 +30,36 @@ PROTOCOL = "2025-03-26"
 MAX_RESPONSE_BYTES = 256 * 1024
 
 
+class MCPQueryCredentialFilter(logging.Filter):
+    """Redact query-key values in HTTPX request diagnostics without changing network requests."""
+
+    def filter(self, record):
+        """Keep HTTP status and URL location while removing query credentials from log records."""
+        message = record.getMessage()
+        cleaned = re.sub(r"([?&]key=)[^&\s\"']+", r"\1[REDACTED]", message)
+        if cleaned != message:
+            record.msg, record.args = cleaned, ()
+        return True
+
+
+def closed_input_schema(schema, depth=0):
+    """Close omitted object properties locally without altering the pinned remote definition."""
+    if not isinstance(schema, dict) or depth > 8:
+        raise ValueError("Invalid MCP schema")
+    result = dict(schema)
+    if result.get("type") == "object":
+        result.setdefault("additionalProperties", False)
+        properties = result.get("properties", {})
+        if not isinstance(properties, dict):
+            raise ValueError("Invalid MCP properties")
+        result["properties"] = {
+            key: closed_input_schema(value, depth + 1) for key, value in properties.items()
+        }
+    elif result.get("type") == "array":
+        result["items"] = closed_input_schema(result.get("items"), depth + 1)
+    return result
+
+
 class MCPApproval(EmptyArguments):
     """Pin administrator-approved read-only metadata; remote annotations grant no permission."""
 
@@ -36,11 +69,11 @@ class MCPApproval(EmptyArguments):
     @field_validator("input_schema")
     @classmethod
     def supported_schema(cls, value):
-        """Accept only the locally enforced closed-object schema subset."""
-        check_schema(value)
+        """Pin remote metadata while requiring a locally enforceable closed projection."""
+        check_schema(closed_input_schema(value))
         if value["type"] != "object":
             raise ValueError("Tool arguments must be an object")
-        return value
+        return json.loads(json.dumps(value))
 
 
 class MCPConnection(EmptyArguments):
@@ -48,6 +81,7 @@ class MCPConnection(EmptyArguments):
 
     url: str
     token: SecretStr
+    credential_mode: Literal["bearer", "query_key"] = "bearer"
     user_ids: list[str] = Field(min_length=1, max_length=100)
     version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
     tools: dict[str, MCPApproval] = Field(min_length=1, max_length=32)
@@ -162,33 +196,59 @@ class MCPTransport:
         self.config = config
         self.client = client
         self.session_id = None
+        if config.credential_mode == "query_key":
+            logger = logging.getLogger("httpx")
+            if not any(isinstance(item, MCPQueryCredentialFilter) for item in logger.filters):
+                logger.addFilter(MCPQueryCredentialFilter())
 
     async def notify(self, method, params=None):
         """Send one notification without retrying or leaking the credential to a redirect."""
         payload = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
-        async with self.client.stream(
-            "POST",
-            self.config.url,
-            headers=self.headers(),
-            json=payload,
-            follow_redirects=False,
-            timeout=5,
-        ) as response:
-            if response.status_code not in {200, 202, 204}:
-                raise ToolOperationError("mcp_notification_failed")
+        try:
+            async with self.client.stream(
+                "POST",
+                self.config.url,
+                params=self.credential_params(),
+                headers=self.headers(),
+                json=payload,
+                follow_redirects=False,
+                timeout=5,
+            ) as response:
+                if response.status_code not in {200, 202, 204}:
+                    raise ToolOperationError("mcp_notification_failed")
+        except httpx.HTTPError:
+            # Initialization also uses notify directly, outside request's error conversion.
+            raise ToolOperationError("mcp_notification_failed") from None
 
     def headers(self):
         """Build private request headers; neither definitions nor results include these."""
         headers = {
-            "Authorization": f"Bearer {self.config.token.get_secret_value()}",
             "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": PROTOCOL,
         }
+        if self.config.credential_mode == "bearer":
+            headers["Authorization"] = f"Bearer {self.config.token.get_secret_value()}"
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
         return headers
+
+    def credential_params(self):
+        """Attach query credentials only on the wire; configured URLs remain credential-free."""
+        return (
+            {"key": self.config.token.get_secret_value()}
+            if (self.config.credential_mode == "query_key")
+            else None
+        )
+
+    def checked_result(self, reply, request_id):
+        """Reject remote credential echoes before definitions or tool text reach the model."""
+        result = self.result(reply, request_id)
+        secret = self.config.token.get_secret_value()
+        if secret and secret in json.dumps(result, ensure_ascii=False):
+            raise ToolOperationError("mcp_credential_in_response")
+        return result
 
     async def request(self, method, params, request_id):
         """Read one bounded reply; cancellation interrupts HTTP and notifies pending calls."""
@@ -196,6 +256,7 @@ class MCPTransport:
             async with self.client.stream(
                 "POST",
                 self.config.url,
+                params=self.credential_params(),
                 headers=self.headers(),
                 json={"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
                 follow_redirects=False,
@@ -214,10 +275,10 @@ class MCPTransport:
                     if content_type == "text/event-stream":
                         reply = self.sse_reply(bytes(body), request_id)
                         if reply is not None:
-                            return self.result(reply, request_id)
+                            return self.checked_result(reply, request_id)
                 if content_type != "application/json":
                     raise ToolOperationError("mcp_invalid_response")
-                return self.result(json.loads(body), request_id)
+                return self.checked_result(json.loads(body), request_id)
         except asyncio.CancelledError:
             if method != "initialize":
                 try:
@@ -298,7 +359,7 @@ class MCPTransport:
                 discovered[name] = {
                     "name": name,
                     "description": approved.description,
-                    "input_schema": approved.input_schema,
+                    "input_schema": closed_input_schema(approved.input_schema),
                 }
             cursor = result.get("nextCursor")
             if cursor is None:
@@ -315,7 +376,7 @@ class MCPTransport:
         if name not in self.config.tools:
             raise ToolOperationError("mcp_tool_not_approved", status="permission_denied")
         try:
-            validate_value(self.config.tools[name].input_schema, arguments)
+            validate_value(closed_input_schema(self.config.tools[name].input_schema), arguments)
         except ValueError:
             raise ToolOperationError("mcp_invalid_arguments") from None
         await self.discover(execution_id)

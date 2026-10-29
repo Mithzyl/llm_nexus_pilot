@@ -13,6 +13,40 @@ from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
 
 
+@pytest.mark.parametrize("prompt", ["记住我喜欢中文，保存后确认一下", "记住我喜欢中文"])
+async def test_reworded_save_stays_candidate_until_user_confirmation(
+    resource_client, memory_key, test_database_session_factory, prompt
+):
+    """A rewritten model save becomes a stable candidate, not consent to activate it."""
+    from types import SimpleNamespace
+
+    from nexuspilot_api.features.memory.services.memory_tools import SaveArguments, execute_memory
+    from nexuspilot_api.features.memory.services.product_memory import memory_for_run
+
+    run = await native_run(resource_client, prompt)
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        tools = SimpleNamespace(db=db, storage=storage)
+        attempt = SimpleNamespace(run_id=run["run_id"])
+        record = SimpleNamespace(tool_call_id="rewritten-save")
+        args = SaveArguments(text="我喜欢 中文")
+        result = await execute_memory(tools, attempt, record, "save_memory", args)
+        assert result["status"] == "candidate"
+        assert await execute_memory(tools, attempt, record, "save_memory", args) == result
+    async with test_database_session_factory() as db:
+        service = await memory_for_run(db, storage, run["run_id"])
+        assert (await service.query(automatic=True, for_model=True))["items"] == []
+        confirmed = await service.mutate(
+            {
+                "action": "confirm",
+                "entry_id": result["entry_id"],
+                "expected_version": 1,
+                "key": "explicit-confirm",
+            }
+        )
+        assert confirmed["status"] == "active"
+
+
 async def test_settings_management_without_run(
     resource_client, memory_key, test_database_session_factory
 ):
@@ -737,7 +771,7 @@ async def test_candidates_and_closed_management(client, memory_key, test_databas
 
 
 @pytest.mark.parametrize("mode", ["quick", "agent"])
-@pytest.mark.parametrize("action", ["save", "query"])
+@pytest.mark.parametrize("action", ["save", "query", "disclosed_query"])
 async def test_memory_tools_in_both_modes(resource_client, memory_key, mode, action):
     """Fixed models exercise actual tool persistence and final responses without paid requests."""
     import json
@@ -763,11 +797,33 @@ async def test_memory_tools_in_both_modes(resource_client, memory_key, mode, act
     assert turn.status_code == 201, turn.text
     run_id = turn.json()["run"]["run_id"]
     path = f"/api/v1/runs/{run_id}/user-memories"
-    if action == "query":
+    if action in {"query", "disclosed_query"}:
         saved = await client.post(
-            path, json={"action": "save", "text": "我喜欢简洁的中文回答", "key": "seed"}
+            path,
+            json={
+                "action": "save",
+                "text": "我喜欢简洁的中文回答",
+                "key": "seed",
+                "sensitive": action == "disclosed_query",
+                "confirmed_sensitive": action == "disclosed_query",
+            },
         )
         assert saved.status_code == 200, saved.text
+        if action == "disclosed_query":
+            selected = saved.json()
+            command = {
+                "action": "disclose",
+                "scope": "personal",
+                "entry_id": selected["entry_id"],
+                "expected_version": selected["version"],
+                "confirmed_sensitive": True,
+                "key": f"disclose:{run_id}:{selected['entry_id']}:{selected['version']}",
+            }
+            granted = await client.post(path, json=command)
+            assert granted.status_code == 200, granted.text
+            # The browser may lose the first response; recovery uses the same selection/version.
+            repeated = await client.post(path, json=command)
+            assert repeated.status_code == 200 and repeated.json() == granted.json()
 
     class Provider(GeneralProvider):
         """Ask for one memory tool and verify the real returned result before answering."""
@@ -782,7 +838,7 @@ async def test_memory_tools_in_both_modes(resource_client, memory_key, mode, act
                     tool_calls=[
                         ToolCall(
                             id="memory-call",
-                            name=f"{action}_memory",
+                            name="save_memory" if action == "save" else "query_memory",
                             arguments={"text": "我喜欢简洁的中文回答"} if action == "save" else {},
                         )
                     ],
@@ -909,17 +965,47 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
             == extension
         )
 
-async def test_explicit_grant_keyword_fallback_is_run_scoped(client, memory_key, test_database_session_factory):
+
+async def test_explicit_grant_keyword_fallback_is_run_scoped(
+    client, memory_key, test_database_session_factory
+):
     run = await create_test_run(client)
     storage = app.dependency_overrides[get_object_storage]()
     async with test_database_session_factory() as db:
-        service = MemoryService(db, storage, run['user_id'], 'personal_assistant', run_id=run['run_id'])
-        saved = await service.mutate({'action':'save','text':'同和佳境到龙城路通勤','key':'fallback-save','sensitive':True,'confirmed_sensitive':True})
-        hidden=await service.query(for_model=True,query='完全不匹配')
-        assert hidden['items'][0]['disclosure_required'] and 'text' not in hidden['items'][0]
-        await service.mutate({'action':'disclose','entry_id':saved['entry_id'],'expected_version':1,'confirmed_sensitive':True,'key':'fallback-grant'})
-        found=await service.query(for_model=True,query='不存在的复合词 otherword')
-        assert found['authorized_fallback'] and found['items'][0]['text']=='同和佳境到龙城路通勤'
-        assert (await service.query(for_model=True,query='不存在 通勤'))['items'][0]['entry_id']==saved['entry_id']
-        await service.mutate({'action':'forget','entry_id':saved['entry_id'],'expected_version':2,'key':'fallback-forget'})
-        assert (await service.query(for_model=True,query='不存在'))['items']==[]
+        service = MemoryService(
+            db, storage, run["user_id"], "personal_assistant", run_id=run["run_id"]
+        )
+        saved = await service.mutate(
+            {
+                "action": "save",
+                "text": "同和佳境到龙城路通勤",
+                "key": "fallback-save",
+                "sensitive": True,
+                "confirmed_sensitive": True,
+            }
+        )
+        hidden = await service.query(for_model=True, query="完全不匹配")
+        assert hidden["items"][0]["disclosure_required"] and "text" not in hidden["items"][0]
+        await service.mutate(
+            {
+                "action": "disclose",
+                "entry_id": saved["entry_id"],
+                "expected_version": 1,
+                "confirmed_sensitive": True,
+                "key": "fallback-grant",
+            }
+        )
+        found = await service.query(for_model=True, query="不存在的复合词 otherword")
+        assert found["authorized_fallback"] and found["items"][0]["text"] == "同和佳境到龙城路通勤"
+        assert (await service.query(for_model=True, query="不存在 通勤"))["items"][0][
+            "entry_id"
+        ] == saved["entry_id"]
+        await service.mutate(
+            {
+                "action": "forget",
+                "entry_id": saved["entry_id"],
+                "expected_version": 2,
+                "key": "fallback-forget",
+            }
+        )
+        assert (await service.query(for_model=True, query="不存在"))["items"] == []

@@ -18,6 +18,8 @@ from nexuspilot_api.features.identity.schemas.authentication import (
     AuthenticatedPrincipalRead,
     BrowserLoginRequest,
     PasswordChangeRequest,
+    RegistrationEmailRequest,
+    RegistrationVerifyRequest,
     UserLoginSessionRead,
     WorkspacePrincipalRead,
 )
@@ -37,6 +39,61 @@ from nexuspilot_api.infrastructure.database import get_database_session
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 DatabaseSessionDependency = Annotated[AsyncSession, Depends(get_database_session)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
+
+
+@router.get("/registration")
+async def get_registration_availability(response: Response, settings: SettingsDependency) -> dict:
+    """Expose only enrollment availability, never SMTP or encryption configuration."""
+    _set_no_store(response)
+    return {"enabled": settings.authentication_enabled and settings.registration_enabled}
+
+
+@router.post(
+    "/registration/request", dependencies=[Depends(require_browser_authentication_enabled)]
+)
+async def post_registration_email(
+    payload: RegistrationEmailRequest,
+    request: Request,
+    response: Response,
+    db_session: DatabaseSessionDependency,
+    settings: SettingsDependency,
+) -> dict:
+    """Request verification using the existing browser Origin restriction."""
+    from nexuspilot_api.features.identity.services.registration import request_registration
+
+    validate_authentication_origin(request.headers.get("origin"), settings)
+    _set_no_store(response)
+    await request_registration(
+        db_session,
+        payload.email,
+        settings,
+        client_identifier=request.client.host if request.client else "unknown",
+    )
+    return {"message": "如该邮箱可注册，验证邮件已发送；已有账号请直接登录。"}
+
+
+@router.post("/registration/verify", dependencies=[Depends(require_browser_authentication_enabled)])
+async def post_registration_verification(
+    payload: RegistrationVerifyRequest,
+    request: Request,
+    response: Response,
+    db_session: DatabaseSessionDependency,
+    settings: SettingsDependency,
+) -> dict:
+    """Consume email proof once; account creation does not implicitly issue a login session."""
+    from nexuspilot_api.features.identity.services.registration import verify_registration
+
+    validate_authentication_origin(request.headers.get("origin"), settings)
+    _set_no_store(response)
+    await verify_registration(
+        db_session,
+        payload.email,
+        payload.code.get_secret_value(),
+        payload.display_name,
+        payload.password.get_secret_value(),
+        settings,
+    )
+    return {"message": "注册成功，请登录。"}
 
 
 def _set_no_store(response: Response) -> None:
