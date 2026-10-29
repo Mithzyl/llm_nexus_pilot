@@ -208,9 +208,9 @@ class MemoryService:
                 and row.sensitive
                 and (self.run_id is None or row.disclosure_run_id != self.run_id)
             ):
+                # Do not leak content or keyword matches before disclosure, but
+                # distinguish an undisclosed entry from an empty account.
                 item["disclosure_required"] = True
-                if query:
-                    continue
             else:
                 body = await self.read(row.body_uri)
                 if query and query.casefold() not in body["text"].casefold():

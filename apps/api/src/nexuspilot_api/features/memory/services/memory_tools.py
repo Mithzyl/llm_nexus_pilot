@@ -81,7 +81,7 @@ MEMORY_TOOLS = tuple(
             "query_memory",
             QueryArguments,
             "Read relevant personal/current-project memories on demand. "
-            "Sensitive results require user disclosure confirmation. "
+            "Sensitive results require user disclosure confirmation. disclosure_required means saved memory exists but this conversation is not authorized; ask the user to authorize it in the UI, never claim there is no memory. Answer naturally from authorized facts without internal correction narratives or file citation aliases. "
             "Do not fetch all memory routinely.",
         ),
         (
