@@ -1,8 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createGeneralAgentWorkflowRequest } from "../lib/agent-workflow";
-import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission,
+import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission, quickResponseRequest,
   type PendingSubmission } from "../lib/pending-submissions";
+
+/** Quick recovery reuses saved model parameters and derives only server-returned message identity. */
+test("quick submission preserves response identity and model across reload", () => {
+  const db = storage();
+  const request: PendingSubmission = {
+    version: 2, mode: "quick", id: "quick-id", owner: "alice", sessionId: null,
+    sessionKey: "session-key", turnKey: "turn-key", input: "hello", fileIds: [],
+    responseKey: "response-key",
+    response: {provider: "opencode", model: "saved-model", timeout_seconds: null,
+      reasoning_display_policy: "provider-visible", reasoning: {enabled: true, effort: "medium"}},
+  };
+  savePendingSubmission(db, request);
+  const restored = readPendingSubmissions(db, "alice")[0];
+  assert.deepEqual(restored, request);
+  const payload = quickResponseRequest(restored, "server-run", "server-message");
+  assert.equal(payload.idempotency_key, "response-key");
+  assert.equal(payload.model, "saved-model");
+  assert.equal(payload.run_id, "server-run");
+  assert.equal(payload.current_user_message_id, "server-message");
+  assert.equal(payload.stream, true);
+  assert.deepEqual(readPendingSubmissions(db, "bob"), []);
+});
+
+/** Corrupt quick parameters must stop recovery rather than silently use current UI defaults. */
+test("quick recovery rejects missing model or response key", () => {
+  for (const response of [{provider: "opencode"}, {provider: "opencode", model: "saved-model"}]) {
+    const db = storage();
+    db.setItem("nexuspilot:pending-submissions:alice", JSON.stringify([{
+      version: 2, mode: "quick", id: "quick-id", owner: "alice", sessionId: null,
+      sessionKey: "session", turnKey: "turn", input: "hello", fileIds: [], response,
+    }]));
+    assert.throws(() => readPendingSubmissions(db, "alice"), /无法读取/);
+  }
+});
 
 /** Use a persistent in-memory store across simulated page instances. */
 function storage() {

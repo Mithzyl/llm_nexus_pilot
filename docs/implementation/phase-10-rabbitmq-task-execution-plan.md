@@ -8,6 +8,20 @@
 
 ## 与统一开发计划的关系
 
+### 三端生态 Step 1（2026-10-29，进行中）
+
+Quick Reply 必须以整轮而非单个 Model Attempt 保存执行身份；一轮可能有多次工具调用。
+复用独立 Worker/租约/对象存储，按 owner + Run + responseKey 比较保存的请求（不新增哈希），
+相同请求返回原执行，参数不同返回409；客户端断开不终止执行，显式停止传播到实际调用。
+最终回复由服务端持久保存，不依赖浏览器收到末帧才保存。执行者失联后的未知上游调用不能
+自动再次发送。恢复不能仅将 Run 从 running 改回 pending。
+
+approval/input 需持久交互记录：interaction_id、run_id、执行引用、kind、status、version、
+request_uri、response_uri、reply_key、created_at、resolved_at、expires_at。对象正文复用 MinIO；
+等待项不占执行租约。答复与恢复入队在事务中关联，旧版本/已取消/已过期拒绝，重放不再次执行。
+现有枚举值存在不代表上述交互已实现；实际生产触发点和两种模式恢复验收必须一并完成。
+RabbitMQ仍不接入。Step 1 验收报告记录实际命令、固定响应、执行次数和未完成项，不冒充付费联调。
+
 ### 当前实施记录（2026-10-24）
 
 当前优先顺序由路线图维护：2026-10-26将MCP最小接入、动态任务工具、Assistant用户记忆设计

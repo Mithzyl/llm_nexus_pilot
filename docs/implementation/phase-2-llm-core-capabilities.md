@@ -1,5 +1,52 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
+## 三端记忆与用户指令（2026-10-29，未开始）
+
+本节为 native / personal_assistant / retail 新增扩展的当前规则；不改变旧验收记录。
+总计划按五批推进：Step 2实现类型/披露/共享接口，Step 3实现用户指令与场景；存量账号间
+共享及global指令使用须等待第四批双向绑定。第三批的对象型Message读取与语法高亮单独验收，
+不代替核心注入测试；缓存统计在第四批实测，普通用户Evaluation和密钥轮换在第五批暂缓。
+实施顺序见总计划 Step 2/3。原来的 App 记忆页面不实施限制仅适用于上一批任务；本批随后
+计划实现 Assistant 真实页面适配，Retail 共用接口，App 项目映射仍不实施。
+
+### 类型化记忆、加密兼容与共享
+
+- 保留 user_memory_scopes/entries/operations 和 MinIO 加密正文，不接入新的向量库或内容哈希。
+  entries 新增 memory_type、schema_version、origin_owner_user_id、origin_entry、origin_scope_key。
+  origin 信息由旧 scope 回填并保持不可变；解密沿用实际创建对象的 owner/scope，权限由请求身份
+  及有效关联/授权重新检查。无法确定原始加密信息的记录停止迁移并报告，不猜测或修改密文。
+  本方案不迁移 owner、对象或密钥；仅在原密钥/密文完好且元数据正确时可免重加密读取。
+- 类型为 free_text/place/commute_preference/time_preference/experience；受控服务端注册表按入口
+  扩展 retail 尺码/消费/服务偏好，不允许模型注册 Schema。字段正文仍加密，不存 SQL 明文坐标。
+  地点必须注明坐标系，时间须注明时区；预计出发时间不冒充永久习惯，经历不冒充未来计划。
+  旧 app_data 保持可读，类型转换需确认，不自动推断或将测试数据激活。
+- user_memory_share_grants：grant_id、entry_id、target_owner_user_id、target_entry、account_link_id、
+  allowed_fields_json、confirmed_entry_version、allow_automatic_use、revoked_at、version。
+  默认为本入口私有；跨入口必须逐次复查同主身份或有效绑定及目标入口。字段投影必须在返回前
+  完成，不能将完整 text 摘要泄露给仅获部分字段的接收方。源内容纠正/遗忘使旧版本授权失效。
+- user_memory_disclosures：disclosure_id、entry_id、entry_version、run_id、recipient_entry、
+  allowed_fields_json、confirmed_at、revoked_at、request_key。敏感共享不代替本次 Run 披露。
+  旧 disclosure_run_id 仅转换为原入口原 Run 的有效授权，不能扩大范围；多个 Run 互不覆盖。
+- App 无 Run 管理接口从应用认证确定 owner/entry，支持查询、候选确认、纠正、忘记、启停及
+  共享开关；模型不能设置用户确认。Assistant 页面本地假状态替换为真实成功响应，失败不显示
+  已保存。长期记忆被遗忘不自动删除 Assistant 日程/计划及历史回答，页面须清楚说明。
+
+### 个性化指令与场景
+
+- user_instruction_profiles：profile_id、owner_user_id、scope_kind(global/entry)、entry、enabled、
+  current_version；user_instruction_versions：profile_id、version、加密 body_uri、创建者与时间。
+  global 仅保存明确设置的沟通偏好，不自动收集地址等记忆；每个入口显式授权引用。
+- prompt_scene_bindings：entry、scene_id、execution_mode、template_name、template_version、enabled、
+  version，复用现有 llm_prompt_templates/versions。App Run 可选 scene_id，省略兼容旧接口；
+  当前应用未批准的场景拒绝，不接受任意 system 指令代替场景。
+- 固定组装顺序：平台规则 → 应用场景 → 执行角色/工具 → 获授权的 global 指令 → 本入口指令
+  → 用户消息/记忆/工具结果。用户指令不能授予权限，资料不能覆盖系统规则。
+  Run 固定所选版本，重试/恢复不能重新选新版；动态时间与执行ID不插入稳定前缀。
+- 增加版本化管理/启停接口、入口授权和实际注入清单，Nexus 设置页不再保留假生效文本。
+
+验收包括旧对象解密、跨入口字段投影、并发披露、纠正/遗忘/解绑、关闭自动引用、三端指令隔离、
+场景越权拒绝与恢复固定版本。不保证供应商缓存命中率；密钥轮换本阶段暂缓。
+
 ## 通用 Agent 的模型输入与结果职责
 
 **2026-10-19 更新；状态：进行中（新循环适配）。** 首批通过共享模型服务发送普通正文/原生工具请求，不改变原显式 JSON API；复用对象化正文和引用存储，无数据库迁移。原阶段完成记录保留。已增加最终组装的 system、适配器输入参数、受保护续接父记录及显式原文输入清单；这不是实际 HTTP wire 抓包，真实 Provider 完整验收仍待完成。范围见[阶段7首批实现](phase-7-tool-runtime-plan.md#首批实现与调用方式2026-10-19)。

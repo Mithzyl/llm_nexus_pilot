@@ -1,12 +1,43 @@
-import type { AgentWorkflowCreate } from "./types";
+import type { AgentWorkflowCreate, ProviderName, ReasoningConfiguration } from "./types";
 import type { MemoryDisclosureSelection } from "./memory-disclosure";
 
-export type PendingSubmission = {
-  version: 1; id: string; owner: string; sessionId: string | null;
+type SubmissionIdentity = {
+  id: string; owner: string; sessionId: string | null;
   sessionKey: string; turnKey: string; input: string; fileIds: string[];
-  workflow: AgentWorkflowCreate;
   memoryDisclosures?: MemoryDisclosureSelection[];
 };
+export type QuickResponseParameters = {
+  provider: ProviderName; model: string; timeout_seconds: number | null;
+  reasoning?: ReasoningConfiguration;
+  reasoning_display_policy: "hidden" | "summary-only" | "provider-visible";
+};
+export type PendingSubmission = SubmissionIdentity & (
+  | {version: 1; mode?: "agent"; workflow: AgentWorkflowCreate}
+  | {version: 2; mode: "agent"; workflow: AgentWorkflowCreate}
+  | {version: 2; mode: "quick"; responseKey: string; response: QuickResponseParameters}
+);
+
+/** Assemble a retry from persisted parameters, never from a changed model picker. */
+export function quickResponseRequest(value: PendingSubmission, runId: string, messageId: string) {
+  if (value.mode !== "quick") throw new Error("待恢复请求不是快速回复。");
+  return {...value.response, run_id: runId, current_user_message_id: messageId,
+    input: value.input, idempotency_key: value.responseKey, stream: true};
+}
+
+/** Recognize existing Agent records and reject incomplete quick records before any network write. */
+function validExecution(value: PendingSubmission): boolean {
+  if (value.mode !== "quick") {
+    return (value.version === 1 || (value.version === 2 && value.mode === "agent")) &&
+      Boolean(value.workflow?.idempotency_key);
+  }
+  const parameters = value.response;
+  return value.version === 2 && typeof value.responseKey === "string" && value.responseKey.length >= 8 &&
+    Boolean(parameters && typeof parameters.provider === "string" && parameters.provider.length &&
+      typeof parameters.model === "string" && parameters.model.length &&
+      ["hidden", "summary-only", "provider-visible"].includes(parameters.reasoning_display_policy) &&
+      (parameters.timeout_seconds === null || (Number.isFinite(parameters.timeout_seconds) &&
+        parameters.timeout_seconds >= 1 && parameters.timeout_seconds <= 600)));
+}
 type SubmissionStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "length" | "key">;
 
 /** Keep authenticated owners separate; this identifier is not an access credential. */
@@ -18,10 +49,10 @@ function parseRecords(raw: string | null, owner: string): PendingSubmission[] {
   if (raw.length > 2_000_000) throw new Error("待恢复请求记录过大，请先处理原请求。");
   const values = JSON.parse(raw) as PendingSubmission[];
   if (!Array.isArray(values) || values.length > 50 || values.some((item) =>
-    !item || item.version !== 1 || item.owner !== owner || typeof item.id !== "string" ||
+    !item || !validExecution(item) || item.owner !== owner || typeof item.id !== "string" ||
     typeof item.input !== "string" || typeof item.sessionKey !== "string" ||
     typeof item.turnKey !== "string" || !Array.isArray(item.fileIds) ||
-    !item.workflow?.idempotency_key || !(item.sessionId === null || typeof item.sessionId === "string") ||
+    !(item.sessionId === null || typeof item.sessionId === "string") ||
     (item.memoryDisclosures !== undefined && (!Array.isArray(item.memoryDisclosures) ||
       item.memoryDisclosures.length > 400 || item.memoryDisclosures.some(grant =>
         !grant || typeof grant.entry_id !== "string" || grant.entry_id.length !== 36 ||

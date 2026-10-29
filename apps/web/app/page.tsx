@@ -1424,8 +1424,12 @@ export default function Home() {
     }
   }
 
-  /** Resume the same persisted Agent intent; keyed writes cannot create replacement sessions/Runs. */
+  /** Resume Agent identity; quick execution stays disabled until the backend can replay whole turns. */
   async function recoverPendingSubmission(pending: PendingSubmission) {
+    if (pending.mode === "quick") {
+      setErrorMessage("快速回复恢复尚未启用，请保留原请求，勿重复发送。");
+      return;
+    }
     if (recoveringSubmissions.current.has(pending.id)) return;
     recoveringSubmissions.current.add(pending.id);
     const initialView = sessionRestoreRequestId.current;
