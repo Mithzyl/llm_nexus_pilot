@@ -908,3 +908,18 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
             ]
             == extension
         )
+
+async def test_explicit_grant_keyword_fallback_is_run_scoped(client, memory_key, test_database_session_factory):
+    run = await create_test_run(client)
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        service = MemoryService(db, storage, run['user_id'], 'personal_assistant', run_id=run['run_id'])
+        saved = await service.mutate({'action':'save','text':'同和佳境到龙城路通勤','key':'fallback-save','sensitive':True,'confirmed_sensitive':True})
+        hidden=await service.query(for_model=True,query='完全不匹配')
+        assert hidden['items'][0]['disclosure_required'] and 'text' not in hidden['items'][0]
+        await service.mutate({'action':'disclose','entry_id':saved['entry_id'],'expected_version':1,'confirmed_sensitive':True,'key':'fallback-grant'})
+        found=await service.query(for_model=True,query='不存在的复合词 otherword')
+        assert found['authorized_fallback'] and found['items'][0]['text']=='同和佳境到龙城路通勤'
+        assert (await service.query(for_model=True,query='不存在 通勤'))['items'][0]['entry_id']==saved['entry_id']
+        await service.mutate({'action':'forget','entry_id':saved['entry_id'],'expected_version':2,'key':'fallback-forget'})
+        assert (await service.query(for_model=True,query='不存在'))['items']==[]

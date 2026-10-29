@@ -181,6 +181,27 @@ class MemoryService:
         own = await self.scope(self.project_id)
         if own is None:
             return {"items": [], "next_offset": None}
+        # Explicit current-Run grants are authoritative; caller/model IDs are not.
+        # Corrections and forgetting clear disclosure_run_id, so they cannot fall back.
+        if for_model and self.run_id and self.project_id is None:
+            granted = list(await self.db.scalars(select(UserMemoryEntry).where(
+                UserMemoryEntry.scope_id == own.scope_id,
+                UserMemoryEntry.status == "active",
+                UserMemoryEntry.disclosure_run_id == self.run_id,
+            ).order_by(UserMemoryEntry.entry_id)))
+            if granted:
+                authorized = []
+                for row in granted:
+                    body = await self.read(row.body_uri)
+                    authorized.append({"entry_id": row.entry_id, "version": row.version,
+                        "status": row.status, "sensitive": row.sensitive, **body})
+                terms = [term.casefold() for term in re.split(r"[\s,，、;；]+", query) if term]
+                matches = [item for item in authorized if not terms or any(
+                    term in item["text"].casefold() for term in terms)]
+                selected = matches or authorized
+                return {"items": selected[offset:offset + limit],
+                        "next_offset": offset + limit if len(selected) > offset + limit else None,
+                        "authorized_fallback": bool(terms and not matches)}
         rows = list(
             await self.db.scalars(
                 select(UserMemoryEntry)
