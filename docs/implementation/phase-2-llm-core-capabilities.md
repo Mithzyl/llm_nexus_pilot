@@ -1,5 +1,16 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
+## Assistant自动记忆与跨端管理更新（2026-10-31）
+
+本批Nexus已实现有当前用户原文来源的Assistant自动写工具、本端按需召回、关联入口管理、
+加密版本引用和条件撤销，以及默认关闭的Assistant→Nexus自动使用许可。原native/retail
+逐条保存/披露规则兼容；账号关联本身不启动模型跨端读取。0049/0050只在隔离MySQL迁移。
+接口、版本约束及模型能力限制统一见[App记忆说明](personal-assistant-app-integration.md#assistant自动记忆与nexus统一管理2026-10-31本地实现)。
+固定模型App工具循环、真实MySQL/MinIO和浏览器记录见
+[本地验收](../../output/security/automatic-memory-20261031.json)。Assistant页面未修改；
+不承诺每次聊天必然提取记忆、自动语义归并准确或未来生效时间已实现独立调度。
+本批未提交、未推送、未部署，无新增内容哈希和自动删除。
+
 ## 三端记忆与用户指令（2026-10-29，进行中）
 
 本节为 native / personal_assistant / retail 新增扩展的当前规则；不改变旧验收记录。

@@ -52,7 +52,17 @@ class MemoryCommand(BaseModel):
     """Validate explicit user operations; model tools use a separate restricted schema."""
 
     model_config = ConfigDict(extra="forbid")
-    action: Literal["save", "propose", "correct", "forget", "confirm", "disclose", "settings"]
+    action: Literal[
+        "save",
+        "propose",
+        "correct",
+        "forget",
+        "confirm",
+        "disclose",
+        "settings",
+        "undo",
+        "automatic_sharing",
+    ]
     scope: Literal["personal", "project"] = "personal"
     key: str = Field(min_length=1, max_length=128)
     text: str | None = Field(default=None, min_length=1, max_length=4000)
@@ -72,10 +82,12 @@ class MemoryCommand(BaseModel):
             self.text is None or not self.text.strip()
         ):
             raise ValueError("Text is required")
-        if self.action in {"correct", "forget", "confirm", "disclose"} and (
+        if self.action in {"correct", "forget", "confirm", "disclose", "undo"} and (
             not self.entry_id or self.expected_version is None or self.expected_version < 1
         ):
             raise ValueError("Target and current version are required")
-        if self.action == "settings" and (self.expected_version is None or self.enabled is None):
+        if self.action in {"settings", "automatic_sharing"} and (
+            self.expected_version is None or self.enabled is None
+        ):
             raise ValueError("Setting and current version are required")
         return self

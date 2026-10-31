@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { getMemorySettings, listProductMemories, mutateProductMemory } from "../../lib/api";
+import { getMemorySettings, listProductMemories, mutateProductMemory, nexusFetch } from "../../lib/api";
 import { memoryErrorMessage } from "../../lib/personal-settings";
 import type { MemoryCommand, MemorySettings, PersonalMemory } from "../../lib/types";
 import { MemorySharingEditor } from "./MemorySharingEditor";
@@ -11,17 +11,31 @@ import { buildTypedMemory, memoryKinds, memoryFields, type MemoryFormKind } from
 /** Manage personal or current-project memory without creating a conversation or model request. */
 export function MemorySettingsPanel({ projectId }: { projectId?: string }) {
   const [scope, setScope] = useState<"personal" | "project">("personal");
+  const [entry, setEntry] = useState("native");
   return <section className="settings-section settings-memory-panel" aria-label="记忆管理">
     <label>记忆范围 <select value={scope} onChange={event => setScope(event.target.value as typeof scope)}>
       <option value="personal">个人记忆</option>
       {projectId && <option value="project">当前项目记忆</option>}
     </select></label>
-    <MemoryScopeEditor key={`${scope}:${projectId ?? ""}`} projectId={scope === "project" ? projectId : undefined} />
+    {scope === "personal" && <label>来源应用 <select value={entry} onChange={event => setEntry(event.target.value)}>
+      <option value="native">Nexus</option><option value="personal_assistant">Assistant</option><option value="retail">Retail</option>
+    </select></label>}
+    <MemoryScopeEditor key={`${scope}:${entry}:${projectId ?? ""}`} entry={scope === "project" ? "native" : entry} projectId={scope === "project" ? projectId : undefined} />
   </section>;
 }
 
 /** Keep one scope's fields and retry identity separate from other scopes and closed dialogs. */
-function MemoryScopeEditor({ projectId }: { projectId?: string }) {
+function MemoryScopeEditor({ projectId, entry }: { projectId?: string; entry: string }) {
+  const [lastChange, setLastChange] = useState<{entry_id: string; version: number} | null>(null);
+  const [history, setHistory] = useState<{version:number; status:string; text?:string}[] | null>(null);
+  /** Fetch only the selected source's scoped version history, without exposing storage references. */
+  async function showHistory(entryId: string) {
+    try {
+      const base = projectId ? `projects/${encodeURIComponent(projectId)}` : "me";
+      const value = await nexusFetch<{items:{version:number;status:string;text?:string}[]}>(`${base}/user-memories?entry=${entry}&history_entry_id=${entryId}`);
+      if (alive.current) setHistory(value.items);
+    } catch (failure) { if (alive.current) setError(memoryErrorMessage(failure)); }
+  }
   const [settings, setSettings] = useState<MemorySettings | null>(null);
   const [items, setItems] = useState<PersonalMemory[]>([]);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
@@ -41,7 +55,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
   /** Read current settings and a page; failures remain visible rather than becoming empty data. */
   async function refresh(offset = 0) {
     try {
-      const [state, page] = await Promise.all([getMemorySettings(projectId), listProductMemories(projectId, offset)]);
+      const [state, page] = await Promise.all([getMemorySettings(projectId, entry), listProductMemories(projectId, offset, entry)]);
       if (!alive.current) return;
       setSettings(state);
       setItems(previous => offset === 0 ? page.items : [...previous, ...page.items]);
@@ -57,14 +71,14 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
   useEffect(() => {
     alive.current = true;
     let cancelled = false;
-    void Promise.all([getMemorySettings(projectId), listProductMemories(projectId)]).then(([state, page]) => {
+    void Promise.all([getMemorySettings(projectId, entry), listProductMemories(projectId, 0, entry)]).then(([state, page]) => {
       if (cancelled) return;
       setSettings(state); setItems(page.items); setNextOffset(page.next_offset); setLoading(false);
     }).catch(failure => {
       if (!cancelled) { setError(memoryErrorMessage(failure)); setLoading(false); }
     });
     return () => { cancelled = true; alive.current = false; };
-  }, [projectId]);
+  }, [projectId, entry]);
 
   /** Retain the same request key on failure; an unknown result must not create a second record. */
   async function execute(command: Omit<MemoryCommand, "key">) {
@@ -73,8 +87,10 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
     if (pending.current?.command !== serialized) pending.current = { command: serialized, key: crypto.randomUUID() };
     setBusy(true); setError(""); setNotice("");
     try {
-      await mutateProductMemory({ ...command, key: pending.current.key }, projectId);
+      const result = await mutateProductMemory({ ...command, key: pending.current.key }, projectId, entry) as {entry_id?:string;version?:number;applied_version?:number};
       if (!alive.current) return;
+      setLastChange(command.action !== "undo" && result.entry_id && result.applied_version && result.version === result.applied_version ? {entry_id:result.entry_id,version:result.applied_version} : null);
+      setHistory(null);
       pending.current = null;
       setText(""); setEditing(null); setSensitiveConfirmed(false);
       setKind("free_text"); setFields({}); setTypeConfirmed(false);
@@ -102,6 +118,10 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
   }
 
   return <>
+    {entry === "personal_assistant" && settings && <label><input type="checkbox"
+      checked={!!settings.automatic_native_use} disabled={busy || loading}
+      onChange={event => { if (event.target.checked && !window.confirm("允许 Nexus 按任务需要使用 Assistant 的有效记忆，包括地址等敏感信息？后续新增和更新也适用，可随时关闭。")) return;
+        void execute({action:"automatic_sharing",enabled:event.target.checked,expected_version:settings.version}); }} />允许 Nexus 使用 Assistant 记忆</label>}
     <div className="settings-form-footer">
       <p>{settings ? projectId
         ? `项目${settings.mode === "inherit" ? "继承入口设置" : "已关闭"}；当前${settings.enabled ? "开启" : "关闭"}`
@@ -128,7 +148,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
         我已核对以上结构化字段；保存记忆不会创建日历事项或规划路线。
       </label>}
       <label><input type="checkbox" checked={sensitiveConfirmed} onChange={event => setSensitiveConfirmed(event.target.checked)} />
-        此条含敏感信息；我确认将以上内容保存到{projectId ? "当前项目" : "个人"}记忆，不授权向外部模型或工具发送。
+        {entry === "personal_assistant" ? "此条含敏感信息；保存后 Assistant 可在本人的任务中按需使用。" : `此条含敏感信息；我确认将以上内容保存到${projectId ? "当前项目" : "个人"}记忆，不授权向外部模型或工具发送。`}
       </label>
       <div className="settings-form-footer">
         <button disabled={busy || loading || !text.trim() || (!settings?.enabled && !editing)} type="submit">
@@ -137,6 +157,8 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
         {editing && <button type="button" disabled={busy} onClick={() => { setEditing(null); setText(""); setSensitiveConfirmed(false); setKind("free_text"); setFields({}); setTypeConfirmed(false); }}>取消编辑</button>}
       </div>
     </form>
+    {lastChange && <button disabled={busy} onClick={() => void execute({action:"undo",entry_id:lastChange.entry_id,expected_version:lastChange.version})}>撤销本次改动</button>}
+    {history && <section aria-label="记忆版本"><button onClick={() => setHistory(null)}>关闭版本记录</button>{history.map(value => <p key={value.version}>版本 {value.version} · {value.status === "forgotten" ? "已忘记" : value.text}</p>)}</section>}
     {!loading && !error && items.length === 0 && <p>暂无记忆。</p>}
     <div className="settings-list">
       {items.map(item => <article className="settings-memory-row" key={item.entry_id}>
@@ -144,6 +166,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
         {item.typed_data && <dl>{memoryFields[(item.memory_type ?? "free_text") as MemoryFormKind]?.map(field =>
           item.typed_data?.[field.key] != null && <div key={field.key}><dt>{field.label}</dt><dd>{String(item.typed_data[field.key])}</dd></div>)}</dl>}
         <div className="settings-form-footer">
+          <button disabled={busy} onClick={() => void showHistory(item.entry_id)}>版本记录</button>
           <button disabled={busy || loading} onClick={() => { setEditing(item); setText(item.text ?? ""); setSensitiveConfirmed(false);
             setKind((item.memory_type ?? "free_text") as MemoryFormKind);
             setFields(Object.fromEntries(Object.entries(item.typed_data ?? {}).map(([key,value]) => [key, value == null ? "" : String(value)])));
@@ -157,7 +180,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
             if (window.confirm("忘记这条记忆？这不会删除原始对话或文件。")) void execute({ action: "forget", entry_id: item.entry_id, expected_version: item.version });
           }}>忘记</button>
         </div>
-        {!projectId && item.status === "active" && <MemorySharingEditor key={`${item.entry_id}:${item.version}`} item={item} />}
+        {!projectId && entry === "native" && item.status === "active" && <MemorySharingEditor key={`${item.entry_id}:${item.version}`} item={item} />}
       </article>)}
     </div>
     {nextOffset !== null && <button disabled={loading || busy} onClick={() => { setLoading(true); void refresh(nextOffset); }}>加载更多记忆</button>}

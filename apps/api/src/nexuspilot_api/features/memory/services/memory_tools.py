@@ -11,6 +11,7 @@ from nexuspilot_api.features.memory.models.product_memory import (
     MemoryRunPermission,
     UserMemoryEntry,
 )
+from nexuspilot_api.features.memory.schemas.typed_memory import TypedMemory
 from nexuspilot_api.features.memory.services.product_memory import MemoryFailure, memory_for_run
 from nexuspilot_api.models import LlmRun
 from nexuspilot_api.services.agent_file_tool_service import (
@@ -33,14 +34,19 @@ class QueryArguments(ScopeArguments):
     query: str = Field(default="", max_length=128)
     offset: int = Field(default=0, ge=0, le=10000)
     shared_offset: int = Field(default=0, ge=0, le=10000)
+    automatic_offset: int = Field(default=0, ge=0, le=10000)
     limit: int = Field(default=10, ge=1, le=20)
 
 
 class SaveArguments(ScopeArguments):
-    """Provide the exact explicitly requested text; confirmation cannot be supplied by a model."""
+    """Provide memory content and an optional current-user source quote, never consent flags."""
 
     text: str = Field(min_length=1, max_length=4000)
     sensitive: bool = False
+    source_quote: str | None = Field(default=None, min_length=1, max_length=4000)
+    typed_data: TypedMemory | None = None
+    entry_id: str | None = Field(default=None, min_length=36, max_length=36)
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class TargetArguments(ScopeArguments):
@@ -82,19 +88,27 @@ MEMORY_TOOLS = tuple(
             "query_memory",
             QueryArguments,
             "Read relevant personal/current-project memories on demand. "
-            "Sensitive results require user disclosure confirmation. disclosure_required means "
+            "Own Assistant memories can be recalled without per-question confirmation; "
+            "Other sensitive results require user disclosure confirmation. "
+            "disclosure_required means "
             "saved memory exists but this conversation is not authorized; "
             "ask the user to authorize it in the UI, never claim there is no memory. "
             "Answer naturally from authorized facts "
             "without internal correction narratives or file citation aliases. "
             "shared_items contains separately approved cross-entry fields. "
             "Use next_shared_offset as shared_offset to continue shared pagination. "
+            "automatic_items contains explicitly enabled Assistant memory for Nexus; "
+            "use next_automatic_offset as automatic_offset for its next page. "
             "Do not fetch all memory routinely.",
         ),
         (
             "save_memory",
             SaveArguments,
-            "Save the user's exact explicit remember request. Do not use for "
+            "For Assistant own memory, save explicit user facts with source_quote copied from the "
+            "current user message; no remember command is needed. Select existing entry_id and "
+            "expected_version only after querying it. Preserve future effective dates; do not "
+            "infer preferences or turn a future plan into a past experience. Other entries: "
+            "save the user's exact explicit remember request. Do not use for "
             "inferred preferences. Reworded content becomes a candidate "
             "requiring user confirmation; "
             "inspect result.status and never report a candidate as active. "
@@ -193,24 +207,64 @@ async def execute_memory(tools, attempt, record, name, arguments):
                 )
                 from nexuspilot_api.features.memory.services.sharing import shared_query_page
 
-                shared = await shared_query_page(service, offset=arguments.shared_offset,
-                                                 limit=arguments.limit)
+                shared = await shared_query_page(
+                    service, offset=arguments.shared_offset, limit=arguments.limit
+                )
                 result["shared_items"] = [
-                    {key: value for key, value in item.items()
-                     if key not in {"text", "app_data", "typed_data"}}
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"text", "app_data", "typed_data"}
+                    }
                     for item in shared["items"]
                 ]
                 result["next_shared_offset"] = shared["next_offset"]
+                from nexuspilot_api.features.memory.services.automatic_recall import query_automatic
+
+                automatic = await query_automatic(
+                    service,
+                    query=arguments.query,
+                    offset=arguments.automatic_offset,
+                    limit=arguments.limit,
+                )
+                result["automatic_items"] = [
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"text", "app_data", "typed_data"}
+                    }
+                    for item in automatic["items"]
+                ]
+                result["next_automatic_offset"] = automatic["next_offset"]
                 # Persist only locators. Rehydrate authorized text immediately before generation,
                 # so forgotten content cannot be recovered from a saved Tool Call or checkpoint.
                 result["items"] = [
-                    {key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}}
+                    {
+                        key: value
+                        for key, value in item.items()
+                        if key not in {"text", "app_data", "typed_data"}
+                    }
                     for item in result["items"]
                 ]
                 return {**result, "memory_scope": arguments.scope, "management": management}
             request = {"action": name.removesuffix("_memory"), "key": record.tool_call_id}
             if name in {"save_memory", "propose_memory"}:
-                if name == "save_memory":
+                if name == "save_memory" and service.entry == "personal_assistant":
+                    if not arguments.source_quote or arguments.source_quote not in run.user_request:
+                        raise MemoryFailure("memory_source_required")
+                    service.assistant_automatic = True
+                    request["source_quote"] = arguments.source_quote
+                    if arguments.typed_data is not None:
+                        request["typed_data"] = arguments.typed_data.model_dump(mode="json")
+                    if arguments.entry_id:
+                        if arguments.expected_version is None:
+                            raise MemoryFailure("memory_version_conflict")
+                        request.update(
+                            action="correct",
+                            entry_id=arguments.entry_id,
+                            expected_version=arguments.expected_version,
+                        )
+                elif name == "save_memory":
                     match = re.fullmatch(
                         r"(?:请)?(?:记住|记一下|remember)\s*[:：]?\s*(.+)", prompt, re.I
                     )
@@ -314,11 +368,17 @@ async def restore_current_memory_messages(db, storage, run_id, records, messages
                 and (enabled or result.get("management"))
             ):
                 restored = {
-                    key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"text", "app_data", "typed_data"}
                 }
                 from nexuspilot_api.features.memory.services.disclosures import is_disclosed
 
-                if not row.sensitive or await is_disclosed(db, row, run_id, service.entry):
+                if (
+                    not row.sensitive
+                    or service.entry == "personal_assistant"
+                    or await is_disclosed(db, row, run_id, service.entry)
+                ):
                     body = await service.read(row.body_uri)
                     restored["text"] = body["text"]
                     if body.get("app_data") is not None:
@@ -335,9 +395,29 @@ async def restore_current_memory_messages(db, storage, run_id, records, messages
         shared = []
         for item in result.get("shared_items", []):
             current = await read_shared(service, for_model=True, grant_id=item["grant_id"])
-            shared.extend(value for value in current if value["version"] == item["version"]
-                          and value["grant_version"] == item["grant_version"])
+            shared.extend(
+                value
+                for value in current
+                if value["version"] == item["version"]
+                and value["grant_version"] == item["grant_version"]
+            )
         result["shared_items"] = shared
+        from nexuspilot_api.features.memory.services.automatic_recall import automatic_source
+
+        source = await automatic_source(service)
+        automatic = []
+        if source:
+            scope = await source.scope(None)
+            for item in result.get("automatic_items", []):
+                row = await db.get(UserMemoryEntry, item["entry_id"], populate_existing=True)
+                if (
+                    row
+                    and row.scope_id == scope.scope_id
+                    and row.status == "active"
+                    and row.version == item["version"]
+                ):
+                    automatic.append({**item, **await source.read(row.body_uri)})
+        result["automatic_items"] = automatic
         result["history_revalidated"] = True
         payload["result"] = result
         message.content = json.dumps(payload, ensure_ascii=False)
@@ -350,13 +430,28 @@ def memory_checkpoint_message(message):
         payload = json.loads(message.content)
         result = payload.get("result") or {}
         result["items"] = [
-            {key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}}
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"text", "app_data", "typed_data"}
+            }
             for item in result.get("items", [])
         ]
         result["shared_items"] = [
-            {key: value for key, value in item.items()
-             if key not in {"text", "app_data", "typed_data"}}
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"text", "app_data", "typed_data"}
+            }
             for item in result.get("shared_items", [])
+        ]
+        result["automatic_items"] = [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"text", "app_data", "typed_data"}
+            }
+            for item in result.get("automatic_items", [])
         ]
         payload["result"] = result
         encoded["content"] = json.dumps(payload, ensure_ascii=False)
@@ -366,6 +461,7 @@ def memory_checkpoint_message(message):
 async def check_memory_external_disclosure(db, run_id, tool):
     """A Provider-only sensitive-memory grant never authorizes forwarding it to network tools."""
     from sqlalchemy import select
+
     from nexuspilot_api.features.memory.services.disclosures import disclosure_condition
 
     network = tool.execution_type == "remote_http" or tool.name in {

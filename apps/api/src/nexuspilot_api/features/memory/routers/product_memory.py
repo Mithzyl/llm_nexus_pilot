@@ -72,13 +72,29 @@ async def post_application_memory(
         raise memory_http_error(error) from None
 
 
-async def management_service(db, storage, project_id=None):
-    """Use the authenticated native owner for settings without creating a Run or App mapping."""
+async def management_service(db, storage, project_id=None, entry="native"):
+    """Resolve a browser user's own or explicitly linked entry without moving encrypted objects."""
     owner = db.info.get("authorized_user_id")
     if not owner or db.info.get("memory_api_entry") != "native":
         raise HTTPException(403, "Memory management requires the current native identity")
     service = MemoryService(db, storage, owner, "native", project_id)
     await service.authorize()
+    if entry != "native":
+        if project_id:
+            raise MemoryFailure("memory_project_not_allowed")
+        from nexuspilot_api.features.memory.services.sharing import resolve_share_target
+
+        target, _, link_id = await resolve_share_target(service, entry, lock=True)
+        service = MemoryService(db, storage, target, entry)
+        from nexuspilot_api.features.identity.models.account_linking import EcosystemAccountLink
+
+        link = await db.get(EcosystemAccountLink, link_id) if link_id else None
+        service.native_management_grant = {
+            "owner": owner,
+            "link_id": link_id,
+            "link_version": link.version if link else None,
+        }
+        await service.authorize()
     return service
 
 
@@ -89,11 +105,12 @@ async def get_management_settings(
     db: DatabaseSessionDependency,
     storage: ObjectStorageDependency,
     project_id: str | None = None,
+    entry: Literal["native", "personal_assistant", "retail"] = "native",
 ):
     """Return owner or owned-project settings independently of a conversation."""
     try:
         validate_management_target(request, project_id)
-        return await (await management_service(db, storage, project_id)).settings()
+        return await (await management_service(db, storage, project_id, entry)).settings()
     except MemoryFailure as error:
         raise memory_http_error(error) from None
 
@@ -107,13 +124,16 @@ async def get_management_memories(
     project_id: str | None = None,
     offset: int = Query(0, ge=0, le=10000),
     limit: int = Query(20, ge=1, le=50),
+    entry: Literal["native", "personal_assistant", "retail"] = "native",
+    history_entry_id: str | None = Query(None, min_length=36, max_length=36),
 ):
     """Page through explicit user management results even when automatic memory is disabled."""
     try:
         validate_management_target(request, project_id)
-        return await (await management_service(db, storage, project_id)).query(
-            offset=offset, limit=limit
-        )
+        service = await management_service(db, storage, project_id, entry)
+        if history_entry_id:
+            return await service.history(history_entry_id, offset=offset, limit=limit)
+        return await service.query(offset=offset, limit=limit)
     except MemoryFailure as error:
         raise memory_http_error(error) from None
 
@@ -126,13 +146,14 @@ async def post_management_memory(
     db: DatabaseSessionDependency,
     storage: ObjectStorageDependency,
     project_id: str | None = None,
+    entry: Literal["native", "personal_assistant", "retail"] = "native",
 ):
     """Persist JSON-safe date/time fields; disclosure still requires an explicitly selected Run."""
     try:
         validate_management_target(request, project_id)
         if payload.scope != ("project" if project_id else "personal"):
             raise MemoryFailure("memory_project_required")
-        service = await management_service(db, storage, project_id)
+        service = await management_service(db, storage, project_id, entry)
         return await service.mutate(
             payload.model_dump(mode="json", exclude_none=True, exclude={"scope"})
         )

@@ -28,6 +28,7 @@ class UserMemoryScope(TimestampMixin, Base):
     project_id: Mapped[str | None] = mapped_column(ForeignKey("llm_projects.project_id"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=0)
+    native_use_grant: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class UserMemoryEntry(TimestampMixin, Base):
@@ -61,6 +62,21 @@ class UserMemoryOperation(TimestampMixin, Base):
     __table_args__ = (UniqueConstraint("scope_id", "request_key", name="uq_memory_operation_key"),)
 
 
+class UserMemoryVersion(Base):
+    """Retain immutable content references for conditional undo; no plaintext or content hash."""
+
+    __tablename__ = "user_memory_versions"
+    entry_id: Mapped[str] = mapped_column(
+        ForeignKey("user_memory_entries.entry_id"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16))
+    sensitive: Mapped[bool] = mapped_column(Boolean)
+    body_uri: Mapped[str | None] = mapped_column(String(1024))
+    memory_type: Mapped[str] = mapped_column(String(32))
+    schema_version: Mapped[int] = mapped_column(Integer)
+
+
 class UserMemoryDisclosure(Base):
     """Authorize one immutable memory version for one Run and recipient entry."""
 
@@ -89,8 +105,11 @@ class UserMemoryShareGrant(TimestampMixin, Base):
     """Version-bound explicit sharing; field values remain in the original encrypted object."""
 
     __tablename__ = "user_memory_share_grants"
-    __table_args__ = (UniqueConstraint("entry_id", "target_owner_user_id", "target_entry",
-                                      name="uq_memory_share_target"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "entry_id", "target_owner_user_id", "target_entry", name="uq_memory_share_target"
+        ),
+    )
     grant_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     entry_id: Mapped[str] = mapped_column(ForeignKey("user_memory_entries.entry_id"))
     target_owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"))

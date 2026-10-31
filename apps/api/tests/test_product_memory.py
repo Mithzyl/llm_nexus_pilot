@@ -170,7 +170,9 @@ async def test_app_fields_roundtrip_and_namespace_isolation(
         )
         saved = await service.mutate(command.model_dump(exclude_none=True, exclude={"scope"}))
         assert (await service.query())["items"][0]["app_data"] == data
-        assert "app_data" not in (await service.query(for_model=True))["items"][0]
+        assert ("app_data" in (await service.query(for_model=True))["items"][0]) == (
+            entry == "personal_assistant"
+        )
         await service.mutate(
             {
                 "action": "correct",
@@ -1033,11 +1035,12 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
 async def test_explicit_grant_keyword_fallback_is_run_scoped(
     client, memory_key, test_database_session_factory
 ):
+    """Native entry still requires version-bound Run grants; Assistant has its own recall policy."""
     run = await create_test_run(client)
     storage = app.dependency_overrides[get_object_storage]()
     async with test_database_session_factory() as db:
         service = MemoryService(
-            db, storage, run["user_id"], "personal_assistant", run_id=run["run_id"]
+            db, storage, run["user_id"], "native", run_id=run["run_id"]
         )
         saved = await service.mutate(
             {

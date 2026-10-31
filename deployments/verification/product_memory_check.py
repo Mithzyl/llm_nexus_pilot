@@ -44,12 +44,14 @@ def main():
                         help="Verify linked instruction consent with MySQL/MinIO and retain the database")
     parser.add_argument("--app-prompts", action="store_true",
                         help="Verify App endpoints through fixed-model prompt assembly with MySQL/MinIO")
+    parser.add_argument("--automatic-memory", action="store_true",
+                        help="Verify automatic App memory and linked management with MySQL/MinIO")
     parser.add_argument("--password-reset", action="store_true",
                         help="Verify password recovery with MySQL and synthetic mail delivery")
     parser.add_argument("--app-scope", action="store_true",
                         help="Verify same-owner cross-App Run isolation with MySQL and no model calls")
     args = parser.parse_args()
-    if sum((args.linked_sharing, args.account_link_concurrency, args.mcp_revocation, args.mcp_catalog, args.linked_instructions, args.app_prompts, args.password_reset, args.app_scope)) > 1:
+    if sum((args.linked_sharing, args.account_link_concurrency, args.mcp_revocation, args.mcp_catalog, args.linked_instructions, args.app_prompts, args.password_reset, args.app_scope, args.automatic_memory)) > 1:
         parser.error("Choose one focused verification mode")
     root = Path(__file__).resolve().parents[2]
     mysql = container_environment("compose-mysql-1")
@@ -85,6 +87,9 @@ def main():
         environment["NEXUSPILOT_TEST_AUTH_KEEP_DATABASE"] = "true"
     if args.app_prompts:
         target = "tests/test_application_prompt_injection.py"
+        environment["NEXUSPILOT_TEST_AUTH_KEEP_DATABASE"] = "true"
+    if args.automatic_memory:
+        target = ["tests/test_assistant_memory_loop.py", "tests/test_unified_memory_management.py"]
         environment["NEXUSPILOT_TEST_AUTH_KEEP_DATABASE"] = "true"
     if args.password_reset:
         target = "tests/test_password_reset.py"

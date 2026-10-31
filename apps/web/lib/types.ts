@@ -42,11 +42,12 @@ export type PersonalMemory = {
   app_data?: { namespace: string; schema_version: number; fields: Record<string, unknown> };
 };
 export type MemorySettings = {
+  automatic_native_use?: boolean;
   enabled: boolean; entry_enabled: boolean; version: number;
   mode: "entry" | "inherit" | "disabled";
 };
 export type MemoryCommand = {
-  action: "save" | "correct" | "forget" | "confirm" | "settings";
+  action: "save" | "correct" | "forget" | "confirm" | "settings" | "undo" | "automatic_sharing";
   key: string; scope?: "personal" | "project";
   text?: string; entry_id?: string; expected_version?: number;
   enabled?: boolean; sensitive?: boolean; confirmed_sensitive?: boolean;

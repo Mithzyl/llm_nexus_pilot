@@ -126,18 +126,18 @@ function memoryBase(projectId?: string): string {
 }
 
 /** Read the persisted entry/project memory setting. */
-export function getMemorySettings(projectId?: string): Promise<MemorySettings> {
-  return nexusFetch<MemorySettings>(`${memoryBase(projectId)}/memory-settings`);
+export function getMemorySettings(projectId?: string, entry = "native"): Promise<MemorySettings> {
+  return nexusFetch<MemorySettings>(`${memoryBase(projectId)}/memory-settings${entry === "native" ? "" : `?entry=${encodeURIComponent(entry)}`}`);
 }
 
 /** Read one bounded management page, including unconfirmed candidates. */
-export function listProductMemories(projectId?: string, offset = 0): Promise<MemoryPage> {
-  return nexusFetch<MemoryPage>(`${memoryBase(projectId)}/user-memories?offset=${offset}&limit=20`);
+export function listProductMemories(projectId?: string, offset = 0, entry = "native"): Promise<MemoryPage> {
+  return nexusFetch<MemoryPage>(`${memoryBase(projectId)}/user-memories?offset=${offset}&limit=20${entry === "native" ? "" : `&entry=${encodeURIComponent(entry)}`}`);
 }
 
 /** Submit an explicit versioned user action; no identity or source-trust flags are accepted. */
-export function mutateProductMemory(command: MemoryCommand, projectId?: string): Promise<unknown> {
-  return nexusFetch(`${memoryBase(projectId)}/user-memories`, {
+export function mutateProductMemory(command: MemoryCommand, projectId?: string, entry = "native"): Promise<unknown> {
+  return nexusFetch(`${memoryBase(projectId)}/user-memories${entry === "native" ? "" : `?entry=${encodeURIComponent(entry)}`}`, {
     method: "POST",
     body: JSON.stringify({ ...command, scope: projectId ? "project" : "personal" }),
   });

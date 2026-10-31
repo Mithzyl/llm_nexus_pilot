@@ -1,0 +1,44 @@
+{
+  "status": "Nexus local implementation and bounded acceptance completed; Assistant UI not modified",
+  "provider": "fixed responses only; no paid calls",
+  "migration": "0049 memory versions and 0050 explicit native-use consent applied in isolated MySQL",
+  "browser_databases": ["identity_acceptance_430ef8915c67", "identity_acceptance_75661755ad9d"],
+  "real_storage_tests": {
+    "command": "apps/api/.venv/bin/python deployments/verification/product_memory_check.py --automatic-memory",
+    "result": "2 passed in 6.79s",
+    "databases": ["authz_audit_1ed19c39d74e44b2a8423f1e1d68bd49", "authz_audit_469c1315a0294eecaa83502809227af0"],
+    "coverage": ["actual App Agent flow: save_memory with current-message source quote, query_memory, final answer; three fixed model rounds", "native linked-entry management, default-off automatic use, explicit enable, version history and link revocation"]
+  },
+  "browser_checks": {
+    "linked_assistant_list": "passed",
+    "create_correct_history_undo": "passed against MySQL and MinIO",
+    "enable_and_refresh": "passed; persisted automatic_native_use true",
+    "enabled_agent_session": "b36a71ef-cdb9-4ccb-9fa6-9a399095a0a7",
+    "enabled_agent_final": "completed; synthetic managed memory included",
+    "disable": "passed; persisted automatic_native_use false",
+    "disabled_agent_session": "d79b2b89-41e0-4fe6-8f71-705a66c8a122",
+    "disabled_agent_final": "completed; managed memory absent in new conversation",
+    "final_applied_version_fix": "new isolated API/browser: create then undo removes active entry"
+  },
+  "necessary_checks": [
+    "Memory service/version/recall/sharing and linked management: 39 passed in 10.16s before final applied_version adjustment",
+    "Version tests rerun after applied_version adjustment: 2 passed",
+    "Frontend personal-settings-api: 4 passed; native URL compatibility preserved",
+    "TypeScript, related ESLint, Ruff and git diff --check passed"
+  ],
+  "failures_retained": [
+    "Before new routing, entry query was ignored and wrote native memory; regression now passes",
+    "App loop fixture initially omitted required ModelResponse fields; corrected test provider then passed",
+    "Playwright uncheck initially complained before asynchronous state changed; subsequent real settings read and UI confirmed false",
+    "Native API URL regression was fixed by omitting default entry query rather than changing existing expectations"
+  ],
+  "limits": [
+    "No Assistant code or business-data changes; App UI adoption remains separate",
+    "No normal development database upgrade, commit, push or deployment",
+    "No content hashes or automatic deletion added; historical runtime hashes unchanged",
+    "Automatic memory is a model-selected sourced tool operation, not an independent background extraction job",
+    "No claim that arbitrary model conclusions, semantic deduplication or future effective dates are correct",
+    "Undo rejects stale current versions; missing pre-migration historical snapshots cannot be reconstructed",
+    "Closing broad automatic use does not revoke pre-existing individual share grants or erase old answers"
+  ]
+}

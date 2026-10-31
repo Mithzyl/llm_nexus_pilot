@@ -17,10 +17,11 @@ from sqlalchemy.exc import IntegrityError
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.features.memory.models.product_memory import (
-    UserMemoryEntry,
     UserMemoryDisclosure,
+    UserMemoryEntry,
     UserMemoryOperation,
     UserMemoryScope,
+    UserMemoryVersion,
 )
 from nexuspilot_api.features.memory.schemas.product_memory import AppMemoryData
 from nexuspilot_api.features.memory.schemas.typed_memory import TypedMemory
@@ -50,12 +51,24 @@ class MemoryService:
     """Keep every operation inside one authenticated owner's entry and optional Nexus project."""
 
     def __init__(
-        self, db, storage, owner, entry, project_id=None, run_id=None, require_running=False
+        self,
+        db,
+        storage,
+        owner,
+        entry,
+        project_id=None,
+        run_id=None,
+        require_running=False,
+        assistant_automatic=False,
     ):
         """Accept identity only from trusted callers, never model arguments."""
         self.db, self.storage, self.owner = db, storage, owner
         self.entry, self.project_id, self.run_id = entry, project_id, run_id
         self.require_running = require_running
+        self.native_management_grant = None
+        self.assistant_automatic = bool(
+            assistant_automatic and entry == "personal_assistant" and not project_id
+        )
         self.scope_key = f"{entry}:{project_id or 'personal'}"
 
     async def authorize(self):
@@ -125,6 +138,12 @@ class MemoryService:
             else "entry",
             "version": own.version if own else 0,
             "entry_enabled": parent is None or parent.enabled,
+            "automatic_native_use": bool(
+                own
+                and own.native_use_grant
+                and self.native_management_grant
+                and own.native_use_grant == self.native_management_grant
+            ),
         }
 
     def cipher(self):
@@ -178,7 +197,7 @@ class MemoryService:
         query="",
         include_candidates=False,
     ):
-        """Read only current entries; sensitive text needs a disclosure grant for this Run."""
+        """Recall own Assistant facts; other entries retain per-Run sensitive disclosure."""
         settings = await self.settings()
         if automatic and not settings["enabled"]:
             return {"items": [], "next_offset": None, "disabled": True}
@@ -187,26 +206,50 @@ class MemoryService:
             return {"items": [], "next_offset": None}
         # Explicit current-Run grants are authoritative; caller/model IDs are not.
         # Corrections change the content version, invalidating all previous Run grants.
-        if for_model and self.run_id and self.project_id is None:
-            granted = list(await self.db.scalars(select(UserMemoryEntry).where(
-                UserMemoryEntry.scope_id == own.scope_id,
-                UserMemoryEntry.status == "active",
-                disclosure_condition(self.run_id, self.entry),
-            ).order_by(UserMemoryEntry.entry_id)))
+        if (
+            for_model
+            and self.run_id
+            and self.project_id is None
+            and self.entry != "personal_assistant"
+        ):
+            granted = list(
+                await self.db.scalars(
+                    select(UserMemoryEntry)
+                    .where(
+                        UserMemoryEntry.scope_id == own.scope_id,
+                        UserMemoryEntry.status == "active",
+                        disclosure_condition(self.run_id, self.entry),
+                    )
+                    .order_by(UserMemoryEntry.entry_id)
+                )
+            )
             if granted:
                 authorized = []
                 for row in granted:
                     body = await self.read(row.body_uri)
-                    authorized.append({"entry_id": row.entry_id, "version": row.version,
-                        "memory_type": row.memory_type, "schema_version": row.schema_version,
-                        "status": row.status, "sensitive": row.sensitive, **body})
+                    authorized.append(
+                        {
+                            "entry_id": row.entry_id,
+                            "version": row.version,
+                            "memory_type": row.memory_type,
+                            "schema_version": row.schema_version,
+                            "status": row.status,
+                            "sensitive": row.sensitive,
+                            **body,
+                        }
+                    )
                 terms = [term.casefold() for term in re.split(r"[\s,，、;；]+", query) if term]
-                matches = [item for item in authorized if not terms or any(
-                    term in item["text"].casefold() for term in terms)]
+                matches = [
+                    item
+                    for item in authorized
+                    if not terms or any(term in item["text"].casefold() for term in terms)
+                ]
                 selected = matches or authorized
-                return {"items": selected[offset:offset + limit],
-                        "next_offset": offset + limit if len(selected) > offset + limit else None,
-                        "authorized_fallback": bool(terms and not matches)}
+                return {
+                    "items": selected[offset : offset + limit],
+                    "next_offset": offset + limit if len(selected) > offset + limit else None,
+                    "authorized_fallback": bool(terms and not matches),
+                }
         rows = list(
             await self.db.scalars(
                 select(UserMemoryEntry)
@@ -232,6 +275,7 @@ class MemoryService:
             if (
                 for_model
                 and row.sensitive
+                and self.entry != "personal_assistant"
                 and not await is_disclosed(self.db, row, self.run_id, self.entry)
             ):
                 # Do not leak content or keyword matches before disclosure, but
@@ -258,6 +302,50 @@ class MemoryService:
             await self.db.rollback()
             raise
 
+    async def history(self, entry_id, *, offset=0, limit=20):
+        """Read owned encrypted version history, including forgotten entries."""
+        await self.authorize()
+        scope = await self.scope(self.project_id)
+        row = await self.db.get(UserMemoryEntry, entry_id)
+        if scope is None or row is None or row.scope_id != scope.scope_id:
+            raise MemoryFailure("memory_not_found")
+        versions = list(
+            await self.db.scalars(
+                select(UserMemoryVersion)
+                .where(UserMemoryVersion.entry_id == entry_id, UserMemoryVersion.version > 0)
+                .order_by(UserMemoryVersion.version.desc())
+                .offset(offset)
+                .limit(limit + 1)
+            )
+        )
+        items = []
+        for version in versions[:limit]:
+            body = await self.read(version.body_uri) if version.body_uri else {}
+            items.append({"version": version.version, "status": version.status, **body})
+        return {
+            "entry_id": entry_id,
+            "current_version": row.version,
+            "items": items,
+            "next_offset": offset + limit if len(versions) > limit else None,
+        }
+
+    async def retain_version(self, row, *, initial=False):
+        """Capture a locked version; version zero represents a new entry's absence."""
+        version = 0 if initial else row.version
+        if await self.db.get(UserMemoryVersion, (row.entry_id, version)) is None:
+            self.db.add(
+                UserMemoryVersion(
+                    entry_id=row.entry_id,
+                    version=version,
+                    status="forgotten" if initial else row.status,
+                    sensitive=row.sensitive,
+                    body_uri=None if initial else row.body_uri,
+                    memory_type=row.memory_type,
+                    schema_version=row.schema_version,
+                )
+            )
+            await self.db.flush()
+
     async def _mutate(self, request):
         """Lock scope settings and update versions, retaining encrypted retry comparison."""
         await self.authorize()
@@ -275,6 +363,7 @@ class MemoryService:
                 raise MemoryFailure("memory_request_conflict")
             result = dict(previous.result_json)
             if result.get("entry_id"):
+                result.setdefault("applied_version", result["version"])
                 latest = await self.db.scalar(
                     select(UserMemoryEntry)
                     .where(UserMemoryEntry.entry_id == result["entry_id"])
@@ -287,13 +376,17 @@ class MemoryService:
             await self.db.commit()
             return result
         action = request["action"]
+        if self.assistant_automatic and not (parent.enabled and own.enabled):
+            raise MemoryFailure("memory_disabled")
         typed_data = request.get("typed_data")
         if typed_data is not None:
             if action not in {"save", "propose", "correct"}:
                 raise MemoryFailure("memory_invalid_operation")
-            if not request.get("confirmed_type"):
+            if not request.get("confirmed_type") and not self.assistant_automatic:
                 raise MemoryFailure("memory_type_confirmation_required")
-            typed_data = TypeAdapter(TypedMemory).validate_python(typed_data).model_dump(mode="json")
+            typed_data = (
+                TypeAdapter(TypedMemory).validate_python(typed_data).model_dump(mode="json")
+            )
         app_data = request.get("app_data")
         if app_data is not None:
             app_data = AppMemoryData.model_validate(app_data).model_dump(mode="json")
@@ -311,16 +404,30 @@ class MemoryService:
             )
         ):
             raise MemoryFailure("memory_credentials_forbidden")
-        sensitive = bool(request.get("sensitive") or sensitive_text(text)
-                         or app_data is not None or typed_data is not None)
+        sensitive = bool(
+            request.get("sensitive")
+            or sensitive_text(text)
+            or app_data is not None
+            or typed_data is not None
+        )
         if (
             action in {"save", "propose", "correct"}
             and sensitive
             and not request.get("confirmed_sensitive")
+            and not self.assistant_automatic
         ):
             raise MemoryFailure("memory_confirmation_required")
         initial_version = own.version
-        if action == "settings":
+        if action == "automatic_sharing":
+            if not self.native_management_grant or self.project_id:
+                raise MemoryFailure("memory_not_allowed")
+            if request["expected_version"] != initial_version:
+                raise MemoryFailure("memory_version_conflict")
+            own.native_use_grant = (
+                dict(self.native_management_grant) if request["enabled"] else None
+            )
+            result = {"automatic_native_use": request["enabled"], "version": initial_version + 1}
+        elif action == "settings":
             if request["expected_version"] != initial_version:
                 raise MemoryFailure("memory_version_conflict")
             own.enabled = request["enabled"]
@@ -347,16 +454,23 @@ class MemoryService:
                 status="candidate" if action == "propose" else "active",
                 sensitive=sensitive,
                 body_uri=await self.put(
-                    {"text": text, **({"app_data": app_data} if app_data else {}),
-                     **({"typed_data": typed_data} if typed_data else {})}
+                    {
+                        "text": text,
+                        **({"app_data": app_data} if app_data else {}),
+                        **({"typed_data": typed_data} if typed_data else {}),
+                    }
                 ),
                 source_run_id=self.run_id,
                 memory_type=typed_data["memory_type"] if typed_data else "free_text",
                 schema_version=1,
-                origin_owner_user_id=self.owner, origin_entry=self.entry,
+                origin_owner_user_id=self.owner,
+                origin_entry=self.entry,
                 origin_scope_key=self.scope_key,
             )
             self.db.add(row)
+            await self.db.flush()
+            await self.retain_version(row, initial=True)
+            await self.retain_version(row)
             result = {"entry_id": row.entry_id, "version": 1, "status": row.status}
         else:
             row = await self.db.scalar(
@@ -368,12 +482,17 @@ class MemoryService:
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
-            if row is None or row.status == "forgotten":
+            if row is None or (row.status == "forgotten" and action != "undo"):
                 raise MemoryFailure("memory_not_found")
             if row.version != request.get("expected_version"):
                 raise MemoryFailure("memory_version_conflict")
+            await self.retain_version(row)
             if action == "correct":
-                if row.sensitive and not request.get("confirmed_sensitive"):
+                if (
+                    row.sensitive
+                    and not request.get("confirmed_sensitive")
+                    and not self.assistant_automatic
+                ):
                     raise MemoryFailure("memory_confirmation_required")
                 body = await self.read(row.body_uri)
                 body["text"] = text
@@ -384,6 +503,17 @@ class MemoryService:
                     row.memory_type = typed_data["memory_type"]
                 row.body_uri = await self.put(body)
                 row.sensitive = row.sensitive or sensitive
+                row.disclosure_run_id = None
+            elif action == "undo":
+                prior = await self.db.get(UserMemoryVersion, (row.entry_id, row.version - 1))
+                if prior is None:
+                    raise MemoryFailure("memory_history_unavailable")
+                if prior.status == "active" and not (parent.enabled and own.enabled):
+                    raise MemoryFailure("memory_disabled")
+                if prior.body_uri:
+                    await self.read(prior.body_uri)
+                for field in ("status", "sensitive", "body_uri", "memory_type", "schema_version"):
+                    setattr(row, field, getattr(prior, field))
                 row.disclosure_run_id = None
             elif action == "forget":
                 row.status, row.body_uri, row.disclosure_run_id = "forgotten", None, None
@@ -396,24 +526,33 @@ class MemoryService:
             elif action == "disclose":
                 if not request.get("confirmed_sensitive") or not self.run_id:
                     raise MemoryFailure("memory_confirmation_required")
-                grant = await self.db.scalar(select(UserMemoryDisclosure).where(
-                    UserMemoryDisclosure.entry_id == row.entry_id,
-                    UserMemoryDisclosure.entry_version == row.version,
-                    UserMemoryDisclosure.run_id == self.run_id,
-                    UserMemoryDisclosure.recipient_entry == self.entry,
-                ))
+                grant = await self.db.scalar(
+                    select(UserMemoryDisclosure).where(
+                        UserMemoryDisclosure.entry_id == row.entry_id,
+                        UserMemoryDisclosure.entry_version == row.version,
+                        UserMemoryDisclosure.run_id == self.run_id,
+                        UserMemoryDisclosure.recipient_entry == self.entry,
+                    )
+                )
                 if grant is None:
-                    self.db.add(UserMemoryDisclosure(
-                        entry_id=row.entry_id, entry_version=row.version, run_id=self.run_id,
-                        recipient_entry=self.entry, allowed_fields_json=["text", "app_data", "typed_data"],
-                        confirmed_at=utc_now(), request_key=request["key"],
-                    ))
+                    self.db.add(
+                        UserMemoryDisclosure(
+                            entry_id=row.entry_id,
+                            entry_version=row.version,
+                            run_id=self.run_id,
+                            recipient_entry=self.entry,
+                            allowed_fields_json=["text", "app_data", "typed_data"],
+                            confirmed_at=utc_now(),
+                            request_key=request["key"],
+                        )
+                    )
                 elif grant.revoked_at is not None:
                     grant.revoked_at, grant.confirmed_at = None, utc_now()
             else:
                 raise MemoryFailure("memory_invalid_operation")
             if action != "disclose":
                 row.version += 1
+                await self.retain_version(row)
             result = {"entry_id": row.entry_id, "version": row.version, "status": row.status}
         # A conditional revision catches stale SQLite writes as well as locking MySQL callers.
         if self.project_id:
@@ -439,6 +578,8 @@ class MemoryService:
         )
         if changed.rowcount != 1:
             raise MemoryFailure("memory_version_conflict")
+        if result.get("entry_id"):
+            result["applied_version"] = result["version"]
         self.db.add(
             UserMemoryOperation(
                 scope_id=own.scope_id,

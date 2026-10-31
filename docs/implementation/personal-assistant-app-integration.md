@@ -48,7 +48,7 @@ GET/POST `/api/v1/app/me/instructions`管理本入口用户偏好；App不能修
 
 ### 当前实现合同（2026-10-31提交前核对）
 
-本节描述当前代码，不代表下述自动记忆方向已经启用。App服务端沿用应用凭据及
+下表描述提交4958820时的兼容接口；本批新增行为见后面的自动记忆实施说明。App服务端沿用应用凭据及
 X-Application-Id、X-External-User-Id；owner和入口由保存的映射确定，不由模型或浏览器指定。
 
 | 操作 | 当前要求与结果 |
@@ -68,10 +68,36 @@ X-Application-Id、X-External-User-Id；owner和入口由保存的映射确定�
 settings当前是范围设置，不是任意单条记忆enabled字段；当前没有自动合并、撤销到上一版本或全局跨端使用开关。
 类型字段精确定义以`features/memory/schemas/typed_memory.py`为准，旧app_data仍兼容，不能替代typed_data。
 
-### 后续方向：Assistant自动记忆与Nexus统一管理（未实现）
+### Assistant自动记忆与Nexus统一管理（2026-10-31，本地实现）
+
+2026-10-31实施进行中（未提交，未部署）：新增0049版本引用表，当前正文和撤销后版本保持
+递增；undo按entry_id/expected_version仅撤销当前版本，旧记录第一次变更前保存现状，
+不伪造更早历史。Assistant自身敏感记忆按需读取及工具历史恢复已修改，native/retail仍保留
+原披露规则。save_memory已开始支持当前用户消息source_quote及查询所得目标版本的自动写入，
+不接受模型确认字段；关闭记忆时自动纠正也被拒绝。
+后续已接入App Agent工具循环，并新增Nexus来源应用切换、版本记录、写入后的撤销按钮及
+自动使用开关。0049/0050已在隔离MySQL实际迁移，MinIO加密正文保留；没有升级正常开发库。
+当前行为及限制如下，Assistant页面接入仍由另一线程处理。
+
+- Nexus的GET/POST `/api/v1/me/user-memories`及GET `/me/memory-settings`接受entry，默认native；
+  personal_assistant/retail只允许当前用户有效关联的App账号，不接受owner参数；项目路径禁止切换入口。
+- GET记忆列表附加history_entry_id读取该条已保留版本，使用offset/limit分页；不返回对象地址。
+  POST action=undo需entry_id、expected_version、key。响应applied_version是该操作实际产生的版本，
+  version可能是重试时的当前版本；二者不同不能撤销后来修改。遗忘可在同一管理会话立即撤销，
+  历史密文不自动删除；旧数据未曾保存的更早版本不能重建。
+- POST同一路径、entry=personal_assistant、action=automatic_sharing、enabled、expected_version、key，
+  由真实Nexus用户设置本端按需读取许可，默认关闭；不是模型工具操作。scope级许可包含后续新增/更新，
+  绑定目标owner及关联版本，解绑后失效，重新关联不自动恢复。关闭不撤销历史回答，也不撤销独立逐条授权。
+- query_memory的automatic_items与next_automatic_offset表示此许可下的独立分页；执行记录只保留引用，
+  生成前再次检查开关、关联、条目状态与版本，才读取原加密正文。管理可见不等于模型可用。
+- Assistant save_memory可带当前用户消息中实际存在的source_quote，无需“记住”关键词；typed_data可选，
+  更新需先查询并带entry_id/expected_version。模型不能提交确认权限字段。不是另起一个后台模型每次
+  扫描全部聊天，也不保证模型每次都能识别值得保存的事实；不按文字哈希自动合并不同条目。
+- 普通Nexus/Retail保存与披露规则继续兼容。Assistant本端可以按需读取自己的有效敏感记忆，
+  不代表跨端或任意外部工具获得相同权限。
 
 用户提出后续取消日常保存的逐条阻断确认、Assistant本端自动召回、Nexus统一管理关联入口记忆，
-以及显式开启跨端自动使用。该方向尚未改变上表接口或权限，Assistant不得仅删除确认参数后假定后端允许。
+以及显式开启跨端自动使用。当前已实现范围以上方实施说明为准；Assistant不得将此扩大为任意跨端权限。
 正式实施需同步Nexus规则、版本/来源记录及App体验，不把绑定账号本身当成已启用模型跨端使用。
 
 - 自动提取区分长期事实、临时安排与已发生经历；未来事项不冒充已发生experience。
@@ -81,7 +107,8 @@ settings当前是范围设置，不是任意单条记忆enabled字段；当前�
 - Nexus跨端管理权与模型使用权分别定义；关联失效、关闭、忘记后的行为需两端一致，不能泄露未授权字段。
 - 轻量“已记住”提示只在持久保存成功后显示；日历/地图动作与记忆保存分别报告结果。
 
-本次仅同步说明并提交已有实现；新方向的权限迁移、自动提取/合并、撤销及跨端管理界面留待下一批实现。
+本批实现保持未提交；无需额外后台模型调用。自动语义归并的质量、未来生效时间调度以及Assistant页面
+仍不由固定模型工具流程证明，不承诺所有聊天都会自动形成正确记忆。
 
 既有Authorization应用凭据、X-Application-Id和X-External-User-Id保持不变。新增：
 
