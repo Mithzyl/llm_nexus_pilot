@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { loginWithPassword, nexusFetch } from "../../lib/api";
 import { RegistrationForm } from "./RegistrationForm";
+import { PasswordResetForm } from "./PasswordResetForm";
 import type { WorkspacePrincipal } from "../../lib/types";
 
 type AuthenticationGateProps = {
@@ -24,12 +25,17 @@ export function AuthenticationGate({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetEnabled, setResetEnabled] = useState(false);
   const [registrationNotice, setRegistrationNotice] = useState("");
   useEffect(() => {
     let active = true;
     void nexusFetch<{enabled: boolean}>("auth/registration").then(result => {
       if (active) setRegistrationEnabled(result.enabled === true);
     }).catch(() => { if (active) setRegistrationEnabled(false); });
+    void nexusFetch<{enabled:boolean}>("auth/password-reset").then(result=>{
+      if(active) setResetEnabled(result.enabled === true);
+    }).catch(()=>{if(active) setResetEnabled(false);});
     return () => {active = false;};
   }, []);
 
@@ -75,9 +81,11 @@ export function AuthenticationGate({
         ) : (
           <>
             <p className="eyebrow">受保护的对话工作台</p>
-            <h1 id="authentication-title">{registering ? "注册" : "登录"}</h1>
+            <h1 id="authentication-title">{resetting ? "找回密码" : registering ? "注册" : "登录"}</h1>
             {registrationNotice && <p role="status">{registrationNotice}</p>}
-            {registering ? <RegistrationForm onBack={() => setRegistering(false)} onComplete={() => {
+            {resetting ? <PasswordResetForm onBack={()=>setResetting(false)} onComplete={()=>{
+              setResetting(false);setPassword("");setRegistrationNotice("密码已重置，原登录会话已退出，请重新登录。");
+            }} /> : registering ? <RegistrationForm onBack={() => setRegistering(false)} onComplete={() => {
               setRegistering(false); setRegistrationNotice("注册成功，请使用新账号登录。");
             }} /> : <>
             <p className="authentication-intro">使用你的账号继续。</p>
@@ -111,6 +119,8 @@ export function AuthenticationGate({
                 {isSubmitting ? "正在登录…" : "登录"}
               </button>
             </form>
+            {resetEnabled && <button type="button" disabled={isSubmitting}
+              onClick={()=>{setPassword("");setResetting(true);setRegistrationNotice("");}}>忘记密码</button>}
             {registrationEnabled && <button type="button" disabled={isSubmitting}
               onClick={() => {setPassword(""); setRegistering(true); setRegistrationNotice("");}}>注册账号</button>}
             </>}

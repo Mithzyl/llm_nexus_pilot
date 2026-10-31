@@ -2,7 +2,8 @@
 
 Run with --root /private/task-root --socket /private/socket-dir/python.sock.
 Requires an already-built nexuspilot-task-runtime:local image and local Docker.
-Each call has immutable inputs and an independent workspace. Retained directories
+Each call has fresh immutable inputs and an independent file generation inherited
+from its task's last saved generation. Retained directories
 are bounded; python_retention.py previews candidates but never deletes them.
 External call records must survive any future workspace removal. This server is
 not a cross-process workflow worker.
@@ -10,6 +11,7 @@ not a cross-process workflow worker.
 
 import argparse
 import base64
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -22,7 +24,13 @@ import uuid
 from pathlib import Path
 
 from python_retention import call_lock, confirm_publication, read_record
-from task_runtime import TaskExecutor, WorkspaceStore, atomic_json, relative_path, resolve_image
+from task_runtime import (
+    TaskExecutor,
+    WorkspaceStore,
+    atomic_json,
+    relative_path,
+    resolve_image,
+)
 
 MAX_WIRE_BYTES = 24 * 1024 * 1024
 
@@ -30,24 +38,39 @@ MAX_WIRE_BYTES = 24 * 1024 * 1024
 def validate_request(value):
     """Reject commands other than Python and bound all wire fields before workspace creation."""
     if not isinstance(value, dict) or set(value) != {
-        "scope", "call_id", "command", "inputs", "output_files",
+        "scope",
+        "call_id",
+        "command",
+        "inputs",
+        "output_files",
     }:
         raise ValueError("Invalid request")
     if str(uuid.UUID(value["call_id"])) != value["call_id"]:
         raise ValueError("Invalid call ID")
     scope = value["scope"]
-    if not isinstance(scope, dict) or set(scope) != {"user_id", "run_id", "task_id"} or any(
-        not isinstance(v, str) or not 1 <= len(v) <= 128 for v in scope.values()
+    if (
+        not isinstance(scope, dict)
+        or set(scope) != {"user_id", "run_id", "task_id"}
+        or any(not isinstance(v, str) or not 1 <= len(v) <= 128 for v in scope.values())
     ):
         raise ValueError("Invalid scope")
     command = value["command"]
-    if not isinstance(command, dict) or set(command) != {"executable", "stdin"} or (
-        command["executable"] != "python" or not isinstance(command["stdin"], str)
-        or not 1 <= len(command["stdin"].encode()) <= 65536
+    if (
+        not isinstance(command, dict)
+        or set(command) != {"executable", "stdin"}
+        or (
+            command["executable"] != "python"
+            or not isinstance(command["stdin"], str)
+            or not 1 <= len(command["stdin"].encode()) <= 65536
+        )
     ):
         raise ValueError("Only Python stdin is supported")
     outputs = value["output_files"]
-    if not isinstance(outputs, list) or len(outputs) > 8 or len(set(outputs)) != len(outputs):
+    if (
+        not isinstance(outputs, list)
+        or len(outputs) > 8
+        or len(set(outputs)) != len(outputs)
+    ):
         raise ValueError("Invalid outputs")
     for path in outputs:
         relative_path(path)
@@ -58,9 +81,10 @@ def validate_request(value):
     for name, body in encoded.items():
         relative_path(name)
         inputs[name] = base64.b64decode(body, validate=True)
-    if any(len(b) > 8 * 1024 * 1024 for b in inputs.values()) or sum(
-        map(len, inputs.values())
-    ) > 16 * 1024 * 1024:
+    if (
+        any(len(b) > 8 * 1024 * 1024 for b in inputs.values())
+        or sum(map(len, inputs.values())) > 16 * 1024 * 1024
+    ):
         raise ValueError("Input limit exceeded")
     return inputs
 
@@ -76,20 +100,67 @@ class PythonRuntime:
         self.max_workspaces = max_workspaces
 
     def execute(self, request, cancel):
-        """Lock durable call identity through execution, export and terminal receipt persistence."""
+        """Serialize a task's file generations; replay old calls without moving its current head."""
         validate_request(request)
-        with call_lock(self.store.root, request["call_id"]):
-            return self._execute(request, cancel)
+        with (
+            self.task_state(request["scope"]) as (path, state),
+            call_lock(self.store.root, request["call_id"]),
+        ):
+            call_id = request["call_id"]
+            if state.get("pending_call") not in {None, call_id}:
+                raise RuntimeError("Previous task call requires recovery")
+            index = self.store.root / f"call-{call_id}.json"
+            replay = index.exists() and read_record(index).get("terminal") is not None
+            if not replay:
+                state["pending_call"] = call_id
+                atomic_json(path, state)
+            result = self._execute(request, cancel, previous=state.get("reference"))
+            if result.get("container_removed") is True:
+                if not replay or state.get("pending_call") == call_id:
+                    if result.get("status") in {"completed", "failed"}:
+                        state["reference"] = read_record(index)["reference"]
+                    state["pending_call"] = None
+                    atomic_json(path, state)
+            return result
+
+    @contextlib.contextmanager
+    def task_state(self, scope):
+        """Resolve exact trusted scope to a random ID and lock it across processes, without hashing."""
+        with self.lock, (self.store.root / ".allocation.lock").open("a") as allocation:
+            fcntl.flock(allocation.fileno(), fcntl.LOCK_EX)
+            path = None
+            records = list(self.store.root.glob("task-*.json"))
+            for candidate in records:
+                if read_record(candidate).get("scope") == scope:
+                    path = candidate
+                    break
+            if path is None:
+                if len(records) >= self.max_workspaces:
+                    raise ValueError("Task retention limit reached")
+                path = self.store.root / f"task-{uuid.uuid4()}.json"
+                atomic_json(
+                    path, {"scope": scope, "reference": None, "pending_call": None}
+                )
+        fd = os.open(
+            path.with_suffix(".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield path, read_record(path)
+        finally:
+            os.close(fd)
 
     def confirm_publication(self, request):
         """Persist an API acknowledgement independently of disposable output snapshots."""
         return confirm_publication(self.store.root, request)
 
-    def _execute(self, request, cancel):
+    def _execute(self, request, cancel, previous=None):
         """Run once or replay retained results; missing workspace never allocates a replacement."""
         inputs = validate_request(request)
         scope, call_id = request["scope"], request["call_id"]
-        fingerprint = hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(request, sort_keys=True).encode()
+        ).hexdigest()
         with self.lock, (self.store.root / ".allocation.lock").open("a") as allocation:
             fcntl.flock(allocation.fileno(), fcntl.LOCK_EX)
             index = self.store.root / f"call-{call_id}.json"
@@ -97,24 +168,68 @@ class PythonRuntime:
                 saved = read_record(index)
                 if saved["fingerprint"] != fingerprint:
                     raise ValueError("Call mismatch")
+                if saved.get("cancelled_before_execution"):
+                    return {"status": "cancelled", "container_removed": True}
                 reference = saved["reference"]
                 if not (self.store.root / reference).is_dir():
-                    return {"error": "python_result_unavailable",
-                            "artifacts": saved.get("publication", {}).get("artifacts", [])}
+                    return {
+                        "error": "python_result_unavailable",
+                        "artifacts": saved.get("publication", {}).get("artifacts", []),
+                    }
             else:
-                if sum(p.is_dir() for p in self.store.root.iterdir()) >= self.max_workspaces:
+                inherited = {}
+                if previous:
+                    # No fallback to an empty workspace when retained state was removed.
+                    with self.store.locked(previous, scope) as (directory, state):
+                        if state["state"] != "ready":
+                            raise RuntimeError("Previous execution requires recovery")
+                        inherited = self.store.snapshot_files(directory, state)
+                if (
+                    sum(p.is_dir() for p in self.store.root.iterdir())
+                    >= self.max_workspaces
+                ):
                     raise ValueError("Workspace retention limit reached")
                 reference = self.store.create(
-                    scope, inputs=inputs,
-                    hashes={n: hashlib.sha256(b).hexdigest() for n, b in inputs.items()},
+                    scope,
+                    inputs=inputs,
+                    hashes={
+                        n: hashlib.sha256(b).hexdigest() for n, b in inputs.items()
+                    },
                     allow_execute=True,
                 )
-                atomic_json(index, {"reference": reference, "fingerprint": fingerprint,
-                                    "scope": scope})
+                if inherited:
+                    with self.store.locked(reference, scope) as (directory, state):
+                        state["snapshot"] = self.store.save_snapshot(
+                            directory, inherited
+                        )
+                        self.store.save_state(directory, state)
+                atomic_json(
+                    index,
+                    {
+                        "reference": reference,
+                        "fingerprint": fingerprint,
+                        "scope": scope,
+                    },
+                )
         if cancel.is_set():
+            saved = read_record(index)
+            saved["cancelled_before_execution"] = True
+            saved["terminal"] = {
+                "status": "cancelled",
+                "container_removed": True,
+                "finished_at": time.time(),
+                "outputs": {},
+                "missing_outputs": [],
+            }
+            atomic_json(index, saved)
             return {"status": "cancelled", "container_removed": True}
         result = self.executor.execute(
-            reference, scope, call_id, request["command"], timeout_seconds=30, cancel=cancel,
+            reference,
+            scope,
+            call_id,
+            request["command"],
+            timeout_seconds=30,
+            cancel=cancel,
         )
         result = dict(result)
         available = {f["path"] for f in result.pop("files", [])}
@@ -129,14 +244,26 @@ class PythonRuntime:
                     ).decode()
         saved = read_record(index)
         saved.setdefault("scope", scope)
-        saved.setdefault("terminal", {
-            "status": result["status"], "container_removed": result["container_removed"],
-            "finished_at": time.time(),
-            "outputs": {path: {"size_bytes": len(base64.b64decode(body)),
-                               "content_hash": hashlib.sha256(base64.b64decode(body)).hexdigest()}
-                        for path, body in result["files"].items()},
-            "missing_outputs": [p for p in request["output_files"] if p not in result["files"]],
-        })
+        saved.setdefault(
+            "terminal",
+            {
+                "status": result["status"],
+                "container_removed": result["container_removed"],
+                "finished_at": time.time(),
+                "outputs": {
+                    path: {
+                        "size_bytes": len(base64.b64decode(body)),
+                        "content_hash": hashlib.sha256(
+                            base64.b64decode(body)
+                        ).hexdigest(),
+                    }
+                    for path, body in result["files"].items()
+                },
+                "missing_outputs": [
+                    p for p in request["output_files"] if p not in result["files"]
+                ],
+            },
+        )
         atomic_json(index, saved)
         result["retention_receipt_required"] = True
         return result
@@ -207,8 +334,10 @@ class Server(socketserver.ThreadingUnixStreamServer):
         """Bind only in an owner-private directory; never remove an existing socket or file."""
         parent = Path(path).parent
         info = parent.stat()
-        if not Path(path).is_absolute() or parent.is_symlink() or (
-            info.st_uid != os.getuid() or info.st_mode & 0o077
+        if (
+            not Path(path).is_absolute()
+            or parent.is_symlink()
+            or (info.st_uid != os.getuid() or info.st_mode & 0o077)
         ):
             raise ValueError("Socket parent must be private")
         self.runtime = runtime

@@ -86,6 +86,7 @@ class MCPConnection(EmptyArguments):
     version: str = Field(default="1.0.0", pattern=r"^\d+\.\d+\.\d+$")
     tools: dict[str, MCPApproval] = Field(min_length=1, max_length=32)
     allow_local_http: bool = False
+    permission_revision: int = Field(default=0, exclude=True)
 
     @model_validator(mode="after")
     def approved_endpoint(self):
@@ -181,11 +182,13 @@ async def native_task_owner(db, run_id, task_id):
 
 
 async def approved_connections(db, run_id, task_id):
-    """Filter connections by persisted owner before exposing aliases to the model."""
+    """Apply saved task ownership and freshly committed user restrictions before each call."""
     owner = await native_task_owner(db, run_id, task_id)
     if owner is None:
         return {}
-    return {key: config for key, config in connections().items() if owner in config.user_ids}
+    from nexuspilot_api.services.mcp_management import effective_connections
+
+    return await effective_connections(db, owner)
 
 
 class MCPTransport:

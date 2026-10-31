@@ -1,0 +1,18 @@
+{
+  "status": "focused persistence and fixed-model workflow checks passed",
+  "fast": {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_mcp_catalog.py apps/api/tests/test_mcp_management.py apps/api/tests/test_task_extensions.py -k 'mcp and not live' -q", "result":"23 passed, 16 deselected"},
+  "mysql_revocation": {
+    "command":"apps/api/.venv/bin/python deployments/verification/product_memory_check.py --mcp-revocation",
+    "result":"1 passed in 3.47s",
+    "database":"authz_audit_101dadf1a5464be8a31d7d0c3dc29679",
+    "assertions":["committed disable observed during pending operation", "local pending operation cancelled", "permission_denied tool result without successful body"]
+  },
+  "mysql_catalog": {
+    "command":"apps/api/.venv/bin/python deployments/verification/product_memory_check.py --mcp-catalog",
+    "result":"1 passed in 6.80s",
+    "database":"authz_audit_80b004ee839e4550b7f438c3a00072f5",
+    "assertions":["search_tools returns independent entry", "describe_tools loads schema", "independent alias invokes existing MCP adapter", "result reaches model message and workflow completes"]
+  },
+  "limitations":["Real local MySQL, fixed model and simulated MCP invocation; no external provider or Amap requests.", "Does not claim a remote server stopped its task.", "Browser management was verified in the separate browser record.", "Test databases retained; no automatic deletion."],
+  "paid_calls":0
+}

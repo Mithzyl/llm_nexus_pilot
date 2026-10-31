@@ -1,0 +1,25 @@
+{
+  "status": "Nexus browser flow passed; real Assistant integration not executed",
+  "database": "identity_acceptance_05dc8b033851",
+  "migration": "20261030_0042",
+  "model_calls": 0,
+  "checks": {
+    "browser_login": "passed",
+    "new_fragment_received_on_existing_page": "passed after hashchange fix",
+    "explicit_confirmation": "passed",
+    "refresh_restores_active_link": "passed",
+    "consumed_ticket_rejected_without_hiding_saved_link": "passed",
+    "explicit_revoke_and_refresh": "passed",
+    "mysql_status": "revoked",
+    "mysql_version": 2,
+    "mysql_app_owner_unchanged": true,
+    "mysql_owners_remain_distinct": true,
+    "mobile_horizontal_overflow": false
+  },
+  "screenshots": ["output/playwright/account-link-active-mobile-20261030.png", "output/playwright/account-link-revoked-desktop-20261030.png"],
+  "limitations": [
+    "App side consent was created through the local fixture service for a synthetic account, not from real Assistant UI.",
+    "Real Nexus API, browser and isolated MySQL were used. MinIO was configured but this account-link flow stores no memory body.",
+    "Cross-owner memory sharing and concurrent MySQL confirmation were not validated in this browser run."
+  ]
+}

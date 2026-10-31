@@ -124,6 +124,7 @@ class ApplicationToolConfiguration(BaseModel):
     base_url: str
     operations: dict[str, str]
     allow_local_http: bool = False
+    login_redirect_uris: list[str] = Field(default_factory=list, max_length=10)
 
 
 def application_tool_configurations():

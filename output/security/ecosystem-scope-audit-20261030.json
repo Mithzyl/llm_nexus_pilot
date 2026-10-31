@@ -1,0 +1,37 @@
+{
+  "overall_status":"in_progress; optional Assistant login delivered and real two-app record reviewed; App memory/instruction settings integration remains",
+  "current_regressions":[
+    {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_user_interaction_execution.py apps/api/tests/test_quick_response_recovery.py apps/api/tests/test_quick_response_submission.py apps/api/tests/test_linked_memory_sharing.py apps/api/tests/test_user_instructions.py apps/api/tests/test_prompt_scenes.py apps/api/tests/test_account_linking.py apps/api/tests/test_application_sso.py apps/api/tests/test_mcp_management.py apps/api/tests/test_mcp_catalog.py -q --tb=short", "result":"18 passed in 5.21s", "scope":"deterministic local regression; no paid provider"},
+    {"command":"cd apps/web && node --import tsx --test tests/pending-submissions.test.ts tests/workflow-recovery.test.ts tests/memory-disclosure.test.ts tests/typed-memory-form.test.ts tests/login-sessions.test.ts tests/proxy-policy.test.ts", "result":"21 passed", "scope":"frontend pure rules and HTTP mocks, not new browser acceptance"}
+  ],
+  "evidence_groups":{
+    "p0_submission_recovery":["quick-worker-browser-20261029.json","python-workflow-browser-20261030.json","human-recovery-followup-20261031.json","pending-home-recovery-20261031.json"],
+    "p0_memory":["linked-memory-sharing-20261030.json","shared-memory-recipient-20261030.json","typed-memory-editor-20261030.json","project-python-memory-20261030.json"],
+    "p0_instructions":["user-instructions-browser-20261029.json","linked-instructions-20261030.json","app-prompt-injection-20261030.json"],
+    "p1_identity":["assistant-unified-login-20261031.json","sso-browser-20261030.json","account-link-browser-20261030.json","account-link-concurrency-20261030.json","password-reset-20261030.json","login-sessions-20261030.json","app-run-scope-20261030.json","app-diagnostics-20261030.json"],
+    "p1_tools":["mcp-management-browser-20261030.json","mcp-catalog-revocation-20261030.json","python-continuation-20261030.json","python-workflow-browser-20261030.json","project-python-memory-20261030.json"]
+  },
+  "assistant_readonly_check":{
+    "file":"/Users/mith/Desktop/project/superapp-next/services/assistant-api/src/assistant_api/routers/auth.py",
+    "observed":"Own local registration, password login and UserSession issuance; module explicitly states it does not use Nexus accounts",
+    "search":"No code_verifier, complete-registration, auth/app/exchange or application-login hits in services/assistant-api and apps excluding generated/dependency files",
+    "limitation":"Read-only evidence; no App edit or actual unified-login acceptance"
+  },
+  "followup_readonly_audit_20261031": {
+    "assistant_checkout":"/Users/mith/Desktop/project/superapp-next",
+    "inspection":"git status and targeted search of services/assistant-api/src and apps for code_verifier, complete-registration, auth/app/exchange, application-login, nexus login",
+    "result":"Working tree has existing App UI edits; targeted search found no login integration match. This does not inspect unrelated worktrees or prove another thread has made no progress.",
+    "required_external_delivery":"Assistant implementation checkout/commit and local callback/startup configuration from the user-assigned thread, followed by actual two-app acceptance",
+    "nexus_remaining_known_recovery_defect":"Home multi-record selection from prior audit was fixed and browser verified; see pending-home-recovery-20261031.json",
+    "validation":"No repeated paid calls or broad test rerun in this audit"
+  },
+  "login_delivery_review_20261031": {
+    "evidence":"assistant-unified-login-20261031.json supplied by the user from another thread; reviewed, not rerun here",
+    "implementation":"Assistant nexus_login.py exchanges through /api/v1/auth/app/exchange and uses _issue_session for the mapped existing user; BFF retains state/PKCE in temporary HttpOnly cookie; Nexus authorize page supports fragment callback",
+    "previous_blocker":"resolved for optional linked-account login",
+    "remaining_app_gap":"routers/memory.py still requires local_run_id for commands and lacks typed_data/confirmed_type; no entry instructions or share-management integration found in inspected client",
+    "boundary":"No Assistant edits; login evidence does not prove memory/instructions UI acceptance or global single logout"
+  },
+  "remaining_authority_or_environment":["Assistant no-Run memory management, typed-memory confirmation, sharing and entry instructions require App-side implementation and joint acceptance; this thread must not edit Assistant", "Actual SMTP delivery requires configured mail service and authorization", "Real provider cache comparison requires authorized paid calls"],
+  "not_changed":["Normal development database/service state", "No commit/push/deployment", "No automatic deletion", "No new content hash"]
+}

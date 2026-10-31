@@ -1,4 +1,4 @@
-import type { AgentWorkflowCreate, ProviderName, ReasoningConfiguration } from "./types";
+import type { AgentWorkflowCreate, ProviderName, ReasoningConfiguration, RunStatus } from "./types";
 import type { MemoryDisclosureSelection } from "./memory-disclosure";
 
 type SubmissionIdentity = {
@@ -57,7 +57,9 @@ function parseRecords(raw: string | null, owner: string): PendingSubmission[] {
       item.memoryDisclosures.length > 400 || item.memoryDisclosures.some(grant =>
         !grant || typeof grant.entry_id !== "string" || grant.entry_id.length !== 36 ||
         !Number.isInteger(grant.version) || grant.version < 1 ||
-        !["personal", "project"].includes(grant.scope))))
+        !["personal", "project"].includes(grant.scope) ||
+        (grant.grant_id !== undefined && (typeof grant.grant_id !== "string" ||
+          grant.grant_id.length !== 36 || !Number.isInteger(grant.grant_version) || grant.grant_version! < 1)))))
   )) throw new Error("无法读取待恢复请求，请勿重复提交。");
   return values;
 }
@@ -97,4 +99,20 @@ export function finishPendingSubmission(storage: SubmissionStorage, owner: strin
     else storage.removeItem(key(owner));
   }
   storage.removeItem(key(owner) + ":item:" + encodeURIComponent(id));
+}
+
+/** Remove only exact turns proven terminal; missing or failed reads never imply completion. */
+export async function reconcilePendingSubmissions(
+  storage: SubmissionStorage, owner: string, records: PendingSubmission[],
+  readStatus: (record: PendingSubmission) => Promise<RunStatus | null>,
+): Promise<PendingSubmission[]> {
+  const remaining: PendingSubmission[] = [];
+  for (const record of records) {
+    if (record.owner !== owner) throw new Error("待恢复请求不属于当前用户。");
+    const status = record.sessionId ? await readStatus(record) : null;
+    if (status && ["completed", "failed", "cancelled"].includes(status)) {
+      finishPendingSubmission(storage, owner, record.id);
+    } else remaining.push(record);
+  }
+  return remaining;
 }

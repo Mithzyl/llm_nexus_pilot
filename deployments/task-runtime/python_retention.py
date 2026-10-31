@@ -89,6 +89,13 @@ def preview(root, now=None):
     now = time.time() if now is None else now
     results = []
     known = set()
+    task_heads = set()
+    invalid_task_metadata = False
+    for task_index in root.glob("task-*.json"):
+        try:
+            task_heads.add(read_record(task_index).get("reference"))
+        except (OSError, ValueError, TypeError):
+            invalid_task_metadata = True
     for index in sorted(root.glob("call-*.json")):
         row = {"call_id": index.stem[5:], "eligible": False, "reason": "invalid_metadata"}
         fd = None
@@ -135,6 +142,8 @@ def preview(root, now=None):
                     row["reason"] = "execution_unconfirmed"
                 elif not saved.get("publication"):
                     row["reason"] = "publication_pending"
+                elif invalid_task_metadata or reference in task_heads:
+                    row["reason"] = "task_continuation_retained"
                 else:
                     hours = 24 if terminal["status"] == "completed" else 72
                     row["eligible_after"] = max(terminal["finished_at"],

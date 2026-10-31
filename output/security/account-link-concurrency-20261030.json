@@ -1,0 +1,20 @@
+{
+  "command": "apps/api/.venv/bin/python deployments/verification/product_memory_check.py --account-link-concurrency",
+  "result": "3 passed in 8.72s",
+  "database_backend": "real local MySQL",
+  "cases": [
+    {"case": "same ticket confirmed concurrently", "outcome": "one confirmed, one rejected, one link"},
+    {"case": "two tickets for one App account", "outcome": "one confirmed, one rejected, one link"},
+    {"case": "two accounts in one App for one Nexus user", "outcome": "one confirmed, one rejected, one link"}
+  ],
+  "retained_databases": [
+    "authz_audit_f570b3c87281494f82044999f1ad054b",
+    "authz_audit_d9872f5b57224bde88e98d2d4cc3639a",
+    "authz_audit_f80daa03b86b470fa6ffb661277da2f9"
+  ],
+  "limitations": [
+    "Synthetic identities and two concurrent service transactions, not real Assistant traffic.",
+    "Does not claim coverage of every cross-App deadlock, revoke race or operational failure.",
+    "No model calls, deployment or automatic data deletion."
+  ]
+}

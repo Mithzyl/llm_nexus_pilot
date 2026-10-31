@@ -86,11 +86,15 @@ async def create_run(
             if (project is None or project.owner_user_id != payload.user_id
                     or project.status.value != "active"):
                 raise ResourceNotFoundError("Project")
-    run = LlmRun(**payload.model_dump(), project_id=project_id, status=RunStatus.PENDING)
+    run = LlmRun(**payload.model_dump(exclude={"scene_id"}), project_id=project_id, status=RunStatus.PENDING)
     db_session.add(run)
     from nexuspilot_api.features.memory.models.product_memory import MemoryRunPermission
 
     await db_session.flush()
+    from nexuspilot_api.features.identity.services.user_instructions import pin_run_instructions
+    await pin_run_instructions(db_session, run, db_session.info.get("memory_api_entry", "native"))
+    from nexuspilot_api.services.prompt_scene_service import pin_scene
+    await pin_scene(db_session, run, db_session.info.get("memory_api_entry", "native"), payload.scene_id)
     db_session.add(MemoryRunPermission(
         run_id=run.run_id, allowed=bool(db_session.info.get("memory_tools_allowed", False)),
     ))
@@ -335,6 +339,9 @@ async def cancel_run(db_session: AsyncSession, run_id: str) -> LlmRun:
             task.status = TaskStatus.CANCELLED
             task.completed_at = now
 
+    from nexuspilot_api.services.user_interactions import cancel_interactions
+
+    await cancel_interactions(db_session, run_id)
     if cancellation_pending:
         run.status = RunStatus.CANCEL_REQUESTED
         run.completed_at = None

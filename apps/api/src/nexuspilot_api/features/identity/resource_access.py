@@ -45,6 +45,7 @@ def uses_json_body(content_type: str | None) -> bool:
 
 
 RESOURCES = {
+    "interaction_id": m.UserInteraction,
     "user_id": m.User,
     "owner_user_id": m.User,
     "session_id": m.LlmSession,
@@ -101,11 +102,19 @@ SOURCE_TYPES = {
 
 
 async def require_resource_owner(db: AsyncSession, model, identifier: str, user_id: str) -> None:
-    """Resolve an immutable owner through a bounded persisted parent chain; deny missing owners."""
+    """Check persisted owner and, for App callers, exact Run mapping along the parent chain."""
     for _ in range(6):
         record = await db.scalar(select(model).where(inspect(model).primary_key[0] == identifier))
         if record is None:
             raise ResourceNotFoundError("Resource")
+        mapping_id = db.info.get("authorized_application_mapping_id")
+        run_id = getattr(record, "run_id", None)
+        if mapping_id and run_id:
+            from nexuspilot_api.features.identity.models.applications import RunApplicationContext
+
+            context = await db.get(RunApplicationContext, run_id, populate_existing=True)
+            if context is None or context.mapping_id != mapping_id:
+                raise ResourceNotFoundError("Resource")
         for field in ("owner_user_id", "user_id"):
             owner = getattr(record, field, None)
             if owner is not None:
@@ -223,11 +232,15 @@ async def authorize_resource_request(
     # Personal execute keys do not implicitly grant persistent memory mutation.
     db.info["memory_tools_allowed"] = principal.authentication_method != "personal_api_key"
     db.info["memory_api_entry"] = "native"
-    if (policy in {("POST", "/runs/{run_id}/user-memories"), ("POST", "/me/user-memories"),
+    if (policy in {("POST", "/me/instructions"), ("POST", "/runs/{run_id}/shared-memory-disclosures"),
+                   ("POST", "/me/memory-shares"), ("POST", "/me/memory-shares/revoke"),
+                   ("POST", "/runs/{run_id}/user-memories"), ("POST", "/me/user-memories"),
                    ("POST", "/projects/{project_id}/user-memories")}
             and not db.info["memory_tools_allowed"]):
         raise HTTPException(403, "个人 Key 尚未授予记忆管理权限。")
     if principal.authentication_method == "personal_api_key":
+        if request.method == "POST" and route.endswith("/interactions/{interaction_id}/reply"):
+            raise HTTPException(403, "个人 Key 不能代替用户回答或批准。")
         required = "read" if request.method in {"GET", "HEAD"} else "execute"
         if required not in principal.scopes:
             raise HTTPException(403, "Personal API key permission is insufficient")

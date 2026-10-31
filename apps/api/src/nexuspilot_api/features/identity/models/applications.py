@@ -20,13 +20,14 @@ class ApplicationUserMapping(TimestampMixin, Base):
     __tablename__ = "application_user_mappings"
     __table_args__ = (
         UniqueConstraint("application_id", "external_user_id", name="uq_application_external_user"),
+        UniqueConstraint("application_id", "pilot_principal_id", name="uq_application_principal"),
     )
     mapping_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     application_id: Mapped[str] = mapped_column(ForeignKey("applications.application_id"))
     external_user_id: Mapped[str] = mapped_column(
         String(128).with_variant(String(128, collation="utf8mb4_bin"), "mysql")
     )
-    pilot_principal_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), unique=True)
+    pilot_principal_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"), index=True)
     is_enabled: Mapped[bool] = mapped_column(default=True)
 
 

@@ -11,6 +11,7 @@ no automatic deletion is enabled. Printed paths/IDs contain no credentials.
 """
 
 import asyncio
+import argparse
 import json
 import os
 from pathlib import Path
@@ -162,9 +163,74 @@ async def seed_model():
     await engine.dispose()
 
 
+async def seed_login_application(directory):
+    """Register a synthetic App identity and private consent ticket, never real App users."""
+    from nexuspilot_api.infrastructure.database import database_session_factory, engine
+    from nexuspilot_api.features.identity.models.applications import Application
+    from nexuspilot_api.features.identity.services.application_identity import resolve_application_user
+    from nexuspilot_api.features.identity.services.account_linking import begin_link
+
+    async with database_session_factory() as db:
+        db.add(Application(application_id="personal_assistant"))
+        await db.commit()
+        mapping = await resolve_application_user(db, application_id="personal_assistant",
+                                                external_user_id="synthetic-app-account")
+        ticket = await begin_link(db, mapping_id=mapping.mapping_id)
+        fd = os.open(directory / "link-ticket.json", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as output:
+            json.dump({"ticket": ticket}, output)
+    await engine.dispose()
+
+
 def main():
     """Own the isolated API/Web/mail lifecycle while retaining test data for inspection."""
     root, directory, name, api_key = configure()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sso", action="store_true", help="Enable a synthetic approved login client")
+    parser.add_argument("--mcp", action="store_true", help="Enable a local MCP protocol fixture and test login")
+    parser.add_argument("--password-reset", action="store_true", help="Enable recovery with registration closed and a synthetic login")
+    parser.add_argument("--shared-memory", action="store_true", help="Seed an explicitly linked App memory for recipient browser acceptance")
+    parser.add_argument("--python-continuation", action="store_true", help="Use real local Python executor with fixed two-call model responses")
+    parser.add_argument(
+        "--worker",
+        action="store_true",
+        help="Validate durable quick replies with a separate fixed-model Worker",
+    )
+    parser.add_argument(
+        "--crash-after-tool",
+        action="store_true",
+        help="Exit the fixture Worker once after a committed tool result and restart it",
+    )
+    args = parser.parse_args()
+    runtime = None
+    if args.python_continuation:
+        runtime_directory = Path(tempfile.mkdtemp(prefix="npy-", dir="/tmp"))
+        os.environ["NEXUS_FIXTURE_PYTHON_CONTINUATION"] = "1"
+        os.environ["NEXUSPILOT_PYTHON_RUNTIME_SOCKET"] = str(runtime_directory / "p.sock")
+        os.environ["NEXUSPILOT_PYTHON_EXECUTION_USER_IDS"] = '["python-fixture-user"]'
+        runtime = subprocess.Popen([sys.executable, str(root / "deployments/task-runtime/serve_python.py"),
+            "--root", str(runtime_directory / "workspaces"), "--socket", str(runtime_directory / "p.sock")],
+            env={key:value for key,value in os.environ.items() if key in {"PATH","HOME","TMPDIR","DOCKER_HOST","DOCKER_CONTEXT"}})
+        print(f"Fixture Python root={runtime_directory}", flush=True)
+    if args.password_reset:
+        os.environ["NEXUSPILOT_PASSWORD_RESET_ENABLED"] = "true"
+        os.environ["NEXUSPILOT_REGISTRATION_ENABLED"] = "false"
+    mcp_token = None
+    if args.mcp:
+        from mcp_browser_fixture import configure_mcp
+        mcp_token = configure_mcp()
+    if args.sso:
+        # The callback is intercepted by browser acceptance, never sent to a real Assistant.
+        os.environ["NEXUSPILOT_APP_TOOLS_JSON"] = json.dumps({"personal_assistant": {
+            "inbound_key": secrets.token_urlsafe(32),
+            "service_token": secrets.token_urlsafe(32),
+            "base_url": "http://127.0.0.1:18013",
+            "allow_local_http": True,
+            "operations": {"personal_assistant_search_notes": "/tools"},
+            "login_redirect_uris": ["http://127.0.0.1:18013/callback"],
+        }})
+    if args.worker:
+        os.environ["NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND"] = "worker"
     asyncio.run(prepare_database(name))
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -172,6 +238,27 @@ def main():
         check=True,
     )
     asyncio.run(seed_model())
+    if args.python_continuation:
+        from mcp_browser_fixture import seed_user
+        asyncio.run(seed_user(directory, user_id="python-fixture-user", email="python@example.test",
+            display_name="Python Fixture", filename="python-login.json"))
+    if args.shared_memory:
+        from mcp_browser_fixture import seed_user
+        from shared_memory_browser_fixture import seed_shared_memory
+        asyncio.run(seed_user(directory, user_id="shared-fixture-user", email="shared@example.test",
+            display_name="Shared Memory Fixture", filename="shared-login.json"))
+        asyncio.run(seed_shared_memory())
+    if args.password_reset:
+        from mcp_browser_fixture import seed_user
+        asyncio.run(seed_user(directory,user_id="reset-fixture-user",email="reset-fixture@example.test",
+            display_name="Recovery Fixture",filename="reset-login.json"))
+    mcp_server = None
+    if args.mcp:
+        from mcp_browser_fixture import seed_user, start_server
+        asyncio.run(seed_user(directory))
+        mcp_server, mcp_thread = start_server(mcp_token)
+    if args.sso:
+        asyncio.run(seed_login_application(directory))
     from serve_memory_fixture import app, fixture_lifespan
     import uvicorn
 
@@ -179,7 +266,11 @@ def main():
     server = socketserver.TCPServer(("127.0.0.1", 18012), mailbox_handler(directory))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    env = {key: value for key, value in os.environ.items() if not key.startswith("NEXUSPILOT_")}
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("NEXUSPILOT_")
+    }
     env.update(NEXUSPILOT_API_URL="http://127.0.0.1:18011", NEXUSPILOT_API_KEY=api_key)
     web = subprocess.Popen(
         ["npm", "run", "dev", "--", "--hostname", "127.0.0.1", "--port", "3117"],
@@ -187,14 +278,67 @@ def main():
         env=env,
     )
     print(f"Fixture database={name}; private inbox directory={directory}", flush=True)
+    worker_env = dict(os.environ)
+    if args.crash_after_tool:
+        if not args.worker:
+            raise ValueError("--crash-after-tool requires --worker")
+        worker_env["NEXUS_FIXTURE_CRASH_AFTER_TOOL"] = str(
+            directory / "worker-crash-marker"
+        )
+    worker_command = [
+        sys.executable,
+        str(root / "deployments/verification/serve_memory_fixture.py"),
+        "--role",
+        "worker",
+    ]
+    workers = (
+        [subprocess.Popen(worker_command, cwd=root, env=worker_env)]
+        if args.worker
+        else []
+    )
+    stopped = threading.Event()
+    worker_lock = threading.Lock()
+
+    def supervise_fixture_worker():
+        """Restart only this fixture's intentional exit once; never touch other local processes."""
+        while not stopped.wait(0.5):
+            with worker_lock:
+                if workers and workers[0].poll() == 86:
+                    previous = workers[0].pid
+                    workers[0] = subprocess.Popen(
+                        worker_command, cwd=root, env=worker_env
+                    )
+                    print(
+                        f"Fixture Worker crash/restart: {previous} -> {workers[0].pid}",
+                        flush=True,
+                    )
+                    return
+
+    supervisor = threading.Thread(target=supervise_fixture_worker, daemon=True)
+    if args.crash_after_tool:
+        supervisor.start()
     try:
         uvicorn.run(app, host="127.0.0.1", port=18011, access_log=False)
     finally:
+        stopped.set()
+        if args.crash_after_tool:
+            supervisor.join(timeout=3)
+        with worker_lock:
+            if workers and workers[0].poll() is None:
+                workers[0].terminate()
+                workers[0].wait(timeout=10)
         web.terminate()
         web.wait(timeout=10)
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+        if mcp_server:
+            mcp_server.shutdown()
+            mcp_server.server_close()
+            mcp_thread.join(timeout=2)
+        if runtime and runtime.poll() is None:
+            runtime.terminate()
+            runtime.wait(timeout=10)
 
 
 if __name__ == "__main__":

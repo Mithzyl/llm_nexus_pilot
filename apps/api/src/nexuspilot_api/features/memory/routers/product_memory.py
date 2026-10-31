@@ -14,6 +14,62 @@ from nexuspilot_api.routers.common import DatabaseSessionDependency, ObjectStora
 
 router = APIRouter(tags=["product-memory"])
 management_router = APIRouter(tags=["product-memory-management"])
+app_management_router = APIRouter(tags=["application-memory-management"])
+
+
+async def application_management_service(db, storage):
+    """Resolve owner and entry exclusively from the authenticated application mapping."""
+    owner, entry = db.info.get("authorized_user_id"), db.info.get("memory_api_entry")
+    if not owner or entry not in {"personal_assistant", "retail"}:
+        raise HTTPException(403, "Application memory requires an authenticated application")
+    service = MemoryService(db, storage, owner, entry)
+    await service.authorize()
+    return service
+
+
+@app_management_router.get("/me/user-memories")
+async def get_application_memories(
+    db: DatabaseSessionDependency,
+    storage: ObjectStorageDependency,
+    offset: int = Query(0, ge=0, le=10000),
+    limit: int = Query(20, ge=1, le=50),
+):
+    """Read the current App user's own memory without provisioning a Run."""
+    try:
+        return await (await application_management_service(db, storage)).query(
+            offset=offset, limit=limit
+        )
+    except MemoryFailure as error:
+        raise memory_http_error(error) from None
+
+
+@app_management_router.get("/me/memory-settings")
+async def get_application_memory_settings(
+    db: DatabaseSessionDependency, storage: ObjectStorageDependency
+):
+    """Read only the authenticated App entry's setting, independently of Nexus settings."""
+    try:
+        return await (await application_management_service(db, storage)).settings()
+    except MemoryFailure as error:
+        raise memory_http_error(error) from None
+
+
+@app_management_router.post("/me/user-memories")
+async def post_application_memory(
+    payload: MemoryCommand,
+    db: DatabaseSessionDependency,
+    storage: ObjectStorageDependency,
+):
+    """Apply App decisions as JSON-safe fields, rejecting project scope and global disclosure."""
+    try:
+        if payload.scope != "personal":
+            raise MemoryFailure("memory_project_required")
+        service = await application_management_service(db, storage)
+        return await service.mutate(
+            payload.model_dump(mode="json", exclude_none=True, exclude={"scope"})
+        )
+    except MemoryFailure as error:
+        raise memory_http_error(error) from None
 
 
 async def management_service(db, storage, project_id=None):
@@ -71,13 +127,15 @@ async def post_management_memory(
     storage: ObjectStorageDependency,
     project_id: str | None = None,
 ):
-    """Apply a user operation; disclosure still requires a Run and cannot be granted globally."""
+    """Persist JSON-safe date/time fields; disclosure still requires an explicitly selected Run."""
     try:
         validate_management_target(request, project_id)
         if payload.scope != ("project" if project_id else "personal"):
             raise MemoryFailure("memory_project_required")
         service = await management_service(db, storage, project_id)
-        return await service.mutate(payload.model_dump(exclude_none=True, exclude={"scope"}))
+        return await service.mutate(
+            payload.model_dump(mode="json", exclude_none=True, exclude={"scope"})
+        )
     except MemoryFailure as error:
         raise memory_http_error(error) from None
 
@@ -151,9 +209,11 @@ async def post_memory(
     db: DatabaseSessionDependency,
     storage: ObjectStorageDependency,
 ):
-    """Execute an authenticated explicit user action; models cannot call this HTTP controller."""
+    """Execute an explicit user action with JSON-safe fields; models cannot call this controller."""
     try:
         service = await request_memory_service(db, storage, run_id, payload.scope)
-        return await service.mutate(payload.model_dump(exclude_none=True, exclude={"scope"}))
+        return await service.mutate(
+            payload.model_dump(mode="json", exclude_none=True, exclude={"scope"})
+        )
     except MemoryFailure as error:
         raise memory_http_error(error) from None

@@ -76,6 +76,7 @@ from nexuspilot_api.services.model_reasoning_service import (
 from nexuspilot_api.services.model_stream_progress_store import persist_stream_progress
 from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
 from nexuspilot_api.services.run_cancellation_watch import watch_run_cancellation
+from nexuspilot_api.features.identity.services.user_instructions import apply_run_instructions
 from nexuspilot_api.services.tool_context import (
     estimate_messages_tokens,
     estimate_text_tokens,
@@ -157,6 +158,7 @@ class ModelInvocationService:
         tool_messages: list[Message] | None = None,
         request_type: str | None = None,
         defer_structured_validation: bool = False,
+        on_text_delta=None,
         tool_history_before_input: bool = False,
         runtime_source_input: RuntimeSourceInput | None = None,
     ) -> ResponsesResult:
@@ -169,6 +171,8 @@ class ModelInvocationService:
         """
 
         model_attempt_id = new_id()
+        from nexuspilot_api.services.prompt_scene_service import apply_scene
+        payload = await apply_scene(self.db_session, payload)
         request, context_build_id = await self._apply_runtime_context(
             payload,
             payload.to_model_request(),
@@ -177,6 +181,7 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        request = await apply_run_instructions(self.db_session, self.storage, payload.run_id, request)
         request = await self._append_tool_history(
             request, context_build_id, tool_messages,
             tool_history_before_input=tool_history_before_input,
@@ -210,7 +215,19 @@ class ModelInvocationService:
                 attempt_id=model_attempt.attempt_id,
                 interval_seconds=STREAM_PROGRESS_INTERVAL_SECONDS,
             ):
-                response = await provider.generate(request)
+                if on_text_delta is None:
+                    response = await provider.generate(request)
+                else:
+                    response = None
+                    async for event in provider.stream(request):
+                        if event.type == StreamEventType.TEXT_DELTA:
+                            await on_text_delta(event.data.get("delta", ""))
+                        elif event.type == StreamEventType.COMPLETED:
+                            response = ModelResponse.model_validate(event.data["response"])
+                        elif event.type == StreamEventType.FAILED:
+                            raise ModelProviderError("provider_stream_failed", "Provider stream failed.")
+                    if response is None:
+                        raise ModelProviderError("provider_stream_incomplete", "Provider stream did not complete.")
             response = self._apply_price(response, request.provider, request.model)
             response = self._project_response_reasoning(
                 response,
@@ -310,7 +327,18 @@ class ModelInvocationService:
     ) -> AsyncIterator[StreamEvent]:
         """Stream one model round; a server-owned loop may persist its combined public event log."""
 
+        from nexuspilot_api.services.quick_response_recovery import completed_response
+
+        recovered = await completed_response(self, payload)
+        if recovered is not None:
+            yield StreamEvent(type=StreamEventType.COMPLETED, sequence=1,
+                response_id=recovered.id,
+                data={"attempt_id": recovered.id, "response": recovered.model_dump(mode="json")})
+            return
+
         model_attempt_id = new_id()
+        from nexuspilot_api.services.prompt_scene_service import apply_scene
+        payload = await apply_scene(self.db_session, payload)
         request, context_build_id = await self._apply_runtime_context(
             payload,
             payload.to_model_request(),
@@ -319,6 +347,7 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
+        request = await apply_run_instructions(self.db_session, self.storage, payload.run_id, request)
         request = await self._append_tool_history(request, context_build_id, tool_messages)
         request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
@@ -760,7 +789,8 @@ class ModelInvocationService:
         """Persist raw response, physical attempts, accounting, and completed state atomically."""
 
         sanitized_raw_response = self._sanitize_raw_response_for_audit(response.raw_response)
-        if self.db_session.info.get("workflow_execution_claim") is not None:
+        if (self.db_session.info.get("workflow_execution_claim") is not None
+                or self.db_session.info.get("quick_response_claim") is not None):
             # Persist the normalized response in the same object/transaction as COMPLETED.
             # Recovery must not reconstruct native tool calls from provider-specific raw JSON.
             sanitized_raw_response = {

@@ -1,0 +1,21 @@
+{
+  "status": "App API to fixed-provider prompt path verified",
+  "command": "apps/api/.venv/bin/python deployments/verification/product_memory_check.py --app-prompts",
+  "result": "1 passed in 3.89s",
+  "retained_database": "authz_audit_ba0eceb267b249a88920c5d84ea4bf93",
+  "checks": [
+    "App authentication creates Run for its saved external-user mapping",
+    "Controller and Reviewer both receive pinned scene, approved linked global preferences, and App entry preferences",
+    "Scene precedes global preferences, which precede App-specific preferences",
+    "A later global text edit does not enter the existing Run",
+    "Agent with always-review completes with final text",
+    "Different external App user cannot read the workflow summary"
+  ],
+  "environment": "Real local MySQL and MinIO, actual ASGI App routes and Agent services, fixed provider",
+  "limitations": [
+    "Synthetic account mapping and association; not a real Assistant login UI test.",
+    "No paid model requests. Assertions inspect the ModelRequest received by the fixed provider, not an external provider wire trace.",
+    "App business callback fixture receives zero calls because this case tests prompts, not business tools.",
+    "Test database and objects retained; no deployment or automatic deletion."
+  ]
+}

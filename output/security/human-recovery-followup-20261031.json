@@ -1,0 +1,20 @@
+{
+  "scope": "Nexus only; Assistant remains read-only and is assigned by the user to another thread",
+  "environment": "isolated MySQL identity_acceptance_a217a66a4acc at migration 0048, real MinIO, independent Worker, API18011, Web3117, Chromium",
+  "provider": "fixed MemoryFixtureProvider; zero paid provider calls",
+  "changes": ["Expose restored Agent cancellation for the displayed Run", "Allow cancellation of pending and waiting_for_input workflows, not only running"],
+  "checks": [
+    {"name":"approval_refresh_resume", "status":"passed", "run_id":"92fc48fe-8681-406e-9fd8-5e33adc0b7cc", "terminal":"completed", "model_attempts":3},
+    {"name":"agent_input_saved_route_refresh_resume", "status":"passed", "run_id":"1d03198b-a4c2-46bc-8b8d-18b9181661bf", "terminal":"completed", "model_attempts":3},
+    {"name":"quick_input_saved_route_refresh_resume", "status":"passed", "run_id":"ec1547c8-4d6c-47e7-952a-41c966afb639", "terminal":"completed", "model_attempts":2, "note":"Initially the script incorrectly expected Agent completion wording; actual saved mode was quick. Not counted as Agent evidence."},
+    {"name":"restored_waiting_cancel", "status":"passed_after_fix", "run_id":"1e1c84be-cc3f-4500-8482-5e82ced2fc89", "terminal":"cancelled", "model_attempts":1, "refresh_hides_approval":true, "before_fix":"Stop absent after restoration; after showing it, old running-only cancellation predicate still rejected waiting_for_input"},
+    {"name":"first_input_probe", "status":"failed", "run_id":"ab0db94d-e7b8-48cc-a06f-035adb3df53f", "reason":"Agent tool task wall-time limit is exhausted", "model_attempts":1}
+  ],
+  "test_commands": [
+    {"command":"cd apps/web && node --import tsx --test tests/agent-workflow-view.test.ts tests/conversation-submission.test.ts tests/workflow-recovery.test.ts", "result":"33 passed; new cancellation expectations failed before implementation"},
+    {"command":"cd apps/web && npx tsc --noEmit", "result":"passed after removing nonexistent workflow cancel_requested state from new helper test; Run cancellation state remains unchanged"},
+    {"command":"cd apps/web && npx eslint app/page.tsx lib/conversation-submission.ts lib/agent-workflow-view.ts tests/conversation-submission.test.ts tests/agent-workflow-view.test.ts", "result":"passed"}
+  ],
+  "remaining": ["Home-page recovery with multiple retained pending submissions can select an older terminal submission before a newer active one; exact conversation-route recovery passed, but home selection/terminal cleanup needs follow-up", "Actual Assistant login/settings integration remains outside this thread"],
+  "limitations": ["Initial overnight browser session expired normally and was reauthenticated", "No production SMTP, paid model, deployment or normal development database validation"]
+}

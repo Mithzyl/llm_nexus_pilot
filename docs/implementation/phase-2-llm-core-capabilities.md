@@ -1,13 +1,14 @@
 # 第二阶段：LLM 核心能力规划与实施说明
 
-## 三端记忆与用户指令（2026-10-29，未开始）
+## 三端记忆与用户指令（2026-10-29，进行中）
 
 本节为 native / personal_assistant / retail 新增扩展的当前规则；不改变旧验收记录。
 总计划按五批推进：Step 2实现类型/披露/共享接口，Step 3实现用户指令与场景；存量账号间
-共享及global指令使用须等待第四批双向绑定。第三批的对象型Message读取与语法高亮单独验收，
+共享及global指令使用须有第四批的明确双向绑定；当前Nexus侧绑定及跨owner共享已实现，
+真实App接入尚未验收。第三批的对象型Message读取与语法高亮单独验收，
 不代替核心注入测试；缓存统计在第四批实测，普通用户Evaluation和密钥轮换在第五批暂缓。
 实施顺序见总计划 Step 2/3。原来的 App 记忆页面不实施限制仅适用于上一批任务；本批随后
-计划实现 Assistant 真实页面适配，Retail 共用接口，App 项目映射仍不实施。
+Assistant当前授权仍为只读，真实页面适配须另行获准；Retail共用接口，App项目映射仍不实施。
 
 ### 类型化记忆、加密兼容与共享
 
@@ -33,6 +34,42 @@
 
 ### 个性化指令与场景
 
+用户指令后端实施中：0039新增profile、加密version及Run选择记录；创建Run固定当时版本或空列表，
+历史无选择记录的Run不自动采纳当前偏好。快速回复和Agent共用模型服务在角色规则后追加选定
+global/entry偏好，工具权限不变。GET/POST me/instructions及App同路径已注册；App只能编辑
+本入口，global由native管理并显式选择接收入口。版本修改不改变进行中/恢复Run的选定版本。
+版本固定/空选择/模型请求组装及原执行恢复、权限定向29项通过；0039在隔离MySQL执行，
+正常库未升级。Nexus个性化设置前端已接入：入口/global编辑、明确接收入口、启停和保存反馈。
+真实隔离MySQL/MinIO/浏览器验证保存、刷新、关闭和全局入口选择通过。固定快速回复2次调用、
+Agent两次生成及一次审核均completed；读取实际MinIO请求记录确认选中global版本、排除已关闭
+入口偏好。证据output/security/user-instructions-browser-20261029.json，不是付费模型行为验证。
+场景后端实现见下节；Assistant指令/类型记忆页面仍只读且未验收，不能将本条当作Step 3整体完成。
+2026-10-31另一线程已完成可选双端登录验收，见阶段5；登录不自动授权记忆或用户指令共享。
+当前metadata记录版本引用，不新增内容哈希。
+
+2026-10-30修正独立owner的global指令接收：0047在profile增加allowed_recipients_json，
+由服务端根据当前绑定记录接收owner、link_id及版本；不接受客户端任意owner。
+旧记录回填空映射，不自动扩大为跨owner授权。创建App Run时只选择明确获准的global版本及
+App本入口版本，读取原owner加密对象；用户修改文字不改变旧Run的正文版本。
+跨owner读取同时复查当前授权、账号/映射与关联版本；解绑后停止读取，重新绑定不恢复旧许可。
+重新保存确认只影响新Run；关闭global不要求已解绑的目标仍可用。没有复制账号历史正文。
+定向测试及真实MySQL/MinIO检查见[跨账号指令验证](../../output/security/linked-instructions-20261030.json)，
+0047仅在独立验收库应用；未调用付费模型，也未验证真实Assistant前端。
+2026-10-30进一步通过实际App ASGI路由创建Run并启动always审核Agent，真实MySQL/MinIO及
+固定Provider检查Controller/Reviewer均收到固定scene→global→entry的选定内容，后续编辑未混入，
+最终文本存在且跨App用户读取拒绝。见[App请求验证](../../output/security/app-prompt-injection-20261030.json)。
+这补齐Nexus接口到请求构造的证据，不是Assistant页面或外部Provider网络实测。
+
+场景后端实施进度：0040新增prompt_scene_bindings和run_prompt_scene_selections，仅在隔离MySQL
+执行。内部POST /api/v1/internal/prompt-scenes登记entry、scene_id、execution_mode(any/quick/agent)、
+template_version_id、enabled、expected_version；模板必须已启用且variable_schema_json为空。
+这是静态应用场景，不支持用运行参数替换模板变量。无scene_id时仅选择本入口注册的default，
+没有注册则保留原提示词行为；显式scene_id不属于本入口或执行模式时拒绝。
+RunCreate和App Run接受可选scene_id，入口来自认证信息；创建时固定绑定与模板版本，模板
+切换不改变旧Run。模型路径按平台规则、场景、原角色指令、已选用户偏好顺序组装，记录场景引用。
+场景/指令/权限/身份相关29项通过，后续内部登记和实际Run默认选择的定向检查通过。
+正常库未升级，未为真实App发布默认场景；场景浏览器/真实App验收尚未执行，不视为Step 3完成。
+
 - user_instruction_profiles：profile_id、owner_user_id、scope_kind(global/entry)、entry、enabled、
   current_version；user_instruction_versions：profile_id、version、加密 body_uri、创建者与时间。
   global 仅保存明确设置的沟通偏好，不自动收集地址等记忆；每个入口显式授权引用。
@@ -46,6 +83,64 @@
 
 验收包括旧对象解密、跨入口字段投影、并发披露、纠正/遗忘/解绑、关闭自动引用、三端指令隔离、
 场景越权拒绝与恢复固定版本。不保证供应商缓存命中率；密钥轮换本阶段暂缓。
+
+当前实现进度：0035将App owner唯一约束改为应用内唯一，未迁移或合并历史owner；0036新增
+user_memory_disclosures，旧有效disclosure_run_id按原入口、原Run及当前版本复制。
+新披露不再增加内容版本，多个Run独立授权；纠正/忘记改变内容版本，使旧授权不再匹配。
+模型查询、工具历史恢复、禁止向外部工具转发的检查已共用新记录。旧字段仅作历史兼容保留，
+不再作为新授权来源。字段级跨入口共享尚未实现，本批记录的allowed_fields仅用于本入口全文授权。
+新增两Run用例先复现旧版本冲突，修复后记忆相关31项测试通过；身份映射3项、迁移2项通过。
+隔离MySQL库identity_acceptance_eb7ce7fdc911已执行0035/0036，正常开发库未升级。
+迁移执行成功不代替历史授权数据和真实浏览器验收；后者仍待完成。
+类型化后端已增加typed_data联合类型：place、commute_preference、time_preference、experience；
+值仍随正文加密，SQL仅存memory_type/schema_version和原始owner/入口/scope元数据。
+新增类型或替换类型须confirmed_type及confirmed_sensitive；普通纠正省略typed_data保留原类型。
+地点校验坐标系/经纬度配对，周期时间校验IANA时区，经历日期不能晚于UTC当天；旧app_data不转换。
+0037已在同一隔离MySQL执行。类型及记忆37项测试通过；新增App无Run接口及权限25项通过。
+App无Run管理提供GET/POST /api/v1/app/me/user-memories和GET /api/v1/app/me/memory-settings，
+继续使用应用凭据及外部用户身份，不接受客户端owner/entry，不支持App项目，不允许全局披露。
+2026-10-30 Nexus个人/项目记忆编辑器新增地点、通勤、时间偏好、经历表单；明确选择类型、坐标系、
+时区和出行方式，提交前确认结构化字段与敏感保存。纠正恢复原字段，修改后须重新确认。
+类型替换需重新填写并确认；不提供将已有结构静默丢弃为普通文字的操作。旧app_data不自动转换。
+真实个人设置浏览器验收发现时间/日期经Pydantic校验后变成Python对象，路由普通model_dump导致
+保存操作记录500；三个记忆写入入口改为mode="json"，保留原校验和权限。回归先复现三个500，
+随后Run及无Run接口保存/同key重试六项与字段规则五项通过。
+真实MySQL/MinIO及浏览器验证四类保存、地点纠正与重新确认、刷新恢复，见
+[类型编辑验收](../../output/security/typed-memory-editor-20261030.json)。随后补充项目对话设置的独立
+浏览器验收：项目经历类型保存及刷新恢复、切回个人范围不可见，见
+[项目组合验收](../../output/security/project-python-memory-20261030.json)。
+Assistant类型编辑和真实业务页面仍只读未实施；共享、指令和场景当前证据分别见相应章节。
+
+共享实现进度：0038已建立user_memory_share_grants并在隔离MySQL执行，未给旧记录自动授权。
+新增native/App下POST me/memory-shares、POST me/memory-shares/revoke、GET me/shared-memories。
+2026-10-30增加不同owner共享：服务端从有效ecosystem_account_links解析目标，不接受客户端owner。
+native→App保存目标account_link_id，App→native保存source_account_link_id，App→App同时保存两端。
+0043新增可空source_account_link_id，旧同owner授权保持原值；已在独立验收MySQL升级通过。
+任一绑定撤销同步撤销依赖授权；每次读取还复核两端映射、账号启用状态及当前接收owner，
+不把解绑后的App请求悄悄改投其影子native账号。密文仍按原owner和入口读取，不复制或重加密全文。
+定向测试先复现不同owner目标被拒，再验证三种方向、字段投影、多Run独立披露和恢复撤权。
+真实MySQL/MinIO服务测试通过，记录见[跨账号共享验证](../../output/security/linked-memory-sharing-20261030.json)；
+这不代替真实Assistant界面或并发验证。
+授权绑定内容版本及字段路径；读取只返回选定字段，不附带完整摘要。内容变更、来源/目标App映射
+撤销或来源关闭后不返回内容。敏感模型读取检查仍需接收入口的Run披露；自动使用开关不等于披露。
+字段投影/版本失效及路由权限定向25项通过；新增管理POST真实ASGI调用返回同一授权记录。
+管理服务及query_memory已接入共享：Tool结果用shared_items和独立next_shared_offset分页，
+持久工具记录/检查点仅存引用；恢复重新检查授权版本、映射、范围开关与当前披露。
+新增POST runs/{run_id}/shared-memory-disclosures（App前缀同样适用）：grant_id、expected_version、
+confirmed:true、key；只允许归属正确且未结束的Run，批准当前字段投影，不授予外部工具转发权限。
+共享字段或自动使用设置变化、撤销均使旧Run披露失效，改回原字段也不会自动恢复旧同意。
+相关记忆与权限57项通过；定向恢复检查证明检查点不保留字段正文、授权变更后移除旧共享消息。
+Nexus设置的逐字段共享、目标入口、自动使用及停止共享页面已实现；新增GET me/memory-shares
+按来源记忆恢复已保存授权。真实隔离MySQL/MinIO/浏览器验证保存、刷新和停止共享通过，桌面及
+390px窄屏已检查；证据output/security/memory-sharing-browser-20261029.json。
+来源端验收使用合成同owner映射，不是统一登录证据。Assistant设置页和跨App真实完整
+流程仍未完成，不宣称用户可通过两端界面完成全流程。
+Nexus接收端选择器代码已接入共享分页及Run授权，稳定提交记录只保留授权ID/版本。
+2026-10-30独立MySQL/MinIO及真实浏览器已验证不同owner的App来源敏感记忆：仅分享地点标签，
+快速回复勾选后读取标签、Agent续聊不勾选仅返回disclosure_required、Agent重新勾选后读取标签；
+未授权地址未进入返回结果。两种模式回答刷新恢复，下一轮复选框不自动选中。
+固定模型只回显真实query_memory结果，不使用付费供应商；共享关系由合成准备显式建立，未改Assistant。
+见[接收端浏览器记录](../../output/security/shared-memory-recipient-20261030.json)。
 
 ## 通用 Agent 的模型输入与结果职责
 

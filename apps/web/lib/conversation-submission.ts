@@ -1,4 +1,5 @@
 import type { AgentWorkflowStatus, MessageSummary, Run, RunDetail } from "./types";
+import { isAgentWorkflowCancellable } from "./agent-workflow-view";
 
 export type ConversationSyncEvent = {
   type: "submission-started" | "submission-finished";
@@ -17,6 +18,15 @@ type BrowserLockManager = {
 export type SubmissionLockResult<T> =
   | { acquired: true; value: T }
   | { acquired: false };
+
+/** Allow stopping a restored active workflow only when it belongs to the displayed Run. */
+export function canCancelRestoredWorkflow(
+  runId: string | null,
+  workflow: { run_id: string; status: AgentWorkflowStatus } | null,
+): boolean {
+  return Boolean(runId && workflow?.run_id === runId &&
+    isAgentWorkflowCancellable(workflow.status));
+}
 
 /**
  * Keep submissions blocked while persisted execution facts are active or insufficient.

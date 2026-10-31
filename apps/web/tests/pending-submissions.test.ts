@@ -1,8 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createGeneralAgentWorkflowRequest } from "../lib/agent-workflow";
-import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission, quickResponseRequest,
+import { reconcilePendingSubmissions, finishPendingSubmission, readPendingSubmissions, savePendingSubmission, quickResponseRequest,
   type PendingSubmission } from "../lib/pending-submissions";
+
+/** Reconcile exact turn keys, never the latest Run of a shared conversation. */
+test("recovery removes only confirmed terminal turns and preserves unknown and active submissions", async () => {
+  const db = storage();
+  const records = ["finished", "active", "missing"].map(id => ({
+    version: 2, mode: "quick", id, owner: "alice", sessionId: "same-session",
+    sessionKey: id, turnKey: id, input: id, fileIds: [], responseKey: "response-" + id,
+    response: {provider: "opencode", model: "fixed", timeout_seconds: null,
+      reasoning_display_policy: "hidden"},
+  } as PendingSubmission));
+  records.forEach(record => savePendingSubmission(db, record));
+  const remaining = await reconcilePendingSubmissions(db, "alice", records, async record =>
+    record.turnKey === "finished" ? "completed" : record.turnKey === "active" ? "running" : null);
+  assert.deepEqual(remaining.map(record => record.id), ["active", "missing"]);
+  assert.deepEqual(readPendingSubmissions(db, "alice").map(record => record.id), ["active", "missing"]);
+  await assert.rejects(reconcilePendingSubmissions(db, "alice", remaining, async () => {
+    throw new Error("read unavailable");
+  }), /read unavailable/);
+  assert.equal(readPendingSubmissions(db, "alice").length, 2);
+});
 
 /** Quick recovery reuses saved model parameters and derives only server-returned message identity. */
 test("quick submission preserves response identity and model across reload", () => {
@@ -11,6 +31,8 @@ test("quick submission preserves response identity and model across reload", () 
     version: 2, mode: "quick", id: "quick-id", owner: "alice", sessionId: null,
     sessionKey: "session-key", turnKey: "turn-key", input: "hello", fileIds: [],
     responseKey: "response-key",
+    memoryDisclosures: [{entry_id: "11111111-1111-4111-8111-111111111111", version: 2,
+      scope: "personal", grant_id: "22222222-2222-4222-8222-222222222222", grant_version: 3}],
     response: {provider: "opencode", model: "saved-model", timeout_seconds: null,
       reasoning_display_policy: "provider-visible", reasoning: {enabled: true, effort: "medium"}},
   };

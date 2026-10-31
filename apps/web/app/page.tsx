@@ -22,6 +22,7 @@ import {
   cancelPreparedRun,
   createMessage,
   createConversationTurn,
+  findConversationTurn,
   createSession,
   getCurrentWorkspacePrincipal,
   getAgentWorkflowNode,
@@ -138,6 +139,7 @@ import {
   writeConversationDraft,
 } from "../lib/conversation-drafts";
 import {
+  canCancelRestoredWorkflow,
   isConversationExecutionActive,
   isConversationSyncEvent,
   runWithConversationSubmissionLock,
@@ -145,7 +147,8 @@ import {
 } from "../lib/conversation-submission";
 import { repeatableUserPrompt } from "../lib/message-actions";
 import { RunArtifacts } from "../components/RunArtifacts";
-import { finishPendingSubmission, readPendingSubmissions, savePendingSubmission,
+import { UserInteractions } from "../components/UserInteractions";
+import { reconcilePendingSubmissions, finishPendingSubmission, readPendingSubmissions, savePendingSubmission, quickResponseRequest,
   type PendingSubmission } from "../lib/pending-submissions";
 import { formatCost, formatDurationMs, formatTokenCount } from "../lib/format";
 import {
@@ -418,6 +421,7 @@ export default function Home() {
     current: AbortController | null;
     mode: ExecutionMode;
     preparing: boolean;
+    runId?: string;
   }>());
   const restoredRouteKey = useRef<string | null>(null);
   const sessionRestoreRequestId = useRef(0);
@@ -998,6 +1002,10 @@ export default function Home() {
   );
   const isConversationSubmissionBlocked =
     isActiveSessionBusyInAnotherTab || isPersistedConversationExecutionActive;
+  const canStopRestoredQuickRun = Boolean(run && workflowAbsentForRunId === run.run_id &&
+    ["pending", "running", "cancel_requested"].includes(run.status));
+  const canStopRestoredAgent = canCancelRestoredWorkflow(run?.run_id ?? null, agentWorkflow);
+  const showStopAction = isSending || canStopRestoredQuickRun || canStopRestoredAgent;
 
   const lastAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant");
 
@@ -1328,13 +1336,31 @@ export default function Home() {
     );
 
     const summary = await getRunAgentWorkflow(createdRun.run_id);
-    const result = await getAgentWorkflowResult(summary.workflow_execution_id);
+    let result = await getAgentWorkflowResult(summary.workflow_execution_id);
     const updatedRun = await getRun(createdRun.run_id);
     if (isCurrent()) {
       applyAgentWorkflowResult(result, assistantMessage.local_id);
       setRun(updatedRun);
-      if (["pending", "running", "waiting_for_input"].includes(result.status)) {
-        await restoreAgentWorkflowForRun(createdRun.run_id, assistantMessage.local_id);
+    }
+    // Worker acknowledgement is not completion: retain this submission's stop target
+    // and request identity until terminal persistence, or detach without cancelling the worker.
+    if (["pending", "running", "waiting_for_input", "cancel_requested"].includes(result.status)) {
+      const terminal = await followWorkflowResult({
+        signal: controller.signal,
+        read: signal => getAgentWorkflowResult(summary.workflow_execution_id, signal),
+        apply: current => {
+          result = current;
+          if (isCurrent()) applyAgentWorkflowResult(current, assistantMessage.local_id);
+        },
+        onError: error => {
+          if (!isCurrent()) return;
+          if (error instanceof NexusApiError && [401, 403, 404].includes(error.status)) controller.abort();
+          setErrorMessage("暂时无法更新执行进度，请检查登录状态；后台任务不会因此被取消。");
+        },
+      });
+      if (terminal && isCurrent()) {
+        const terminalRun = await getRun(createdRun.run_id);
+        if (isCurrent()) setRun(terminalRun);
       }
     }
     return result;
@@ -1424,12 +1450,21 @@ export default function Home() {
     }
   }
 
-  /** Resume Agent identity; quick execution stays disabled until the backend can replay whole turns. */
+  /** Query the exact saved turn, preserving unknown submissions without starting any execution. */
+  async function reconcileSavedSubmissions(records: PendingSubmission[]) {
+    if (!workspacePrincipal) return [];
+    return reconcilePendingSubmissions(window.localStorage, workspacePrincipal.user_id, records,
+      async record => {
+        try { return (await findConversationTurn(record.sessionId!, record.turnKey)).run.status; }
+        catch (error) {
+          if (error instanceof NexusApiError && error.status === 404) return null;
+          throw error;
+        }
+      });
+  }
+
+  /** Resume the saved execution parameters; never substitute the current composer selection. */
   async function recoverPendingSubmission(pending: PendingSubmission) {
-    if (pending.mode === "quick") {
-      setErrorMessage("快速回复恢复尚未启用，请保留原请求，勿重复发送。");
-      return;
-    }
     if (recoveringSubmissions.current.has(pending.id)) return;
     recoveringSubmissions.current.add(pending.id);
     const initialView = sessionRestoreRequestId.current;
@@ -1453,6 +1488,20 @@ export default function Home() {
       }
       if (turn.run.status === "pending") {
         await grantSelectedMemories(turn.run.run_id, saved.memoryDisclosures ?? []);
+      }
+      if (saved.mode === "quick") {
+        const response = await fetch("/api/nexus/responses", {
+          method: "POST", headers: {"Content-Type": "application/json", ...browserCsrfHeaders()},
+          body: JSON.stringify(quickResponseRequest(saved, turn.run.run_id, turn.message.message_id)),
+        });
+        if (!response.ok) throw new Error(`原请求恢复失败（${response.status}）`);
+        await readStreamEvents(response, async () => {});
+        const currentRun = await getRun(turn.run.run_id);
+        if (["completed", "failed", "cancelled"].includes(currentRun.status)) {
+          finishPendingSubmission(window.localStorage, saved.owner, saved.id);
+        }
+        if (activeSessionIdValue.current === saved.sessionId) await restoreSession(saved.sessionId!);
+        return;
       }
       const response = await openAgentWorkflowStream(turn.run.run_id, saved.workflow);
       // An existing active execution returns a finite replay; existing polling observes its future.
@@ -1583,16 +1632,22 @@ export default function Home() {
   /** Keep browser history navigation synchronized with persisted Session and Run facts. */
   useEffect(() => {
     if (authenticationState !== "authenticated") return;
-    const restoreFrame = window.requestAnimationFrame(() => {
+    let disposed = false;
+    const restoreFrame = window.requestAnimationFrame(() => { void restorePendingRoute(); });
+    /** Reconcile saved identities before choosing a route; navigation invalidates late reads. */
+    async function restorePendingRoute() {
       if (restoredRouteKey.current === currentRouteKey) return;
-      restoredRouteKey.current = currentRouteKey;
       try {
-        const pending = workspacePrincipal && readPendingSubmissions(
+        const candidates = workspacePrincipal ? readPendingSubmissions(
           window.localStorage, workspacePrincipal.user_id,
-        ).find((item) => workspaceRoute.kind === "home" ||
-          (workspaceRoute.kind === "conversation" && item.sessionId === workspaceRoute.sessionId));
+        ).filter((item) => workspaceRoute.kind === "home" ||
+          (workspaceRoute.kind === "conversation" && item.sessionId === workspaceRoute.sessionId)) : [];
+        const pending = (await reconcileSavedSubmissions(candidates))[0];
+        if (disposed) return;
+        restoredRouteKey.current = currentRouteKey;
         if (pending) { void recoverPendingSubmission(pending); return; }
       } catch (error) {
+        if (disposed) return;
         setErrorMessage(error instanceof Error ? error.message : "待恢复请求不可用");
         return;
       }
@@ -1610,8 +1665,8 @@ export default function Home() {
         return;
       }
       void restoreRunRoute(workspaceRoute.runId);
-    });
-    return () => window.cancelAnimationFrame(restoreFrame);
+    }
+    return () => { disposed = true; window.cancelAnimationFrame(restoreFrame); };
     // The stable route key is the intended reload trigger; state setters and helpers are local.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authenticationState, currentRouteKey]);
@@ -1955,9 +2010,29 @@ export default function Home() {
     }
   }
 
-  /** Abort file preparation before any workflow exists; otherwise cancel the active execution. */
-  function handleStop() {
+  /** Explicitly cancel a quick Run before disconnecting; passive disconnection never cancels it. */
+  async function handleStop() {
     const localExecution = activeSessionId ? localExecutions.current.get(activeSessionId) : null;
+    const quickRunId = localExecution?.mode === "response" ? localExecution.runId
+      : canStopRestoredQuickRun ? run?.run_id : undefined;
+    if (quickRunId) {
+      setIsCancellingWorkflow(true);
+      try {
+        const cancelled = await cancelPreparedRun(quickRunId);
+        setRun(current => current?.run_id === cancelled.run_id ? cancelled : current);
+        if (cancelled.status === "cancelled" && workspacePrincipal) {
+          for (const saved of readPendingSubmissions(window.localStorage, workspacePrincipal.user_id)) {
+            if (saved.mode === "quick" && saved.sessionId === activeSessionId) {
+              finishPendingSubmission(window.localStorage, saved.owner, saved.id);
+            }
+          }
+        }
+        localExecution?.current?.abort();
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : "停止请求失败，请重试。");
+      } finally { setIsCancellingWorkflow(false); }
+      return;
+    }
     if (localExecution && (localExecution.preparing || localExecution.mode === "response")) {
       localExecution.current?.abort();
       return;
@@ -1966,7 +2041,7 @@ export default function Home() {
       activeRequestController.current?.abort();
       return;
     }
-    if (executionMode === "agent" && run) {
+    if ((canStopRestoredAgent || executionMode === "agent") && run) {
       void handleCancelAgentWorkflow();
       return;
     }
@@ -2027,6 +2102,7 @@ export default function Home() {
     const savedDraftKey = draftStorageKey.current;
     const executionRequest = {
       current: null as AbortController | null, mode: submittedMode, preparing: true,
+      runId: undefined as string | undefined,
     };
     if (activeSessionId) localExecutions.current.set(activeSessionId, executionRequest);
     const latestAssistantText = { current: "" };
@@ -2095,18 +2171,23 @@ export default function Home() {
       if (uploadController.signal.aborted) return;
       view.setUploadProgress("");
       let pendingSubmission: PendingSubmission | null = null;
-      if (submittedMode === "agent" && workspacePrincipal) {
-        const previous = readPendingSubmissions(window.localStorage, workspacePrincipal.user_id)
-          .find((item) => item.sessionId === (activeSession?.session_id ?? null));
+      if (workspacePrincipal) {
+        const previous = (await reconcileSavedSubmissions(
+          readPendingSubmissions(window.localStorage, workspacePrincipal.user_id)
+            .filter((item) => item.sessionId === (activeSession?.session_id ?? null)),
+        ))[0];
         if (previous) {
           void recoverPendingSubmission(previous);
           throw new Error("正在确认原提交，请勿重复发送。");
         }
-        pendingSubmission = {
-          version: 1, id: crypto.randomUUID(), owner: workspacePrincipal.user_id,
+        const identity = {
+          id: crypto.randomUUID(), owner: workspacePrincipal.user_id,
           sessionId: activeSession?.session_id ?? null,
           sessionKey: crypto.randomUUID(), turnKey: crypto.randomUUID(), input, fileIds,
           memoryDisclosures: selectedDisclosures,
+        };
+        pendingSubmission = submittedMode === "agent" ? {
+          ...identity, version: 2, mode: "agent",
           workflow: createGeneralAgentWorkflowRequest({
             binding: { provider: selectedProvider as ProviderName, model: selectedModel,
               structured_output_mode: agentStructuredOutputMode(selectedProvider as ProviderName),
@@ -2114,7 +2195,11 @@ export default function Home() {
             reviewPolicy, maxParallelAgents, idempotencyKey: crypto.randomUUID(),
             reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
           }),
-        };
+        } : {...identity, version: 2, mode: "quick", responseKey: crypto.randomUUID(),
+          response: {provider: selectedProvider as ProviderName, model: selectedModel,
+            timeout_seconds: null,
+            reasoning: createReasoningConfiguration(reasoningEffort, selectedReasoningPolicy),
+            reasoning_display_policy: reasoningDisplayPolicy}};
         savePendingSubmission(window.localStorage, pendingSubmission);
       }
       view.setMessages((current) => [...current, userMessage]);
@@ -2167,6 +2252,7 @@ export default function Home() {
           : message,
       ));
       submittedRunId = createdRun.run_id;
+      executionRequest.runId = createdRun.run_id;
       view.setRun(createdRun);
       if (uploadController.signal.aborted) {
         await cancelPreparedRun(createdRun.run_id);
@@ -2194,7 +2280,7 @@ export default function Home() {
       if (submittedMode === "agent") {
         executionRequest.preparing = false;
         const workflowResult = await executeAgentWorkflow(createdRun, assistantMessage, isCurrent,
-          executionRequest, pendingSubmission?.workflow);
+          executionRequest, pendingSubmission?.mode === "quick" ? undefined : pendingSubmission?.workflow);
         if (pendingSubmission && ["completed", "failed", "cancelled", "outcome_unknown"].includes(workflowResult.status)) {
           finishPendingSubmission(window.localStorage, pendingSubmission.owner, pendingSubmission.id);
         }
@@ -2210,7 +2296,8 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...browserCsrfHeaders() },
         signal: responseController.signal,
-        body: JSON.stringify({
+        body: JSON.stringify(pendingSubmission?.mode === "quick"
+          ? quickResponseRequest(pendingSubmission, createdRun.run_id, createdTurn.message.message_id) : {
           run_id: createdRun.run_id,
           current_user_message_id: createdTurn.message.message_id,
           provider: selectedProvider,
@@ -2290,6 +2377,13 @@ export default function Home() {
           });
           try {
             if (!completedText) throw new Error("响应没有可保存的文本。");
+            if (data.assistant_message_id) {
+              const savedMessageId = data.assistant_message_id;
+              hasRestorableTerminalFacts = true;
+              view.setAssistantSaved(true);
+              view.setMessages(current => current.map(message => message.local_id === assistantMessage.local_id
+                ? {...message, message_id: savedMessageId, saving: false} : message));
+            } else {
             const savedMessage = await createMessage(session.session_id, {
               role: "assistant",
               content_text: completedText,
@@ -2306,6 +2400,7 @@ export default function Home() {
                   : message,
               ),
             );
+            }
           } catch (error) {
             view.setAssistantSaveFailed(true);
             view.setErrorMessage(
@@ -2349,6 +2444,12 @@ export default function Home() {
           applyResponseEvent,
           { afterSequence: lastResponseSequence.current },
         );
+      }
+      if (pendingSubmission) {
+        const terminalRun = await getRun(createdRun.run_id);
+        if (["completed", "failed", "cancelled"].includes(terminalRun.status)) {
+          finishPendingSubmission(window.localStorage, pendingSubmission.owner, pendingSubmission.id);
+        }
       }
     } catch (error) {
       if (executionRequest.current?.signal.aborted) {
@@ -2804,7 +2905,7 @@ export default function Home() {
                 <button type="button" className="composer-restore" aria-expanded={!isComposerMinimized} aria-controls="composer-editor" onClick={expandComposer}>
                   展开输入框{draft.trim() ? " · 有草稿" : ""}{pendingUploadFiles.length ? ` · ${pendingUploadFiles.length} 个文件` : ""}
                 </button>
-                {isSending && <button type="button" className="composer-quiet-button" disabled={isCancellingWorkflow} onClick={handleStop}>{executionMode === "agent" ? "取消工作流" : "停止生成"}</button>}
+                {showStopAction && <button type="button" className="composer-quiet-button" disabled={isCancellingWorkflow} onClick={handleStop}>{executionMode === "agent" && !canStopRestoredQuickRun ? "取消工作流" : "停止生成"}</button>}
               </div>
               <div id="composer-editor" className="composer-editor" aria-hidden={isComposerMinimized} inert={isComposerMinimized}>
               <span id="composer-keyboard-hint" className="composer-keyboard-hint">Enter 发送 · Shift+Enter 换行</span>
@@ -2819,6 +2920,8 @@ export default function Home() {
                 aria-label="消息内容"
                 rows={1}
               />
+              {run && <UserInteractions key={run.run_id} runId={run.run_id}
+                active={["pending", "running"].includes(run.status)} />}
               <MemoryDisclosurePicker key={`${activeSessionId ?? "new"}:${disclosureRevision}`}
                 projectId={activeSession?.project_id ?? undefined} disabled={isSending || isPersistedConversationExecutionActive}
                 onChange={items => { memoryDisclosures.current = {sessionId: activeSessionId, items}; }} />
@@ -2955,7 +3058,7 @@ export default function Home() {
                       );
                     }}
                   />
-                  <button className="send-button" disabled={isCancellingWorkflow || (!isSending && (isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (isSending ? handleStop() : void handleSend())} aria-label={isSending ? executionMode === "agent" ? "取消工作流" : "停止生成" : "发送消息"}>{isSending ? "■" : "↑"}</button>
+                  <button className="send-button" disabled={isCancellingWorkflow || (!showStopAction && (isConversationSubmissionBlocked || !draft.trim() || !isModelSelectionAllowed(providerCatalog, selectedProvider, selectedModel)))} onClick={() => (showStopAction ? handleStop() : void handleSend())} aria-label={showStopAction ? executionMode === "agent" && !canStopRestoredQuickRun ? "取消工作流" : "停止生成" : "发送消息"}>{showStopAction ? "■" : "↑"}</button>
                 </div>
               </div>
               </div>

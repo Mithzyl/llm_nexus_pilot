@@ -1,0 +1,26 @@
+{
+  "status": "local browser management verified; real external MCP not called",
+  "database": "identity_acceptance_2d29ca3e0118",
+  "migration": "20261030_0045",
+  "server": "loopback HTTP JSON-RPC fixture on port 18014",
+  "checks": {
+    "logged_in_user_sees_assigned_connection": "passed",
+    "explicit_discovery": "passed",
+    "save_disabled_connection": "passed",
+    "refresh_restores_disabled_setting": "passed",
+    "discovery_button_disabled_when_connection_disabled": true,
+    "mobile_horizontal_overflow": false
+  },
+  "automated_checks": {
+    "management_and_resource_policy": "25 passed",
+    "frontend_proxy_policy": "5 passed",
+    "typescript_and_component_eslint": "passed",
+    "invalid_remote_response": "HTTP 502 and saved failure status, not success with empty tools"
+  },
+  "screenshots": ["output/playwright/mcp-settings-desktop-20261030.png", "output/playwright/mcp-settings-mobile-20261030.png"],
+  "limitations": [
+    "Real Nexus API, MySQL and browser; MCP is a local protocol fixture, not Amap.",
+    "No paid models or external MCP calls.",
+    "Does not establish real MySQL in-flight permission revocation or an independent model-tool catalog."
+  ]
+}

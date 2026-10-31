@@ -2,9 +2,12 @@
 
 NEXUSPILOT_TEST_AUTH_MYSQL_URL must target the explicitly named authz_audit
 database on loopback. Each test creates and drops its own UUID-suffixed database.
-Optional NEXUSPILOT_TEST_AUTH_MINIO_* settings select an isolated MinIO instance.
+Set NEXUSPILOT_TEST_AUTH_KEEP_DATABASE=true to retain the generated database for
+inspection instead of dropping it. Optional NEXUSPILOT_TEST_AUTH_MINIO_* settings
+select an isolated MinIO instance; objects are not deleted by this fixture.
 """
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -17,7 +20,7 @@ from nexuspilot_api.models import Base
 
 @asynccontextmanager
 async def authorization_mysql_factory(url):
-    """Create an owned ephemeral database, exercise actual MySQL, and drop only that database."""
+    """Create an isolated database; retain on request, otherwise remove only that database."""
     parsed = make_url(url)
     if parsed.host not in {"127.0.0.1", "localhost"} or parsed.database != "authz_audit":
         raise ValueError("Authorization test database must be loopback/authz_audit")
@@ -32,6 +35,9 @@ async def authorization_mysql_factory(url):
         yield async_sessionmaker(engine, class_=ConversationBodySession, expire_on_commit=False)
     finally:
         await engine.dispose()
-        async with admin.connect() as connection:
-            await connection.exec_driver_sql(f"DROP DATABASE IF EXISTS `{name}`")
+        if os.environ.get("NEXUSPILOT_TEST_AUTH_KEEP_DATABASE") == "true":
+            print(f"Retained verification database: {name}")
+        else:
+            async with admin.connect() as connection:
+                await connection.exec_driver_sql(f"DROP DATABASE IF EXISTS `{name}`")
         await admin.dispose()

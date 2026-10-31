@@ -20,6 +20,7 @@ class RunCreate(BaseModel):
     session_id: str | None = Field(default=None, max_length=36)
     run_type: str = Field(default="general", min_length=1, max_length=64)
     budget_limit: Decimal | None = Field(default=None, ge=0)
+    scene_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class RunRead(ApiModel):

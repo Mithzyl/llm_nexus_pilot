@@ -11,19 +11,23 @@ import os
 import re
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pydantic import TypeAdapter
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.features.memory.models.product_memory import (
     UserMemoryEntry,
+    UserMemoryDisclosure,
     UserMemoryOperation,
     UserMemoryScope,
 )
 from nexuspilot_api.features.memory.schemas.product_memory import AppMemoryData
+from nexuspilot_api.features.memory.schemas.typed_memory import TypedMemory
 from nexuspilot_api.features.memory.services.credential_guard import scan_for_sensitive_input
+from nexuspilot_api.features.memory.services.disclosures import disclosure_condition, is_disclosed
 from nexuspilot_api.models import LlmProject, User
-from nexuspilot_api.models.base import new_id
+from nexuspilot_api.models.base import new_id, utc_now
 
 
 class MemoryFailure(Exception):
@@ -182,18 +186,19 @@ class MemoryService:
         if own is None:
             return {"items": [], "next_offset": None}
         # Explicit current-Run grants are authoritative; caller/model IDs are not.
-        # Corrections and forgetting clear disclosure_run_id, so they cannot fall back.
+        # Corrections change the content version, invalidating all previous Run grants.
         if for_model and self.run_id and self.project_id is None:
             granted = list(await self.db.scalars(select(UserMemoryEntry).where(
                 UserMemoryEntry.scope_id == own.scope_id,
                 UserMemoryEntry.status == "active",
-                UserMemoryEntry.disclosure_run_id == self.run_id,
+                disclosure_condition(self.run_id, self.entry),
             ).order_by(UserMemoryEntry.entry_id)))
             if granted:
                 authorized = []
                 for row in granted:
                     body = await self.read(row.body_uri)
                     authorized.append({"entry_id": row.entry_id, "version": row.version,
+                        "memory_type": row.memory_type, "schema_version": row.schema_version,
                         "status": row.status, "sensitive": row.sensitive, **body})
                 terms = [term.casefold() for term in re.split(r"[\s,，、;；]+", query) if term]
                 matches = [item for item in authorized if not terms or any(
@@ -227,7 +232,7 @@ class MemoryService:
             if (
                 for_model
                 and row.sensitive
-                and (self.run_id is None or row.disclosure_run_id != self.run_id)
+                and not await is_disclosed(self.db, row, self.run_id, self.entry)
             ):
                 # Do not leak content or keyword matches before disclosure, but
                 # distinguish an undisclosed entry from an empty account.
@@ -239,6 +244,9 @@ class MemoryService:
                 item["text"] = body["text"]
                 if body.get("app_data") is not None:
                     item["app_data"] = body["app_data"]
+                if body.get("typed_data") is not None:
+                    item["typed_data"] = body["typed_data"]
+            item.update(memory_type=row.memory_type, schema_version=row.schema_version)
             items.append(item)
         return {"items": items, "next_offset": offset + limit if len(rows) > limit else None}
 
@@ -279,6 +287,13 @@ class MemoryService:
             await self.db.commit()
             return result
         action = request["action"]
+        typed_data = request.get("typed_data")
+        if typed_data is not None:
+            if action not in {"save", "propose", "correct"}:
+                raise MemoryFailure("memory_invalid_operation")
+            if not request.get("confirmed_type"):
+                raise MemoryFailure("memory_type_confirmation_required")
+            typed_data = TypeAdapter(TypedMemory).validate_python(typed_data).model_dump(mode="json")
         app_data = request.get("app_data")
         if app_data is not None:
             app_data = AppMemoryData.model_validate(app_data).model_dump(mode="json")
@@ -287,7 +302,7 @@ class MemoryService:
         if action in {"save", "propose", "confirm"} and not (parent.enabled and own.enabled):
             raise MemoryFailure("memory_disabled")
         text = request.get("text", "")
-        scanned = text + (json.dumps(app_data, ensure_ascii=False) if app_data else "")
+        scanned = text + json.dumps([app_data, typed_data], ensure_ascii=False)
         if scanned and (
             scan_for_sensitive_input(scanned)
             or re.search(
@@ -296,7 +311,8 @@ class MemoryService:
             )
         ):
             raise MemoryFailure("memory_credentials_forbidden")
-        sensitive = bool(request.get("sensitive") or sensitive_text(text) or app_data is not None)
+        sensitive = bool(request.get("sensitive") or sensitive_text(text)
+                         or app_data is not None or typed_data is not None)
         if (
             action in {"save", "propose", "correct"}
             and sensitive
@@ -331,9 +347,14 @@ class MemoryService:
                 status="candidate" if action == "propose" else "active",
                 sensitive=sensitive,
                 body_uri=await self.put(
-                    {"text": text, **({"app_data": app_data} if app_data else {})}
+                    {"text": text, **({"app_data": app_data} if app_data else {}),
+                     **({"typed_data": typed_data} if typed_data else {})}
                 ),
                 source_run_id=self.run_id,
+                memory_type=typed_data["memory_type"] if typed_data else "free_text",
+                schema_version=1,
+                origin_owner_user_id=self.owner, origin_entry=self.entry,
+                origin_scope_key=self.scope_key,
             )
             self.db.add(row)
             result = {"entry_id": row.entry_id, "version": 1, "status": row.status}
@@ -358,6 +379,9 @@ class MemoryService:
                 body["text"] = text
                 if app_data is not None:
                     body["app_data"] = app_data
+                if typed_data is not None:
+                    body["typed_data"] = typed_data
+                    row.memory_type = typed_data["memory_type"]
                 row.body_uri = await self.put(body)
                 row.sensitive = row.sensitive or sensitive
                 row.disclosure_run_id = None
@@ -372,10 +396,24 @@ class MemoryService:
             elif action == "disclose":
                 if not request.get("confirmed_sensitive") or not self.run_id:
                     raise MemoryFailure("memory_confirmation_required")
-                row.disclosure_run_id = self.run_id
+                grant = await self.db.scalar(select(UserMemoryDisclosure).where(
+                    UserMemoryDisclosure.entry_id == row.entry_id,
+                    UserMemoryDisclosure.entry_version == row.version,
+                    UserMemoryDisclosure.run_id == self.run_id,
+                    UserMemoryDisclosure.recipient_entry == self.entry,
+                ))
+                if grant is None:
+                    self.db.add(UserMemoryDisclosure(
+                        entry_id=row.entry_id, entry_version=row.version, run_id=self.run_id,
+                        recipient_entry=self.entry, allowed_fields_json=["text", "app_data", "typed_data"],
+                        confirmed_at=utc_now(), request_key=request["key"],
+                    ))
+                elif grant.revoked_at is not None:
+                    grant.revoked_at, grant.confirmed_at = None, utc_now()
             else:
                 raise MemoryFailure("memory_invalid_operation")
-            row.version += 1
+            if action != "disclose":
+                row.version += 1
             result = {"entry_id": row.entry_id, "version": row.version, "status": row.status}
         # A conditional revision catches stale SQLite writes as well as locking MySQL callers.
         if self.project_id:

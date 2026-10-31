@@ -43,8 +43,8 @@ def test_receipt_required_before_readonly_preview(python_server, tmp_path, monke
     receipt = {"operation": "confirm_publication", "scope": request["scope"],
                "call_id": request["call_id"], "artifacts": []}
     runtime.confirm_publication(receipt)
-    assert preview(runtime.store.root)[0]["reason"] == "retained"
-    assert preview(runtime.store.root, now=time.time() + 90000)[0]["eligible"]
+    assert preview(runtime.store.root)[0]["reason"] == "task_continuation_retained"
+    assert not preview(runtime.store.root, now=time.time() + 90000)[0]["eligible"]
     assert runtime.confirm_publication(receipt)["confirmed"]
     with pytest.raises(ValueError):
         runtime.confirm_publication({**receipt, "scope": {**request["scope"], "user_id": "other"}})
@@ -124,7 +124,7 @@ def test_receipt_rejects_incomplete_or_changed_manifest(python_server, tmp_path,
 def test_non_success_receipts_use_longer_preview_retention(
     python_server, tmp_path, monkeypatch, status,
 ):
-    """Confirmed non-success calls require 72 hours, not the successful-call 24 hours."""
+    """Superseded non-success calls require 72 hours; current task heads remain retained."""
     from python_retention import preview
     from task_runtime import atomic_json
     runtime, request, _ = completed_runtime(python_server, tmp_path, monkeypatch)
@@ -132,6 +132,10 @@ def test_non_success_receipts_use_longer_preview_retention(
     saved = json.loads(index.read_text())
     saved["terminal"]["status"] = status
     atomic_json(index, saved)
+    for task_path in runtime.store.root.glob("task-*.json"):
+        task = json.loads(task_path.read_text())
+        task["reference"] = None  # Model a generation no longer referenced by the task.
+        atomic_json(task_path, task)
     runtime.confirm_publication({"operation": "confirm_publication", "scope": request["scope"],
                                  "call_id": request["call_id"], "artifacts": []})
     assert not preview(runtime.store.root, now=time.time() + 90000)[0]["eligible"]

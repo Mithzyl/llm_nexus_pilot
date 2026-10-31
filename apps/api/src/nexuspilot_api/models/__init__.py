@@ -1,5 +1,8 @@
 """Public model exports and metadata registration for the NexusPilot API."""
 
+from nexuspilot_api.models.quick_response import QuickResponseEvent, QuickResponseExecution  # noqa: F401
+from nexuspilot_api.models.user_interactions import UserInteraction  # noqa: F401
+
 from nexuspilot_api.features.identity.models.applications import (  # noqa: F401
     Application,
     ApplicationUserMapping,
@@ -15,9 +18,22 @@ from nexuspilot_api.features.identity.models.personal_api_key import UserApiKey 
 from nexuspilot_api.features.identity.models.registration import RegistrationChallenge  # noqa: F401
 from nexuspilot_api.features.memory.models.product_memory import (  # noqa: F401
     MemoryRunPermission,
+    UserMemoryDisclosure,
+    UserMemoryShareGrant,
     UserMemoryEntry,
     UserMemoryOperation,
     UserMemoryScope,
+)
+from nexuspilot_api.features.identity.models.user_instructions import (  # noqa: F401
+    UserInstructionProfile, UserInstructionVersion, RunInstructionSelection,
+)
+from nexuspilot_api.models.prompt_scenes import PromptSceneBinding, RunPromptSceneSelection  # noqa: F401
+from nexuspilot_api.features.identity.models.sso import ApplicationLoginGrant  # noqa: F401
+from nexuspilot_api.features.identity.models.password_reset import PasswordResetChallenge  # noqa: F401
+from nexuspilot_api.features.identity.models.mcp_preferences import MCPUserConnection  # noqa: F401
+from nexuspilot_api.features.identity.models.mcp_catalog import MCPToolBinding  # noqa: F401
+from nexuspilot_api.features.identity.models.account_linking import (  # noqa: F401
+    AccountLinkRequest, EcosystemAccountLink,
 )
 from nexuspilot_api.features.memory.models.agent_memory import (
     LlmAgentRun,

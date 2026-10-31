@@ -1,0 +1,44 @@
+{
+  "status": "local two-application login acceptance passed for explicitly linked existing accounts",
+  "nexus_database": "identity_acceptance_03aefb8730fe",
+  "nexus_migration": "20261030_0048",
+  "assistant_storage": "isolated SQLite with synthetic existing local account; no normal database changes",
+  "services": {"nexus_api":18011,"nexus_web":3117,"assistant_api":18013,"assistant_web":3118},
+  "model_calls": 0,
+  "checks": {
+    "original_password_login": "passed",
+    "assistant_initiates_link_for_authenticated_user": "passed",
+    "nexus_browser_explicit_link_confirmation": "passed",
+    "logout_original_assistant_session_then_nexus_login": "passed",
+    "real_callback_and_server_code_exchange": "passed; no callback interception or mock upstream",
+    "assistant_me": {"status":200,"user_id":"synthetic-app-account"},
+    "assistant_session_cookie_http_only": true,
+    "temporary_pkce_cookie_removed": true,
+    "nexus_link_revoke": {"status":"revoked","version":2},
+    "new_nexus_login_after_revoke": "rejected with explicit unlinked-account message",
+    "original_password_login_after_revoke": "passed for original user",
+    "invalid_state": 400,
+    "cross_origin_start": 403
+  },
+  "final_code_recheck": "After temporary-cookie type validation, explicitly relinked, logged in through Nexus and refreshed Assistant successfully",
+  "screenshot": "output/playwright/assistant-linked-account-20261031.png",
+  "tests": [
+    {"command":"services/assistant-api/.venv/bin/pytest services/assistant-api/tests/test_nexus_login.py -q -p no:cacheprovider", "result":"4 passed in 0.22s; local HTTP simulation and rules, distinct from browser acceptance"},
+    {"command":"Assistant apps/web: npm run typecheck -- --incremental false", "result":"passed"},
+    {"command":"Nexus apps/web: npx tsc --noEmit && npx eslint app/authorize/page.tsx", "result":"passed"}
+  ],
+  "failures_retained": [
+    "Initial fixture inherited Assistant production mode and correctly refused mock commute providers; fixture now explicitly uses development",
+    "First real exchange used /api/v1/app/exchange and returned 404; corrected to actual /api/v1/auth/app/exchange before successful rerun",
+    "Immediate fixture restart encountered TIME_WAIT with no listener; read-only port check now uses SO_REUSEADDR"
+  ],
+  "boundaries": [
+    "Original Assistant login/registration retained; optional Nexus login defaults disabled",
+    "No automatic registration, email-based account merge or historical owner migration",
+    "Unlinked users use original login/registration then explicit linking",
+    "Unlink prevents new associated Nexus logins; existing Assistant sessions retain original logout/expiry semantics, not global single logout",
+    "Memory/instruction sharing permissions are not granted by login and were not newly exercised in this login acceptance",
+    "Standard PKCE S256 only; no business content hashes",
+    "No commit, push, deployment, paid model call or normal service restart"
+  ]
+}

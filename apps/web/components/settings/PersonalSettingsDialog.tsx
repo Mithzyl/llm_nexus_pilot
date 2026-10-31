@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { MemorySettingsPanel } from "./MemorySettingsPanel";
+import { UserInstructionSettings } from "./UserInstructionSettings";
+import { MCPSettings } from "./MCPSettings";
+import { LoginSessions } from "./LoginSessions";
 import {
   useEffect,
   useRef,
@@ -23,7 +26,7 @@ import type {
   WorkspacePrincipal,
 } from "../../lib/types";
 
-type PersonalSettingsSection = "account" | "api-keys" | "memory" | "personalization";
+type PersonalSettingsSection = "account" | "api-keys" | "memory" | "personalization" | "tools";
 
 type PersonalSettingsDialogProps = {
   principal: WorkspacePrincipal;
@@ -43,6 +46,7 @@ const SECTIONS: Array<{
   { id: "api-keys", label: "API Key", description: "个人调用凭据" },
   { id: "memory", label: "记忆", description: "查看和管理长期记忆" },
   { id: "personalization", label: "个性化提示词", description: "回答风格与指令" },
+  { id: "tools", label: "工具连接", description: "批准的 MCP 服务" },
 ];
 
 /** Format a backend timestamp for settings without changing its intended instant. */
@@ -321,6 +325,10 @@ export function PersonalSettingsDialog({
                   </p>
                 </div>
                 {isBrowserSession && (
+                  <Link href="/account-links">管理应用账号关联</Link>
+                )}
+                {isBrowserSession && <LoginSessions />}
+                {isBrowserSession && (
                   <button
                     type="button"
                     className="settings-danger-action"
@@ -465,31 +473,8 @@ export function PersonalSettingsDialog({
 
             {section === "memory" && <MemorySettingsPanel projectId={projectId} />}
 
-            {section === "personalization" && (
-              <section className="settings-section" aria-labelledby="settings-personalization-heading">
-                <div className="settings-section-heading">
-                  <div>
-                    <p className="eyebrow">回答偏好</p>
-                    <h3 id="settings-personalization-heading">个性化提示词</h3>
-                  </div>
-                  <span className="settings-status" data-pending="true">等待后端接口</span>
-                </div>
-                <div className="settings-locked-panel" aria-describedby="personalization-pending-copy">
-                  <span aria-hidden="true">⌁</span>
-                  <div>
-                    <strong>用户级提示词暂不可配置</strong>
-                    <p id="personalization-pending-copy">
-                      当前后端只管理平台 System Prompt，并要求普通浏览器不得读取、选择或覆盖。
-                      在用户级提示词的保存、版本和模型注入接口完成前，本页不会把本地文本伪装成已生效设置。
-                    </p>
-                  </div>
-                </div>
-                <div className="settings-note">
-                  <strong>现在可以做什么</strong>
-                  <p>账户信息与个人 API Key 可继续管理。长期偏好和用户级提示词需要等待当前产品接口完成适配。</p>
-                </div>
-              </section>
-            )}
+            {section === "personalization" && <UserInstructionSettings />}
+            {section === "tools" && (isBrowserSession ? <MCPSettings /> : <p>请登录后管理工具连接。</p>)}
           </div>
         </div>
       </section>

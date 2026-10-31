@@ -5,13 +5,14 @@ import { followWorkflowResult } from "../lib/workflow-recovery";
 /** Cancellation requests remain active until server cleanup confirms a terminal state. */
 test("Run recovery waits for cancellation confirmation", async () => {
   const seen: string[] = [];
-  await followWorkflowResult({
+  const terminal = await followWorkflowResult({
     signal: new AbortController().signal, intervalMs: 1,
     read: async () => ({ status: seen.length ? "cancelled" : "cancel_requested" }),
     apply: (result) => { seen.push(result.status); },
     onError: (error) => { throw error; },
   });
   assert.deepEqual(seen, ["cancel_requested", "cancelled"]);
+  assert.deepEqual(terminal, {status: "cancelled"});
 });
 
 /** Recovery reads serial snapshots until terminal state without submitting another workflow. */

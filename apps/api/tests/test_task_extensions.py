@@ -693,7 +693,9 @@ def test_mcp_sse_preserves_fragmented_unicode_and_ignores_progress():
     [
         "success",
         "foreign_owner",
+        "independent",
         "revoked",
+        "user_disabled",
         "cancel",
         pytest.param(
             "live_amap",
@@ -714,7 +716,7 @@ def test_mcp_sse_preserves_fragmented_unicode_and_ignores_progress():
         ],
     ],
 )
-async def test_mcp_in_general_agent(client, monkeypatch, case):
+async def test_mcp_in_general_agent(client, monkeypatch, case, test_database_session_factory):
     """Exercise saved identity, tool messages and revocation inside the existing Agent loop."""
     from nexuspilot_models.contracts import ModelResponse, ToolCall
     from pydantic import SecretStr
@@ -784,10 +786,16 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
             except asyncio.CancelledError:
                 cancelled.set()
                 raise
-        if case in {"revoked", "cancel"}:
+        if case in {"revoked", "cancel", "user_disabled"}:
             entered.set()
             if case == "revoked":
                 monkeypatch.setattr(get_settings(), "mcp_connections_json", SecretStr("{}"))
+            if case == "user_disabled":
+                from nexuspilot_api.services.mcp_management import save_connection
+
+                async with test_database_session_factory() as db:
+                    await save_connection(db, run["user_id"], connection="demo",
+                        config_version="1.0.0", expected_revision=0, enabled=False, tools=["lookup"])
             try:
                 await asyncio.Event().wait()
             finally:
@@ -802,6 +810,16 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
         async def generate(self, request):
             """Attempt the call once; the catalog rejects it for an unapproved owner."""
             previous = [m for m in request.messages if m.role.value == "tool"]
+            if case == "independent" and len(previous) < 3:
+                if not previous:
+                    name, args = "search_tools", {"query":"lookup"}
+                else:
+                    found = json.loads(previous[0].content)["result"]["items"]
+                    selected = next(item for item in found if item["name"].startswith("mcp_remote_"))
+                    name, args = (("describe_tools", {"name":selected["name"],"version":selected["version"]})
+                                  if len(previous) == 1 else (selected["name"], {}))
+                return ModelResponse(tool_calls=[ToolCall(id=f"independent-{len(previous)}", name=name, arguments=args)],
+                    finish_reason="tool_calls", latency_ms=1, raw_response={})
             if not previous:
                 return ModelResponse(
                     tool_calls=[
@@ -823,10 +841,10 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
             result = json.loads(previous[-1].content)
             if case == "foreign_owner":
                 assert result["status"] == "permission_denied"
-            elif case in {"revoked", "live_amap_revoked"}:
+            elif case in {"revoked", "live_amap_revoked", "user_disabled"}:
                 assert result["status"] == "permission_denied"
                 assert result["result"] is None
-            elif case == "success":
+            elif case in {"success", "independent"}:
                 assert result["result"]["content"][0]["text"] == "fixture result"
             elif case == "live_amap":
                 assert result["status"] == "completed", result.get("error")
@@ -858,5 +876,5 @@ async def test_mcp_in_general_agent(client, monkeypatch, case):
     assert response.status_code == 201, response.text
     assert response.json()["status"] == "completed", response.text
     assert len(calls) == (0 if case == "foreign_owner" else 1)
-    if case in {"cancel", "revoked"}:
+    if case in {"cancel", "revoked", "user_disabled"}:
         assert cancelled.is_set()

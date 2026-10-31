@@ -164,3 +164,19 @@ async def test_unkeyed_legacy_turns_remain_distinct(client):
     second = await client.post(endpoint, json=payload)
     assert first.status_code == second.status_code == 201
     assert first.json()["run"]["run_id"] != second.json()["run"]["run_id"]
+
+
+async def test_new_key_waits_for_previous_turn_but_same_key_recovers(client):
+    """A stale second tab cannot append a new keyed turn while the first awaits execution."""
+    await create_user(client, "occupied-owner")
+    conversation = await create_session(client, "occupied-owner")
+    endpoint = f"/api/v1/sessions/{conversation['session_id']}/turns"
+    payload = {"user_id": "occupied-owner", "content_text": "first",
+               "idempotency_key": "occupied-first-key"}
+    first = await client.post(endpoint, json=payload)
+    assert first.status_code == 201
+    assert (await client.post(endpoint, json=payload)).status_code == 200
+    second = {**payload, "content_text": "second", "idempotency_key": "occupied-second-key"}
+    assert (await client.post(endpoint, json=second)).status_code == 409
+    assert (await client.post(f"/api/v1/runs/{first.json()['run']['run_id']}/cancel")).status_code == 200
+    assert (await client.post(endpoint, json=second)).status_code == 201

@@ -1,0 +1,28 @@
+{
+  "status": "Nexus authorization page verified; Assistant integration not executed",
+  "database": "identity_acceptance_69ffe918f1d1",
+  "migration": "20261029_0041",
+  "services": {"api": "127.0.0.1:18011", "web": "127.0.0.1:3117", "mail": "local SMTP fixture"},
+  "model_calls": 0,
+  "checks": {
+    "synthetic_registration_and_browser_login": "passed",
+    "approved_app_and_destination_display": "passed",
+    "explicit_confirmation_requests": 1,
+    "callback_code_present": true,
+    "callback_state_matches": true,
+    "unapproved_callback_rejected": true,
+    "issued_grants_after_refresh_and_reopening": 1,
+    "consumed_grants": 0,
+    "application_mappings_created": 0,
+    "mobile_horizontal_overflow": false,
+    "authorization_button_font": "16px"
+  },
+  "screenshots": ["output/playwright/sso-authorization-mobile-20261030.png", "output/playwright/sso-authorization-desktop-20261030.png"],
+  "limitations": [
+    "Real Nexus API and isolated MySQL; App callback intercepted by Playwright, not a real Assistant service.",
+    "Browser did not exchange the code or establish an App session. Service exchange checks are separate automated test evidence.",
+    "MinIO was configured but this login flow does not read or write memory bodies.",
+    "Initial fixture startup rejected missing allow_local_http; corrected only in synthetic configuration.",
+    "A stale local registration code was rejected; a fresh local code was used successfully."
+  ]
+}

@@ -275,7 +275,7 @@ export function agentNodeMissingOutputLabel(status: AgentWorkflowNodeStatus): st
   return labels[status];
 }
 
-/** Expose the cancel action only while the public Workflow status is running. */
+/** Queued, running and human-waiting workflows remain explicitly cancellable. */
 export function isAgentWorkflowCancellable(status: AgentWorkflowStatus): boolean {
-  return status === "running";
+  return ["pending", "running", "waiting_for_input"].includes(status);
 }

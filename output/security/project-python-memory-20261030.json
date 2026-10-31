@@ -1,0 +1,20 @@
+{
+  "status":"Project typed memory and explicitly selected project file execution verified",
+  "environment":"isolated MySQL/MinIO, independent Worker, Docker Python executor and Chromium; fixed model only",
+  "database":"identity_acceptance_2f6da7816897",
+  "project_id":"ec026080-c750-427c-b8d1-2c13bec94034",
+  "session_id":"7070011a-ed7c-4581-8633-21ff30888bb0",
+  "run_id":"12852a7a-e8bb-40e4-b9d6-0f7efc5e0fff",
+  "workflow_id":"37ec7974-ad64-4f40-bbc1-e3e75e6d7e84",
+  "workflow_status":"completed",
+  "duration_ms":8936,
+  "fixed_model_calls":6,
+  "tool_calls":4,
+  "supplier_requests":0,
+  "supplier_tokens":0,
+  "checks":["Create project through UI", "Save two fixed project copies from existing synthetic Python artifact", "Create project conversation", "Save typed project experience with explicit confirmations", "Personal scope does not show the project memory", "Refresh restores project memory", "Attach only answer.txt; leave not-selected.txt unselected", "Fixed provider asserts list_run_files contains exactly one selected file", "Python reads selected file through authorized /input ID and uses continuous workspace in next call", "Final downloaded answer.txt contains 84", "Answer and artifact entry restore after refresh"],
+  "screenshot":"output/playwright/project-python-20261030.png",
+  "regression":{"command":"apps/api/.venv/bin/pytest apps/api/tests/test_project_attachments.py apps/api/tests/test_product_memory.py -k 'cannot_bind or reject_foreign or nexus_project_inheritance' -q --tb=short", "result":"3 passed, 34 deselected in 1.16s", "scope":"Synthetic API tests for wrong-conversation attachment, foreign owner rejection and project memory inheritance/isolation"},
+  "harness_corrections":["File source control is a tab, not a button", "Desktop memory settings navigation includes its descriptive accessible name"],
+  "limitations":["No implicit whole-project mount or writeback", "No real provider quality evaluation", "No Assistant changes", "No automatic deletion, push, deployment or new content hash mechanism"]
+}

@@ -1,0 +1,21 @@
+{
+  "environment": "isolated MySQL identity_acceptance_bf53519825bd, migration0048, real MinIO, independent Worker, API18011, Web3117, Chromium",
+  "provider": "fixed MemoryFixtureProvider; no paid calls",
+  "scenario": "Retain a copy of a real completed submission in browser storage, start a second Agent waiting for input, navigate to home, reconcile by exact session and turn key, resume second task",
+  "results": {
+    "pending_before_home": 2,
+    "pending_after_reconciliation": 1,
+    "home_selected_active_session": "2f2c5299-f7d4-4e11-9d83-112390e43ffd",
+    "old_run": {"run_id":"ecda2b5b-584d-4c9f-89cc-5975631f0395", "status":"completed", "model_attempts":3},
+    "resumed_run": {"run_id":"215cdbf5-5975-40a2-94f7-c3ae3e989b28", "status":"completed", "model_attempts":3},
+    "pending_after_terminal_home_reconciliation": 0,
+    "initial_home_read": "Saw one retained record before asynchronous reconciliation finished; waited for actual completion before asserting zero"
+  },
+  "checks": [
+    {"command":"cd apps/web && node --import tsx --test tests/pending-submissions.test.ts tests/workflow-recovery.test.ts tests/conversation-submission.test.ts", "result":"21 passed"},
+    {"command":"cd apps/web && npx tsc --noEmit", "result":"passed"},
+    {"command":"cd apps/web && npx eslint app/page.tsx lib/pending-submissions.ts tests/pending-submissions.test.ts", "result":"passed"}
+  ],
+  "test_first": "New exact-turn reconciliation test failed before helper implementation; then passed",
+  "limits": ["No Assistant code changes or actual unified-login claim", "No normal database upgrade, paid provider, commit, push or deployment", "No new content hash"]
+}

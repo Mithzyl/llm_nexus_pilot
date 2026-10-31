@@ -1,0 +1,10 @@
+{
+  "status": "Executor continuity implemented and locally verified; integrated workflow acceptance pending",
+  "behavior": ["Exact user/Run/Task scope selects a random-ID continuation record", "New calls inherit the last saved writable files but have fresh authorized read-only inputs", "Old call replay exports its own generation and cannot change the task head", "Unknown pending call blocks new calls", "Cancellation preserves prior task files", "Pre-execution cancellation remains terminal on retry", "Current task heads excluded from read-only cleanup candidates"],
+  "tests": [
+    {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_python_continuation.py apps/api/tests/test_python_retention.py apps/api/tests/test_python_tool.py -q --tb=short", "result":"26 passed, 2 skipped in 4.07s", "scope":"Real snapshot files, fixed executor/model responses, synthetic database/storage and local socket cancellation; optional Docker integration tests skipped in this command"},
+    {"command":"NEXUSPILOT_TEST_TASK_RUNTIME=1 apps/api/.venv/bin/pytest apps/api/tests/test_python_runtime.py -k real_python_socket -q", "result":"1 passed, 5 deselected in 1.94s", "scope":"Actual local Docker and Unix socket: inherited CSV, changed generation, old call result, in-flight stop, subsequent read; rerun after final cancellation fix"}
+  ],
+  "findings": ["Regression reproduced execution of a call cancelled before container start; persisted terminal marker fixes replay", "Old Python model fixture prohibited streaming; adapted fixed responses to current Agent stream interface without changing expected business results"],
+  "limitations": ["No complete API/Worker/real MinIO multi-call workflow acceptance yet", "No normal-service restart", "No automatic cleanup or project directory import", "No Shell, pip, paid model calls, push or deployment", "Existing immutable-input and invocation validation unchanged; no new content hashes"]
+}

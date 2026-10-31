@@ -1,0 +1,21 @@
+{
+  "status": "linked recipient selection and persistence verified; real Assistant UI not exercised",
+  "command": "apps/api/.venv/bin/python deployments/verification/product_memory_check.py --linked-instructions",
+  "result": "1 passed in 2.96s",
+  "retained_database": "authz_audit_d8bd6af585864313ab715509981ad3bb",
+  "migration": {"database":"identity_acceptance_2d29ca3e0118","from":"20261030_0046","to":"20261030_0047","result":"passed"},
+  "checks": [
+    "Global profile approved for a linked App with a distinct resource owner",
+    "App selection includes global first and entry-specific instructions second",
+    "Later text edits do not change an existing Run's selected text version",
+    "Unlink removes cross-owner instructions but preserves App-specific instructions",
+    "Relinking does not restore old recipient consent",
+    "Renewed consent affects new Runs, not the old revoked selection",
+    "A global profile can be disabled after the recipient has unlinked"
+  ],
+  "limitations": [
+    "Real local MySQL and MinIO, synthetic account links and service-level Run selection.",
+    "No paid model requests or real Assistant UI changes.",
+    "This does not replace full App-to-model request verification."
+  ]
+}

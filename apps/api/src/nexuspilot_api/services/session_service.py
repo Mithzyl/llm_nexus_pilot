@@ -28,6 +28,7 @@ from nexuspilot_api.models import (
     LlmReasoningBlock,
     LlmRun,
     LlmSession,
+    RunStatus,
     SessionStatus,
     User,
 )
@@ -251,6 +252,7 @@ async def create_conversation_turn(
     Lock the Session before reading its key map, so MySQL serializes same-session
     requests. Key records, Run, message and sequence commit together. This does not
     start or retry a Provider call. Ready files bind atomically with message metadata.
+    New keyed turns wait for the prior Run to finish; identical retries still recover.
     Legacy unkeyed requests remain separate turns.
     """
 
@@ -295,6 +297,21 @@ async def create_conversation_turn(
                     raise ResourceConflictError("Committed turn references are unavailable")
                 await db_session.commit()
                 return run, message, True
+            # The Session lock serializes keyed submissions from stale browser tabs.
+            # Check after key replay so losing the first response never blocks recovery.
+            active_run = await db_session.scalar(
+                select(LlmRun.run_id)
+                .where(
+                    LlmRun.session_id == session_id,
+                    LlmRun.status.in_([
+                        RunStatus.PENDING, RunStatus.RUNNING, RunStatus.CANCEL_REQUESTED,
+                    ]),
+                )
+                .limit(1)
+                .with_for_update()
+            )
+            if active_run is not None:
+                raise ResourceConflictError("Session still has an unfinished Run")
         run = await create_run(
             db_session,
             RunCreate(

@@ -1,0 +1,20 @@
+{
+  "date": "2026-10-29",
+  "database": "identity_acceptance_e90dd8f2c58e",
+  "migration": "20261029_0039",
+  "environment": "real local MySQL/MinIO, API 18011, Worker, Web 3117 and Chromium; fixed provider only",
+  "paid_calls": 0,
+  "ui": {
+    "save_entry_preferences": "passed",
+    "refresh_restore": "passed after awaiting asynchronous load; first immediate read was during loading and not counted",
+    "disable_entry_preferences": "passed",
+    "save_global_for_explicit_native_recipient": "passed",
+    "mobile_and_desktop_visual_review": "passed; no horizontal overflow",
+    "locator_note": "First desktop-name click failed in narrow viewport; refreshed snapshot and used actual mobile accessible name"
+  },
+  "quick": {"run_id": "f7f2ffa0-cb6c-4f7f-b5ae-90f46c3e99eb", "terminal": "COMPLETED", "attempts": 2},
+  "agent": {"run_id": "89c1aa3f-1ecf-48b1-9c74-66307fd15d85", "terminal": "COMPLETED", "attempts": 3, "roles": ["controller", "controller", "reviewer"]},
+  "request_audit": "Read actual MinIO raw-request effective_request options: all five attempts contain selected global version 1 and exclude disabled entry preferences; no raw prompts or keys recorded here",
+  "screenshots": ["output/playwright/instructions-settings-mobile-20261029.png", "output/playwright/instructions-settings-20261029.png"],
+  "not_verified": ["Assistant instruction UI", "cross-App linked-owner instructions", "scene selection", "paid-provider behavior"]
+}

@@ -1,0 +1,23 @@
+{
+  "status": "Nexus browser session management verified locally",
+  "database": "identity_acceptance_2867ab7427fb",
+  "environment": "isolated local API, real MySQL, Chromium and synthetic account; no model requests",
+  "checks": [
+    "Two real browser login sessions listed; current session distinguished",
+    "Dismissed confirmation retains the other session",
+    "Confirmed revocation updates the list",
+    "Revoked context auth/me returns 401; current context returns 200",
+    "Refresh retains revoked status",
+    "390px screenshot inspected"
+  ],
+  "commands": [
+    "cd apps/web && node --import tsx --test tests/login-sessions.test.ts",
+    "cd apps/web && npx tsc --noEmit",
+    "cd apps/web && npx eslint components/settings/LoginSessions.tsx lib/login-sessions.ts"
+  ],
+  "results": "status unit test, TypeScript and scoped ESLint passed",
+  "existing_permission_regression": {"command": "apps/api/.venv/bin/pytest apps/api/tests/test_authentication.py -k session_listing -q", "result": "1 passed, 11 deselected in 0.64s", "scope": "ASGI ownership listing and cross-user revocation refusal"},
+  "screenshot": "output/playwright/login-sessions-mobile-20261030.png",
+  "test_harness_corrections": ["Corrected CLI callback signature before login", "Retrieved the existing second browser context after cross-command global handle was unavailable; no repeated revocation"],
+  "limitations": ["No real Assistant integration", "Not hardware device identity", "Personal API Keys and App sessions are unchanged", "No push or deployment"]
+}

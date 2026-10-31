@@ -1,6 +1,8 @@
 """Decide the node order and review branches for the model_only_v1 workflow."""
 
 import asyncio
+import logging
+import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -2432,6 +2434,11 @@ class ModelOnlyWorkflowOrchestrator:
             else:
                 code = "node_output_invalid"
             return self._workflow_error(code, message)
+        logging.getLogger(__name__).error(
+            "workflow internal failure type=%s frames=%s",
+            type(error).__name__,
+            [(frame.name, frame.lineno) for frame in traceback.extract_tb(error.__traceback__)],
+        )
         return self._workflow_error(
             "agent_workflow_internal_error",
             "Agent workflow execution failed.",

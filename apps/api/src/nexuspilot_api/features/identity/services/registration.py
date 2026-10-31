@@ -38,7 +38,7 @@ def verification_cipher(settings):
         raise InvalidRequestError("注册验证服务尚未配置。") from None
 
 
-async def send_verification_email(email, code, settings):
+async def send_verification_email(email, code, settings, *, purpose="registration"):
     """Send one bounded SMTP message; do not log credentials, code, or server exception bodies."""
     host = settings.registration_smtp_host
     if not host or not settings.registration_smtp_sender:
@@ -48,8 +48,9 @@ async def send_verification_email(email, code, settings):
     message = EmailMessage()
     message["From"] = settings.registration_smtp_sender
     message["To"] = email
-    message["Subject"] = "NexusPilot 注册验证"
-    message.set_content(f"你的注册验证码：\n{code}\n\n15分钟内有效。若非本人申请，请忽略本邮件。")
+    label = "密码重置" if purpose == "password_reset" else "注册验证"
+    message["Subject"] = f"NexusPilot {label}"
+    message.set_content(f"你的{label}码：\n{code}\n\n15分钟内有效。若非本人申请，请忽略本邮件。")
 
     def deliver():
         """Use the configured relay once; SMTP uncertainty must not trigger automatic resends."""

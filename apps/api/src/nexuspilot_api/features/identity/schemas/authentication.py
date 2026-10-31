@@ -33,6 +33,12 @@ class RegistrationVerifyRequest(RegistrationEmailRequest):
     password: SecretStr = Field(min_length=12, max_length=1024)
 
 
+class PasswordResetVerifyRequest(RegistrationEmailRequest):
+    """Reset only an existing account using purpose-specific proof; never accept an owner ID."""
+    code: SecretStr = Field(min_length=1, max_length=128)
+    new_password: SecretStr = Field(min_length=12, max_length=1024)
+
+
 class PasswordChangeRequest(BaseModel):
     """Validate the current and replacement password without logging either value."""
 

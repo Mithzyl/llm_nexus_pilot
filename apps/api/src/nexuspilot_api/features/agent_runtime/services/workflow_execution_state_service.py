@@ -675,6 +675,9 @@ class WorkflowExecutionStateService:
         run = await self.require_run(workflow.run_id)
         run.status = RunStatus.CANCELLED
         run.completed_at = now
+        from nexuspilot_api.services.user_interactions import cancel_interactions
+
+        await cancel_interactions(self.db_session, workflow.run_id)
         self.bump_snapshot(workflow)
         await self.append_event(
             workflow,

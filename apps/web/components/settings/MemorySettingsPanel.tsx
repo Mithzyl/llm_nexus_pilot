@@ -4,6 +4,9 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { getMemorySettings, listProductMemories, mutateProductMemory } from "../../lib/api";
 import { memoryErrorMessage } from "../../lib/personal-settings";
 import type { MemoryCommand, MemorySettings, PersonalMemory } from "../../lib/types";
+import { MemorySharingEditor } from "./MemorySharingEditor";
+import { TypedMemoryFields } from "./TypedMemoryFields";
+import { buildTypedMemory, memoryKinds, memoryFields, type MemoryFormKind } from "../../lib/typed-memory-form";
 
 /** Manage personal or current-project memory without creating a conversation or model request. */
 export function MemorySettingsPanel({ projectId }: { projectId?: string }) {
@@ -29,6 +32,9 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
   const [text, setText] = useState("");
   const [editing, setEditing] = useState<PersonalMemory | null>(null);
   const [sensitiveConfirmed, setSensitiveConfirmed] = useState(false);
+  const [kind, setKind] = useState<MemoryFormKind>("free_text");
+  const [fields, setFields] = useState<Record<string,string>>({});
+  const [typeConfirmed, setTypeConfirmed] = useState(false);
   const alive = useRef(true);
   const pending = useRef<{ command: string; key: string } | null>(null);
 
@@ -71,6 +77,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
       if (!alive.current) return;
       pending.current = null;
       setText(""); setEditing(null); setSensitiveConfirmed(false);
+      setKind("free_text"); setFields({}); setTypeConfirmed(false);
       setNotice(command.action === "forget" ? "已忘记；原始对话和文件未删除。" : "操作已保存。");
       await refresh();
     } catch (failure) {
@@ -84,8 +91,13 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!text.trim()) return;
+    let typed: Record<string,unknown> | undefined;
+    try { typed = buildTypedMemory(kind, fields); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : "请检查记忆字段。"); return; }
+    if (typed && (!typeConfirmed || !sensitiveConfirmed)) { setError("请确认类型字段和敏感信息保存授权。"); return; }
     void execute({ action: editing ? "correct" : "save", text: text.trim(),
       ...(editing ? { entry_id: editing.entry_id, expected_version: editing.version } : {}),
+      ...(typed ? {typed_data:typed, confirmed_type:typeConfirmed} : {}),
       sensitive: editing?.sensitive || sensitiveConfirmed, confirmed_sensitive: sensitiveConfirmed });
   }
 
@@ -105,9 +117,16 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
     {notice && <p role="status">{notice}</p>}
     {!settings?.enabled && settings && <p>关闭后不自动使用或新增记忆，仍可查看、纠正和忘记。</p>}
     <form className="settings-form" onSubmit={submit}>
+      <label>记忆类型<select value={kind} disabled={busy} onChange={event => {
+        setKind(event.target.value as MemoryFormKind); setFields({}); setTypeConfirmed(false); setSensitiveConfirmed(false);
+      }}>{memoryKinds.map(([value,label]) => <option key={value} value={value} disabled={value === "free_text" && Boolean(editing?.typed_data)}>{label}</option>)}</select></label>
       <label>{editing ? "纠正记忆" : "新增记忆"}
         <textarea aria-label="记忆内容" maxLength={4000} value={text} onChange={event => setText(event.target.value)} />
       </label>
+      <TypedMemoryFields kind={kind} values={fields} onChange={value => {setFields(value); setTypeConfirmed(false);}} />
+      {kind !== "free_text" && <label><input type="checkbox" checked={typeConfirmed} onChange={event => setTypeConfirmed(event.target.checked)} />
+        我已核对以上结构化字段；保存记忆不会创建日历事项或规划路线。
+      </label>}
       <label><input type="checkbox" checked={sensitiveConfirmed} onChange={event => setSensitiveConfirmed(event.target.checked)} />
         此条含敏感信息；我确认将以上内容保存到{projectId ? "当前项目" : "个人"}记忆，不授权向外部模型或工具发送。
       </label>
@@ -115,15 +134,21 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
         <button disabled={busy || loading || !text.trim() || (!settings?.enabled && !editing)} type="submit">
           {editing ? "保存纠正" : "保存记忆"}
         </button>
-        {editing && <button type="button" disabled={busy} onClick={() => { setEditing(null); setText(""); setSensitiveConfirmed(false); }}>取消编辑</button>}
+        {editing && <button type="button" disabled={busy} onClick={() => { setEditing(null); setText(""); setSensitiveConfirmed(false); setKind("free_text"); setFields({}); setTypeConfirmed(false); }}>取消编辑</button>}
       </div>
     </form>
     {!loading && !error && items.length === 0 && <p>暂无记忆。</p>}
     <div className="settings-list">
       {items.map(item => <article className="settings-memory-row" key={item.entry_id}>
         <p>{item.text}</p><span>{item.status === "candidate" ? "等待确认" : "已保存"}{item.sensitive ? " · 敏感" : ""}</span>
+        {item.typed_data && <dl>{memoryFields[(item.memory_type ?? "free_text") as MemoryFormKind]?.map(field =>
+          item.typed_data?.[field.key] != null && <div key={field.key}><dt>{field.label}</dt><dd>{String(item.typed_data[field.key])}</dd></div>)}</dl>}
         <div className="settings-form-footer">
-          <button disabled={busy || loading} onClick={() => { setEditing(item); setText(item.text ?? ""); setSensitiveConfirmed(false); }}>纠正</button>
+          <button disabled={busy || loading} onClick={() => { setEditing(item); setText(item.text ?? ""); setSensitiveConfirmed(false);
+            setKind((item.memory_type ?? "free_text") as MemoryFormKind);
+            setFields(Object.fromEntries(Object.entries(item.typed_data ?? {}).map(([key,value]) => [key, value == null ? "" : String(value)])));
+            setTypeConfirmed(false);
+          }}>纠正</button>
           {item.status === "candidate" && <button disabled={busy || loading || !settings?.enabled} onClick={() => {
             if (item.sensitive && !window.confirm(`确认将这条敏感候选保存为${projectId ? "当前项目" : "个人"}记忆？\n${item.text}`)) return;
             void execute({ action: "confirm", entry_id: item.entry_id, expected_version: item.version, confirmed_sensitive: item.sensitive });
@@ -132,6 +157,7 @@ function MemoryScopeEditor({ projectId }: { projectId?: string }) {
             if (window.confirm("忘记这条记忆？这不会删除原始对话或文件。")) void execute({ action: "forget", entry_id: item.entry_id, expected_version: item.version });
           }}>忘记</button>
         </div>
+        {!projectId && item.status === "active" && <MemorySharingEditor key={`${item.entry_id}:${item.version}`} item={item} />}
       </article>)}
     </div>
     {nextOffset !== null && <button disabled={loading || busy} onClick={() => { setLoading(true); void refresh(nextOffset); }}>加载更多记忆</button>}

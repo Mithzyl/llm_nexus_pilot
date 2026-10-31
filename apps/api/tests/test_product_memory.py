@@ -13,6 +13,35 @@ from nexuspilot_api.infrastructure.object_storage import get_object_storage
 from nexuspilot_api.main import app
 
 
+async def test_typed_memory_remains_encrypted_and_requires_type_confirmation(
+    resource_client, memory_key, test_database_session_factory,
+):
+    """Typed places require explicit consent and survive text-only corrections without SQL prose."""
+    from nexuspilot_api.features.memory.models.product_memory import UserMemoryEntry
+    from nexuspilot_api.features.memory.services.product_memory import memory_for_run
+
+    run = await native_run(resource_client, "管理记忆")
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        service = await memory_for_run(db, storage, run["run_id"])
+        data = {"memory_type": "place", "label": "home", "address": "synthetic address",
+                "coordinate_system": "GCJ02", "latitude": 24.0, "longitude": 109.0}
+        request = {"action": "save", "key": "typed-place", "text": "My place",
+                   "typed_data": data, "confirmed_sensitive": True}
+        with pytest.raises(MemoryFailure, match="memory_type_confirmation_required"):
+            await service.mutate(request)
+        saved = await service.mutate({**request, "confirmed_type": True})
+        row = await db.get(UserMemoryEntry, saved["entry_id"])
+        assert row.memory_type == "place" and row.origin_entry == "native"
+        assert row.origin_owner_user_id == run["user_id"]
+        assert (await service.query())["items"][0]["typed_data"]["address"] == data["address"]
+        assert "typed_data" not in (await service.query(for_model=True))["items"][0]
+        await service.mutate({"action": "correct", "key": "typed-correction",
+            "entry_id": row.entry_id, "expected_version": 1, "text": "Updated label",
+            "confirmed_sensitive": True})
+        assert (await service.query())["items"][0]["typed_data"]["address"] == data["address"]
+
+
 @pytest.mark.parametrize("prompt", ["记住我喜欢中文，保存后确认一下", "记住我喜欢中文"])
 async def test_reworded_save_stays_candidate_until_user_confirmation(
     resource_client, memory_key, test_database_session_factory, prompt
@@ -254,6 +283,31 @@ async def test_sensitive_disclosure_is_run_bound_and_does_not_grant_network_tool
             await check_memory_external_disclosure(
                 db, run["run_id"], SimpleNamespace(execution_type="remote_http", name="app_tool")
             )
+
+
+async def test_disclosures_for_two_runs_coexist_until_content_changes(
+    resource_client, memory_key, test_database_session_factory,
+):
+    """Granting a second Run preserves the first grant; correcting content invalidates both."""
+    from nexuspilot_api.features.memory.services.product_memory import memory_for_run
+
+    runs = [await native_run(resource_client, "查看记忆") for _ in range(2)]
+    storage = app.dependency_overrides[get_object_storage]()
+    async with test_database_session_factory() as db:
+        services = [await memory_for_run(db, storage, run["run_id"]) for run in runs]
+        saved = await services[0].mutate({"action": "save", "text": "家庭地址：测试地点",
+            "key": "two-run-save", "confirmed_sensitive": True})
+        for index, service in enumerate(services):
+            await service.mutate({"action": "disclose", "entry_id": saved["entry_id"],
+                "expected_version": saved["version"], "key": f"two-run-disclose-{index}",
+                "confirmed_sensitive": True})
+        for service in services:
+            assert (await service.query(for_model=True))["items"][0]["text"] == "家庭地址：测试地点"
+        await services[0].mutate({"action": "correct", "entry_id": saved["entry_id"],
+            "expected_version": saved["version"], "key": "two-run-correction",
+            "text": "家庭地址：已纠正", "confirmed_sensitive": True})
+        for service in services:
+            assert "text" not in (await service.query(for_model=True))["items"][0]
 
 
 async def test_memory_migration_preserves_existing_run(client, test_database_session_factory):
@@ -786,6 +840,8 @@ async def test_memory_tools_in_both_modes(resource_client, memory_key, mode, act
     text = "记住我喜欢简洁的中文回答" if action == "save" else "你记得我的偏好吗？"
     client._transport.raise_app_exceptions = True
     initial = await native_run(client, text)
+    # The helper provisions a pending Run; finish that setup before submitting a new turn.
+    assert (await client.post(f"/api/v1/runs/{initial['run_id']}/cancel")).status_code == 200
     turn = await client.post(
         f"/api/v1/sessions/{initial['session_id']}/turns",
         json={
@@ -936,6 +992,14 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
     assert (await client.get(other_path, headers=runs[1][1])).json()["items"] == []
     foreign = {**headers, "X-External-User-Id": "another-user"}
     assert (await client.get(path, headers=foreign)).status_code == 404
+    management = "/api/v1/app/me/user-memories"
+    managed = await client.get(management, headers=headers)
+    assert managed.status_code == 200
+    assert managed.json()["items"][0]["entry_id"] == saved.json()["entry_id"]
+    assert (await client.get(management, headers=foreign)).json()["items"] == []
+    assert (await client.get(management, headers=runs[1][1])).json()["items"] == []
+    assert (await client.post(management, headers=headers, json={"action": "save",
+        "text": "scope override", "key": "deny-project", "scope": "project"})).status_code == 409
     assert (await client.get(path, headers=headers, params={"scope": "project"})).status_code == 409
     assert (await client.get(path)).status_code == 401
     # Exercise the same public envelope for each App, not just the internal service method.
@@ -1004,7 +1068,7 @@ async def test_explicit_grant_keyword_fallback_is_run_scoped(
             {
                 "action": "forget",
                 "entry_id": saved["entry_id"],
-                "expected_version": 2,
+                "expected_version": saved["version"],
                 "key": "fallback-forget",
             }
         )

@@ -9,7 +9,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from nexuspilot_models.contracts import ModelResponse, ToolCall
+from nexuspilot_models.contracts import ModelResponse, StreamEvent, StreamEventType, ToolCall
 from sqlalchemy import select
 from test_agent_workflows import register_default_agent_test_model, scripted_registry  # noqa: F401
 from test_api import create_test_run
@@ -20,6 +20,17 @@ from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.dependencies import get_provider_registry
 from nexuspilot_api.main import app
 from nexuspilot_api.models import LlmModelToolCall, LlmRunArtifact
+
+
+class PythonTestProvider(GeneralProvider):
+    """Adapt fixed Python tool responses to the current Agent streaming invocation path."""
+
+    async def stream(self, request):
+        """Emit the same generated result, including tool calls, without contacting a provider."""
+        yield StreamEvent(type=StreamEventType.STARTED, sequence=1)
+        response = await self.generate(request)
+        yield StreamEvent(type=StreamEventType.COMPLETED, sequence=2,
+                          data={"response":response.model_dump(mode="json")})
 
 
 @pytest.fixture
@@ -152,7 +163,7 @@ async def test_python_tool_authorization_and_artifact(
 
         monkeypatch.setattr(storage, "put_bytes", fail_artifact)
 
-    class Provider(GeneralProvider):
+    class Provider(PythonTestProvider):
         """Select the deferred Python tool and inspect the durable tool message."""
 
         async def generate(self, request):
@@ -305,7 +316,7 @@ async def test_python_workflow_cancel_propagates(client, monkeypatch, real_path=
     else:
         monkeypatch.setattr(service, "execute_python_request", execute)
 
-    class Provider(GeneralProvider):
+    class Provider(PythonTestProvider):
         """Request Python once and reject any generation after cancellation."""
 
         async def generate(self, request):

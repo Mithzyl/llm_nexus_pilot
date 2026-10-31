@@ -3,6 +3,35 @@ import test from "node:test";
 
 import { isAllowedProxyRoute } from "../lib/proxy-policy";
 
+/** Password recovery exposes availability and explicit submissions, not arbitrary auth actions. */
+test("password reset exposes only its documented methods", () => {
+  assert.equal(isAllowedProxyRoute("GET", ["auth", "password-reset"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["auth", "password-reset"]), false);
+  for (const action of ["request", "verify"]) {
+    assert.equal(isAllowedProxyRoute("POST", ["auth", "password-reset", action]), true);
+    assert.equal(isAllowedProxyRoute("GET", ["auth", "password-reset", action]), false);
+  }
+});
+
+/** MCP management uses exact browser routes, never a generic remote URL proxy. */
+test("MCP management exposes only configured connection actions", () => {
+  assert.equal(isAllowedProxyRoute("GET", ["me", "mcp-connections"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["me", "mcp-connections"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["me", "mcp-connections", "discover"]), true);
+  assert.equal(isAllowedProxyRoute("POST", ["me", "mcp-connections", "execute"]), false);
+});
+
+/** Browser consent endpoints are available, but confidential App operations stay server-only. */
+test("account linking exposes browser consent without App credentials", () => {
+  assert.equal(isAllowedProxyRoute("GET", ["me", "account-links"]), true);
+  for (const operation of ["preview", "confirm", "revoke"]) {
+    assert.equal(isAllowedProxyRoute("POST", ["me", "account-links", operation]), true);
+    assert.equal(isAllowedProxyRoute("GET", ["me", "account-links", operation]), false);
+  }
+  assert.equal(isAllowedProxyRoute("POST", ["app", "me", "account-link-requests"]), false);
+  assert.equal(isAllowedProxyRoute("POST", ["auth", "app", "exchange"]), false);
+});
+
 /** Saved execution files allow reads and downloads, never browser writes or deletion. */
 test("execution artifacts expose read-only routes", () => {
   for (const path of [["artifacts"], ["artifacts", "id"], ["artifacts", "id", "content"]]) {

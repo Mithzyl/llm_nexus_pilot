@@ -1,0 +1,11 @@
+{
+  "status":"same-owner cross-App Run isolation fixed and verified",
+  "reproduced":"Two separately authenticated App mappings shared one owner; the other App could GET the saved workflow summary with HTTP 200 before the fix",
+  "fix":"Pin authenticated mapping_id in request DB context; check persisted RunApplicationContext along each resource parent chain in addition to owner",
+  "checks":["Foreign App summary 404", "Foreign App result 404", "Foreign App event replay 404", "Foreign App workflow cancel 404", "Foreign App Run cancel 404", "Original App result remains pending", "Original App Run cancel succeeds"],
+  "tests":[
+    {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_application_scope.py apps/api/tests/test_application_identity.py -q --tb=short", "result":"4 passed in 0.74s"},
+    {"command":"apps/api/.venv/bin/python deployments/verification/product_memory_check.py --app-scope", "result":"1 passed in 2.59s", "database":"authz_audit_d2d2e7808ef1457cb33901df343c0f51", "environment":"real local MySQL; queued workflow without worker/model execution; synthetic App credentials and mappings"}
+  ],
+  "limitations":["No actual Assistant login or UI changes", "No provider or business callback requests", "No new browser UI in this change", "No push, deployment or automatic deletion"]
+}

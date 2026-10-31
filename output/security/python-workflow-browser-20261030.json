@@ -1,0 +1,27 @@
+{
+  "environment": "isolated real MySQL/MinIO, independent Worker and Unix socket Python executor, real Docker and Chromium; fixed model responses only",
+  "command": "PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/serve_identity_memory_fixture.py --python-continuation --worker",
+  "database": "identity_acceptance_a365a73e6d8e",
+  "success": {
+    "session_id":"c78c68e6-579e-4dfd-b74a-33aa8d344066",
+    "run_id":"b2e649b5-0011-4964-908f-bc277781dac0",
+    "workflow_id":"5fe35ea1-6955-4533-a6ee-9cedcb610f65",
+    "status":"completed", "duration_ms":6838,
+    "fixed_model_calls":5, "tool_calls":3, "supplier_tokens":0, "supplier_requests":0,
+    "checks":["First Python call saves only intermediate file, no Artifact", "Second call uses inherited file with no explicit inputs to compute 42", "MinIO publication confirmed", "Browser download answer.txt contains 42", "New conversation URL updates automatically", "Refresh restores final answer and artifact entry"]
+  },
+  "cancellation": {
+    "run_id":"55f6e347-426a-4fb4-84cc-e513d5cacbdd",
+    "workflow_id":"c13b4f02-0620-43bd-9c25-a75c6d09db93",
+    "status":"cancelled", "executor_status":"cancelled", "container_removed":true,
+    "method":"Observe the synthetic second Python sleep command executing, then immediately click browser stop in the same verification script"
+  },
+  "failed_attempts": [
+    {"run_id":"9718ff09-ed15-4e27-aadb-7a57b34a2266", "result":"executor timed_out; workflow outcome_unknown because fixed fixture rejects unsuccessful tool result", "accepted_as_cancel_test":false},
+    {"run_id":"35f456f8-6cf2-443a-96a3-77d7e35782b2", "result":"stop click did not cancel the observed running task before frontend submission lifecycle repair", "accepted_as_cancel_test":false}
+  ],
+  "fix":"Keep the active submission following saved Worker results until terminal state instead of returning the acknowledgement snapshot; this preserves stop identity and terminal route update.",
+  "checks":"TypeScript, scoped ESLint, 8 recovery/route tests passed; screenshot inspected",
+  "screenshot":"output/playwright/python-continuation-workflow-20261030.png",
+  "limitations":["No real provider evaluation", "No normal service restart or deployment", "No project-wide implicit file import", "No automatic deletion or new content hashes"]
+}

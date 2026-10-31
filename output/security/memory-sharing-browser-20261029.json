@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-29",
+  "database": "identity_acceptance_1b7f5530ccd1",
+  "migration": "20261029_0038",
+  "environment": "isolated API 18011, Web 3117, real MySQL/MinIO and Chromium",
+  "model_calls": 0,
+  "setup": "Synthetic browser-registered user and one synthetic same-owner personal_assistant mapping. This is not unified-login evidence.",
+  "checks": {
+    "native_settings_save_memory": "passed",
+    "select_fields_and_confirm_share": "passed",
+    "reload_restores_persisted_grant": "passed",
+    "stop_sharing": "passed; revoke button removed after server confirmation",
+    "desktop_visual_review": "passed after adding scoped button/select/fieldset styles",
+    "mobile_390x844_visual_review": "passed; document has no horizontal overflow"
+  },
+  "screenshots": ["output/playwright/memory-sharing-settings-20261029.png", "output/playwright/memory-sharing-mobile-20261029.png"],
+  "not_verified": ["Assistant settings UI", "recipient shared sensitive disclosure UI", "cross-application login", "paid model usage"],
+  "tests": "TypeScript and scoped ESLint passed; backend sharing and route policy 25 passed."
+}

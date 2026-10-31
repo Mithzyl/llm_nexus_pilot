@@ -1,0 +1,21 @@
+{
+  "status": "Nexus recipient browser flow verified with fixed models",
+  "command": "PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python deployments/verification/serve_identity_memory_fixture.py --shared-memory",
+  "database": "identity_acceptance_4d8b9c0169cc",
+  "session_id": "6258c47b-9e8b-43bf-9c13-6cf8287f6872",
+  "last_run_id": "b4ca2ccb-8bcf-4bb3-8c15-7040ff5b9840",
+  "last_run_status": "completed",
+  "environment": "Real local MySQL, MinIO, API, Web and Chromium; synthetic linked App owner distinct from recipient; fixed memory query/reviewer responses",
+  "checks": [
+    "Picker opens unchecked and shows only approved label, not source address",
+    "Quick reply explicit disclosure returns the approved label through query_memory",
+    "Quick reply refresh restores saved answer and does not select consent for next turn",
+    "Agent continuation without selection returns disclosure_required metadata without label",
+    "Agent new explicit selection returns approved label, not source address",
+    "Agent final answer restores after refresh; next-turn checkbox remains unchecked",
+    "390px disclosure picker screenshot inspected"
+  ],
+  "screenshot": "output/playwright/shared-recipient-mobile-20261030.png",
+  "harness_correction": "Initial last-article locator did not select the answer; explicit MEMORY_CHECK paragraph locator confirmed the saved response. No business-code fix was needed.",
+  "limitations": ["No actual Assistant UI or login changes", "Synthetic explicit association, not real user binding acceptance", "No paid provider calls", "Revocation/version tests are separate existing service evidence, not repeated browser actions in this run", "No automatic deletion, push or deployment"]
+}

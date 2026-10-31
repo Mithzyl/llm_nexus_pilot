@@ -1,4 +1,16 @@
 .file-library { position: relative; }
+.settings-memory-panel select { font: inherit; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); max-width: 100%; }
+.memory-sharing-editor { margin-top: 12px; }
+.memory-sharing-editor button, .memory-sharing-editor select {
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+  background: var(--panel); color: var(--text); font: inherit; cursor: pointer;
+}
+.memory-sharing-editor button:disabled { opacity: .5; cursor: default; }
+.memory-sharing-editor .settings-form { margin-top: 12px; }
+.memory-sharing-editor fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+.memory-sharing-editor fieldset label { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; overflow-wrap: anywhere; }
+.memory-sharing-editor input[type="checkbox"] { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 3px; }
+.memory-sharing-editor p { font-weight: 400; line-height: 1.6; }
 /* Claims are separate from execution state; originals keep a readable, bounded column. */
 .evidence-tabs { display: flex; border-bottom: 1px solid var(--line); gap: 24px; margin: 8px 0 20px; }
 .evidence-tabs button { display: inline-flex; align-items: center; gap: 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 12px 4px; color: var(--muted); cursor: pointer; font-size: 15px; transition: color 160ms var(--ease-out-soft), border-color 160ms var(--ease-out-soft); }
@@ -1036,6 +1048,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settings-check strong { font: 620 11px var(--font-geist-mono); }
 .settings-check small { color: var(--muted); font-size: 9px; font-weight: 400; }
 .settings-form-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.authentication-panel .application-login-actions button { min-height: 44px; font-size: 16px; }
+.application-login-actions a { font-size: 16px; padding-block: 10px; }
+.account-links-panel { width: min(100%, 560px); overflow-wrap: anywhere; }
+.account-links-panel h2 { font-size: 20px; }
+.account-link-item { border-top: 1px solid var(--border); margin-block: 20px; padding-top: 16px; }
+.account-links-panel button { min-height: 44px; font-size: 16px; }
+.mcp-connection { margin-block: 24px; border-top: 1px solid var(--border); padding-top: 16px; overflow-wrap: anywhere; }
+.mcp-connection h4 { font-size: 18px; margin-block: 8px; }
+.mcp-connection fieldset { border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+.mcp-connection label { display: flex; align-items: flex-start; gap: 10px; margin-block: 12px; font-size: 15px; }
+.mcp-connection small { display: block; color: var(--muted); font-size: 14px; margin-top: 4px; }
+.mcp-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.mcp-reload { min-height: 44px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; background: transparent; color: inherit; font-size: 15px; cursor: pointer; }
+.mcp-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.mcp-actions button { min-height: 44px; border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; background: transparent; color: inherit; font-size: 15px; cursor: pointer; }
+.account-link-item button { padding: 8px 14px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: inherit; cursor: pointer; }
 .settings-form-footer p { max-width: 520px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
 .settings-form-footer button,
 .settings-once button,
@@ -1101,6 +1129,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .settings-memory-type { width: fit-content; border-radius: 6px; padding: 4px 6px; background: var(--soft); color: var(--muted); font-size: 8px; font-weight: 680; }
 .settings-memory-row textarea { margin: 2px 0; }
 .settings-danger-action { margin-top: 8px; border-color: color-mix(in srgb, var(--danger) 48%, var(--line)); background: transparent; color: var(--danger); }
+.login-sessions { margin-block: 24px; }
+.login-sessions ul { list-style: none; margin: 16px 0; padding: 0; }
+.login-sessions li { padding-block: 16px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.login-sessions p { font-size: 14px; line-height: 1.6; }
+.login-sessions button { margin: 4px 12px 4px 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; font: inherit; }
 .settings-empty-state { padding: 20px 16px; border-radius: 12px; background: var(--panel); }
 .settings-empty-state strong { font-size: 12px; }
 .settings-empty-state p { max-width: 620px; margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
@@ -1314,3 +1347,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px
 .project-attachment-chips li { display: flex; align-items: center; gap: 12px; max-width: 100%; padding: 6px 12px; border: 1px solid var(--border-color, #ccc); border-radius: 8px; }
 .project-attachment-chips span { overflow-wrap: anywhere; }
 .project-attachment-chips button { border: 0; background: transparent; color: inherit; padding: 6px; cursor: pointer; }
+/* Human questions remain readable beside the composer without revealing technical payloads. */
+.user-interactions { padding: 12px 0; }
+.interaction-question { border-top: 1px solid var(--border, #ddd); padding: 12px 0; }
+.interaction-question p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 12px; }
+.interaction-question textarea { width: 100%; min-height: 80px; font: inherit; resize: vertical; }
+.interaction-actions { display: flex; justify-content: flex-end; gap: 16px; flex-wrap: wrap; }
+.interaction-actions button { font: inherit; padding: 8px 14px; border: 1px solid var(--border, #ddd); border-radius: 8px; }

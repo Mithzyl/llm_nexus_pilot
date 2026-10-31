@@ -210,6 +210,9 @@ class ConversationBodySession(AsyncSession):
 
     async def commit(self):
         """Fence Worker writes before committing SQL; retain object receipts on uncertainty."""
+        from nexuspilot_api.services.quick_response_ownership import verify_response_claim
+
+        await verify_response_claim(self)
         if self.info.get("workflow_execution_claim") is not None:
             from nexuspilot_api.features.agent_runtime.services.workflow_ownership import (
                 verify_execution_claim,
@@ -218,6 +221,7 @@ class ConversationBodySession(AsyncSession):
         await self.flush()
         if self.info.get("workflow_execution_claim") is not None:
             await verify_execution_claim(self)
+        await verify_response_claim(self)
         await super().commit()
 
     async def execute(self, statement, params=None, **kwargs):

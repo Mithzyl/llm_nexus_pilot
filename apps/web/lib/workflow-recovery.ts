@@ -13,14 +13,14 @@ function pause(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Follow an existing Run or workflow with serial reads and no execution writes. */
+/** Return the saved terminal result; passive abort returns undefined and never cancels execution. */
 export async function followWorkflowResult<T extends { status: string }>(options: {
   signal: AbortSignal;
   read: (signal: AbortSignal) => Promise<T>;
   apply: (result: T, signal: AbortSignal) => void | Promise<void>;
   onError: (error: unknown) => void;
   intervalMs?: number;
-}): Promise<void> {
+}): Promise<T | undefined> {
   const interval = options.intervalMs ?? 1500;
   let failures = 0;
   while (!options.signal.aborted) {
@@ -31,7 +31,7 @@ export async function followWorkflowResult<T extends { status: string }>(options
       await options.apply(result, signal);
       if (options.signal.aborted) return;
       failures = 0;
-      if (!["pending", "running", "waiting_for_input", "cancel_requested"].includes(result.status)) return;
+      if (!["pending", "running", "waiting_for_input", "cancel_requested"].includes(result.status)) return result;
     } catch (error) {
       if (options.signal.aborted) return;
       failures += 1;

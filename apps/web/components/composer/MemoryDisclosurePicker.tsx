@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { listProductMemories } from "../../lib/api";
+import { listProductMemories, nexusFetch } from "../../lib/api";
 import type { PersonalMemory } from "../../lib/types";
 import type { MemoryDisclosureSelection } from "../../lib/memory-disclosure";
 
@@ -9,7 +9,8 @@ import type { MemoryDisclosureSelection } from "../../lib/memory-disclosure";
 export function MemoryDisclosurePicker({disabled, projectId, onChange}: {
   disabled: boolean; projectId?: string; onChange: (items: MemoryDisclosureSelection[]) => void;
 }) {
-  const [items, setItems] = useState<Array<PersonalMemory & {scope: "personal" | "project"}>>([]);
+  const [items, setItems] = useState<Array<PersonalMemory & {scope: "personal" | "project";
+    grant_id?: string; grant_version?: number; source_entry?: string}>>([]);
   const [selected, setSelected] = useState<MemoryDisclosureSelection[]>([]);
   const [opened, setOpened] = useState(false);
   const [error, setError] = useState("");
@@ -40,6 +41,18 @@ export function MemoryDisclosurePicker({disabled, projectId, onChange}: {
           offset = page.next_offset;
         } while (offset !== null);
       }
+      let sharedOffset: number | null = 0;
+      const seenShared = new Set<number>();
+      do {
+        if (seenShared.has(sharedOffset) || seenShared.size >= 20) throw new Error("Invalid shared pagination");
+        seenShared.add(sharedOffset);
+        const page: {items: Array<typeof items[number]>; next_offset: number | null} = await nexusFetch(
+          `me/shared-memories?offset=${sharedOffset}&limit=50`);
+        if (!mounted.current) return;
+        result.push(...page.items.filter(item => item.sensitive).map(item => ({...item,
+          status: "active" as const, scope: "personal" as const})));
+        sharedOffset = page.next_offset;
+      } while (sharedOffset !== null);
       setItems(result);
     } catch { if (mounted.current) setError("无法读取敏感记忆，请重试；本次不会自动授权。"); }
     finally { if (mounted.current) setLoading(false); }
@@ -47,7 +60,8 @@ export function MemoryDisclosurePicker({disabled, projectId, onChange}: {
 
   /** Preserve the exact displayed version and scope; selection never includes the body. */
   function toggle(item: typeof items[number], checked: boolean) {
-    const next = checked ? [...selected, {entry_id: item.entry_id, version: item.version, scope: item.scope}]
+    const next = checked ? [...selected, {entry_id: item.entry_id, version: item.version, scope: item.scope,
+      ...(item.grant_id ? {grant_id:item.grant_id,grant_version:item.grant_version} : {})}]
       : selected.filter(value => value.entry_id !== item.entry_id);
     setSelected(next); onChange(next);
   }
@@ -67,7 +81,8 @@ export function MemoryDisclosurePicker({disabled, projectId, onChange}: {
         <input type="checkbox" disabled={disabled || loading}
           checked={selected.some(value => value.entry_id === item.entry_id)}
           onChange={event => toggle(item, event.target.checked)} />
-        {item.scope === "project" ? "项目" : "个人"}：{item.text}
+        {item.grant_id ? "其他应用共享" : item.scope === "project" ? "项目" : "个人"}：{item.text
+          ?? Object.entries(item.typed_data ?? item.app_data?.fields ?? {}).map(([key,value]) => `${key}：${String(value)}`).join("；")}
       </label>)}
     </section>}
   </div>;

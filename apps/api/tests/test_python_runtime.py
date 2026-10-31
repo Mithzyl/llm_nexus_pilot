@@ -110,6 +110,16 @@ async def test_real_python_socket_execution_and_stop(python_server, tmp_path):
             assert result["stdout"].strip() == "6"
             assert base64.b64decode(result["files"]["result.csv"]) == b"total\n6\n"
             assert await execute_python_request(str(path), payload) == result
+            continuation = request_for(
+                "from pathlib import Path\n"
+                "assert Path('result.csv').read_text() == 'total\\n6\\n'\n"
+                "Path('result.csv').write_text('total\\n12\\n')"
+            )
+            continuation["inputs"] = {}
+            continued = await execute_python_request(str(path), continuation)
+            assert base64.b64decode(continued["files"]["result.csv"]) == b"total\n12\n"
+            # An older call must export its own immutable generation, not the current task files.
+            assert await execute_python_request(str(path), payload) == result
             failed = await execute_python_request(
                 str(path), request_for("raise ValueError('sample')"),
             )
@@ -145,6 +155,11 @@ async def test_real_python_socket_execution_and_stop(python_server, tmp_path):
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(pending, 30)
+            after_stop = request_for(
+                "from pathlib import Path\nprint(Path('result.csv').read_text())"
+            )
+            final = await execute_python_request(str(path), after_stop)
+            assert "12" in final["stdout"]
             # Every completed call, including cancellation, must be ready with no container.
             for workspace in runtime.store.root.iterdir():
                 if workspace.is_dir():

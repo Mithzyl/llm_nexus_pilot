@@ -28,6 +28,7 @@ class ConversationResponseService:
         self.invocation = invocation
         self.db = invocation.db_session
         self.run_id: str | None = None
+        self.defer_finalization = False
 
     async def _start(self, payload: ResponsesRequest) -> None:
         """Atomically claim a saved chat Run; reject duplicates before model dispatch."""
@@ -48,6 +49,20 @@ class ConversationResponseService:
         )
         if not valid:
             raise InvalidRequestError("Conversation message does not belong to this Run.")
+        if self.db.info.get("quick_response_claim"):
+            # The database lease fences the caller; only this owned Run may be resumed.
+            from nexuspilot_api.models.quick_response import QuickResponseExecution
+
+            claim = self.db.info["quick_response_claim"]
+            owned = await self.db.scalar(select(QuickResponseExecution.run_id).where(
+                QuickResponseExecution.response_execution_id == claim.execution_id,
+                QuickResponseExecution.run_id == payload.run_id))
+            state = await self.db.scalar(
+                select(LlmRun.status).where(LlmRun.run_id == payload.run_id)
+            )
+            if owned and state == RunStatus.RUNNING:
+                self.run_id = payload.run_id
+                return
         claimed = await self.db.execute(
             update(LlmRun)
             .where(
@@ -65,8 +80,8 @@ class ConversationResponseService:
         self.run_id = payload.run_id
 
     async def _finish(self, status: RunStatus) -> None:
-        """Persist local terminal state; provider cancellation and usage may remain unknown."""
-        if self.run_id is None:
+        """Finalize inline turns; durable consumers commit the reply and terminal state together."""
+        if self.run_id is None or self.defer_finalization:
             return
         with CancelScope(shield=True):
             await self.db.rollback()

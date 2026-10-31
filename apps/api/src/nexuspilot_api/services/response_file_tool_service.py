@@ -119,7 +119,7 @@ class ResponseFileToolService:
             )
 
     async def _publish(self, event: StreamEvent, payload: ResponsesRequest) -> StreamEvent:
-        """Persist each public event before delivery under one stable replay cursor."""
+        """Persist inline events; durable quick consumers own their whole-turn event sequence."""
         assert self.root_attempt_id is not None
         self.sequence += 1
         public = event.model_copy(
@@ -135,9 +135,10 @@ class ResponseFileToolService:
                 },
             }
         )
-        await record_model_response_event(
-            self.invocation.db_session, attempt_id=self.root_attempt_id, event=public
-        )
+        if not self.invocation.db_session.info.get("quick_response_claim"):
+            await record_model_response_event(
+                self.invocation.db_session, attempt_id=self.root_attempt_id, event=public
+            )
         return public
 
     async def stream(self, payload: ResponsesRequest) -> AsyncIterator[StreamEvent]:
@@ -155,7 +156,9 @@ class ResponseFileToolService:
                     sanitize_memory_history,
                 )
 
-                await sanitize_memory_history(self.tools, payload.run_id, self.records, self.history)
+                await sanitize_memory_history(
+                    self.tools, payload.run_id, self.records, self.history
+                )
                 remaining = deadline - monotonic() if deadline is not None else None
                 if remaining is not None and remaining < 1:
                     raise InvalidRequestError("文件读取已超时，请缩小问题范围后重试。")
@@ -165,7 +168,10 @@ class ResponseFileToolService:
                     tool.name: self.tools.loaded_versions[tool.name] for tool in definitions
                 }
                 key = payload.idempotency_key
-                if key and index:
+                claim = self.invocation.db_session.info.get("quick_response_claim")
+                if claim:
+                    key = f"quick:{claim.execution_id}:round:{index}"
+                elif key and index:
                     key = hashlib.sha256(f"{key}:file-round:{index}".encode()).hexdigest()
                 round_payload = payload.model_copy(
                     update={
@@ -258,9 +264,14 @@ class ResponseFileToolService:
                     async with asyncio.timeout(
                         max(0, deadline - monotonic()) if deadline is not None else None
                     ):
-                        record = await self.tools.execute(
-                            attempt_id=response.id, call=call, offered_versions=versions
-                        )
+                        from nexuspilot_api.services.quick_response_recovery import completed_tool
+
+                        record = await completed_tool(self.tools, payload.run_id,
+                                                      response.id, call, versions)
+                        if record is None:
+                            record = await self.tools.execute(
+                                attempt_id=response.id, call=call, offered_versions=versions
+                            )
                     self.records.append(record)
                     if not self.progress.observe(call.name, call.arguments, record.output_json):
                         raise InvalidRequestError(
@@ -278,6 +289,10 @@ class ResponseFileToolService:
             # Model/Tool services retain their own cancellation facts; no new round is launched.
             raise
         except Exception as error:
+            from nexuspilot_api.services.quick_response_recovery import QuickResponseOutcomeUnknown
+
+            if isinstance(error, QuickResponseOutcomeUnknown):
+                raise
             if self.root_attempt_id is None:
                 raise
             message = (

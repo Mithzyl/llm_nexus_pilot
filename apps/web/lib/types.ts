@@ -37,6 +37,9 @@ export type PersonalMemory = {
   status: "active" | "candidate" | "forgotten";
   text?: string;
   sensitive: boolean;
+  memory_type?: string;
+  typed_data?: Record<string, unknown>;
+  app_data?: { namespace: string; schema_version: number; fields: Record<string, unknown> };
 };
 export type MemorySettings = {
   enabled: boolean; entry_enabled: boolean; version: number;
@@ -47,6 +50,7 @@ export type MemoryCommand = {
   key: string; scope?: "personal" | "project";
   text?: string; entry_id?: string; expected_version?: number;
   enabled?: boolean; sensitive?: boolean; confirmed_sensitive?: boolean;
+  typed_data?: Record<string, unknown>; confirmed_type?: boolean;
 };
 export type MemoryPage = { items: PersonalMemory[]; next_offset: number | null };
 
@@ -351,6 +355,7 @@ export type StreamEvent = {
     delta?: string;
     attempt_id?: string;
     response?: ResponseResult;
+    assistant_message_id?: string;
     usage?: ResponseUsage;
     block_id?: string;
     kind?: ReasoningPresentation["kind"];

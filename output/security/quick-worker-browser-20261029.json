@@ -1,0 +1,75 @@
+{
+  "date": "2026-10-29",
+  "status": "in_progress",
+  "environment": "isolated local MySQL, MinIO, API 18011, Web 3117, independent Worker",
+  "database": "identity_acceptance_d7aca589146c",
+  "migration": "20261029_0032",
+  "provider": "fixed MemoryFixtureProvider; no paid HTTP requests",
+  "checks": [
+    {"name": "normal_quick_reply", "result": "passed", "run_id": "8db9025c-9c5e-4e84-a583-547409d74d3d", "terminal": "completed", "model_attempts": 2, "assistant_messages": 1},
+    {"name": "refresh_immediately_after_response_post", "result": "passed", "run_id": "f6dcde81-ef49-4010-bb2e-3de4a92ded84", "terminal": "completed", "model_attempts": 2, "assistant_messages": 1, "browser_pending_records": 0},
+    {"name": "stop_before_button_fix", "result": "failed", "run_id": "70daa389-6f75-4a38-ada0-0054ce074699", "terminal": "completed", "reason": "Old button only aborted SSE; detached Worker correctly kept running"},
+    {"name": "explicit_stop_after_button_fix", "result": "passed", "run_id": "76029b53-2804-49a5-baf7-58a6210c3fcb", "terminal": "cancelled", "model_attempts": 0, "assistant_messages": 0, "limitation": "Cancelled while queued, not proof of in-flight provider cancellation"}
+  ],
+  "screenshot": "output/playwright/quick-worker-refresh-20261029.png",
+  "followup_real_fault_verification": {
+    "database": "identity_acceptance_8f517c95e640",
+    "migration": "20261029_0033",
+    "model_delay_seconds": 6,
+    "session_id": "7f183893-bfae-4de7-b6e1-8459db2a7c94",
+    "created_session_response_loss_and_two_tab_recovery": {
+      "result": "passed",
+      "method": "Forward actual session POST, withhold committed response, reload; open same pending session in a second browser tab",
+      "session_count": 1,
+      "run_id": "765ff2e3-d3f4-4b23-932e-c50f1773651a",
+      "terminal": "completed",
+      "model_attempts": 2,
+      "assistant_messages": 1
+    },
+    "worker_process_crash": {
+      "result": "passed",
+      "method": "Fixture exits process after actual tool-result commit, supervisor restarts only its child; original lease expires naturally",
+      "previous_pid": 2984,
+      "replacement_pid": 3969,
+      "exit_code": 86,
+      "lease_version": 2,
+      "run_id": "765ff2e3-d3f4-4b23-932e-c50f1773651a"
+    },
+    "first_cancel_probe": {
+      "result": "not_executed_in_flight",
+      "run_id": "509ead9f-338b-4dee-859a-91f8f286b7e4",
+      "reason": "Both model calls already completed before separate inspection/click commands; not counted as cancellation evidence"
+    },
+    "restored_page_inflight_cancel": {
+      "result": "passed",
+      "run_id": "908120c7-ecc0-4556-9667-19948d42ce17",
+      "method": "Within one browser script observe attempt started via actual Run API, reload, click stop",
+      "terminal": "cancelled",
+      "model_attempts": 1,
+      "attempt_status": "OUTCOME_UNKNOWN",
+      "assistant_messages": 0,
+      "browser_pending_records": 0,
+      "limitation": "Fixed provider only; not evidence that an external provider acknowledged cancellation"
+    }
+  },
+  "human_interactions": {
+    "database": "identity_acceptance_4fc174a96147",
+    "migration": "20261029_0034",
+    "provider": "fixed local provider, no paid model calls",
+    "quick_input_refresh_resume": {"result": "passed", "run_id": "99d3da71-2fba-4ac9-ad7d-d3e942cf8745", "terminal": "COMPLETED", "attempts": 2, "assistant_messages": 1, "interaction_status": "resolved"},
+    "agent_approval_refresh_resume": {"result": "passed", "run_id": "fd289be7-9396-43ce-8725-05718ac1aa35", "review_policy": "never", "terminal": "COMPLETED", "attempts": 2, "assistant_messages": 1, "interaction_status": "resolved"},
+    "cancel_waiting_approval": {"result": "passed", "run_id": "8f0eb179-6f5e-45ab-8b67-d8fe304ed9fc", "terminal": "CANCELLED", "attempts": 1, "assistant_messages": 0, "interaction_status": "cancelled", "approval_buttons_after_refresh": 0},
+    "unsupported_fixture_review": {"result": "failed", "run_id": "78fb13e9-762f-46ef-8d3d-bc9216845321", "review_policy": "always", "error_code": "node_output_invalid", "attempts": 5, "reason": "Fixture only returns tool results as text and does not produce Reviewer JSON; not counted as end-to-end success"},
+    "targeted_tests": "test_user_interaction_execution.py and test_user_interactions.py: 8 passed",
+    "screenshot": "output/playwright/human-wait-20261029.png"
+  },
+  "p0_combination_followup": {
+    "database": "identity_acceptance_eb7ce7fdc911",
+    "migration": "20261029_0034",
+    "agent_approval_always_review": {"result": "passed", "run_id": "1f976118-0b2e-43a1-a747-2a29408eb0ab", "terminal": "COMPLETED", "attempts": 3, "browser_refresh_restored": true, "note": "Fixed reviewer now returns decisions for the actual requested unit batch; no assertion of model knowledge correctness"},
+    "different_messages_two_browser_tabs": {"result": "passed", "session_id": "185ec9f8-8a9e-4813-a71d-3916aa24f250", "statuses": [201,409], "created_run_id": "7f3c3f53-b6d5-4fd7-9992-675e94d287ae", "cleanup": "Synthetic pending Run explicitly cancelled; no model started"},
+    "tests": "Human execution across quick and all three Agent review policies: 4 passed. Conversation submission: 10 passed, 1 MySQL-only test skipped in SQLite; actual browser/MySQL race separately passed. New distinct-key case failed before fix (201 instead of 409)."
+  },
+  "not_verified": ["Nexus Assistant unified login"],
+  "unit_checks": "14 passed: test_quick_response_submission.py and test_response_run_lifecycle.py; frontend pending-submissions 5 passed; TypeScript and scoped ESLint passed"
+}

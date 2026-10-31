@@ -1,6 +1,8 @@
 """Product memory metadata, separate from legacy experimental hash/text records."""
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from nexuspilot_api.models.base import Base, TimestampMixin, new_id
@@ -40,6 +42,11 @@ class UserMemoryEntry(TimestampMixin, Base):
     body_uri: Mapped[str | None] = mapped_column(String(1024))
     source_run_id: Mapped[str | None] = mapped_column(ForeignKey("llm_runs.run_id"))
     disclosure_run_id: Mapped[str | None] = mapped_column(ForeignKey("llm_runs.run_id"))
+    memory_type: Mapped[str] = mapped_column(String(32), default="free_text")
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    origin_owner_user_id: Mapped[str | None] = mapped_column(String(128))
+    origin_entry: Mapped[str | None] = mapped_column(String(64))
+    origin_scope_key: Mapped[str | None] = mapped_column(String(128))
 
 
 class UserMemoryOperation(TimestampMixin, Base):
@@ -52,3 +59,46 @@ class UserMemoryOperation(TimestampMixin, Base):
     request_uri: Mapped[str] = mapped_column(String(1024))
     result_json: Mapped[dict] = mapped_column(JSON)
     __table_args__ = (UniqueConstraint("scope_id", "request_key", name="uq_memory_operation_key"),)
+
+
+class UserMemoryDisclosure(Base):
+    """Authorize one immutable memory version for one Run and recipient entry."""
+
+    __tablename__ = "user_memory_disclosures"
+    __table_args__ = (
+        UniqueConstraint(
+            "entry_id",
+            "entry_version",
+            "run_id",
+            "recipient_entry",
+            name="uq_memory_disclosure_recipient",
+        ),
+    )
+    disclosure_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entry_id: Mapped[str] = mapped_column(ForeignKey("user_memory_entries.entry_id"))
+    entry_version: Mapped[int] = mapped_column(Integer)
+    run_id: Mapped[str] = mapped_column(ForeignKey("llm_runs.run_id"), index=True)
+    recipient_entry: Mapped[str] = mapped_column(String(64))
+    allowed_fields_json: Mapped[list] = mapped_column(JSON)
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    request_key: Mapped[str] = mapped_column(String(128))
+
+
+class UserMemoryShareGrant(TimestampMixin, Base):
+    """Version-bound explicit sharing; field values remain in the original encrypted object."""
+
+    __tablename__ = "user_memory_share_grants"
+    __table_args__ = (UniqueConstraint("entry_id", "target_owner_user_id", "target_entry",
+                                      name="uq_memory_share_target"),)
+    grant_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    entry_id: Mapped[str] = mapped_column(ForeignKey("user_memory_entries.entry_id"))
+    target_owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.user_id"))
+    target_entry: Mapped[str] = mapped_column(String(64))
+    account_link_id: Mapped[str | None] = mapped_column(String(36))
+    source_account_link_id: Mapped[str | None] = mapped_column(String(36))
+    allowed_fields_json: Mapped[list] = mapped_column(JSON)
+    confirmed_entry_version: Mapped[int] = mapped_column(Integer)
+    allow_automatic_use: Mapped[bool] = mapped_column(Boolean, default=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1)

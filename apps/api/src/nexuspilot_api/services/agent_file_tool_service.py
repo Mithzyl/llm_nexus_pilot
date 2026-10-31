@@ -280,6 +280,9 @@ class AgentFileToolService:
         from nexuspilot_api.features.memory.services.memory_tools import install_memory_tools
 
         await install_memory_tools(self, run_id)
+        from nexuspilot_api.services.user_interaction_tools import install_interaction_tools
+
+        install_interaction_tools(self)
 
     def definitions(self) -> list[ToolDefinition]:
         """Resolve loaded versions against current policy before each Provider request."""
@@ -405,6 +408,11 @@ class AgentFileToolService:
 
     async def _execute_registered_tool(self, attempt, record, name, arguments):
         """Dispatch shared file, web and scoped memory operations with saved call identities."""
+        if name == "request_user_input":
+            from nexuspilot_api.services.user_interactions import create_interaction
+
+            return await create_interaction(self.db, self.storage, attempt, record,
+                                            arguments.model_dump(mode="json"))
         from nexuspilot_api.features.memory.services.memory_tools import (
             MEMORY_NAMES,
             execute_memory,

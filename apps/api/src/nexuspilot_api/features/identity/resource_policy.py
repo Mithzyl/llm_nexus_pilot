@@ -7,6 +7,7 @@ still require the current workspace identity. Owned entries validate every locat
 
 INTERNAL_ROUTES = frozenset(
     {
+        ("POST", "/internal/prompt-scenes"),
         ("POST", "/users"),
         ("PATCH", "/users/{user_id}"),
         ("POST", "/internal/sessions/{session_id}/states"),
@@ -60,6 +61,24 @@ SHARED_ROUTES = frozenset(
 )
 OWNED_ROUTES = frozenset(
     {
+        ("GET", "/me/application-login"),
+        ("GET", "/me/mcp-connections"),
+        ("POST", "/me/mcp-connections/discover"),
+        ("POST", "/me/mcp-connections"),
+        ("GET", "/me/account-links"),
+        ("POST", "/me/account-links/preview"),
+        ("POST", "/me/account-links/confirm"),
+        ("POST", "/me/account-links/revoke"),
+        ("POST", "/me/application-login"),
+        ("GET", "/me/instructions"),
+        ("POST", "/me/instructions"),
+        ("GET", "/me/memory-shares"),
+        ("POST", "/runs/{run_id}/shared-memory-disclosures"),
+        ("POST", "/me/memory-shares"),
+        ("POST", "/me/memory-shares/revoke"),
+        ("GET", "/me/shared-memories"),
+        ("GET", "/runs/{run_id}/interactions"),
+        ("POST", "/runs/{run_id}/interactions/{interaction_id}/reply"),
         ("GET", "/me/memory-settings"),
         ("GET", "/me/user-memories"),
         ("POST", "/me/user-memories"),

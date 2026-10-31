@@ -278,7 +278,7 @@ async def authenticate_local_password(
     client_identifier: str,
     settings: Settings,
 ) -> BrowserLoginResult:
-    """Verify local credentials, persist one opaque session, and return cookie secrets once."""
+    """Serialize password verification with reset, then persist one opaque browser session."""
 
     try:
         normalized_email = normalize_login_email(email)
@@ -305,6 +305,7 @@ async def authenticate_local_password(
                 UserAuthenticationIdentity.identity_provider == "local_password",
                 UserAuthenticationIdentity.normalized_email == normalized_email,
             )
+            .with_for_update()
         )
     ).one_or_none()
     encoded_password_hash = row[1].password_hash if row is not None else DUMMY_PASSWORD_HASH
@@ -497,6 +498,8 @@ async def change_local_password(
     password_credential = await db_session.get(
         UserPasswordCredential,
         current_login_session.auth_identity_id,
+        with_for_update=True,
+        populate_existing=True,
     )
     if password_credential is None or not await asyncio.to_thread(
         verify_password,

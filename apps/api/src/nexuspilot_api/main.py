@@ -30,6 +30,7 @@ from nexuspilot_api.features.agent_runtime.services.workflow_execution_tasks imp
     workflow_execution_tasks,
 )
 from nexuspilot_api.features.identity.routers.application_runs import router as application_router
+from nexuspilot_api.features.identity.routers.account_linking import app_router as account_link_app_router
 from nexuspilot_api.features.identity.routers.authentication import router as authentication_router
 from nexuspilot_api.features.identity.routers.personal_api_keys import (
     router as personal_keys_router,
@@ -80,6 +81,7 @@ app = FastAPI(
 app.include_router(authentication_router)
 app.include_router(personal_keys_router)
 app.include_router(application_router)
+app.include_router(account_link_app_router)
 app.include_router(resource_routers.api_router)
 
 

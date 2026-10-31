@@ -8,6 +8,7 @@ replaying unknown effects. RabbitMQ delivery remains a separate rollout requirem
 import asyncio
 
 from sqlalchemy import or_, select
+from nexuspilot_api.services.user_interactions import InteractionPending
 
 from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
     AgentWorkflowCreate,
@@ -167,6 +168,8 @@ async def execute_claim(factory, storage, registry, prices, claim):
     heartbeat = asyncio.create_task(renew())
     try:
         await running
+    except InteractionPending:
+        return
     finally:
         heartbeat.cancel()
         await asyncio.gather(heartbeat, return_exceptions=True)

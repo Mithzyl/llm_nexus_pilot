@@ -1,6 +1,119 @@
 # 阶段5：平台身份、授权与凭据管理规划
 
-## 三端账号互通（2026-10-29，未开始）
+## Assistant可选统一登录已接入（2026-10-31）
+
+另一线程已实现真实Assistant回调、PKCE/state校验、服务端兑换和自身会话签发，保留原登录/注册。
+隔离双端本地验收记录见[登录验收](../../output/security/assistant-unified-login-20261031.json)；
+本线程随后只读核对实际代码和记录，未重跑该流程。关联后登录原App用户、刷新、解绑拒绝新登录、
+原密码登录保留均有该记录支持。功能默认关闭，不按邮箱合并、不迁移历史数据；解绑不是跨应用单点登出。
+此前“Assistant尚无回调”的描述仅适用于10月30日及之前的历史验收，不再是当前登录阻塞。
+App记忆/指令管理页面仍需独立接入与验收，本线程对Assistant继续只读。
+
+## 跨端运行诊断（2026-10-30，进行中）
+
+新增只读App Run诊断接口，将当前App运行与Workflow、Model Attempt、Tool Call和记忆工具
+调用的ID/状态/时间关联。查询使用明确SQL列，不读取MinIO或输出业务正文、错误全文、凭据。
+两组明细独立游标，跨用户、跨App和其他Run游标均拒绝。接口字段和调用方式由
+[App接入说明](personal-assistant-app-integration.md#app运行诊断接口2026-10-30)维护。
+定向HTTP与真实MySQL验证通过；App页面仍受只读限制，未实现。缓存字段仅展示已记录值，
+不把固定测试token当作真实供应商缓存收益。
+
+## 同owner多App运行权限检查（2026-10-30）
+
+映射约束允许同一owner在多个App登记后，owner相等不能单独证明App可以访问Run。
+已补充App认证mapping_id到通用资源父引用检查，Run归属的保存映射必须完全一致；
+摘要、结果、事件、取消均适用，原App仍可访问。回归复现修复前跨App摘要200，修复后404；
+真实MySQL验证通过，见[App运行隔离记录](../../output/security/app-run-scope-20261030.json)。
+不把此检查解释为Assistant统一登录已接入。
+
+## Nexus会话管理页面（2026-10-30）
+
+个人设置账户页复用现有 GET `/api/v1/auth/sessions` 和 DELETE
+`/api/v1/auth/sessions/{login_session_id}`，显示当前、可用、过期和已退出会话及最近使用时间。
+只允许明确确认后退出其他有效会话；当前会话使用原“退出当前账户”。本机无登录模式不显示管理列表。
+读取失败显示错误而非空列表，撤销结果未知时提示刷新检查，不声称已成功。
+不展示令牌，不新增数据库结构，不撤销个人Key或关联App会话。
+独立真实MySQL/API/浏览器已验证保留、撤销、刷新及被撤销会话401/当前会话200；
+390px窄屏截图已查看。记录见[会话验收](../../output/security/login-sessions-20261030.json)。
+此处是浏览器会话管理，不提供可信硬件设备识别；近期重新认证仍未完成。
+
+## 密码找回当前实现（2026-10-30）
+
+Nexus 已新增邮箱密码重置和登录页“忘记密码”。`NEXUSPILOT_PASSWORD_RESET_ENABLED`
+默认 false，与注册开关独立；启用还要求认证开启、现有私有
+`registration_verification_key` 和 SMTP 配置可用。注册可保持关闭。
+迁移0048新增 `password_reset_challenges`，只在独立验收数据库升级，未升级正常开发库。
+
+接口为 GET `/api/v1/auth/password-reset` 查询可用性，POST 同前缀 `/request` 提交 email，
+POST `/verify` 提交 email、code、new_password。申请响应不区分账号是否存在；邮件失败记录
+脱敏审计但不声称已投递。证明15分钟有效，每邮箱60秒内不能重发，同客户端15分钟最多申请5次，
+最多5次错误验证。使用现有加密密钥保存一次性证明及当时密码校验值；密码变更即使发生在同一
+数据库时间精度内，旧证明也不能用于重置。不新增业务内容哈希。
+
+验证成功在同一事务中修改密码、消费证明、撤销该用户全部浏览器会话；不会自动登录，
+不会撤销个人 API Key，也不会变更 App 账号关联或历史资源 owner。密码登录与修改锁定相关
+凭据记录，避免使用旧凭据完成登录；尚未做真实并发登录与重置竞争验收。
+
+必要验证：密码重置及已有认证测试14项通过；独立真实MySQL重置测试2项通过；本地SMTP与
+浏览器验证申请、重置、旧会话/旧密码拒绝及新密码登录。浏览器验证后又增加同时间密码变更
+用例并修正证明绑定，后续真实MySQL测试通过；未再次进行完整浏览器流程。生产邮件尚未验收。
+详见[验证记录](../../output/security/password-reset-20261030.json)。下方历史未实施说明以本节为准；
+会话管理页面当前验收见文首；近期重新认证未完成，真实Assistant登录接入见文首10月31日更新。
+
+## 三端账号互通（2026-10-29，进行中）
+
+当前本线程授权范围：Assistant继续只读；另一线程的双端登录交付见文首，不能将旧Nexus接口测试称为双端验收。
+用户已允许标准PKCE/S256和现有认证令牌校验，不新增文件、网页或记忆内容哈希。
+Nexus新增application_login_grants（0041）及五分钟一次性代码，绑定批准的浏览器会话、App、
+精确回调和PKCE；注销/过期检查不依赖浏览器仍然打开。复用现有认证摘要函数，不保存原始代码。
+POST /api/v1/me/application-login须真实浏览器登录及CSRF；输入application_id/redirect_uri/
+code_challenge/state，返回一次性code、原state及批准的redirect_uri。Nexus的`/authorize`页面
+通过GET同路径预览已批准应用及回调地址，用户明确确认后才发码。
+App服务端以既有独立应用凭据调用POST /api/v1/auth/app/exchange（code/redirect_uri/code_verifier），
+返回subject、display_name和已有external_user_id；不返回Nexus Cookie，不发送用户密码。
+没有映射时附带短时registration_ticket，App创建独立账号后通过POST /api/v1/auth/app/complete-registration
+提交ticket/external_user_id。只允许新账号关联；已有不同owner的账号拒绝自动接管，须使用下述独立绑定流程。
+私有App配置新增login_redirect_uris，默认空即关闭登录；HTTPS或显式loopback HTTP，严格匹配，
+不接受用户信息、query或fragment。App必须自行核对state并建立自己的会话；Nexus不能代替该检查。
+定向服务及实际ASGI接口验证PKCE拒绝、单次兑换、登记重放和改变外部身份拒绝；连同路由检查25项
+通过。后续补验授权码过期、批准登录被撤销后均拒绝兑换且不标记已消费，仍为25项定向测试通过。
+Nexus确认页面已增加登录状态检查、服务端回调预览和显式确认；TypeScript与定向ESLint通过。
+0041只在隔离MySQL执行。2026-10-30 Nexus确认页面已用真实浏览器及独立MySQL验证登录、
+明确确认、回调state、未批准地址拒绝和刷新不额外发码；桌面/手机截图及限制见
+[浏览器记录](../../output/security/sso-browser-20261030.json)。App回调由Playwright拦截，未兑换，
+未建立Assistant会话；双向绑定页面及端到端验收仍未完成，不能据此宣称Assistant统一登录已完成。
+协议依据：[RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)。不声称实现通用OIDC服务器。
+
+### 存量账号绑定（2026-10-30，进行中）
+
+迁移0042增加`account_link_requests`和`ecosystem_account_links`，只在独立验收数据库
+`identity_acceptance_69ffe918f1d1`升级通过，不改历史资源owner。当前新增接口：
+
+- App服务端在用户明确同意后，以既有App凭据和已认证`X-External-User-Id`调用
+  `POST /api/v1/app/me/account-link-requests`，返回十分钟一次性`ticket`。
+  Nexus根据现有mapping保存App侧身份；不得由请求正文指定Nexus owner。
+- Nexus浏览器登录后POST `/api/v1/me/account-links/preview`（ticket）查看目标应用和外部账号，
+  明确同意后POST同前缀`/confirm`（ticket）。需要真实浏览器登录及CSRF。
+- GET `/api/v1/me/account-links`只返回当前账号关联的ID、状态和版本。
+- POST `/api/v1/me/account-links/revoke`（link_id）或App端
+  `/api/v1/app/me/account-links/revoke`允许双方撤销；App调用还要求精确mapping一致。
+  绑定不自动共享任何业务内容；解绑同步撤销依赖该link_id的记忆共享记录。
+- 登录兑换优先查原同owner映射，没有时才查有效绑定；返回原App external_user_id，
+  不创建第二个App账号，不将App历史资源转移到Nexus账号。
+
+必要测试包含App请求未确认时不生效、单次确认、原owner保留、关联账号登录解析、解绑、
+外部用户越权拒绝、mapping限定和过期拒绝。绑定服务与ASGI接口测试使用合成数据；
+真实MySQL只验证迁移，不将其称为MySQL并发或真实Assistant绑定验收。
+Nexus新增`/account-links`确认/管理页面，个人设置账户栏提供入口；App应将短时ticket置于
+URL片段`#ticket=...`，不放query、日志或浏览器持久存储。用户确认后清除片段。
+2026-10-30已用真实浏览器和独立MySQL验证确认、刷新、失效ticket仍显示已有记录及解绑恢复；
+修复页面已经打开时不处理新片段的问题。数据库确认原App owner不变，见
+[浏览器记录](../../output/security/account-link-browser-20261030.json)。App发起侧仍为合成服务数据。
+跨owner记忆共享已按阶段2接入有效关联及两端撤权，真实MySQL/MinIO服务检查通过；
+真实MySQL已补三种并发确认：同ticket、同App账号两个ticket、同Nexus账号确认两个同App账号；
+每种均只有一成功、一拒绝且一条关联，见[并发记录](../../output/security/account-link-concurrency-20261030.json)。
+不声称覆盖所有跨App锁竞争。真实App双端流程仍未执行。
+Assistant仍只读，未新增Assistant入口或替用户发起真实绑定。
 
 当前战略入口为 native、personal_assistant、retail。既有应用身份自动创建资源 owner，
 不等于完成两个独立登录账号的绑定。按总计划五批顺序：Step 2准备映射约束，第四批实现统一
@@ -31,7 +144,7 @@
 2026-10-28合成Assistant映射用户通过登录创建Key、一次OpenCode Go生成、跨用户拒绝与撤销验证，
 见[实际记录](../../output/security/assistant-personal-key-live-20261028.json)。映射由测试准备显式建立，
 不是自助账号绑定。当前主本地API关闭登录，不支持个人Key；验收临时登录实例已停止。
-注册及邮件验证本地实现进行中，当前证据见下节；找回密码、App自助关联尚未实现。下列新增规划替代历史“公开注册不在范围”
+注册及邮件验证本地实现进行中，当前证据见下节；密码找回及Nexus账号关联当前实现见文首，真实App侧接入未完成。下列新增规划替代历史“公开注册不在范围”
 的永久排除含义；原先最小登录阶段完成记录保持，不追溯改成未完成。
 
 ### Nexus注册与App账号关联（注册进行中，App关联暂停）
@@ -385,13 +498,14 @@ POST /api/v1/auth/sessions/revoke-all
 GET    /api/v1/auth/sessions
 DELETE /api/v1/auth/sessions/{login_session_id}
 POST   /api/v1/auth/password/change
-POST   /api/v1/auth/password/forgot
-POST   /api/v1/auth/password/reset
+GET    /api/v1/auth/password-reset
+POST   /api/v1/auth/password-reset/request
+POST   /api/v1/auth/password-reset/verify
 ```
 
 - 会话列表与单会话撤销用于识别和关闭异常设备，不能只提供“一次撤销全部”。
 - 已登录密码变更必须验证当前密码，并撤销其他会话。
-- 找回与重置必须使用短时、一次性、不可逆存储的令牌；响应不能泄露邮箱是否存在。
+- 找回与重置使用短时、一次性、加密保存且绑定原密码校验值的证明；响应不能泄露邮箱是否存在。
 - 初始阶段不提供公开注册。开发环境通过测试 fixture，私有部署通过受控 bootstrap 命令预置首个账户。若要求公开注册或邀请，再单独增加验证、滥用防护和管理员规则，不能复用 `POST /users` 直接创建可登录账户。
 - 采用服务端不透明 Session 后不需要公开 `refresh` 接口；服务端可以在绝对过期时间内受控滚动空闲到期时间。
 

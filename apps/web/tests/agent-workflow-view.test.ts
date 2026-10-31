@@ -148,9 +148,11 @@ test("keeps consumed cost and temporary reservation as separate budget facts", (
   );
 });
 
-test("offers explicit cancellation only for a running Workflow", () => {
+/** Human waiting and queued execution are active states, not completed work. */
+test("offers explicit cancellation for queued running and waiting workflows", () => {
   assert.equal(isAgentWorkflowCancellable("running"), true);
-  assert.equal(isAgentWorkflowCancellable("pending"), false);
+  assert.equal(isAgentWorkflowCancellable("pending"), true);
+  assert.equal(isAgentWorkflowCancellable("waiting_for_input"), true);
   assert.equal(isAgentWorkflowCancellable("cancelled"), false);
   assert.equal(isAgentWorkflowCancellable("completed"), false);
 });

@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from nexuspilot_api.features.memory.schemas.typed_memory import TypedMemory
+
 
 class AppMemoryData(BaseModel):
     """Bound versioned App values without letting them override platform identity or permissions."""
@@ -60,6 +62,8 @@ class MemoryCommand(BaseModel):
     sensitive: bool = False
     confirmed_sensitive: bool = False
     app_data: AppMemoryData | None = None
+    typed_data: TypedMemory | None = None
+    confirmed_type: bool | None = None
 
     @model_validator(mode="after")
     def fields_for_action(self):

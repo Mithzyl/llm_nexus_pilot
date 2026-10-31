@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     )
     authentication_enabled: bool = False
     registration_enabled: bool = False
+    password_reset_enabled: bool = False
     registration_verification_key: SecretStr | None = None
     registration_smtp_host: str = ""
     registration_smtp_port: int = Field(default=587, ge=1, le=65535)

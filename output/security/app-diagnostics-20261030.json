@@ -1,0 +1,11 @@
+{
+  "status":"Nexus App diagnostics endpoint implemented; App UI not modified",
+  "endpoint":"GET /api/v1/app/runs/{run_id}/diagnostics",
+  "checks":["Owned structural model/tool metadata", "Independent stable cursor pages", "Unknown workflow remains null", "Private question/tool inputs/outputs/error text/storage URI excluded", "Other user denied", "Other Run cursor denied", "Same-owner different App denied", "App authentication required"],
+  "tests":[
+    {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_application_diagnostics.py apps/api/tests/test_application_scope.py -q --tb=short", "result":"2 passed in 0.79s"},
+    {"command":"apps/api/.venv/bin/pytest apps/api/tests/test_resource_policy.py -k 'all_business_methods or independent_routes or browser_identity_cannot' -q --tb=short", "result":"5 passed, 19 deselected in 0.89s"},
+    {"command":"apps/api/.venv/bin/python deployments/verification/product_memory_check.py --app-scope", "result":"2 passed in 5.09s", "databases":["authz_audit_1e0c3ce70e7045359ccd162622b109a3","authz_audit_bd40864acfc341bf99abdfb428e7e771"], "environment":"real local MySQL, synthetic model/tool records; no actual model or business callback execution"}
+  ],
+  "limitations":["No new UI or browser check required for this backend endpoint", "Assistant remains read-only", "No actual provider cache comparison", "No push, deployment, auto-delete or new content hash"]
+}

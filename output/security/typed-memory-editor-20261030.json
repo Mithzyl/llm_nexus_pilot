@@ -1,0 +1,22 @@
+{
+  "status": "Nexus typed personal memory forms and temporal serialization fix verified locally",
+  "environment": "isolated MySQL/MinIO, API and Chromium; synthetic login; no model calls",
+  "checks": [
+    "Place saved with explicit coordinate system and both confirmations",
+    "Place correction restores original fields, rejects missing renewed confirmation and persists after refresh",
+    "Commute, time preference and experience saved through UI after backend fix and restored after refresh",
+    "390px form screenshot inspected"
+  ],
+  "defect": "HTTP payload.model_dump used Python mode, leaving time/date instances in the persisted request. All three memory mutation routes now use JSON mode.",
+  "regression": {"before":"3 temporal HTTP cases returned 500", "after":"6 Run/management cases plus 5 schema tests passed"},
+  "commands": [
+    "apps/api/.venv/bin/pytest apps/api/tests/test_typed_memory_http.py apps/api/tests/test_typed_memory_schema.py -q",
+    "cd apps/web && node --import tsx --test tests/typed-memory-form.test.ts",
+    "cd apps/web && npx tsc --noEmit",
+    "cd apps/web && npx eslint components/settings/MemorySettingsPanel.tsx components/settings/TypedMemoryFields.tsx lib/typed-memory-form.ts"
+  ],
+  "results": "11 backend tests, 2 frontend tests, TypeScript and scoped ESLint passed; scoped Ruff and diff check passed",
+  "screenshots": ["output/playwright/typed-memory-place-mobile-20261030.png", "output/playwright/typed-memory-saved-mobile-20261030.png"],
+  "limitations": ["Project editor reuses component but no separate project browser flow in this run", "Assistant unchanged", "No calendar creation or route calculation", "No push, deployment or automatic deletion"],
+  "harness_corrections": ["Settings navigation is a button, not a tab", "Type select uses accessible combobox name rather than exact label locator"]
+}

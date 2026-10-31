@@ -32,6 +32,7 @@ class QueryArguments(ScopeArguments):
 
     query: str = Field(default="", max_length=128)
     offset: int = Field(default=0, ge=0, le=10000)
+    shared_offset: int = Field(default=0, ge=0, le=10000)
     limit: int = Field(default=10, ge=1, le=20)
 
 
@@ -86,6 +87,8 @@ MEMORY_TOOLS = tuple(
             "ask the user to authorize it in the UI, never claim there is no memory. "
             "Answer naturally from authorized facts "
             "without internal correction narratives or file citation aliases. "
+            "shared_items contains separately approved cross-entry fields. "
+            "Use next_shared_offset as shared_offset to continue shared pagination. "
             "Do not fetch all memory routinely.",
         ),
         (
@@ -188,10 +191,20 @@ async def execute_memory(tools, attempt, record, name, arguments):
                     limit=arguments.limit,
                     include_candidates=management,
                 )
+                from nexuspilot_api.features.memory.services.sharing import shared_query_page
+
+                shared = await shared_query_page(service, offset=arguments.shared_offset,
+                                                 limit=arguments.limit)
+                result["shared_items"] = [
+                    {key: value for key, value in item.items()
+                     if key not in {"text", "app_data", "typed_data"}}
+                    for item in shared["items"]
+                ]
+                result["next_shared_offset"] = shared["next_offset"]
                 # Persist only locators. Rehydrate authorized text immediately before generation,
                 # so forgotten content cannot be recovered from a saved Tool Call or checkpoint.
                 result["items"] = [
-                    {key: value for key, value in item.items() if key not in {"text", "app_data"}}
+                    {key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}}
                     for item in result["items"]
                 ]
                 return {**result, "memory_scope": arguments.scope, "management": management}
@@ -301,18 +314,30 @@ async def restore_current_memory_messages(db, storage, run_id, records, messages
                 and (enabled or result.get("management"))
             ):
                 restored = {
-                    key: value for key, value in item.items() if key not in {"text", "app_data"}
+                    key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}
                 }
-                if not row.sensitive or row.disclosure_run_id == run_id:
+                from nexuspilot_api.features.memory.services.disclosures import is_disclosed
+
+                if not row.sensitive or await is_disclosed(db, row, run_id, service.entry):
                     body = await service.read(row.body_uri)
                     restored["text"] = body["text"]
                     if body.get("app_data") is not None:
                         restored["app_data"] = body["app_data"]
+                    if body.get("typed_data") is not None:
+                        restored["typed_data"] = body["typed_data"]
                     restored.pop("disclosure_required", None)
                 else:
                     restored["disclosure_required"] = True
                 filtered.append(restored)
         result["items"] = filtered
+        from nexuspilot_api.features.memory.services.sharing import read_shared
+
+        shared = []
+        for item in result.get("shared_items", []):
+            current = await read_shared(service, for_model=True, grant_id=item["grant_id"])
+            shared.extend(value for value in current if value["version"] == item["version"]
+                          and value["grant_version"] == item["grant_version"])
+        result["shared_items"] = shared
         result["history_revalidated"] = True
         payload["result"] = result
         message.content = json.dumps(payload, ensure_ascii=False)
@@ -325,8 +350,13 @@ def memory_checkpoint_message(message):
         payload = json.loads(message.content)
         result = payload.get("result") or {}
         result["items"] = [
-            {key: value for key, value in item.items() if key not in {"text", "app_data"}}
+            {key: value for key, value in item.items() if key not in {"text", "app_data", "typed_data"}}
             for item in result.get("items", [])
+        ]
+        result["shared_items"] = [
+            {key: value for key, value in item.items()
+             if key not in {"text", "app_data", "typed_data"}}
+            for item in result.get("shared_items", [])
         ]
         payload["result"] = result
         encoded["content"] = json.dumps(payload, ensure_ascii=False)
@@ -336,6 +366,7 @@ def memory_checkpoint_message(message):
 async def check_memory_external_disclosure(db, run_id, tool):
     """A Provider-only sensitive-memory grant never authorizes forwarding it to network tools."""
     from sqlalchemy import select
+    from nexuspilot_api.features.memory.services.disclosures import disclosure_condition
 
     network = tool.execution_type == "remote_http" or tool.name in {
         "web_search",
@@ -345,7 +376,7 @@ async def check_memory_external_disclosure(db, run_id, tool):
     if network and await db.scalar(
         select(UserMemoryEntry.entry_id)
         .where(
-            UserMemoryEntry.disclosure_run_id == run_id,
+            disclosure_condition(run_id),
             UserMemoryEntry.status != "forgotten",
         )
         .limit(1)

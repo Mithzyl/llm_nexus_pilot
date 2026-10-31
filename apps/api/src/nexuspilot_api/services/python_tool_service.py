@@ -2,7 +2,7 @@
 
 Docker access belongs to the separate Unix-socket executor. No shell command,
 host path, identity, or credential is accepted from the model. Each invocation
-uses a fresh workspace; subsequent invocations can explicitly import artifacts.
+uses a new process with the task's last saved file snapshot and freshly authorized inputs.
 """
 
 import asyncio
@@ -65,8 +65,9 @@ class PythonArguments(BaseModel):
 PYTHON_TOOL = RegisteredTool(
     name="run_command", version="1.0.0", arguments=PythonArguments, output=FileToolResult,
     description="Run Python for code verification or deterministic data calculation, offline, "
-    "30 seconds maximum. Each invocation has a fresh /workspace; variables/files do not carry "
-    "over automatically. Authorized file_ids and same-task artifact_ids are mounted read-only "
+    "30 seconds maximum. Files in /workspace continue within the same task from its last saved "
+    "snapshot; Python variables do not persist. Cancelled calls do not replace that snapshot. "
+    "Authorized file_ids and same-task artifact_ids are freshly mounted read-only "
     "at /input/<ID>. Select output_files relative to /workspace to save as private artifacts. "
     "Use existing file search/read tools for document reading. No Shell, network or pip. "
     "Results prove only the executed sample, not general code correctness.",

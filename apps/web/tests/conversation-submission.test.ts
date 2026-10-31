@@ -5,9 +5,20 @@ import type { MessageSummary, ModelAttempt, RunDetail } from "../lib/types";
 import {
   conversationSubmissionLockName,
   isConversationExecutionActive,
+  canCancelRestoredWorkflow,
   isConversationSyncEvent,
   runWithConversationSubmissionLock,
 } from "../lib/conversation-submission";
+
+/** Restored Agent tasks must remain stoppable without a live submission promise. */
+test("restored active workflow exposes cancellation only for the current Run", () => {
+  for (const status of ["pending", "running", "waiting_for_input"] as const) {
+    assert.equal(canCancelRestoredWorkflow("run-1", {run_id: "run-1", status}), true);
+    assert.equal(canCancelRestoredWorkflow("run-2", {run_id: "run-1", status}), false);
+  }
+  assert.equal(canCancelRestoredWorkflow("run-1", {run_id: "run-1", status: "completed"}), false);
+  assert.equal(canCancelRestoredWorkflow(null, null), false);
+});
 
 test("uses a stable encoded lock name per persisted conversation", () => {
   assert.equal(

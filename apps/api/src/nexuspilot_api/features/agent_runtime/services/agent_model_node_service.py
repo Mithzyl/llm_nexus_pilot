@@ -583,6 +583,14 @@ class AgentModelNodeService:
             float(timeout_seconds or binding.timeout_seconds),
             remaining_wall_time_ms / 1_000,
         )
+        async def publish_answer_delta(delta):
+            if delta:
+                await self.workflow_state.append_event(
+                    workflow, node=node, event_type="agent.answer.delta",
+                    public_summary="Final answer is being generated",
+                    public_payload={"text_delta": delta},
+                )
+
         try:
             response = await self.model_invocation_service.generate(
                 ResponsesRequest(
@@ -630,6 +638,8 @@ class AgentModelNodeService:
                 ),
                 context_source_references=context_source_references,
                 defer_structured_validation=True,
+                **({"on_text_delta": publish_answer_delta}
+                   if node.node_key in {"final_synthesis", "general_agent"} and not output_repair else {}),
                 tool_history_before_input=output_repair,
                 **(
                     {

@@ -1,0 +1,31 @@
+{
+  "status": "service and persistence checks passed; real App UI not exercised",
+  "fast_command": "apps/api/.venv/bin/pytest apps/api/tests/test_linked_memory_sharing.py apps/api/tests/test_memory_sharing.py apps/api/tests/test_product_memory.py apps/api/tests/test_account_linking.py -q",
+  "fast_result": "35 passed",
+  "real_command": "apps/api/.venv/bin/python deployments/verification/product_memory_check.py --linked-sharing",
+  "real_result": "1 passed in 2.87s",
+  "retained_database": "authz_audit_bb30aaaa72d94d3cbb2e4ee62486eb6d",
+  "migration_check": {
+    "database": "identity_acceptance_05dc8b033851",
+    "from": "20261030_0042",
+    "to": "20261030_0043",
+    "result": "passed"
+  },
+  "checks": [
+    "Nexus to separate-owner Assistant field projection",
+    "Assistant to Nexus and Assistant to Retail explicit grants",
+    "No unselected address or full text included",
+    "Disabled mapping prevents reads",
+    "Two Runs require independent sensitive disclosure",
+    "Checkpoint omits plaintext and restores approved fields using current grants",
+    "Revocation of either source or target association denies dependent reads",
+    "Recovery after revocation does not restore old shared plaintext"
+  ],
+  "limitations": [
+    "Associations are explicit synthetic fixture rows; live account confirmation was verified separately.",
+    "Real MySQL and MinIO were used with synthetic content, not real Assistant data.",
+    "No browser or provider request executed in this check; no concurrency claim.",
+    "Test databases and objects retained; no scheduled deletion enabled."
+  ],
+  "paid_model_calls": 0
+}

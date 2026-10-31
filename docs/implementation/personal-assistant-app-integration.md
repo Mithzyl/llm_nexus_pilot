@@ -1,5 +1,112 @@
 # Personal Assistant 与 NexusPilot 本地接口及验收
 
+## App运行诊断接口（2026-10-30）
+
+`GET /api/v1/app/runs/{run_id}/diagnostics`使用既有App服务端凭据和外部用户身份，
+要求Run保存的mapping_id完全一致。浏览器Cookie、个人Key不能代替App认证；不增加BFF代理。
+响应`Cache-Control: no-store`，只查询SQL结构化列，不加载MinIO正文：
+
+- `application_id`、`run`（ID、状态、开始/结束时间）；`workflow`（工作流ID、状态、时间、错误码），尚未创建时为null。
+- `attempts.items`：attempt_id、task_id、context_build_id、provider/model、agent_role、状态、时间、latency_ms、input/output/cached_tokens、错误码。未知用量保持null，不伪造为0。
+- `tools.items`：tool_call_id、attempt_id、名称、版本、状态、时间和错误码；记忆读写工具也使用该关联记录。
+- `limit`默认50、最大100，分别限制两组明细；`after_attempt_id`和`after_tool_call_id`为各组独立游标。
+  按started_at及ID升序，`next_cursor`为本页最后ID或null；游标不属于此Run时404。
+
+不返回用户问题、system prompt、模型/工具输入输出、记忆正文、外部用户ID、凭据、错误全文或对象存储地址。
+不替代最终结果和事件接口；客户端仍通过原result/events取得自己有权访问的业务内容。
+真实MySQL及HTTP测试见[诊断记录](../../output/security/app-diagnostics-20261030.json)。
+Assistant目前只读，本批只交付Nexus接口，不声称Assistant诊断页面已经实现。
+
+## 统一身份后的App运行隔离（2026-10-30）
+
+App认证会在当前数据库会话记录认证mapping_id。对Run及其工作流、节点、交互、模型调用等
+资源引用，除owner一致外，还检查保存的`run_application_context.mapping_id`与当前映射一致。
+因此不同App即使通过统一身份使用同一owner，也不能读取、回放或取消另一App的运行；
+原App的调用保持兼容。绑定/共享记忆不等于共享运行管理权限。
+回归先复现另一App读取摘要返回200，修复后摘要、结果、事件和两种取消均404，原App取消成功。
+真实MySQL限定验证见[记录](../../output/security/app-run-scope-20261030.json)。无模型调用、无Assistant代码修改。
+
+## 统一登录与绑定当前状态（2026-10-31）
+
+Assistant已由另一线程实现可选Nexus登录、关联入口及真实授权码兑换；原密码登录/注册保留。
+已有隔离双端浏览器验收记录，详见下方“可选双端登录接入”。本线程复核了源码和该记录，
+没有把另一线程的测试说成本轮重跑。正常环境默认关闭，本线程仍对Assistant只读。
+App端必须由真实用户明确发起，再以已认证外部用户ID申请ticket，Nexus明确确认；
+后台模型调用不代表同意。不按邮箱合并账号，不迁移历史owner，不以账号关联自动授权记忆或指令。
+
+## 可选应用场景与用户指令（2026-10-29，Nexus后端已修改）
+
+POST `/api/v1/app/runs`新增可选scene_id，省略保持兼容：只选择当前应用登记的default，
+未登记不新增场景提示词。场景由内部接口绑定已启用的静态Prompt模板，App不能传任意模板或
+借scene_id访问其他入口。Run固定模板版本；显式场景未批准时返回错误，不默默换用其他场景。
+GET/POST `/api/v1/app/me/instructions`管理本入口用户偏好；App不能修改global偏好。
+请求体为scope:"entry"、text、enabled、expected_version，allowed_entries保持空数组。
+新增或修改指令只影响之后创建的Run；现有Run恢复使用原版本。Assistant页面尚未接入，
+本节不表示App场景默认登记或指令页面已验收；登录验收独立见下方记录。
+
+## 记忆管理接口扩展（2026-10-29，后端已修改，App页面尚未接入）
+
+### 当前实现合同（2026-10-31提交前核对）
+
+本节描述当前代码，不代表下述自动记忆方向已经启用。App服务端沿用应用凭据及
+X-Application-Id、X-External-User-Id；owner和入口由保存的映射确定，不由模型或浏览器指定。
+
+| 操作 | 当前要求与结果 |
+|---|---|
+| 无Run查询 | GET `/api/v1/app/me/user-memories`，offset默认0、limit默认20且最多50；返回items/next_offset，不创建对话任务 |
+| 无Run设置 | GET `/api/v1/app/me/memory-settings`；POST记忆管理路径，action=settings、key、expected_version、enabled |
+| 保存/候选/纠正 | POST `/api/v1/app/me/user-memories`；action=save/propose/correct，key与非空text必填；纠正需entry_id和expected_version |
+| 确认/忘记 | 同一POST，action=confirm/forget、key、entry_id、expected_version；忘记不删除历史聊天或App独立日历 |
+| 类型化字段 | typed_data遵守后端类型Schema，类型写入需confirmed_type；敏感保存需confirmed_sensitive；这些字段不代替共享或本次Run使用授权 |
+| 共享管理 | GET `/api/v1/app/me/memory-shares?entry_id=...`恢复已有许可；POST同路径传entry_id、expected_version、target_entry、fields、automatic；POST `/revoke`传grant_id、expected_version |
+| 接收共享 | GET `/api/v1/app/me/shared-memories`分页读取获准字段，不代表可修改来源App原记忆 |
+| 敏感共享披露 | POST `/api/v1/app/runs/{run_id}/shared-memory-disclosures`，grant_id、expected_version、confirmed=true、key；仅批准指定Run当前版本 |
+
+无Run管理scope只能personal，不接受App项目映射。旧Run路径继续兼容对话内管理和disclose；
+无Run管理不能用disclose绕过本次任务授权。key标识一次操作，重试保留同一key和参数；
+版本过期、未授权或结果未知不能在页面显示成功，应保留用户输入并读取当前状态。
+settings当前是范围设置，不是任意单条记忆enabled字段；当前没有自动合并、撤销到上一版本或全局跨端使用开关。
+类型字段精确定义以`features/memory/schemas/typed_memory.py`为准，旧app_data仍兼容，不能替代typed_data。
+
+### 后续方向：Assistant自动记忆与Nexus统一管理（未实现）
+
+用户提出后续取消日常保存的逐条阻断确认、Assistant本端自动召回、Nexus统一管理关联入口记忆，
+以及显式开启跨端自动使用。该方向尚未改变上表接口或权限，Assistant不得仅删除确认参数后假定后端允许。
+正式实施需同步Nexus规则、版本/来源记录及App体验，不把绑定账号本身当成已启用模型跨端使用。
+
+- 自动提取区分长期事实、临时安排与已发生经历；未来事项不冒充已发生experience。
+- 新事实带生效时间：例如“下个月搬家”不能立即覆盖当前有效地址；“不坐公交”不能推断用户偏好驾车。
+- 自动更新需明确对应旧条目及来源，保留版本；撤销须精确对应一次写入，不能覆盖之后的新修改。
+- 本端召回表示从有效记忆中按任务相关性选择，不是把全部active正文无条件塞进每个模型请求。
+- Nexus跨端管理权与模型使用权分别定义；关联失效、关闭、忘记后的行为需两端一致，不能泄露未授权字段。
+- 轻量“已记住”提示只在持久保存成功后显示；日历/地图动作与记忆保存分别报告结果。
+
+本次仅同步说明并提交已有实现；新方向的权限迁移、自动提取/合并、撤销及跨端管理界面留待下一批实现。
+
+既有Authorization应用凭据、X-Application-Id和X-External-User-Id保持不变。新增：
+
+- GET `/api/v1/app/me/user-memories?offset=0&limit=20`：当前App用户记忆，返回items/next_offset。
+- POST `/api/v1/app/me/user-memories`：复用MemoryCommand的保存、候选确认、纠正、忘记和设置操作。
+- GET `/api/v1/app/me/memory-settings`：当前入口启停状态。没有Run的管理请求不能批准敏感披露。
+
+用户与入口来自认证映射，不接受请求正文指定owner或entry；scope只能personal，不映射App项目。
+typed_data支持place/commute_preference/time_preference/experience，类型定义见阶段2。
+类型保存需用户明确confirmed_type和confirmed_sensitive；值仍加密保存，不创建日历或地图动作。
+共享管理新增POST `/api/v1/app/me/memory-shares`（entry_id、expected_version、target_entry、
+fields字段路径列表、automatic），POST其`/revoke`（grant_id、expected_version），以及GET
+`/api/v1/app/me/shared-memories`。身份仍来自应用映射；跨owner共享需要有效双向账号绑定和逐项
+共享许可，绑定本身不产生共享授权。读取不附带未授权摘要；query_memory返回shared_items并在恢复时重查授权。
+POST `/api/v1/app/runs/{run_id}/shared-memory-disclosures`接受grant_id、expected_version、
+confirmed:true、key，仅为该Run批准当前共享字段，不能授权转发给网络工具。
+App页面尚未接入，不计作真实App浏览器验收。
+
+2026-10-31只读核对：Assistant现有`routers/memory.py`仍通过local_run_id解析Nexus Run，
+MemoryCommand尚无typed_data/confirmed_type；NexusClient仍调用Run记忆路径。接入工作应保留
+对话内Run披露，另将设置页的查询/保存/纠正/忘记/启停接到上述无Run管理接口；类型转换需明确确认。
+跨端共享管理、共享字段披露与entry用户指令页面尚需App实现和联合验收，不能由本次登录成功替代。
+新增接口及权限定向检查25项通过（本地测试，不是App真实页面或付费模型联调）。
+下方2026-10-26的11条路由数量是历史验证范围，当前完整清单以test_resource_policy.py为准。
+
 ## 权限分类回归更新（2026-10-26，无付费调用）
 
 `tests/test_resource_policy.py`现在明确核对App的11条路由及个人Key管理的3条路由；它们分别
@@ -253,3 +360,19 @@ PYTHONPATH=apps/api/src:packages/models/src apps/api/.venv/bin/python \
 `check_personal_assistant_app.py verify --report 新路径.json`会发起真实付费调用，不能当普通离线测试运行。
 以上真实联调代码和记录已随 326fbc4 提交；本次状态修复与回归测试随后独立提交，提交号以Git历史为准，未推送、未部署。
 临时服务和合成数据不能作为普通开发或公网配置使用。
+# 可选双端登录接入（2026-10-31）
+
+Assistant 原密码登录/注册保留，新增关闭默认值的 Nexus 登录及“我的”页面关联入口。
+现有用户从 Assistant 发起关联并在 Nexus 明确确认后，可通过 Nexus 授权登录原 Assistant 账号；
+未关联时不自动注册、不按邮箱合并、不迁移历史 owner。应用凭据仅在 Assistant 服务端读取。
+授权码兑换的实际路径是 `POST /api/v1/auth/app/exchange`，不是 `/api/v1/app/exchange`。
+
+新客户端在 `/authorize` 使用 `response_mode=fragment`，将一次性 code/state 传入批准的
+`/nexus-callback`；前端立即清除 fragment，BFF 核对短期 HttpOnly state/PKCE 后调用本地
+`POST /api/v1/auth/nexus/exchange`，由 API 兑换并签发 Assistant 自身会话。
+Nexus 旧客户端不传 response_mode 时仍使用 query 回调。不得把码或验证码写入日志、文档或持久浏览器存储。
+
+真实双端本地验收已完成原登录、两端确认关联、退出后 Nexus 登录、解除后新登录拒绝和原密码登录保留。
+使用隔离 MySQL/SQLite、实际两端 API/BFF，无回调拦截或付费模型；见
+[本次记录](../../output/security/assistant-unified-login-20261031.json)。这不是正常开发/生产配置已启用，
+也不代表本轮重新验收了跨端记忆/指令页面。解除关联不撤销既有 Assistant 独立会话，用户需按原机制退出。

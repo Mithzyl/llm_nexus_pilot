@@ -14,10 +14,12 @@ from nexuspilot_api.features.identity.dependencies import (
     require_browser_authentication_enabled,
 )
 from nexuspilot_api.features.identity.models.authentication import UserLoginSession
+from nexuspilot_api.features.identity.routers.sso import client_router as sso_client_router
 from nexuspilot_api.features.identity.schemas.authentication import (
     AuthenticatedPrincipalRead,
     BrowserLoginRequest,
     PasswordChangeRequest,
+    PasswordResetVerifyRequest,
     RegistrationEmailRequest,
     RegistrationVerifyRequest,
     UserLoginSessionRead,
@@ -37,8 +39,65 @@ from nexuspilot_api.features.identity.services.authentication_service import (
 from nexuspilot_api.infrastructure.database import get_database_session
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
+router.include_router(sso_client_router)
 DatabaseSessionDependency = Annotated[AsyncSession, Depends(get_database_session)]
 SettingsDependency = Annotated[Settings, Depends(get_settings)]
+
+
+@router.get("/password-reset")
+async def get_reset_availability(response: Response, settings: SettingsDependency):
+    """Report reset availability separately from account registration."""
+    _set_no_store(response)
+    return {"enabled": settings.authentication_enabled and settings.password_reset_enabled}
+
+
+@router.post(
+    "/password-reset/request", dependencies=[Depends(require_browser_authentication_enabled)]
+)
+async def post_reset_email(
+    payload: RegistrationEmailRequest,
+    request: Request,
+    response: Response,
+    db_session: DatabaseSessionDependency,
+    settings: SettingsDependency,
+):
+    """Accept an email recovery request without revealing whether its account exists."""
+    from nexuspilot_api.features.identity.services.password_reset import request_reset
+
+    validate_authentication_origin(request.headers.get("origin"), settings)
+    _set_no_store(response)
+    await request_reset(
+        db_session,
+        payload.email,
+        settings,
+        client_identifier=request.client.host if request.client else "unknown",
+    )
+    return {"message": "若该账号可用且邮件服务正常，你将收到密码重置邮件。"}
+
+
+@router.post(
+    "/password-reset/verify", dependencies=[Depends(require_browser_authentication_enabled)]
+)
+async def post_reset_verification(
+    payload: PasswordResetVerifyRequest,
+    request: Request,
+    response: Response,
+    db_session: DatabaseSessionDependency,
+    settings: SettingsDependency,
+):
+    """Consume reset proof and revoke sessions; do not automatically log the user in."""
+    from nexuspilot_api.features.identity.services.password_reset import verify_reset
+
+    validate_authentication_origin(request.headers.get("origin"), settings)
+    _set_no_store(response)
+    await verify_reset(
+        db_session,
+        payload.email,
+        payload.code.get_secret_value(),
+        payload.new_password.get_secret_value(),
+        settings,
+    )
+    return {"message": "密码已重置，原登录会话已退出，请重新登录。"}
 
 
 @router.get("/registration")
