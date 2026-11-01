@@ -86,7 +86,7 @@ apps/api/src/nexuspilot_api/
 
 ## 后端本地启动
 
-生产部署说明见 [deployments/production/README.md](deployments/production/README.md)：包含独立生产 Compose、私有配置、HTTPS、非 root 镜像和单独迁移步骤。2026年11月1日已推送main并将服务器更新至业务代码 `786c70f`、数据库 `20261031_0050`，范围及限定验收见[服务器部署记录](docs/implementation/server-deployment-20261101.md)。文件解析执行器沿用；Python执行器未配置，自助注册未开启，入口仍使用自签证书，同机备份尚未做异地和恢复演练。后续本地提交不会自动更新服务器；开发Compose不直接用于公网。
+生产部署说明见 [deployments/production/README.md](deployments/production/README.md)：包含独立生产Compose、私有配置、HTTPS、非root镜像和单独迁移步骤。2026年11月1日已将服务器API/独立Worker更新至 `15dbeae`、数据库升级至 `20261031_0050`，并启用私有Python执行器；范围及限定验收见[服务器部署记录](docs/implementation/server-deployment-20261101.md)。Python仅授权给当时可登录的原生账号，新账号须显式加入；自助注册未开启。入口沿用自签证书，同机备份尚未做异地和恢复演练。后续本地提交不会自动更新服务器；开发Compose不直接用于公网。
 
 2026 年 9 月 17 日授权变更：FastAPI 业务接口现在独立校验当前用户和资源归属；启用登录时，仅部署 `X-API-Key` 不再足以读取会话或调用模型。关闭登录仍固定为本地 `nexuspilot-web`，不能通过请求指定其他 owner。用户创建／更新、兼容 Attempt 记录写入及 System Prompt 管理／渲染等管理接口需要部署 Key 与内部 Key，且不接受浏览器 Cookie/Bearer；原有受信脚本需按[Phase 5 兼容说明](docs/implementation/phase-5-platform-identity-credentials.md#本次实现与调用方兼容说明)调整。没有新增数据库迁移；旧分页 cursor 可能失效，重新读取第一页即可。
 

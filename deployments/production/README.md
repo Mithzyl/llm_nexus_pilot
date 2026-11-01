@@ -1,8 +1,8 @@
 # NexusPilot 首次生产部署
 
-**当前发布（2026-11-01）：** current 为 `/opt/nexuspilot/releases/20261101-786c70f`，API/Web业务代码为 `786c70f`，数据库已从 `20261018_0024` 升至 `20261031_0050`。更新前已停写备份MySQL、MinIO和私有配置；新版本API/Web/Nginx及存储健康。HTTPS登录、消息恢复、TXT存储、记忆历史/纠正/撤销和相关跨用户访问拒绝通过，本次模型请求数为0。完整验证、镜像、备份及剩余限制见[2026-11-01部署记录](../../docs/implementation/server-deployment-20261101.md)。
+**当前发布（2026-11-01）：** current 为 `/opt/nexuspilot/releases/20261101-15dbeae`，API/独立Worker使用 `20261101-15dbeae` 镜像，Web沿用内容相同的 `20261101-786c70f` 镜像，数据库为 `20261031_0050`。独立Worker及Python执行器已启用；真实队列消费、两次Python连续文件计算/产物下载、在途停止及容器移除通过。本次追加验证仅使用私有固定响应服务，真实供应商请求数为0，没有运行回归或额外哈希检查。首次发布和本次追加的实际范围见[2026-11-01部署记录](../../docs/implementation/server-deployment-20261101.md)。
 
-线上保持inline执行方式，Python执行器未配置，自助注册未开启。独立记忆加密密钥仅在服务器私有配置中生成并备份；不复制本地密钥。20 MiB限制、既有Strata配置和文件解析执行器沿用，PDF/Office及真实模型结果仍以[10月18日历史验收](../../docs/implementation/server-deployment-20261018.md)为准。重建API必须同时包含 `docker-compose.office.yml`；执行器重启重建Socket目录后也应重建API以刷新目录挂载。下文首次部署和旧验证属于历史，不能视为本次重新执行。
+线上使用worker后端，Python仅授权给用户确认时全部可登录原生账号的快照（本次1个）；新增账号仍需显式加入。Python宿主账号的Docker权限已经用户明确确认，API/Worker仅挂载私有Socket目录。自助注册未开启，20 MiB限制、既有Strata配置、记忆密钥和文件解析执行器沿用。PDF/Office及真实模型结果仍以[10月18日历史验收](../../docs/implementation/server-deployment-20261018.md)为准。维护命令使用下方统一overlay/profile和systemd客户端单元；下文首次部署和旧验证不能视为本次重新执行。
 
 本目录提供单台 Linux 主机的 Docker Compose 部署，使用预置账号，只对外发布 Nginx。2026-10-04 已在目标 AMD64 主机启动首个实例，使用自签 HTTPS 8443；配置、实际检查和剩余限制见[服务器部署记录](../../docs/implementation/server-deployment-20261004.md)。部署准备来自 `codex/deployment`，前置功能提交为 `83d335e`；首次部署执行时使用获授权的未提交工作区快照，不能把该前置提交当成实际部署版本。部署验收后按用户要求提交并合入 `main`，后续开发以 `main` 为基础；服务器仍以记录中的源码快照及镜像 ID 标识，不随本地 Git 合并自动更新。
 
@@ -119,7 +119,7 @@ Nginx 将 HTTPS Origin/Host 传到 Web；API 关闭通用代理头信任。入�
 
 ## 5. 可选 PDF／Office 执行器
 
-2026-10-07 本地代码增加固定 PDF 解析分支，API 不再启动嵌套沙箱；当时服务器安装与发布暂停。2026-10-12 用户授权后已按下述方式部署专用执行器，目标环境结果见本页顶部记录。新协议、旧 Office 兼容、发布/恢复顺序及目标验收以[阶段7解析部署与服务器验收计划](../../docs/implementation/phase-7-tool-runtime-plan.md#文件解析部署与服务器验收计划2026-年-10-月-6-日)为准。任务工作目录和 Python／Shell 仍是后续经工具 Registry/权限检查的独立工作项，不通过该解析 Socket 接受任意命令。
+2026-10-07本地代码增加固定PDF解析分支，API不再启动嵌套沙箱；当时服务器安装与发布暂停。2026-10-12用户授权后已按下述方式部署专用执行器，目标环境结果见本页顶部记录。新协议、旧Office兼容及解析器发布顺序见[阶段7解析部署与服务器验收计划](../../docs/implementation/phase-7-tool-runtime-plan.md#文件解析部署与服务器验收计划2026-年-10-月-6-日)。2026-11-01另行启用的Python执行器使用下方独立Socket和原生用户授权，不通过此解析Socket接受任意命令，Shell没有随之开放为模型工具。
 
 先按[阶段7执行环境说明](../../docs/implementation/phase-7-tool-runtime-plan.md#linux-云服务器兼容与验收)在目标架构构建、检查镜像。不要把本机 ARM64 测试镜像直接当作 AMD64 云主机的验收结果。
 
