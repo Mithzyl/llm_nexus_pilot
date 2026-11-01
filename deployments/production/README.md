@@ -1,6 +1,8 @@
 # NexusPilot 首次生产部署
 
-**当前发布（2026-10-18）：** current 为 `/opt/nexuspilot/releases/20261018-c8f6665`，数据库为 `20261018_0024`。单文件上限提高到 20 MiB，服务器已启用 Strata，线上 20 MiB 合成 PDF 上传、真实工具读取及回答恢复通过；登录和跨用户隔离检查通过。API/Web 业务代码为 `88dbc2d`，`c8f6665` 仅补充解析临时文件限制修复与测试，API 镜像内容复用不变。版本、备份和验收范围见[2026-10-18 部署记录](../../docs/implementation/server-deployment-20261018.md)。下文旧验证描述属于历史，不代替本次结果；Agent 未在本次重新验收。重建 API 必须同时包含 `docker-compose.office.yml`，执行器重启重建 Socket 目录后也应重建 API 以刷新目录挂载。
+**当前发布（2026-11-01）：** current 为 `/opt/nexuspilot/releases/20261101-786c70f`，API/Web业务代码为 `786c70f`，数据库已从 `20261018_0024` 升至 `20261031_0050`。更新前已停写备份MySQL、MinIO和私有配置；新版本API/Web/Nginx及存储健康。HTTPS登录、消息恢复、TXT存储、记忆历史/纠正/撤销和相关跨用户访问拒绝通过，本次模型请求数为0。完整验证、镜像、备份及剩余限制见[2026-11-01部署记录](../../docs/implementation/server-deployment-20261101.md)。
+
+线上保持inline执行方式，Python执行器未配置，自助注册未开启。独立记忆加密密钥仅在服务器私有配置中生成并备份；不复制本地密钥。20 MiB限制、既有Strata配置和文件解析执行器沿用，PDF/Office及真实模型结果仍以[10月18日历史验收](../../docs/implementation/server-deployment-20261018.md)为准。重建API必须同时包含 `docker-compose.office.yml`；执行器重启重建Socket目录后也应重建API以刷新目录挂载。下文首次部署和旧验证属于历史，不能视为本次重新执行。
 
 本目录提供单台 Linux 主机的 Docker Compose 部署，使用预置账号，只对外发布 Nginx。2026-10-04 已在目标 AMD64 主机启动首个实例，使用自签 HTTPS 8443；配置、实际检查和剩余限制见[服务器部署记录](../../docs/implementation/server-deployment-20261004.md)。部署准备来自 `codex/deployment`，前置功能提交为 `83d335e`；首次部署执行时使用获授权的未提交工作区快照，不能把该前置提交当成实际部署版本。部署验收后按用户要求提交并合入 `main`，后续开发以 `main` 为基础；服务器仍以记录中的源码快照及镜像 ID 标识，不随本地 Git 合并自动更新。
 

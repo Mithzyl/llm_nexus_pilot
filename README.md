@@ -86,7 +86,7 @@ apps/api/src/nexuspilot_api/
 
 ## 后端本地启动
 
-生产部署说明见 [deployments/production/README.md](deployments/production/README.md)：包含独立生产 Compose、随机私有配置生成、HTTPS、非 root 镜像和单独迁移步骤。2026 年 10 月 4 日目标服务器已完成自签 HTTPS 基础部署与验收，范围和剩余限制见[服务器部署记录](docs/implementation/server-deployment-20261004.md)。部署分支合入 `main` 后，后续开发以 `main` 为基础；本地合并不会自动更新远端仓库或服务器。开发 Compose 不直接用于公网；当前容器 PDF 沙箱、Office 执行器、受信任证书和备份恢复仍有未完成事项。
+生产部署说明见 [deployments/production/README.md](deployments/production/README.md)：包含独立生产 Compose、私有配置、HTTPS、非 root 镜像和单独迁移步骤。2026年11月1日已推送main并将服务器更新至业务代码 `786c70f`、数据库 `20261031_0050`，范围及限定验收见[服务器部署记录](docs/implementation/server-deployment-20261101.md)。文件解析执行器沿用；Python执行器未配置，自助注册未开启，入口仍使用自签证书，同机备份尚未做异地和恢复演练。后续本地提交不会自动更新服务器；开发Compose不直接用于公网。
 
 2026 年 9 月 17 日授权变更：FastAPI 业务接口现在独立校验当前用户和资源归属；启用登录时，仅部署 `X-API-Key` 不再足以读取会话或调用模型。关闭登录仍固定为本地 `nexuspilot-web`，不能通过请求指定其他 owner。用户创建／更新、兼容 Attempt 记录写入及 System Prompt 管理／渲染等管理接口需要部署 Key 与内部 Key，且不接受浏览器 Cookie/Bearer；原有受信脚本需按[Phase 5 兼容说明](docs/implementation/phase-5-platform-identity-credentials.md#本次实现与调用方兼容说明)调整。没有新增数据库迁移；旧分页 cursor 可能失效，重新读取第一页即可。
 
@@ -105,7 +105,7 @@ make api-run
 
 新版 Web 的轮次保存重试需要迁移 `20260912_0021`（新增 `llm_conversation_turns`，不修改旧消息字段）。先完成迁移再启动新版前端；不要只更新前端而保留旧数据库。完整轮次重试语义见[Session 与 Message](docs/implementation/phase-1-foundation.md#session-与-message)。
 
-文件上传及新对话正文保存均需启动 MinIO；当前迁移链最新版本为 `20261024_0029`（包含正文对象引用、提交身份/执行所有权和项目副本元信息）。备份并确认目标库后执行 `make api-migrate`，再重启 API；2026-10-24本地开发库已备份升级至0029，其他环境仍须独立核对。PDF/Office 还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动本机执行器；未配置时明确拒绝 PDF/Office，不会自动安装依赖。
+文件上传及新对话正文保存均需启动MinIO；当前迁移链最新版本为 `20261031_0050`，包含正文对象引用、提交身份/执行所有权、项目文件、类型化记忆及版本/共享、用户指令和账号关联等结构。备份并确认目标库后执行 `make api-migrate`，再重启API；2026-11-01服务器已备份升级至0050，其他环境仍须独立核对。PDF/Office还需按[执行器启动说明](docs/implementation/phase-7-tool-runtime-plan.md#office-执行器启动与权限)构建、检查镜像并启动执行器；未配置时明确拒绝PDF/Office，不会自动安装依赖。
 
 #### 历史对话正文迁移与恢复
 
