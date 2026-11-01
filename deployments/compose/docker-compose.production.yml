@@ -95,6 +95,21 @@ services:
       timeout: 5s
       retries: 5
 
+  worker:
+    <<: *api
+    profiles: [worker]
+    env_file: ["${DEPLOY_CONFIG_DIR}/api.env"]
+    environment:
+      NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND: worker
+    command: [python, -m, nexuspilot_api.commands.workflow_worker]
+    networks: [application, data, egress]
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 140s
+    depends_on:
+      mysql: {condition: service_healthy}
+      minio: {condition: service_healthy}
+
   web:
     image: nexuspilot-web:${RELEASE_TAG}
     build:

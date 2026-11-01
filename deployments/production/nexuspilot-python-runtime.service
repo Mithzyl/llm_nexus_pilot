@@ -1,0 +1,31 @@
+# The host user must have UID 10001 to match the API/Worker socket clients.
+# It receives Docker access; the API/Worker containers never receive that socket.
+[Unit]
+Description=NexusPilot restricted Python task executor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=nexus-python-runtime
+Group=nexus-python-runtime
+SupplementaryGroups=docker
+RuntimeDirectory=nexuspilot-python-runtime
+RuntimeDirectoryMode=0700
+StateDirectory=nexuspilot-python
+StateDirectoryMode=0700
+EnvironmentFile=/etc/nexuspilot/python-runtime.env
+WorkingDirectory=/opt/nexuspilot/current
+ExecStart=/usr/bin/python3 /opt/nexuspilot/current/deployments/task-runtime/serve_python.py --root /var/lib/nexuspilot-python/workspaces --socket /run/nexuspilot-python-runtime/python.sock --image ${PYTHON_RUNTIME_IMAGE}
+KillSignal=SIGINT
+TimeoutStopSec=140
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+# Inspect retained call records after a crash before explicitly restarting.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

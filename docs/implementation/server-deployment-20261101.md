@@ -60,3 +60,11 @@
 服务器保持 `workflow_execution_backend=inline`，未启用独立Worker；Python执行器未配置，自助注册未开启。已有Provider配置沿用，真实模型质量、付费调用、App双端页面、生产邮件与完整浏览器交互未在本次验收；真实本机MySQL/MinIO和固定模型结果不替代这些项目。
 
 10月17日的未终结模型记录保留原状，未伪造完成或费用状态。数据库已经升级且新版本已产生合成验收数据；旧版本兼容性未证明，不能仅切回旧镜像、自动降级数据库或覆盖发布后的新增数据。
+
+## 当日追加：独立Worker与Python执行器
+
+状态：进行中。用户授权部署启用两项服务、完成直接相关验证并更新记录；明确不做多余测试、不做回归、不做哈希检查。用户进一步授权所有当前可登录的原生Nexus账号使用Python，并选择只做无付费验证。
+
+本次新增生产Worker profile、API/Worker共享的Python Socket overlay、Python执行器systemd单元及Socket客户端启动单元；Office Socket配置同时应用到API和Worker。宿主执行器UID10001与容器用户一致，目录0700、Socket0600，不扩大Socket权限，也不向API/Worker挂载Docker Socket。Worker启动前实际查询没有待执行Worker任务；旧inline失败记录不转换执行。
+
+已完成合并Compose配置检查、修改文件Ruff及差异检查，Python任务镜像已从服务器现有解析镜像离线构建。尚待安装启用、实际队列/Python/产物/停止验证及最终状态记录；没有运行回归或额外哈希校验。

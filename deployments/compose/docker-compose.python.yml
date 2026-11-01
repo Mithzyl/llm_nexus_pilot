@@ -1,0 +1,15 @@
+# Use with production Compose after the UID-10001 host executor is active.
+# Both clients connect to its owner-private socket; neither receives Docker access.
+x-python-runtime: &python-runtime
+  environment:
+    NEXUSPILOT_PYTHON_RUNTIME_SOCKET: /run/nexuspilot-python-runtime/python.sock
+  volumes:
+    - type: bind
+      source: /run/nexuspilot-python-runtime
+      target: /run/nexuspilot-python-runtime
+      read_only: true
+      bind: {create_host_path: false}
+
+services:
+  api: *python-runtime
+  worker: *python-runtime

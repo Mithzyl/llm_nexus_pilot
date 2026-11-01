@@ -1,9 +1,10 @@
-"""Local independent Worker prototype; disabled unless explicitly selected in private config.
+"""Consume database-backed quick replies and workflows in an independent process.
 
 Run from apps/api: PYTHONPATH=src .venv/bin/python -m nexuspilot_api.commands.workflow_worker
-Requires migrated MySQL, MinIO and configured Providers. This can invoke paid
-models for accepted jobs; use test Providers for verification. Do not enable for
-long autonomous tasks until RabbitMQ and the remaining inter-node recovery cases pass.
+Production runs through the opt-in worker Compose profile with the same private
+settings and runtime sockets as API. Requires migrated MySQL, MinIO and configured
+Providers. Accepted jobs may invoke paid models. This database-polling consumer
+does not provide RabbitMQ dispatch or general autonomous-task scheduling.
 """
 
 import asyncio

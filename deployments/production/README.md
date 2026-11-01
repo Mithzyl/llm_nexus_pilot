@@ -141,6 +141,59 @@ docker compose --env-file deployments/production/runtime/.env \
 
 可用性检查要求：先更新宿主执行器到支持 `file_capabilities.v1` 的版本，再更新 API/Web。旧执行器仍能接受原解析协议，但新版 API 无法确认其可用性时会拒绝新的 Office/PDF 上传；旧解析结果仍可经文件工具读取。通过登录后的 `/api/v1/files/capabilities`（浏览器为 `/api/nexus/files/capabilities`）确认 `executor_status=available`，再验收实际文件上传及模型自动调用附件工具；不再要求用户选择“读取附件”开关。此接口不返回 Socket 路径、镜像 ID 或凭据，也不以探测成功代替真实解析验收。2026-10-12 服务器已完成此更新，Agent 输出结构问题仍以实际验收记录为准。
 
+## 独立Worker与Python执行器
+
+生产Compose的 `worker` profile启动独立数据库轮询进程，消费已保存的快速回复和Agent任务。
+API与Worker共用同一份私有 `api.env`、数据库、对象存储和记忆加密密钥。启用前先确认没有未知
+待执行任务，再将 `NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=worker` 写入私有配置；历史inline
+任务不自动转换为Worker任务。Worker使用SIGINT停止，允许既有取消与结果保存逻辑执行。
+
+Python执行器使用 `deployments/production/nexuspilot-python-runtime.service`。
+宿主 `nexus-python-runtime` 用户UID必须为10001，与API/Worker镜像相同；仅该宿主进程加入Docker组。
+在 `/etc/nexuspilot/python-runtime.env` 指定已在目标主机构建的 `PYTHON_RUNTIME_IMAGE`。
+任务状态保存在 `/var/lib/nexuspilot-python/workspaces`，私有Socket位于
+`/run/nexuspilot-python-runtime/python.sock`，目录0700、Socket0600。API/Worker仅挂载此目录，
+不获得Docker Socket、宿主工作目录或执行器配置。
+
+任务镜像可以从目标主机已有且检查过的解析镜像离线构建：
+
+```bash
+docker build --network=none --pull=false \
+  --build-arg BASE_IMAGE=YOUR_CHECKED_FILE_RUNTIME_IMAGE \
+  -t YOUR_PYTHON_RUNTIME_IMAGE deployments/task-runtime
+```
+
+将明确允许的原生用户ID列表写入私有配置 `NEXUSPILOT_PYTHON_EXECUTION_USER_IDS`；没有通配符，
+新增账号不会自动授权。模型执行限于现有Python工具，App和快速回复不因部署而获得代码执行权限。
+
+确认现有文件执行器可用后，安装并启用Python服务及客户端启动单元：
+
+```bash
+install -m 644 deployments/production/nexuspilot-python-runtime.service /etc/systemd/system/
+install -m 644 deployments/production/nexuspilot-runtime-clients.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now nexuspilot-python-runtime
+systemctl enable --now nexuspilot-runtime-clients
+```
+
+`nexuspilot-runtime-clients.service`在两个宿主执行器创建Socket目录后重建API/Worker，
+并等待API健康、Worker进程运行。这也处理重启后 `/run` 目录重新创建的情况；没有执行服务器重启演练
+时，不能把依赖配置核对写成已验证整机重启。显式重启任何执行器后，同样重启此客户端单元以刷新挂载。
+该单元停止时会停止API和Worker，执行前先处理运行中的请求。
+
+手动Compose命令必须包含同一组overlay和profile：
+
+```bash
+docker compose --env-file /etc/nexuspilot/config/.env \
+  -f deployments/compose/docker-compose.production.yml \
+  -f deployments/compose/docker-compose.office.yml \
+  -f deployments/compose/docker-compose.python.yml --profile worker ps
+```
+
+Python执行器没有自动删除历史目录，也不在未知调用后自动重跑代码。异常退出后先检查具体调用记录，
+再明确启动；目录数量达到现有限制时仍需管理员维护。此Worker使用数据库轮询，不等同于RabbitMQ或
+无人值守的通用长期任务调度。实际启用和直接验收范围见[当日部署记录](../../docs/implementation/server-deployment-20261101.md)。
+
 ## 6. 发布验收、备份与更新
 
 按[首次上线清单](../../docs/implementation/initial-release-checklist.md#发布验收清单)验收，重点包括：匿名数据请求拒绝、A/B 双向隔离、所有 JSON 变体、上传与删除、模型 SSE、登录退出、服务端密钥不进入浏览器、外部看不到后台端口。Web 页面返回 200 或服务健康不等于这些检查已通过。
