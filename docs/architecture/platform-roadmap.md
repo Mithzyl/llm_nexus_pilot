@@ -7,7 +7,10 @@
 2026-10-31后续产品方向：Assistant自动提取/更新记忆、本端按需自动召回，以及Nexus关联入口
 统一管理、显式跨端自动使用和写入撤销，纳入现有记忆工作项，不新增阶段编号。
 后续本地实现已接入Assistant有来源的自动写工具、本端读取、版本撤销、Nexus关联入口管理和
-显式自动使用开关；当前新增改动尚未提交。实际范围及验证见App记忆说明，Assistant页面仍由另一线程接入。
+显式自动使用开关，已提交c4944fe。Assistant另一线程的19777602已接入无Run管理、类型字段、撤销、
+共享及entry指令；本线程重新核对代码和隔离浏览器刷新。Nexus新增App历史读取及自动写入结果投影，
+后者已通过固定模型与真实MySQL/MinIO测试，纳入本批提交。剩余App候选确认/冲突草稿、历史及写入结果
+页面接入见[App记忆说明](../implementation/personal-assistant-app-integration.md)。
 现状与后续差异统一见[App记忆说明](../implementation/personal-assistant-app-integration.md#当前实现合同2026-10-31提交前核对)。
 
 2026-10-24：执行产物默认不自动过期。只读目录清理预览、API产物保存确认和工作目录缺失后
@@ -19,10 +22,9 @@
 **当前范围：** 通用 Agent 本地后端已完成既定验收，Web 新请求已使用 general_agent；旧工作流读取和历史记录保留。Personal Assistant 已完成 OpenCode Go 普通回答及三种只读工具真实联调，后续 App 取消修复和确定性测试见[App 接入说明](../implementation/personal-assistant-app-integration.md)。本地完成不代表已部署。
 
 **当前优先事项：** Nexus端P0/P1本地实现与限定验收已推进到下方逐项复核；不再将已验证的
-项目类型编辑、项目文件执行衔接或诊断接口列为未开始。本批纳入2026-10-31本地提交，正常开发服务未升级。
-正常开发库`0031`仅是此前核查记录，本轮未重查；独立验收库已实际执行到`0048`，不能据此声称
-正常开发库已更新。Assistant可选登录回调和独立会话已由另一线程接入并完成隔离双端验收；
-记忆/指令设置页面仍未完成本轮目标的接入，三端整体目标不能标为完成。
+项目类型编辑、项目文件执行衔接或诊断接口列为未开始。正常本地库已升级0050，API/Worker/Web已按用户
+授权重启；不是服务器部署。Assistant可选登录及记忆/指令页面已接入并有隔离双端记录，
+但剩余App交互与新增接口的页面验收未完成，整体目标不能标为完成。
 本线程对Assistant保持只读；生产SMTP和供应商缓存收益不由本地模拟或固定模型记录证明。
 
 ## 当前优先级（2026-10-30）
@@ -39,8 +41,8 @@ Nexus 同时提供 `native` 工作台与共享后端；`personal_assistant` 和 
    既定本地故障验收已有记录；2026-10-30又修复Worker确认后过早结束前端提交的问题并通过浏览器复验。
 2. **Step 2（进行中）：三端身份数据结构与记忆。** 映射唯一约束改为 `(application_id, pilot_principal_id)`
    和 `(application_id, external_user_id)`；统一登录及存量绑定的用户流程排到第四批。
-   类型化记忆、App 无 Run 管理、字段级共享和多 Run 披露已有后端限定验收；Assistant仍只读，
-   真实页面接入不能写成已经完成。
+   类型化记忆、App 无 Run 管理、字段级共享和多 Run 披露已有后端限定验收；Assistant已由另一线程
+   接入页面，本线程保持只读复核，剩余项见App记忆说明。
 3. **Step 3（进行中）：用户指令与场景。** global/entry 指令按版本保存、显式按入口授权；
    `scene_id` 只能选择当前应用批准模板。共享与模型注入都不自动合并历史 owner。
    2026-10-30补齐独立owner的global接收授权及解绑撤回，正文仍按Run固定版本，详见阶段2。
@@ -59,16 +61,16 @@ Nexus 同时提供 `native` 工作台与共享后端；`personal_assistant` 和 
 
 | 目标 | 当前可核对证据 | 仍缺工作 |
 |---|---|---|
-| P0-1稳定提交与恢复 | `quick-worker-browser-20261029.json`记录响应丢失、多标签、Worker工具后崩溃、输入/批准与取消；`python-workflow-browser-20261030.json`补Worker提交终态及停止修复 | 本批纳入本地提交，正常服务未升级；不声称任意故障均已验证 |
-| P0-2类型/共享/披露 | `typed-memory-editor-20261030.json`、`linked-memory-sharing-20261030.json`、`shared-memory-recipient-20261030.json`、`project-python-memory-20261030.json` | Assistant真实设置/确认页面受只读限制 |
-| P0-3指令/场景 | `user-instructions-browser-20261029.json`、`linked-instructions-20261030.json`、`app-prompt-injection-20261030.json` | 真实App用户入口；不可把固定模型请求组装称为供应商缓存收益 |
+| P0-1稳定提交与恢复 | `quick-worker-browser-20261029.json`记录响应丢失、多标签、Worker工具后崩溃、输入/批准与取消；`python-workflow-browser-20261030.json`补Worker提交终态及停止修复 | 已提交且正常本地服务已升级；不声称任意故障均已验证 |
+| P0-2类型/共享/披露 | 既有类型/共享/披露记录，及Assistant 19777602的双端验收和本线程刷新复核 | 候选确认、冲突保留草稿；App历史入口及自动写入结果投影 |
+| P0-3指令/场景 | `user-instructions-browser-20261029.json`、`linked-instructions-20261030.json`、`app-prompt-injection-20261030.json`；Assistant指令页面已接入 | 不可把固定模型请求组装称为供应商缓存收益；各场景实际批准配置需逐应用核对 |
 | P1登录/绑定 | `assistant-unified-login-20261031.json`真实双端记录；原Nexus授权/绑定并发、密码恢复/会话及App权限/诊断记录 | App诊断页面未接入；正常环境未启用；生产SMTP未验收 |
 | P1MCP/目录 | MCP目录、撤销与管理浏览器记录；Python真实Docker和独立Worker联合记录；项目文件组合验收 | 供应商缓存收益实测需另行授权调用 |
 
 本轮组合回归：恢复/交互/共享/指令/场景/绑定/SSO/MCP后端18项、前端提交/恢复/披露/表单/
 会话/代理21项通过，命令见`output/security/ecosystem-scope-audit-20261030.json`。这是当前代码的
-定向回归，不替代逐条记录中的真实浏览器与存储验收。Assistant只读核查确认其auth.py仍独立
-签发本地会话，未发现Nexus兑换/PKCE回调接入。用户已安排其他线程修改Assistant，本线程保持只读；
+定向回归，不替代逐条记录中的真实浏览器与存储验收。当时Assistant尚未接入Nexus兑换/PKCE，
+该历史缺口已由下述10月31日登录实现取代；Assistant仍签发自己的会话。本线程保持只读；
 不再将获得Assistant写权限作为继续Nexus开发的前置条件。
 
 2026-10-31补验：修复恢复后Agent停止入口及waiting_for_input取消判断，批准/输入刷新继续和
@@ -79,8 +81,8 @@ Nexus 同时提供 `native` 工作台与共享后端；`personal_assistant` 和 
 
 2026-10-31后续：用户已交付另一线程的Assistant实现和真实双端登录记录，本线程核对到实际
 授权码兑换、原账号查找及自身会话签发代码，原登录阻塞解除。该记录不是本线程重跑，未将其
-扩展为记忆/指令共享验收。剩余App工作是无Run记忆管理、类型字段确认、共享管理/披露和entry
-用户指令入口；现有Assistant仍依赖local_run_id且未传typed_data，详见App接入说明。
+扩展为记忆/指令共享验收。其后19777602已补无Run记忆、类型字段、共享与entry用户指令；
+2026-10-31本线程复核代码及真实隔离页面刷新，当前剩余项详见App接入说明，不能沿用旧的缺口列表。
 
 ### 六大能力板块与当前缺口
 

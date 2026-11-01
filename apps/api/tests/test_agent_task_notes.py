@@ -197,7 +197,7 @@ async def test_note_can_correct_arguments_after_failed_tool_without_weakening_sc
 async def test_note_keeps_actual_sources_and_history_rechecks_revoked_files(
     client, test_database_session_factory, monkeypatch, revoke,
 ):
-    """A note retains real file snapshots; revoked originals stop subsequent model input."""
+    """Retain file snapshots with source-type defaults; revoke originals before further input."""
     from test_conversation_file_context import prepare_conversation_file
 
     from nexuspilot_api.models import UserFile
@@ -230,7 +230,11 @@ async def test_note_keeps_actual_sources_and_history_rechecks_revoked_files(
         ))
         reference = note.output_json["result"]["sources"]["S1"]
         read = await db.get(LlmModelToolCall, reference["tool_call_id"])
-        assert reference == read.output_json["result"]["evidence_ref"]
+        assert reference == {
+            **read.output_json["result"]["evidence_ref"],
+            "source_kind": "file",
+            "web_result_id": None,
+        }
         assert reference["file_id"] == file["file_id"]
         assert note.output_json["result"]["content_verified"] is False
 

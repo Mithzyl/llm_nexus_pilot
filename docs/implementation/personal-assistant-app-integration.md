@@ -41,10 +41,10 @@ POST `/api/v1/app/runs`新增可选scene_id，省略保持兼容：只选择当�
 借scene_id访问其他入口。Run固定模板版本；显式场景未批准时返回错误，不默默换用其他场景。
 GET/POST `/api/v1/app/me/instructions`管理本入口用户偏好；App不能修改global偏好。
 请求体为scope:"entry"、text、enabled、expected_version，allowed_entries保持空数组。
-新增或修改指令只影响之后创建的Run；现有Run恢复使用原版本。Assistant页面尚未接入，
-本节不表示App场景默认登记或指令页面已验收；登录验收独立见下方记录。
+新增或修改指令只影响之后创建的Run；现有Run恢复使用原版本。Assistant已在19777602接入entry
+指令页面，本线程复核读取及刷新一致；这不表示所有App场景已默认登记。登录验收独立见下方记录。
 
-## 记忆管理接口扩展（2026-10-29，后端已修改，App页面尚未接入）
+## 记忆管理接口扩展（2026-10-29起，当前状态见10月31日复核）
 
 ### 当前实现合同（2026-10-31提交前核对）
 
@@ -65,19 +65,19 @@ X-Application-Id、X-External-User-Id；owner和入口由保存的映射确定�
 无Run管理scope只能personal，不接受App项目映射。旧Run路径继续兼容对话内管理和disclose；
 无Run管理不能用disclose绕过本次任务授权。key标识一次操作，重试保留同一key和参数；
 版本过期、未授权或结果未知不能在页面显示成功，应保留用户输入并读取当前状态。
-settings当前是范围设置，不是任意单条记忆enabled字段；当前没有自动合并、撤销到上一版本或全局跨端使用开关。
+settings是范围设置，不是任意单条记忆enabled字段；自动合并未实现。撤销及显式跨端使用开关见下节。
 类型字段精确定义以`features/memory/schemas/typed_memory.py`为准，旧app_data仍兼容，不能替代typed_data。
 
 ### Assistant自动记忆与Nexus统一管理（2026-10-31，本地实现）
 
-2026-10-31实施进行中（未提交，未部署）：新增0049版本引用表，当前正文和撤销后版本保持
+2026-10-31已本地提交c4944fe（未推送、未部署）：新增0049版本引用表，当前正文和撤销后版本保持
 递增；undo按entry_id/expected_version仅撤销当前版本，旧记录第一次变更前保存现状，
 不伪造更早历史。Assistant自身敏感记忆按需读取及工具历史恢复已修改，native/retail仍保留
 原披露规则。save_memory已开始支持当前用户消息source_quote及查询所得目标版本的自动写入，
 不接受模型确认字段；关闭记忆时自动纠正也被拒绝。
 后续已接入App Agent工具循环，并新增Nexus来源应用切换、版本记录、写入后的撤销按钮及
-自动使用开关。0049/0050已在隔离MySQL实际迁移，MinIO加密正文保留；没有升级正常开发库。
-当前行为及限制如下，Assistant页面接入仍由另一线程处理。
+自动使用开关。0049/0050已在隔离MySQL及正常本地库迁移，MinIO加密正文保留。
+Assistant页面由另一线程实现，当前复核及剩余限制见下方记录。
 
 - Nexus的GET/POST `/api/v1/me/user-memories`及GET `/me/memory-settings`接受entry，默认native；
   personal_assistant/retail只允许当前用户有效关联的App账号，不接受owner参数；项目路径禁止切换入口。
@@ -107,8 +107,8 @@ settings当前是范围设置，不是任意单条记忆enabled字段；当前�
 - Nexus跨端管理权与模型使用权分别定义；关联失效、关闭、忘记后的行为需两端一致，不能泄露未授权字段。
 - 轻量“已记住”提示只在持久保存成功后显示；日历/地图动作与记忆保存分别报告结果。
 
-本批实现保持未提交；无需额外后台模型调用。自动语义归并的质量、未来生效时间调度以及Assistant页面
-仍不由固定模型工具流程证明，不承诺所有聊天都会自动形成正确记忆。
+上述实现已提交；无需额外后台模型调用。自动语义归并的质量和未来生效时间调度
+不由固定模型工具流程证明，不承诺所有聊天都会自动形成正确记忆。
 
 既有Authorization应用凭据、X-Application-Id和X-External-User-Id保持不变。新增：
 
@@ -125,12 +125,51 @@ fields字段路径列表、automatic），POST其`/revoke`（grant_id、expected
 共享许可，绑定本身不产生共享授权。读取不附带未授权摘要；query_memory返回shared_items并在恢复时重查授权。
 POST `/api/v1/app/runs/{run_id}/shared-memory-disclosures`接受grant_id、expected_version、
 confirmed:true、key，仅为该Run批准当前共享字段，不能授权转发给网络工具。
-App页面尚未接入，不计作真实App浏览器验收。
+2026-10-31重新只读核对Assistant提交19777602：local_run_id已可省略，设置页面调用无Run接口，
+typed_data/confirmed_type、undo、逐条共享及entry指令均已接入。其README记录另一线程真实MySQL/MinIO、
+固定模型及双端浏览器验收，不计作本线程重跑。本线程在仍存活的隔离3308/18308与3309/18309服务
+重新登录合成账号：列表与指令HTTP200，5条记忆含1条类型化记录，刷新后ID/版本及指令文本一致。
+未修改Assistant或测试业务数据，未调用模型。候选记忆列表只有纠正/忘记/共享，缺少候选确认按钮；
+409冲突分支清空编辑内容而不是保留草稿，需Assistant线程处理。旧通勤确认组件不代替普通候选确认。
 
-2026-10-31只读核对：Assistant现有`routers/memory.py`仍通过local_run_id解析Nexus Run，
-MemoryCommand尚无typed_data/confirmed_type；NexusClient仍调用Run记忆路径。接入工作应保留
-对话内Run披露，另将设置页的查询/保存/纠正/忘记/启停接到上述无Run管理接口；类型转换需明确确认。
-跨端共享管理、共享字段披露与entry用户指令页面尚需App实现和联合验收，不能由本次登录成功替代。
+本批提交新增App版本历史读取：GET `/api/v1/app/me/user-memories?history_entry_id=<entry_id>&offset=0&limit=20`。
+复用原生历史服务，返回entry_id、current_version、items（version/status及解密正文）、next_offset，
+不返回MinIO对象地址；其他用户或其他入口返回404。省略history_entry_id保持原列表响应。
+App可据此接入历史页面，不需要伪造Run；现有undo仍只撤销当前版本，不支持任意旧版本覆盖。
+当前App尚未转发该参数。自动写入结果投影在本批Nexus提交中补齐，Assistant尚未接入：
+GET `/api/v1/app/runs/{run_id}/diagnostics` 的tools分页中，有已提交记忆操作的
+save_memory/propose_memory/forget_memory条目新增可选memory_write：
+`{entry_id, applied_version, current_version, status, can_undo}`。
+只关联当前Run实际工具ID、当前App用户及个人范围的操作记录，不读取工具原始输出、记忆正文或对象地址。
+status表示该次操作结果，applied_version永远表示该次写入，不随当前版本更新。can_undo仅为当前
+版本仍匹配的提示；点击撤销仍须POST action=undo、expected_version=applied_version及独立key，
+后端重新校验版本、范围状态及历史是否存在，冲突不能强行重试覆盖。
+没有memory_write不表示“没保存”；操作可能仍在执行，App应继续按游标读取或重新读取该工具页。
+有已提交操作时，即使外层工具后来取消，也保留写入事实；工具失败或取消本身不撤销已提交记忆。
+App仅对active写入显示保存成功，candidate明确为待确认；不得仅凭工具成功状态构造保存提示。
+
+自动写入结果回归：固定模型App循环及诊断权限2项通过；真实MySQL/MinIO运行
+`NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=inline apps/api/.venv/bin/python deployments/verification/product_memory_check.py --automatic-memory`
+2项通过（7.80秒），保留数据库authz_audit_dbc9e55ebe154595a2b5d87d382ce45a及
+authz_audit_3d9ffa9d742e42f790d7538db5721402。确认自动保存版本1、后续纠正版本2后原写入仍为1且
+can_undo=false；诊断不含测试记忆正文。首次执行受正常worker配置影响返回pending，测试现明确
+使用inline；随后手动纠正敏感旧条目按要求加入合成用户确认，不放宽生产确认规则。
+本次未重启其他线程的隔离服务，新增投影尚无Assistant页面验收，不计作付费模型或真实供应商结果。
+
+同日追加真实存储验收：复用product_memory_check.container_environment读取本地容器配置，
+设置现有NEXUSPILOT_TEST_AUTH_MYSQL_URL及MINIO测试变量、KEEP_DATABASE=true后运行
+`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_product_memory.py::test_app_memory_isolation_and_project_rejection -q -s --tb=short`。
+1项通过（3.04秒），保留authz_audit_10043aca7ed04ecfa698b98dd4d29968。覆盖历史两页版本、
+结束游标、跨用户及跨App返回404、普通列表兼容，不使用模型或内存对象存储替代MinIO。
+Assistant仍为19777602，未发现history_entry_id或memory_write接入；其页面验收继续由所属线程完成。
+
+本次必要回归命令：`apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml
+apps/api/tests/test_product_memory.py::test_app_memory_isolation_and_project_rejection
+apps/api/tests/test_memory_versions.py apps/api/tests/test_unified_memory_management.py -q`。
+新增历史断言在修改前因缺少current_version失败，修改后4项通过（SQLite及内存对象存储，非真实MinIO验收）。
+相关Ruff和git diff --check通过；历史参数已追加上述真实存储验证，但尚未重启服务进行双端浏览器验收，前述浏览器结果仅证明
+已运行版本的列表和指令刷新。上述验证当时未提交、未推送、未部署，没有增加模型请求或内容哈希。
+2026-11-01提交推送与服务器部署状态见[本次发布记录](server-deployment-20261101.md)。
 新增接口及权限定向检查25项通过（本地测试，不是App真实页面或付费模型联调）。
 下方2026-10-26的11条路由数量是历史验证范围，当前完整清单以test_resource_policy.py为准。
 

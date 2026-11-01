@@ -1000,6 +1000,30 @@ async def test_app_memory_isolation_and_project_rejection(resource_client, monke
     assert managed.json()["items"][0]["entry_id"] == saved.json()["entry_id"]
     assert (await client.get(management, headers=foreign)).json()["items"] == []
     assert (await client.get(management, headers=runs[1][1])).json()["items"] == []
+    # App history must use the same owner/entry checks as current memory, not ignore the selector.
+    history_params = {"history_entry_id": saved.json()["entry_id"], "limit": 1}
+    history = await client.get(management, headers=headers, params=history_params)
+    assert history.status_code == 200
+    assert history.json()["current_version"] == 1
+    assert history.json()["items"][0]["text"] == "中文偏好"
+    assert history.json()["next_offset"] is None
+    assert "body_uri" not in str(history.json())
+    for denied_headers in (foreign, runs[1][1]):
+        denied = await client.get(management, headers=denied_headers, params=history_params)
+        assert denied.status_code == 404
+    corrected = await client.post(management, headers=headers, json={
+        "action": "correct", "text": "中文简洁偏好", "key": "history-correct",
+        "entry_id": saved.json()["entry_id"], "expected_version": 1,
+    })
+    assert corrected.status_code == 200
+    history = (await client.get(management, headers=headers, params=history_params)).json()
+    assert history["current_version"] == 2
+    assert history["items"][0]["version"] == 2
+    assert history["next_offset"] == 1
+    previous = (await client.get(management, headers=headers,
+                                params={**history_params, "offset": 1})).json()
+    assert previous["items"][0]["version"] == 1
+    assert previous["next_offset"] is None
     assert (await client.post(management, headers=headers, json={"action": "save",
         "text": "scope override", "key": "deny-project", "scope": "project"})).status_code == 409
     assert (await client.get(path, headers=headers, params={"scope": "project"})).status_code == 409

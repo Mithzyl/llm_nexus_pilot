@@ -12,6 +12,8 @@ from nexuspilot_models.contracts import (
     ProviderName,
     ReasoningConfigurationSource,
     ReasoningEffort,
+    StreamEvent,
+    StreamEventType,
     TransportAttempt,
 )
 from nexuspilot_models.pricing import PriceCatalog
@@ -341,11 +343,15 @@ class ScriptedAgentProvider:
             transport_attempts=[TransportAttempt(attempt_index=1, status_code=200, latency_ms=5)],
         )
 
-    async def stream(self, _request: ModelRequest):
-        """Reject direct provider streaming because workflow SSE replays business events."""
+    async def stream(self, request: ModelRequest):
+        """Complete deterministic synthesis streams through the same scripted response rules."""
 
-        raise AssertionError("Agent workflow must not stream directly from the provider")
-        yield
+        response = await self.generate(request)
+        yield StreamEvent(
+            type=StreamEventType.COMPLETED,
+            sequence=1,
+            data={"response": response.model_dump(mode="json")},
+        )
 
     def _node_output(self, node_key: str, request: ModelRequest) -> dict:
         """Build one complete structured output without hidden reasoning fields."""

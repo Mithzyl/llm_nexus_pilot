@@ -33,12 +33,14 @@ async def get_application_memories(
     storage: ObjectStorageDependency,
     offset: int = Query(0, ge=0, le=10000),
     limit: int = Query(20, ge=1, le=50),
+    history_entry_id: str | None = Query(None, min_length=36, max_length=36),
 ):
-    """Read the current App user's own memory without provisioning a Run."""
+    """Read owned current memory or encrypted version history without provisioning a Run."""
     try:
-        return await (await application_management_service(db, storage)).query(
-            offset=offset, limit=limit
-        )
+        service = await application_management_service(db, storage)
+        if history_entry_id:
+            return await service.history(history_entry_id, offset=offset, limit=limit)
+        return await service.query(offset=offset, limit=limit)
     except MemoryFailure as error:
         raise memory_http_error(error) from None
 

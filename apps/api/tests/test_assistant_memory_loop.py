@@ -79,8 +79,11 @@ class AutomaticMemoryProvider:
 
 
 @pytest.mark.usefixtures("memory_key", "configured_application")
-async def test_app_agent_saves_then_recalls_without_manual_consent(resource_client):
-    """Exercise App identity, saved tools and history restoration with a fixed provider."""
+async def test_app_agent_saves_then_recalls_without_manual_consent(resource_client, monkeypatch):
+    """Exercise saved tools and version receipts inline, independent of the local Worker setting."""
+    from nexuspilot_api.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "workflow_execution_backend", "inline")
     headers = app_headers("personal_assistant", "auto-memory-user")
     created = await resource_client.post(
         "/api/v1/app/runs", headers=headers, json={"user_request": "我家在测试路"}
@@ -97,3 +100,22 @@ async def test_app_agent_saves_then_recalls_without_manual_consent(resource_clie
     assert response.json()["status"] == "completed", response.text
     assert response.json()["final_output"]["final_text"]
     assert provider.calls == 3
+    path = f"/api/v1/app/runs/{created.json()['run_id']}/diagnostics"
+    diagnostics = await resource_client.get(path, headers=headers)
+    assert diagnostics.status_code == 200
+    writes = [item["memory_write"] for item in diagnostics.json()["tools"]["items"]
+              if item.get("memory_write")]
+    assert len(writes) == 1
+    write = writes[0]
+    assert write["applied_version"] == write["current_version"] == 1
+    assert write["status"] == "active" and write["can_undo"] is True
+    assert "测试路" not in diagnostics.text
+    changed = await resource_client.post("/api/v1/app/me/user-memories", headers=headers,
+        json={"action": "correct", "key": "later-edit", "entry_id": write["entry_id"],
+              "expected_version": 1, "text": "新的非敏感偏好", "confirmed_sensitive": True})
+    assert changed.status_code == 200, changed.text
+    refreshed = (await resource_client.get(path, headers=headers)).json()
+    later = next(item["memory_write"] for item in refreshed["tools"]["items"]
+                 if item.get("memory_write"))
+    assert later["applied_version"] == 1 and later["current_version"] == 2
+    assert later["can_undo"] is False

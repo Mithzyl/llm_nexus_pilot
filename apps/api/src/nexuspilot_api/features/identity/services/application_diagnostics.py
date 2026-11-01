@@ -4,6 +4,11 @@ from sqlalchemy import select, tuple_
 
 from nexuspilot_api.core.errors import ResourceNotFoundError
 from nexuspilot_api.features.identity.models.applications import RunApplicationContext
+from nexuspilot_api.features.memory.models.product_memory import (
+    UserMemoryEntry,
+    UserMemoryOperation,
+    UserMemoryScope,
+)
 from nexuspilot_api.models import (
     LlmAgentWorkflowExecution,
     LlmModelAttempt,
@@ -30,6 +35,44 @@ async def diagnostic_page(db, statement, *, model, id_column, cursor, limit):
         "items": [dict(row) for row in rows[:limit]],
         "next_cursor": rows[limit - 1][id_column.key] if len(rows) > limit else None,
     }
+
+
+async def attach_memory_write_receipts(db, identity, tool_page):
+    """Project committed writes for this authorized tool page, never model output or memory text.
+
+    The immutable operation version identifies what this call saved. A later edit disables
+    the undo hint; the mutation endpoint still performs its own transactional version check.
+    """
+    calls = {item["tool_call_id"]: item for item in tool_page["items"]
+             if item["tool_name"] in {"save_memory", "propose_memory", "forget_memory"}}
+    if not calls:
+        return
+    rows = (await db.execute(select(UserMemoryOperation.request_key,
+                                     UserMemoryOperation.result_json,
+                                     UserMemoryOperation.scope_id)
+        .join(UserMemoryScope, UserMemoryScope.scope_id == UserMemoryOperation.scope_id)
+        .where(UserMemoryOperation.request_key.in_(calls),
+               UserMemoryScope.owner_user_id == identity.pilot_principal_id,
+               UserMemoryScope.entry == identity.application_id,
+               UserMemoryScope.project_id.is_(None)))).mappings().all()
+    for row in rows:
+        result = row["result_json"]
+        entry_id = result.get("entry_id")
+        applied = result.get("applied_version", result.get("version"))
+        if not entry_id or type(applied) is not int:
+            continue
+        entry = (await db.execute(select(UserMemoryEntry.version)
+            .where(UserMemoryEntry.entry_id == entry_id,
+                   UserMemoryEntry.scope_id == row["scope_id"]))).scalar_one_or_none()
+        if entry is None:
+            continue
+        calls[row["request_key"]]["memory_write"] = {
+            "entry_id": entry_id,
+            "applied_version": applied,
+            "current_version": entry,
+            "status": result.get("status"),
+            "can_undo": applied == entry,
+        }
 
 
 async def read_application_diagnostics(
@@ -97,6 +140,11 @@ async def read_application_diagnostics(
         .join(LlmModelAttempt, LlmModelAttempt.attempt_id == LlmModelToolCall.attempt_id)
         .where(LlmModelAttempt.run_id == run_id)
     )
+    tool_page = await diagnostic_page(
+        db, tools, model=LlmModelToolCall, id_column=LlmModelToolCall.tool_call_id,
+        cursor=after_tool_call_id, limit=limit,
+    )
+    await attach_memory_write_receipts(db, identity, tool_page)
     return {
         "application_id": identity.application_id,
         "run": dict(run),
@@ -109,12 +157,5 @@ async def read_application_diagnostics(
             cursor=after_attempt_id,
             limit=limit,
         ),
-        "tools": await diagnostic_page(
-            db,
-            tools,
-            model=LlmModelToolCall,
-            id_column=LlmModelToolCall.tool_call_id,
-            cursor=after_tool_call_id,
-            limit=limit,
-        ),
+        "tools": tool_page,
     }
