@@ -37,6 +37,31 @@ async def owned_project(db, project_id, owner, *, lock=False):
     return project
 
 
+async def list_owned_project_files(db, project_id, owner):
+    """List at most 500 saved copies after checking the active project owner."""
+    await owned_project(db, project_id, owner)
+    return list(await db.scalars(
+        select(ProjectFile)
+        .where(ProjectFile.project_id == project_id)
+        .order_by(ProjectFile.created_at, ProjectFile.project_file_id)
+        .limit(500)
+    ))
+
+
+async def list_owned_project_sessions(db, project_id, owner, offset):
+    """Validate pagination and list only the owner's conversations in this active project."""
+    if offset < 0 or offset > 100000:
+        raise HTTPException(422, "Invalid offset")
+    await owned_project(db, project_id, owner)
+    return list(await db.scalars(
+        select(LlmSession)
+        .where(LlmSession.project_id == project_id, LlmSession.user_id == owner)
+        .order_by(LlmSession.created_at.desc(), LlmSession.session_id)
+        .offset(offset)
+        .limit(100)
+    ))
+
+
 async def owned_project_file(db, project_id, file_id, owner):
     """Resolve the entry only inside the authenticated project, including reserved copies."""
     await owned_project(db, project_id, owner)

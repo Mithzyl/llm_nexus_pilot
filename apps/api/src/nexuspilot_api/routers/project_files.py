@@ -3,10 +3,7 @@
 from urllib.parse import quote
 
 from fastapi import APIRouter, Response
-from sqlalchemy import select
 
-from nexuspilot_api.models import LlmSession
-from nexuspilot_api.models.project_file import ProjectFile
 from nexuspilot_api.routers.common import DatabaseSessionDependency, ObjectStorageDependency
 from nexuspilot_api.routers.user_files import Principal
 from nexuspilot_api.schemas.project_files import (
@@ -18,6 +15,8 @@ from nexuspilot_api.schemas.project_files import (
 from nexuspilot_api.schemas.sessions import SessionCreate, SessionRead
 from nexuspilot_api.schemas.user_files import UserFileRead
 from nexuspilot_api.services.project_workspace_service import (
+    list_owned_project_files,
+    list_owned_project_sessions,
     materialize_saved_file,
     owned_project,
     owned_project_file,
@@ -32,16 +31,8 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["project workspace"])
 
 @router.get("/files", response_model=list[ProjectFileRead])
 async def list_project_files(project_id: str, db: DatabaseSessionDependency, principal: Principal):
-    """List bounded saved copies, including interrupted publications available for retry."""
-    await owned_project(db, project_id, principal.user_id)
-    return list(
-        await db.scalars(
-            select(ProjectFile)
-            .where(ProjectFile.project_id == project_id)
-            .order_by(ProjectFile.created_at, ProjectFile.project_file_id)
-            .limit(500)
-        )
-    )
+    """Delegate the bounded owner-checked list, including interrupted publications."""
+    return await list_owned_project_files(db, project_id, principal.user_id)
 
 
 @router.post("/files", response_model=ProjectFileRead, status_code=201)
@@ -130,18 +121,5 @@ async def post_project_session(
 async def list_project_sessions(
     project_id: str, db: DatabaseSessionDependency, principal: Principal, offset: int = 0
 ):
-    """Return a bounded page of project conversations without reading unrelated histories."""
-    from fastapi import HTTPException
-
-    if offset < 0 or offset > 100000:
-        raise HTTPException(422, "Invalid offset")
-    await owned_project(db, project_id, principal.user_id)
-    return list(
-        await db.scalars(
-            select(LlmSession)
-            .where(LlmSession.project_id == project_id, LlmSession.user_id == principal.user_id)
-            .order_by(LlmSession.created_at.desc(), LlmSession.session_id)
-            .offset(offset)
-            .limit(100)
-        )
-    )
+    """Delegate bounded conversation lookup without reading unrelated histories."""
+    return await list_owned_project_sessions(db, project_id, principal.user_id, offset)

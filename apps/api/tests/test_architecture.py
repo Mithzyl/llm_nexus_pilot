@@ -50,6 +50,7 @@ MEMORY_FEATURE_ROOT = PACKAGE_ROOT / "features" / "memory"
                     "/sessions/{session_id}/messages/full",
                     "/sessions/{session_id}/messages/latest",
                     "/sessions/{session_id}/turns",
+                    "/sessions/{session_id}/turns/{submission_key}",
                     "/messages/{message_id}",
             },
         ),

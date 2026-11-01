@@ -362,8 +362,10 @@ async def test_local_fetch_over_real_loopback_http():
         await server.wait_closed()
 
 
-async def test_general_catalog_refresh_preserves_removed_native_tool(monkeypatch):
-    """Refreshing web/Python grants must not restore a native version withdrawn during a run."""
+async def test_general_catalog_refresh_preserves_removed_native_tool(
+    monkeypatch, test_database_session_factory,
+):
+    """Refresh grants against isolated persistence without restoring a withdrawn native tool."""
     from nexuspilot_api.features.agent_runtime.services.task_note_tools import (
         GeneralAgentToolService,
     )
@@ -371,15 +373,18 @@ async def test_general_catalog_refresh_preserves_removed_native_tool(monkeypatch
     from nexuspilot_api.services.tool_catalog import ToolCatalog
 
     async def no_grant(*args):
-        """Keep this test focused on catalog preservation, without database/network access."""
+        """Keep web, Python and App grants absent without making external requests."""
         return None
 
     monkeypatch.setattr(application_tools, "authorized_application_context", no_grant)
     monkeypatch.setattr(python_tool_service, "python_authorized", no_grant)
     monkeypatch.setattr(web_tools, "web_authorized", no_grant)
-    tools = GeneralAgentToolService(None, None, task_id="task", sources={}, allowed_task_ids=set())
-    tools.catalog = ToolCatalog(
-        tuple(t for t in tools.catalog.entries if t.name != "get_file_outline")
-    )
-    await tools.refresh_catalog("run")
-    assert "get_file_outline" not in {t.name for t in tools.catalog.entries}
+    async with test_database_session_factory() as db:
+        tools = GeneralAgentToolService(
+            db, None, task_id="task", sources={}, allowed_task_ids=set(),
+        )
+        tools.catalog = ToolCatalog(
+            tuple(t for t in tools.catalog.entries if t.name != "get_file_outline")
+        )
+        await tools.refresh_catalog("run")
+        assert "get_file_outline" not in {t.name for t in tools.catalog.entries}
