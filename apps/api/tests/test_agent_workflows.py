@@ -344,13 +344,18 @@ class ScriptedAgentProvider:
         )
 
     async def stream(self, request: ModelRequest):
-        """Complete deterministic synthesis streams through the same scripted response rules."""
+        """Stream fixed responses with the same private continuation envelope as real providers."""
 
         response = await self.generate(request)
         yield StreamEvent(
             type=StreamEventType.COMPLETED,
             sequence=1,
             data={"response": response.model_dump(mode="json")},
+            private_data={
+                "provider_continuation_state": response.provider_continuation_state.model_dump(
+                    mode="json"
+                )
+            } if response.provider_continuation_state else {},
         )
 
     def _node_output(self, node_key: str, request: ModelRequest) -> dict:

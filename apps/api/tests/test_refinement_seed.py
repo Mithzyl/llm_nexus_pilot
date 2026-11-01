@@ -167,7 +167,11 @@ async def test_seed_runs_through_persisted_review_and_real_binding_refinement(
     from nexuspilot_models.contracts import ModelResponse, ToolCall
     from nexuspilot_models.registry import ProviderRegistry
     from sqlalchemy import select
-    from test_agent_workflows import INTERNAL_HEADERS, registered_agent_test_model
+    from test_agent_workflows import (
+        INTERNAL_HEADERS,
+        ScriptedAgentProvider,
+        registered_agent_test_model,
+    )
     from test_general_agent import unit_review_text
     from test_user_files import reserve_file
 
@@ -185,8 +189,8 @@ async def test_seed_runs_through_persisted_review_and_real_binding_refinement(
     monkeypatch.setattr(GeneralAgentOrchestrator, "_public_error_from_exception", expose_failure)
     client._transport.raise_app_exceptions = True
 
-    class Followup:
-        """Stand in for paid Strata only in this offline API test."""
+    class Followup(ScriptedAgentProvider):
+        """Stand in for paid Strata with the shared scripted synthesis stream interface."""
 
         def __init__(self):
             """Count actual reviewer invocations separately from seed outputs."""

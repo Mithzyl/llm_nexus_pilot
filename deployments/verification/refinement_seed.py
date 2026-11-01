@@ -11,7 +11,13 @@ import json
 from contextlib import asynccontextmanager, contextmanager
 from uuid import UUID
 
-from nexuspilot_models.contracts import ModelResponse, ProviderName, ToolCall
+from nexuspilot_models.contracts import (
+    ModelResponse,
+    ProviderName,
+    StreamEvent,
+    StreamEventType,
+    ToolCall,
+)
 
 SEED_MODEL = "verification-fixed-candidate"
 
@@ -162,6 +168,16 @@ class SeedProvider:
             text=f"该论文的 Degree project 学分是 300 [{alias}]。",
             finish_reason="stop",
             **common,
+        )
+
+
+    async def stream(self, request):
+        """Return the same local-only fixture response through the synthesis stream interface."""
+        response = await self.generate(request)
+        yield StreamEvent(
+            type=StreamEventType.COMPLETED,
+            sequence=1,
+            data={"response": response.model_dump(mode="json")},
         )
 
 

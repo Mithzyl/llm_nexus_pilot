@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from nexuspilot_api.core.config import Settings, get_settings
 from nexuspilot_api.core.errors import InvalidRequestError
+from nexuspilot_api.features.identity.services.user_instructions import apply_run_instructions
 from nexuspilot_api.infrastructure.object_storage import ObjectStorage
 from nexuspilot_api.infrastructure.provider_continuation_store import (
     ProviderContinuationStateError,
@@ -76,7 +77,6 @@ from nexuspilot_api.services.model_reasoning_service import (
 from nexuspilot_api.services.model_stream_progress_store import persist_stream_progress
 from nexuspilot_api.services.parsed_artifact_service import validate_parsed_context_sources
 from nexuspilot_api.services.run_cancellation_watch import watch_run_cancellation
-from nexuspilot_api.features.identity.services.user_instructions import apply_run_instructions
 from nexuspilot_api.services.tool_context import (
     estimate_messages_tokens,
     estimate_text_tokens,
@@ -124,6 +124,23 @@ def calculate_prompt_prefix_fingerprint(request: ModelRequest) -> str | None:
     return hashlib.sha256(serialized_prefix.encode()).hexdigest()
 
 
+def response_from_stream_completion(event: StreamEvent) -> ModelResponse:
+    """Restore a normalized response and its private continuation without exposing it publicly."""
+    response_data = event.data.get("response")
+    if not isinstance(response_data, dict):
+        raise ModelProviderError(
+            "response_parse_error",
+            "Provider stream completed without a normalized response.",
+        )
+    response = ModelResponse.model_validate(response_data)
+    private_continuation = event.private_data.get("provider_continuation_state")
+    if isinstance(private_continuation, dict):
+        response.provider_continuation_state = ProviderContinuationState.model_validate(
+            private_continuation
+        )
+    return response
+
+
 class ModelInvocationService:
     """Execute a routed model request while keeping MySQL as the source of execution truth."""
 
@@ -168,6 +185,7 @@ class ModelInvocationService:
         Effective messages/options and explicitly supplied runtime source paths are
         stored in the private request audit; arbitrary HTTP input cannot set those paths.
         Workflow-only deferred JSON validation preserves generation usage before node repair.
+        Text callbacks retain the private continuation needed for later tool rounds and recovery.
         """
 
         model_attempt_id = new_id()
@@ -181,7 +199,9 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
-        request = await apply_run_instructions(self.db_session, self.storage, payload.run_id, request)
+        request = await apply_run_instructions(
+            self.db_session, self.storage, payload.run_id, request
+        )
         request = await self._append_tool_history(
             request, context_build_id, tool_messages,
             tool_history_before_input=tool_history_before_input,
@@ -223,11 +243,15 @@ class ModelInvocationService:
                         if event.type == StreamEventType.TEXT_DELTA:
                             await on_text_delta(event.data.get("delta", ""))
                         elif event.type == StreamEventType.COMPLETED:
-                            response = ModelResponse.model_validate(event.data["response"])
+                            response = response_from_stream_completion(event)
                         elif event.type == StreamEventType.FAILED:
-                            raise ModelProviderError("provider_stream_failed", "Provider stream failed.")
+                            raise ModelProviderError(
+                                "provider_stream_failed", "Provider stream failed."
+                            )
                     if response is None:
-                        raise ModelProviderError("provider_stream_incomplete", "Provider stream did not complete.")
+                        raise ModelProviderError(
+                            "provider_stream_incomplete", "Provider stream did not complete."
+                        )
             response = self._apply_price(response, request.provider, request.model)
             response = self._project_response_reasoning(
                 response,
@@ -347,7 +371,9 @@ class ModelInvocationService:
                 context_source_references or payload.context_source_references
             ),
         )
-        request = await apply_run_instructions(self.db_session, self.storage, payload.run_id, request)
+        request = await apply_run_instructions(
+            self.db_session, self.storage, payload.run_id, request
+        )
         request = await self._append_tool_history(request, context_build_id, tool_messages)
         request = await resolve_registered_model_reasoning(self.db_session, request)
         model_attempt = await self._start_model_attempt(
@@ -404,26 +430,7 @@ class ModelInvocationService:
                     event_data,
                 )
                 if event.type is StreamEventType.COMPLETED:
-                    response_data = event_data.get("response")
-                    if not isinstance(response_data, dict):
-                        raise ModelProviderError(
-                            "response_parse_error",
-                            "Provider stream completed without a normalized response.",
-                        )
-                    response = ModelResponse.model_validate(response_data)
-                    private_continuation_data = event.private_data.get(
-                        "provider_continuation_state"
-                    )
-                    if isinstance(private_continuation_data, dict):
-                        response = response.model_copy(
-                            update={
-                                "provider_continuation_state": (
-                                    ProviderContinuationState.model_validate(
-                                        private_continuation_data
-                                    )
-                                )
-                            }
-                        )
+                    response = response_from_stream_completion(event)
                     response = self._apply_price(response, request.provider, request.model)
                     response = self._project_response_reasoning(
                         response,

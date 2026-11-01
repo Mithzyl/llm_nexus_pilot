@@ -260,7 +260,7 @@ async def test_parsed_snapshot_replays_but_changed_source_cannot_generate(
 
 
 async def test_large_extraction_requires_range_instead_of_overflowing_mysql_text(client):
-    """Existing TEXT storage is not widened; oversized snapshots fail and ranges remain readable."""
+    """Reject oversized Context preflight before executing a saved turn with a smaller range."""
 
     payload, provider, _ = await prepare_parsed_fixture(client)
     artifact = (
@@ -272,7 +272,19 @@ async def test_large_extraction_requires_range_instead_of_overflowing_mysql_text
     ).json()
     reference = {"artifact_id": artifact["artifact_id"]}
     payload["context_source_references"] = {"parsed_artifacts": [reference]}
-    response = await client.post("/api/v1/responses", json=payload)
+    message = (await client.get(
+        f"/api/v1/messages/{payload['current_user_message_id']}"
+    )).json()
+    session = (await client.get(f"/api/v1/sessions/{message['session_id']}")).json()
+    # Validate the selection before claiming a chat Run; failed executions are terminal.
+    response = await client.post("/api/v1/context-builds", json={
+        "user_id": session["user_id"], "session_id": message["session_id"],
+        "run_id": payload["run_id"],
+        "current_user_message_id": payload["current_user_message_id"],
+        "idempotency_key": "large-context-preflight",
+        "provider": payload["provider"], "model": payload["model"],
+        "source_references": payload["context_source_references"],
+    })
     assert response.status_code == 409 and "range" in response.text
     assert not provider.requests
     reference.update(block_offset=950, block_limit=10)
