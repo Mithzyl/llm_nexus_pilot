@@ -1,5 +1,10 @@
 """Public model exports and metadata registration for the NexusPilot API."""
 
+from nexuspilot_api.models.application_response import (  # noqa: F401
+    ApplicationResponseBinding,
+    ApplicationResponseExecution,
+)
+
 from nexuspilot_api.models.quick_response import QuickResponseEvent, QuickResponseExecution  # noqa: F401
 from nexuspilot_api.models.user_interactions import UserInteraction  # noqa: F401
 

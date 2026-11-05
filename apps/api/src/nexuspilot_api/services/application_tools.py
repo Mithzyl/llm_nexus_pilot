@@ -123,6 +123,7 @@ class ApplicationToolConfiguration(BaseModel):
     service_token: SecretStr = Field(min_length=16)
     base_url: str
     operations: dict[str, str]
+    response_processing_path: str | None = None
     allow_local_http: bool = False
     login_redirect_uris: list[str] = Field(default_factory=list, max_length=10)
 
@@ -139,10 +140,20 @@ def application_tool_configurations():
             if config.inbound_key.get_secret_value().startswith("np_"):
                 raise ValueError("Application credentials cannot use the personal key prefix")
             allowed = {t.name for t in STATIC_APP_TOOLS[app_id]}
-            if not config.operations or not set(config.operations) <= allowed:
+            if (not config.operations and not config.response_processing_path) or not set(
+                config.operations
+            ) <= allowed:
                 raise ValueError("Unknown operation")
-            if any(not path.startswith("/") or path.startswith("//") or ".." in path
-                   or any(c in path for c in "?#\\\r\n") for path in config.operations.values()):
+            if any(
+                not path.startswith("/")
+                or path.startswith("//")
+                or ".." in path
+                or any(c in path for c in "?#\\\r\n")
+                for path in [
+                    *config.operations.values(),
+                    *([config.response_processing_path] if config.response_processing_path else []),
+                ]
+            ):
                 raise ValueError("Invalid static operation path")
             if config.allow_local_http and get_settings().environment != "development":
                 raise ValueError("Local HTTP requires development environment")

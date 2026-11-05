@@ -108,3 +108,32 @@ class RemoteToolAdapter:
             raise ToolOperationError("remote_transport_error") from error
         except (ValidationError, ValueError, UnicodeError) as error:
             raise ToolOperationError("remote_invalid_response") from error
+
+    async def execute_body(self, *, path, envelope, timeout_seconds):
+        """Send approved caller text once; every post-dispatch error remains ambiguous to caller."""
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or ".." in path
+            or any(c in path for c in "?#\\\r\n")
+        ):
+            raise ValueError("Invalid caller path")
+        async with asyncio.timeout(timeout_seconds):
+            async with httpx.AsyncClient(
+                follow_redirects=False, trust_env=False, timeout=timeout_seconds
+            ) as client:
+                async with client.stream(
+                    "POST",
+                    self.base_url + path,
+                    headers={"Authorization": "Bearer " + self._token},
+                    json=envelope,
+                ) as response:
+                    response.raise_for_status()
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        content.extend(chunk)
+                        if len(content) > 1024 * 1024:
+                            raise ValueError("Caller result exceeds 1 MiB")
+                    if self._token.encode() in content:
+                        raise ValueError("Caller result contains credential")
+                    return json.loads(content)

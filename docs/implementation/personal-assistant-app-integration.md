@@ -1,5 +1,212 @@
 # Personal Assistant 与 NexusPilot 本地接口及验收
 
+## 平台处理正文协议规划
+
+**2026-11-05，状态：进行中；下列创建字段及通用处理协议已首批实现，完整验收范围见下节实施记录。**
+设计主定义见[阶段7](phase-7-tool-runtime-plan.md#调用平台处理主agent正文2026-11-05)。
+本节仅定义Nexus与已认证调用平台的通用消息协议，不登记create_todo等静态业务工具，
+不新增`/continue`或平台结果提交接口；原静态只读工具协议及普通运行保持兼容。
+
+### 创建配置与固定输入
+
+在现有`POST /api/v1/app/runs/{run_id}/agent-workflows`增加以下可选字段，
+与现有general_agent版本、role_bindings、review_policy及幂等键一起使用：
+
+```json
+{
+  "application_response_mode": "caller_processed",
+  "application_protocol_instructions": "本应用的中间调用提议格式、业务操作说明和最终回答规则",
+  "final_output_schema": {"type": "object"}
+}
+```
+
+字段名与首批实现一致。省略模式时保持原行为；
+只有general_agent主Agent支持caller_processed，且服务端必须批准此App使用通用处理连接。
+application_protocol_instructions仅由已认证App服务端提交，不作为平台最高优先级指令；
+调用说明描述中间业务提议，final_output_schema可省略，仅约束候选终答，不约束每次中间正文。
+Schema拒绝外部引用；首批只支持type/properties/required/items/enum/additionalProperties，
+最大序列化16000字符、8层嵌套、每层最多100属性；省略时仍需平台确认终答。
+这不等于向供应商传response_format，不保证模型一次生成合法JSON。
+创建时固定这些值，重复启动参数变化返回冲突，恢复不读取后来修改的说明。
+执行地址、认证凭据及连接许可仅来自App私有配置，不接受请求正文/模型指定地址或用户身份。
+
+### Nexus发送给平台
+
+POST到已批准的通用正文处理地址，独立服务端Bearer凭据、application/json，禁止重定向。
+不是现有按工具名查询STATIC_APP_TOOLS的请求，不能把本信封发到旧只读工具路由冒充兼容。
+
+```json
+{
+  "protocol_version": "1",
+  "application_id": "personal_assistant",
+  "external_user_id": "运行映射中的用户",
+  "run_id": "原Run编号",
+  "workflow_id": "原Workflow编号",
+  "response_id": "本轮已保存模型响应编号",
+  "execution_id": "平台处理稳定编号",
+  "content": "{\"decision\":\"call\",\"call\":{\"operation_id\":\"create_todo\",\"body\":{},\"summary\":\"...\"}}"
+}
+```
+
+所有身份与编号来自Nexus记录；content是原始完整模型正文，不改参数、不摘要化、不取局部流式JSON。
+只有正常完整响应可发送；截断/取消/流异常不能因部分JSON可解析而执行。平台解析decision/call和
+业务参数，校验业务访问权限及用户批准；Nexus不理解operation_id。平台必须保存execution_id与
+实际请求及执行结果，相同编号相同请求最多一次业务影响，不同请求返回协议冲突。
+新编号下的语义重复创建仍需平台业务规则判断，不能仅靠网络请求去重解决。
+
+### 平台同步HTTP返回
+
+正常成功响应携带相同protocol_version、execution_id；通用外层采用严格字段校验，result为
+有界业务JSON对象。HTTP处理结果与模型最终回答分开，不能把业务操作成功当成用户目标完成。
+
+```json
+{
+  "protocol_version": "1",
+  "execution_id": "原处理编号",
+  "disposition": "continue",
+  "execution_status": "succeeded",
+  "result": {
+    "operation_id": "create_todo",
+    "executed_arguments": {},
+    "data": {}
+  },
+  "error": null
+}
+```
+
+result内部字段由平台定义，上述operation_id/executed_arguments/data只是示例，不成为Nexus固定业务Schema。
+模型已经产生有效终答时：
+
+```json
+{
+  "protocol_version": "1",
+  "execution_id": "原处理编号",
+  "disposition": "complete"
+}
+```
+
+complete不得伴随业务执行结果，表示认可该response_id对应原正文为候选终答，不替换正文；
+如本次真正执行了业务操作，返回continue，让模型读取实际结果再生成终答。
+Nexus继续执行已保存的审核策略和最终结构校验，不能直接跳过Reviewer。审核后修改的正文必须重新确认。
+
+| disposition / execution_status | 要求及Nexus下一步 |
+|---|---|
+| continue / succeeded | result为实际结果，error=null；追加消息，继续主Agent |
+| continue / failed | error包含安全code/message、retryable；仅用于平台确认未产生业务影响的失败；retryable=false时停止自动执行 |
+| continue / rejected | error包含安全code/message、retryable；可修正输入可为true，身份/权限/用户批准拒绝必须false；不得通过换参数规避 |
+| stop / unknown | 结果或副作用不确定，停止自动执行，等待用户到平台确认；不作为普通错误让模型再创建 |
+| stop / partially_succeeded | result记录已确认的部分副作用，error说明未完成部分；停止自动执行，由平台处理，不自动补偿或重试 |
+| complete / 不出现 | 不带result/error/execution_status，认可当前正文，进入原审核/最终保存流程 |
+
+unknown必须使用stop，result可为空或只含已知事实，error说明未知原因；其他未列字段组合拒绝。
+failed/rejected不带成功result，不能把部分执行当作未执行；已确认的部分副作用使用partially_succeeded。
+error.retryable只是平台建议且须符合上表，不覆盖Nexus取消、期限、权限和无进展判断。
+平台不得回传凭据或不属于该用户的数据。Nexus只检查通用格式/关联/大小，不认证业务事实正确性。
+
+### HTTP异常、取消与恢复
+
+- 确定在发送前的本地配置/输入拒绝：未执行。不得用一次普通连接异常推断未执行。
+- 请求可能发出后超时、断连、HTTP错误、响应过大、非法JSON、execution_id不符：结果未知。
+  不因HTTP500、429或返回非法正文自动重试；已有只读适配器的错误分类不能直接套用。
+- 平台明确未执行的业务错误应以正常HTTP响应和上述通用结构表达，不依赖HTTP错误推断副作用。
+- 显式取消传播到HTTP等待，停止后续调用；不承诺平台撤销。迟到确定结果可保存事实，但不能复活CANCELLED。
+- 处理结果先保存再追加原消息。事件/结果读取和重连均只读；结果未知只展示需要到平台核实，
+  本批不增加结果提交、业务查询或自动继续入口。
+- 预算和期限沿用原任务，不因等待/恢复重置。平台去重与Nexus执行所有权都必须验证，
+  不把“稳定编号”宣称为已实现恰好一次。
+
+### 两端职责与验收交接
+
+Nexus负责可信运行身份、原正文保存、一次处理记录、HTTP传输、结果追加、恢复/取消及审核。
+App负责业务说明、业务解析与权限/批准、稳定编号去重、实际结果和有效终答判断。
+application_result只是内部来源记录；适配器不得发送虚构供应商角色或无对应调用的role:tool。
+后续模型保留原目标、说明、消息级私有续接状态和已发生事实；不得新建第二个Agent接续。
+只保存代码或本地模拟成功不能宣称真实App业务接入完成。必要验收逐项采用阶段7清单，分别
+记录单元/模拟HTTP、真实数据库与对象存储、固定模型浏览器和真实调用平台验证，不混同证据。
+
+### 平台正文处理首批实施与验证
+
+2026-11-05本地实现，未提交、未推送、未部署。私有NEXUSPILOT_APP_TOOLS_JSON中按App增加
+response_processing_path（例如/internal/agent/body），沿用base_url/service_token及显式本地HTTP许可。
+可以operations={}仅启用正文处理，不需注册业务operation；没有response_processing_path不允许该模式。
+完整信封和结果各上限1MiB，HTTP等待使用当前任务剩余期限，不新增固定轮数或业务内容哈希。
+迁移0051新增application_response_executions，只保存执行/Run/模型响应关联、状态、目的地址及对象引用；
+全文保存在MinIO。原默认工作流请求身份保持兼容，没有增加/continue或结果提交接口。
+
+验证脚本：`apps/api/tests/test_application_body_processing.py`。本地模拟平台保存合成待办结果，
+固定模型第一轮返回完整create_todo提议，第二轮检查原始参数、summary、关联execution_id/response_id、
+todo-C/open及提醒事实。两轮system_instruction逐字相等，保留历史A/B和本次请求，最终同一Run/Workflow。
+三种审核策略均通过，Reviewer未调用平台；重复启动不再调用模型或平台。相同成功提议再次出现会在
+发送前拒绝；非法平台响应进入outcome_unknown而非普通失败；在途取消后没有下一次模型或平台调用。
+首批已保存结果的读取复用不等同于真实进程崩溃验收；后续四项专项已完成，见下节。
+连接现在在创建时固定，审核修正及Schema异常也有专项证据。取消不会撤销模拟平台已保存的待办。
+未修改Assistant。
+
+实际命令与证据：
+- `NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=inline apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_application_body_processing.py apps/api/tests/test_remote_tool_adapter.py apps/api/tests/test_general_agent.py -q`：40通过（20.72秒）。
+- 设置既有NEXUSPILOT_TEST_AUTH_MYSQL_URL及MinIO测试变量、KEEP_DATABASE=true后，同一新测试文件：
+  6通过（28.48秒）。使用真实MySQL/MinIO，但模型和业务平台仍为本地固定模拟，不是真实Assistant业务。
+  保留数据库authz_audit_e25895a7c416425a97efbfad79fb4981、authz_audit_6db9e1b571c846778be04934a6b3628e、
+  authz_audit_72bac8a9364d40ac95d1001907e2ca08、authz_audit_b024da50c2aa49e6b96c6155bb129765、
+  authz_audit_df33f90dbfca42b29748fefff8e9a252、authz_audit_1340126d128749669cb9a7eea96b693f。
+- 使用现有隔离数据库准备函数执行`alembic upgrade head`：退出0，数据库identity_acceptance_322df8739f07；
+  正常本地库和服务器库未升级。ORM建表测试不作为迁移通过证据。
+- 新测试文件加`apps/api/tests/test_application_tool_loop.py`：28通过（23.17秒），覆盖原静态只读App流程兼容。
+  最后扩充固定头部及历史A/B的origin/backend_evidence/current_request输入，保留全部调用参数和summary，
+  新测试文件再次6通过（5.29秒，SQLite/内存对象存储）。上方MySQL记录针对此前较简短的同等两历史样例，
+  不冒充扩充文本后的重新执行。测试使用固定时间和固定模型，不验证真实模型对“6点10分”的语义判断。
+- 首次红测显示未支持的新App配置使创建失败；实施过程中修正新表外键真实名称llm_attempts，
+  固定模型检查system_instruction而非错误读取messages；Reviewer测试说明由空串改为现有要求的非空值。
+  unknown终态测试先失败（错误地为failed），修正后通过。没有删除原有效断言。
+
+目前不宣称整份平台处理规划完成；尚无真实App业务与浏览器验收、无付费模型测试。
+
+### 四项定向验收（2026-11-05）
+
+用户限定本次只验Worker故障/竞争、Reviewer修正、已声明Schema子集、创建时连接固定；
+不执行Assistant验收或旧功能回归，不增加内容哈希。以下为本次实际执行，不与上节旧测试累计计数。
+
+**实现修正：** 0052新增application_response_bindings，在工作流创建事务中保存Run、mapping_id和
+非秘密连接字段（protocol_version/base_url/path/allow_local_http）。恢复及主Agent首次调用前
+核对当前配置与固定字段，变化或缺少绑定均拒绝；凭据不入表，私有凭据轮换不改变目的地址。
+不为0051旧caller工作流猜测绑定，旧记录缺少绑定时拒绝执行；普通模式不受影响。
+Schema拒绝空子Schema、重复required、非有限数值等非法输入；枚举比较区分布尔与数字，
+整数接受数学意义为整数的1.0。整个最终JSON先排除NaN/Infinity/溢出数值，再检查子集。
+Nexus本地Schema错误明确标记来源nexus并保留平台complete事实，不冒充平台业务执行失败。
+恢复发现dispatching且没有保存结果时，将处理记录写为unknown，不重发。
+
+| 真实进程故障位置 | 恢复终态 | 模型调用数 | 平台HTTP请求数 |
+|---|---|---:|---:|
+| prepared提交后、发送前 | completed | 2 | 2 |
+| dispatching提交后、HTTP发出前 | outcome_unknown | 1 | 0 |
+| 平台已执行且HTTP返回、Nexus尚未保存结果 | outcome_unknown | 1 | 1 |
+| 平台结果已保存、消息尚未追加 | completed | 2 | 2 |
+| 消息已追加到内存、消息检查点提交前 | completed | 2 | 2 |
+| 消息检查点提交后 | completed | 2 | 2 |
+
+成功流程的2次HTTP分别为一次业务提议处理和一次候选终答确认，不是重复创建。每个故障进程真实
+os._exit(86)，确认其退出后等待真实5秒租约自然到期，再启动新Worker；没有手动改过期时间。
+两个Worker通过同一启动屏障竞争，只有一个取得执行权；最终2次模型调用/2次HTTP。
+首调前更换目的路径的真实Worker验证：failed，0次模型调用/0次HTTP，没有转投新地址。
+测试专用退出包装只存在于子进程fixture，生产代码没有故障开关。所有模型为固定实现，平台为本地HTTP
+合成写服务，SQL/对象存储及Worker进程为真实本地服务；不代表真实Assistant业务接入或所有可能崩溃位置。
+
+**命令与结果：**
+- `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_application_body_validation.py -q`：
+  36通过，16.41秒。包含Reviewer先revise后supported，主Agent原提议/初稿/修订稿共3次平台确认、
+  2次审核；最终保存修订原文。6类最终正文错误在同一Agent纠正成功；13类非法Schema、11类匹配语义、
+  大小/层数限制、3类隐藏非JSON数值及创建绑定检查。
+- 复用现有AUTH_MYSQL_URL/MinIO测试变量，KEEP_DATABASE=true，额外设置
+  `NEXUSPILOT_TEST_CALLER_WORKER=1 NEXUSPILOT_TEST_EVIDENCE_BATCH=final-four-requirements`，执行
+  `apps/api/.venv/bin/python -m pytest -c apps/api/pyproject.toml apps/api/tests/test_application_worker_faults.py -q -s --tb=short -x`：
+  最终8通过，71.97秒。逐项Run/Workflow/数据库/计数见
+  [Worker验收记录](../../output/security/application-body-worker-20261105.json)中final-four-requirements批次。
+  初轮7通过是修正前记录，不重复计入最终8项。
+- 在新隔离库identity_acceptance_8504e8c1e7a0依次`alembic upgrade 20261105_0051`与
+  `alembic upgrade 20261105_0052`，均退出0；正常开发库与服务器库未迁移。
+- 新定向测试最初10失败/16通过，暴露Schema细节和缺失创建绑定参数，修正后通过。
+  只执行本次相关检查，未执行Assistant、浏览器或全套回归。合成数据库/对象保留，不自动删除。
+
 ## App运行诊断接口（2026-10-30）
 
 `GET /api/v1/app/runs/{run_id}/diagnostics`使用既有App服务端凭据和外部用户身份，

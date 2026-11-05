@@ -44,9 +44,9 @@ class AgentWorkflowCreate(StrictContract):
 
     workflow_name: Literal["model_only", "general_agent"] = "model_only"
     workflow_version: Literal["1.0.0", "1.1.0"] = "1.1.0"
-    execution_profile: Literal[
-        "model_only_v1", "tool_enabled_v1", "general_tools_v1"
-    ] = "model_only_v1"
+    execution_profile: Literal["model_only_v1", "tool_enabled_v1", "general_tools_v1"] = (
+        "model_only_v1"
+    )
     idempotency_key: str = Field(min_length=8, max_length=128)
     role_bindings: dict[
         Literal["controller", "planner", "researcher", "reviewer", "verifier"],
@@ -55,12 +55,22 @@ class AgentWorkflowCreate(StrictContract):
     reasoning: ReasoningConfiguration | None = None
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     partial_response_policy: Literal["stop", "continue_once"] = "stop"
+    application_response_mode: Literal["standard", "caller_processed"] = "standard"
+    application_protocol_instructions: str | None = Field(
+        default=None, min_length=1, max_length=16000
+    )
+    final_output_schema: dict | None = None
     max_nodes: int = Field(default=32, ge=10, le=32)
-    max_model_calls: int = Field(default=0, ge=0,
-        description="Zero means no call-count limit; positive values are explicit caller budgets.")
+    max_model_calls: int = Field(
+        default=0,
+        ge=0,
+        description="Zero means no call-count limit; positive values are explicit caller budgets.",
+    )
     max_parallel_agents: int = Field(default=1, ge=1, le=2)
     max_workflow_rounds: int = Field(
-        default=2, ge=1, le=2,
+        default=2,
+        ge=1,
+        le=2,
         description="Legacy model_only refinement limit; unused by general_agent.",
     )
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
@@ -70,6 +80,19 @@ class AgentWorkflowCreate(StrictContract):
     def validate_required_role_bindings(self) -> "AgentWorkflowCreate":
         """Validate an explicit general definition separately without changing legacy defaults."""
 
+        if self.application_response_mode == "caller_processed":
+            if self.workflow_name != "general_agent" or not self.application_protocol_instructions:
+                raise ValueError(
+                    "Caller processing requires general_agent and application instructions"
+                )
+            from nexuspilot_api.services.application_body_processing import validate_final_schema
+
+            validate_final_schema(self.final_output_schema)
+        elif (
+            self.application_protocol_instructions is not None
+            or self.final_output_schema is not None
+        ):
+            raise ValueError("Application instructions require caller processing")
         if self.workflow_name == "general_agent":
             if self.workflow_version != "1.0.0" or self.execution_profile != "general_tools_v1":
                 raise ValueError("general_agent requires 1.0.0 / general_tools_v1")
@@ -639,8 +662,8 @@ class GeneralCandidateOutput(StrictContract):
                 or unit.start_char < previous_end
                 or unit.end_char <= unit.start_char
                 or unit.end_char > len(self.text)
-                or self.text[unit.start_char:unit.end_char] != unit.text
-                or self.text[previous_end:unit.start_char].strip()
+                or self.text[unit.start_char : unit.end_char] != unit.text
+                or self.text[previous_end : unit.start_char].strip()
             ):
                 raise ValueError("Candidate unit does not match the original text span")
             if unit.unknown_source_aliases != [
@@ -682,8 +705,11 @@ class GeneralReviewOutput(StrictContract):
             raise ValueError("Unit reviews require a candidate and distinct decisions")
         verdicts = {item.verdict for item in self.decisions}
         expected = (
-            "revise" if "revise" in verdicts
-            else "unconfirmed" if "unconfirmed" in verdicts else "supported"
+            "revise"
+            if "revise" in verdicts
+            else "unconfirmed"
+            if "unconfirmed" in verdicts
+            else "supported"
         )
         if self.verdict != expected:
             raise ValueError("Aggregate verdict differs from unit decisions")

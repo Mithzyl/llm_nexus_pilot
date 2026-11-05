@@ -47,6 +47,13 @@ def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
     # Default stop preserves request identities created before continuation existed.
     if payload.partial_response_policy == "stop":
         canonical_payload.pop("partial_response_policy", None)
+    if payload.application_response_mode == "standard":
+        for key in (
+            "application_response_mode",
+            "application_protocol_instructions",
+            "final_output_schema",
+        ):
+            canonical_payload.pop(key, None)
     if payload.workflow_version == "1.0.0":
         canonical_payload.pop("max_workflow_rounds", None)
     serialized = serialize_agent_generated_json(canonical_payload)
@@ -288,7 +295,8 @@ def validate_controller_plan(
         task.task_key
         for task in plan.tasks
         if payload.max_model_calls > 0
-        and payload.execution_profile == "model_only_v1" and task.max_model_calls != 1
+        and payload.execution_profile == "model_only_v1"
+        and task.max_model_calls != 1
     ]
     within_limits = (
         len(plan.tasks) <= 8

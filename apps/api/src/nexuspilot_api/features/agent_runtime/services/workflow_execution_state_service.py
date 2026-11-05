@@ -179,6 +179,23 @@ class WorkflowExecutionStateService:
             )
         if validate_new_workflow is not None:
             await validate_new_workflow()
+        if payload.application_response_mode == "caller_processed":
+            from nexuspilot_api.models import ApplicationResponseBinding
+            from nexuspilot_api.services.application_body_processing import (
+                connection_snapshot,
+                require_body_connection,
+            )
+
+            if self.db_session.info.get("memory_api_entry") not in {"personal_assistant", "retail"}:
+                raise InvalidRequestError("Caller processing requires authenticated App creation")
+            _, mapping, config = await require_body_connection(self.db_session, run_id)
+            self.db_session.add(
+                ApplicationResponseBinding(
+                    run_id=run_id,
+                    mapping_id=mapping.mapping_id,
+                    connection_json=connection_snapshot(config),
+                )
+            )
 
         from nexuspilot_api.core.config import get_settings
         from nexuspilot_api.models import LlmOutboxEvent
@@ -191,8 +208,9 @@ class WorkflowExecutionStateService:
             workflow_name=payload.workflow_name,
             workflow_version=payload.workflow_version,
             execution_profile=payload.execution_profile,
-            status=(AgentWorkflowStatus.PENDING if backend == "worker"
-                    else AgentWorkflowStatus.RUNNING),
+            status=(
+                AgentWorkflowStatus.PENDING if backend == "worker" else AgentWorkflowStatus.RUNNING
+            ),
             execution_backend=backend,
             version=1,
             snapshot_version=1,
@@ -214,13 +232,18 @@ class WorkflowExecutionStateService:
         )
         self.db_session.add(workflow)
         if backend == "worker":
-            self.db_session.add(LlmOutboxEvent(
-                aggregate_type="agent_workflow", aggregate_id=workflow.workflow_execution_id,
-                event_type="agent_workflow.ready", payload_json={
-                    "schema_version": 1, "workflow_execution_id": workflow.workflow_execution_id,
-                    "run_id": run_id,
-                },
-            ))
+            self.db_session.add(
+                LlmOutboxEvent(
+                    aggregate_type="agent_workflow",
+                    aggregate_id=workflow.workflow_execution_id,
+                    event_type="agent_workflow.ready",
+                    payload_json={
+                        "schema_version": 1,
+                        "workflow_execution_id": workflow.workflow_execution_id,
+                        "run_id": run_id,
+                    },
+                )
+            )
         run.status = RunStatus.RUNNING
         run.started_at = run.started_at or now
         try:
@@ -403,8 +426,11 @@ class WorkflowExecutionStateService:
         serialized = json.dumps(output_json, ensure_ascii=False, separators=(",", ":"))
         result_limit = (
             MAX_GENERAL_NODE_RESULT_BYTES
-            if node.output_type in {
-                "general_candidate", "general_delegated_candidate", "general_review",
+            if node.output_type
+            in {
+                "general_candidate",
+                "general_delegated_candidate",
+                "general_review",
             }
             or (workflow.workflow_name == "general_agent" and node.output_type == "final_synthesis")
             else MAX_NODE_RESULT_BYTES
@@ -846,16 +872,20 @@ class WorkflowExecutionStateService:
             AgentWorkflowStatus.OUTCOME_UNKNOWN,
         }:
             return
-        nodes = list(await self.db_session.scalars(
-            select(LlmAgentWorkflowNodeExecution).where(
-                LlmAgentWorkflowNodeExecution.workflow_execution_id == workflow_id,
-                LlmAgentWorkflowNodeExecution.status.in_([
-                    AgentWorkflowNodeStatus.CANCELLED,
-                    AgentWorkflowNodeStatus.FAILED,
-                    AgentWorkflowNodeStatus.OUTCOME_UNKNOWN,
-                ]),
+        nodes = list(
+            await self.db_session.scalars(
+                select(LlmAgentWorkflowNodeExecution).where(
+                    LlmAgentWorkflowNodeExecution.workflow_execution_id == workflow_id,
+                    LlmAgentWorkflowNodeExecution.status.in_(
+                        [
+                            AgentWorkflowNodeStatus.CANCELLED,
+                            AgentWorkflowNodeStatus.FAILED,
+                            AgentWorkflowNodeStatus.OUTCOME_UNKNOWN,
+                        ]
+                    ),
+                )
             )
-        ))
+        )
         changed = False
         for node in nodes:
             evidence, usage = await self.node_attempt_evidence_and_usage(workflow, node)
@@ -1334,6 +1364,7 @@ class WorkflowExecutionStateService:
         from nexuspilot_api.features.agent_runtime.services.workflow_ownership import (
             verify_execution_claim,
         )
+
         await verify_execution_claim(self.db_session)
 
         await self.db_session.refresh(workflow)

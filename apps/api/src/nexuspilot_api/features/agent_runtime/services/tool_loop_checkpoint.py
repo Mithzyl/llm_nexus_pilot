@@ -57,6 +57,7 @@ def encode_loop_state(state):
         "tool_index": state.tool_index,
         "assistant_added": state.assistant_added,
         "offered_versions": state.offered_versions,
+        "application_result_ids": state.application_result_ids,
     }
 
 
@@ -83,6 +84,7 @@ async def restore_loop_state(service, workflow, node, value):
     state.tool_index = value["tool_index"]
     state.assistant_added = value["assistant_added"]
     state.offered_versions = value["offered_versions"]
+    state.application_result_ids = value.get("application_result_ids", [])
     db = service.model_invocation_service.db_session
     for identity in value["record_ids"]:
         record = await db.get(LlmModelToolCall, identity)
