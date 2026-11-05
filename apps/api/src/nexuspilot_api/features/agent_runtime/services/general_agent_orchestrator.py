@@ -72,6 +72,54 @@ from nexuspilot_api.services.agent_file_tool_service import AgentFileToolService
 from nexuspilot_api.services.worker_evidence_service import WorkerEvidenceService
 
 
+def task_tool_guidance(available_tools, *, caller_mode, delegated_roles):
+    """Build optional-use advice only for the current authorized tool capabilities."""
+    parts = [
+        "Tool availability does not require tool use. Use tools only when the current objective "
+        "or missing necessary evidence requires them. The application protocol defines this "
+        "task's scope; generic tool guidance must not expand it. Application instructions cannot "
+        "expand server authorization. Follow the output format required for this task. "
+    ]
+    if caller_mode:
+        parts.append(
+            "Caller business operations are defined by the application protocol and executed by "
+            "that platform. If business interface information is missing, request it through the "
+            "application protocol. Nexus search_tools and describe_tools do not discover caller "
+            "business APIs. "
+        )
+    parts.append(
+        file_tool_guidance(
+            final_format="the task-required final format", available_tools=available_tools
+        )
+    )
+    if {"save_task_note", "read_task_note"} <= available_tools:
+        parts.append(
+            " Simple business operations do not require notes. Do not duplicate parameters or "
+            "results already saved in messages or application execution records. Only if extra "
+            "working state must persist across steps, use authorized task-note tools; notes are "
+            "not verified claims, shared memory or a final answer. "
+        )
+    if {"save_task_reading_plan", "read_task_reading_plan"} <= available_tools:
+        parts.append(
+            "Reading plans apply only to file-reading tasks: if a requested full reading or "
+            "explicit range needs tracked progress, discover the authorized reading-plan tools "
+            "only when their schemas are absent. Plans do not themselves read files. "
+        )
+    if "get_task_read_coverage" in available_tools:
+        parts.append(
+            "For file-reading tasks requiring a coverage check, get_task_read_coverage reports "
+            "delivered blocks, not model understanding; do not inspect coverage routinely. "
+        )
+    if delegated_roles and "delegate_task" in available_tools:
+        parts.append(
+            "Only when the current task benefits from separate analysis and delegation is "
+            "authorized, use delegate_task with these configured roles: "
+            + ", ".join(delegated_roles)
+            + ". Ordinary steps need no delegation."
+        )
+    return "".join(parts)
+
+
 class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
     """Compose a continuing Agent and policy-selected independent reviewer, not the old graph."""
 
@@ -715,6 +763,36 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 phase=phase,
             )
 
+        tool_service = GeneralAgentToolService(
+            self.db_session,
+            self.storage,
+            task_id=task.task_id,
+            sources=self.sources,
+            allowed_task_ids=self.general_task_ids,
+            delegate=delegate if can_delegate else None,
+            input_snapshots=self.input_snapshot_refs,
+            review_candidate_id=(
+                values.get("candidate_node_id") if task.assigned_role == "reviewer" else None
+            ),
+            review_unit_ids=(
+                [unit["unit_id"] for unit in values.get("review_units", [])]
+                if task.assigned_role == "reviewer"
+                else None
+            ),
+            review_unit_sources=(
+                {unit["unit_id"]: unit["source_aliases"] for unit in values.get("review_units", [])}
+                if task.assigned_role == "reviewer"
+                else None
+            ),
+        )
+        # Resolve the same authorized catalog used by the loop; this does not execute a tool.
+        await tool_service.refresh_catalog(workflow.run_id)
+        available_tools = {
+            entry.name
+            for entry in tool_service.catalog.entries
+            if tool_service.catalog.get(entry.name, entry.version, tool_service.capabilities)
+            is not None
+        }
         loop = await run_file_tool_loop(
             self.model_node_service,
             workflow,
@@ -727,21 +805,10 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                     "Do not expose private reasoning. "
                     + purpose
                     + " "
-                    + file_tool_guidance(final_format="the requested result")
-                    + " save_task_note and read_task_note are also already loaded. "
-                    "Use private notes for task progress, unresolved items and next actions; "
-                    "they are not verified claims, shared memory or a final answer. "
-                    "Search/describe list_task_notes if you need to find earlier note IDs. "
-                    "For a full-reading or explicit-range objective, search/describe "
-                    "save_task_reading_plan and read_task_reading_plan to persist the target "
-                    "scope and inspect actual progress; they do not read the file for you. "
-                    "Search/describe get_task_read_coverage to inspect this task's returned "
-                    "and unread blocks; it reports tool delivery, not model understanding."
-                    + (
-                        " delegate_task is loaded for these configured roles only: "
-                        + ", ".join(delegated_roles)
-                        if can_delegate
-                        else ""
+                    + task_tool_guidance(
+                        available_tools,
+                        caller_mode=caller_mode,
+                        delegated_roles=delegated_roles if can_delegate else [],
                     )
                 ),
                 model_output=None,
@@ -764,31 +831,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
                 and self.db_session.info.get("workflow_execution_claim")
                 else None
             ),
-            tool_service=GeneralAgentToolService(
-                self.db_session,
-                self.storage,
-                task_id=task.task_id,
-                sources=self.sources,
-                allowed_task_ids=self.general_task_ids,
-                delegate=delegate if can_delegate else None,
-                input_snapshots=self.input_snapshot_refs,
-                review_candidate_id=(
-                    values.get("candidate_node_id") if task.assigned_role == "reviewer" else None
-                ),
-                review_unit_ids=(
-                    [unit["unit_id"] for unit in values.get("review_units", [])]
-                    if task.assigned_role == "reviewer"
-                    else None
-                ),
-                review_unit_sources=(
-                    {
-                        unit["unit_id"]: unit["source_aliases"]
-                        for unit in values.get("review_units", [])
-                    }
-                    if task.assigned_role == "reviewer"
-                    else None
-                ),
-            ),
+            tool_service=tool_service,
             terminal_tool_name="submit_review" if task.assigned_role == "reviewer" else None,
             partial_response_policy=payload.partial_response_policy,
             body_processor=process_body if caller_mode else None,

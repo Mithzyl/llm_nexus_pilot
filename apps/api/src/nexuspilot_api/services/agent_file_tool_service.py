@@ -607,21 +607,46 @@ class AgentFileToolService:
         return record
 
 
-def file_tool_guidance(*, final_format: str = "final JSON") -> str:
-    """Derive planning guidance from the same catalog that supplies initial tool definitions."""
-    loaded = sorted(entry.name for entry in FILE_TOOL_CATALOG.entries if entry.initially_loaded)
-    return (
-        "Already loaded tools: " + ", ".join(loaded) + ". Call these directly; "
-        "do NOT search or describe them first. Other tools already present in this request's "
-        "tool schemas are also callable directly. Discover only absent tools. "
-        f"Continue useful reads until evidence supports the task, then submit {final_format}. "
-        "For pagination pass the returned next_offset as the next request's offset parameter. "
-        "Search matches may be incomplete lines; read surrounding source before inferring meaning."
-        " Search results contain read_targets: pass read_arguments directly to read_file_content. "
-        "has_more/next_offset indicate available data, not a requirement to read all of it. "
-        "Stop reading when each requested point has supporting text; submit the answer with "
-        "citations and honest limitations. Do not scan unrelated sections to achieve full coverage."
+def file_tool_guidance(
+    *, final_format: str = "final JSON", available_tools: set[str] | None = None
+) -> str:
+    """Describe conditional file use without implying that every task must inspect attachments.
+
+    Explicit availability comes from the caller's authorized catalog. Legacy callers without
+    a catalog receive conditional advice, never a declaration that named tools are loaded.
+    """
+    if available_tools is not None and not available_tools.intersection(
+        entry.name for entry in FILE_TOOLS
+    ):
+        return ""
+    parts = [
+        "Only when the current task needs and permits a tool, call it directly if its schema "
+        "is already supplied; no preliminary search or description is needed. "
+        "If existing context and application execution results are sufficient, continue the task "
+        "without extra tool calls. "
+    ]
+    if available_tools is None or "list_run_files" in available_tools:
+        parts.append(
+            "Only if the task depends on attachments and their IDs are missing, use list_run_files "
+            "when available. Do not routinely list attachments just to check whether any exist. "
+        )
+    parts.append(
+        "For file-reading tasks only: continue necessary reads until the requested points have "
+        "supporting evidence. For pagination use returned next_offset as offset; has_more is an "
+        "available range, not a requirement to read everything. Read surrounding source when "
+        "search matches are incomplete. Do not scan unrelated sections for full coverage. "
     )
+    if available_tools is None or {"search_file_content", "read_file_content"} <= available_tools:
+        parts.append(
+            "For needed search-hit context, pass returned read_targets.read_arguments to "
+            "read_file_content when its schema is available, rather than reading preceding pages. "
+        )
+    parts.append(
+        "When file evidence is used, cite sources and state unread/extraction limits "
+        f"in {final_format}. "
+        "This guidance does not change the required final output format."
+    )
+    return "".join(parts)
 
 
 class ToolUnavailableError(Exception):
