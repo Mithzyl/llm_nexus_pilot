@@ -54,7 +54,7 @@ async def resolve_registered_model_reasoning_configuration(
     requested_reasoning: ReasoningConfiguration | None,
     require_registration: bool = False,
 ) -> tuple[ReasoningConfiguration | None, ResolvedReasoningConfiguration | None]:
-    """Resolve one model's effective reasoning configuration without dispatching it.
+    """Resolve configured controls without inventing reasoning levels for generic gateways.
 
     Product surfaces can set ``require_registration`` to reject role bindings that
     bypass the stable model directory. Low-level gateway callers retain the legacy
@@ -83,7 +83,7 @@ async def resolve_registered_model_reasoning_configuration(
     # These gateways have no verified reasoning-control codec. An empty profile
     # means provider defaults, not an invented medium effort or disabled thinking.
     if (
-        provider in {ProviderName.STRATA, ProviderName.OPENCODE}
+        provider in {ProviderName.STRATA, ProviderName.OPENCODE, ProviderName.OPENAI_COMPATIBLE}
         and registered_model.reasoning_supported_efforts_json == []
         and registered_model.reasoning_effort_mapping_json == {}
         and not registered_model.reasoning_supports_disable

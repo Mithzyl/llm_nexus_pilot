@@ -63,6 +63,27 @@ async def _create_registered_model(
         await db_session.commit()
 
 
+async def test_compatible_gateway_default_does_not_invent_reasoning_controls(
+    test_database_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A newly registered compatible model keeps provider defaults and rejects unconfigured controls."""
+    from nexuspilot_api.schemas.prompt_catalog import RegisteredModelCreate
+    from nexuspilot_api.services.prompt_catalog_service import create_registered_model
+    from nexuspilot_api.services.model_reasoning_policy_service import resolve_registered_model_reasoning_configuration
+
+    async with test_database_session_factory() as db:
+        await create_registered_model(db, RegisteredModelCreate(
+            provider=ProviderName.OPENAI_COMPATIBLE,model_identifier='compatible-default-probe',
+            display_name='Compatible default probe'))
+        resolved=await resolve_registered_model_reasoning_configuration(db,
+            provider=ProviderName.OPENAI_COMPATIBLE,model='compatible-default-probe',requested_reasoning=None)
+        assert resolved == (None,None)
+        with pytest.raises(ModelProviderError,match='not configured'):
+            await resolve_registered_model_reasoning_configuration(db,
+                provider=ProviderName.OPENAI_COMPATIBLE,model='compatible-default-probe',
+                requested_reasoning=ReasoningConfiguration(enabled=True,effort=ReasoningEffort.MEDIUM))
+
+
 async def test_model_reasoning_policy_defaults_missing_request_to_medium(
     test_database_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

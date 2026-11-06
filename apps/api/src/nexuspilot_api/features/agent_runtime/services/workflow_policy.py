@@ -41,9 +41,11 @@ def serialize_agent_generated_json(value: Any) -> str:
 
 
 def hash_workflow_request(payload: AgentWorkflowCreate) -> str:
-    """Hash logical input while preserving old identities for default-stop continuation."""
+    """Preserve default request identities and bind explicit native-tool opt-outs to their workflow."""
 
     canonical_payload = payload.model_dump(mode="json", exclude={"stream"})
+    if payload.application_native_tools_enabled:
+        canonical_payload.pop("application_native_tools_enabled", None)
     # Default stop preserves request identities created before continuation existed.
     if payload.partial_response_policy == "stop":
         canonical_payload.pop("partial_response_policy", None)

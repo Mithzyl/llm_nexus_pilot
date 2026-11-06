@@ -1,6 +1,78 @@
 # Personal Assistant 与 NexusPilot 本地接口及验收
 
+## 本机新增兼容 API 配置（2026-11-06）
+
+按本机管理员提供的地址新增 `openai_compatible` 端点
+`https://mithfusion.site/v1`，模型为 `tiel-coder-35b-a3b-ud-q4_k_xl`。
+使用独立服务器密钥，仅保存在 Git 忽略的 Nexus 私有 `.env`，不替换 App 入站密钥或
+Assistant 回调密钥。原 OpenCode Go 地址、模型和密钥保留。
+远端认证 `/v1/models` 返回 HTTP 200，声明 `meta.n_ctx=163840`，据此登记上下文窗口。
+工具、结构化输出、图片、缓存及流式能力尚未进行生成验证，目录中的能力标记保持保守值，
+不能把模型目录可读等同于实际 Agent 任务通过。
+
+Nexus API/Worker 已在无活动任务时平滑重载；健康检查和在线模型目录均 HTTP 200，
+新模型 `registry_available=true`、`selectable=true`。没有调用生成模型或迁移 Nexus 架构。
+经管理员授权，已重新备份两端私有配置、Nexus 数据库及 Assistant SQLite，
+执行 Assistant `0026_agent_response_receipts` / `0027_browser_push` 增量迁移。
+原有表的记录数量和主键保持一致，Assistant `.env` 未改动。
+Nexus 的 `personal_assistant.response_processing_path` 已配置为
+`/internal/nexus/agent-responses`，其余 App 配置及双向凭据保留且匹配。
+两端 API 和 Worker 已重载，Assistant scheduler 已重启并有新心跳；
+Assistant 健康、OpenAPI 和受保护的工具目录读取均 HTTP 200，新正文回调路由已加载。
+正常 Assistant 进程现已加载新 controller 绑定，通勤自动 AI、自动天气和浏览器推送仍关闭。
+本次启用未调用模型；真实生成和完整 Agent 业务任务尚未验证。
+
+首次登记兼容模型发现默认空推理配置被误判为损坏的 medium 配置，已将兼容网关与
+现有无推理控制网关同样处理：省略控制时保持供应商默认，显式未配置控制仍拒绝。
+定向用例 `tests/test_model_reasoning_policy.py::test_compatible_gateway_default_does_not_invent_reasoning_controls`
+先复现失败，修复后 1 项通过；未运行额外回归或哈希检查。
+本机备份及不含密钥的执行记录位置见
+`/private/tmp/nexus-mithfusion-config-20261106/configuration-result.json`，原账号和业务记录保留。
+迁移启用记录位于 `/private/tmp/assistant-agent-enable-20261106/`；
+备份目录为本机私有运行目录下 `backups/agent-enable-20261106-165848`。
+
 ## 平台处理正文协议规划
+
+### 调用平台显式选择工具入口（2026-11-06）
+
+状态：代码已修改，固定输出定向检查通过，修复后的真实任务已验证正文续接；
+完整路线和卡片任务仍未通过，未部署。
+当日真实 OpenCode Go `deepseek-v4.1-flash` 可用性检查返回 `NEXUS_READY`。
+随后由隔离 Assistant 网页提交的路线任务使用独立 API、Worker、SQLite 和本地 MinIO，
+主 Agent 首次通过正文协议查询通勤成功，随后改用 Nexus 原生 `search_tools`，最后发出
+占位 `request_user_input`，未完成待办保存和路线规划；4 次模型调用后取消，保留记录。
+这说明此前仅凭应用文字约束原生工具不足，不能将前日固定输出结果当成真实任务已通过。
+
+新增可选创建字段 `application_native_tools_enabled`，默认 `true`，保留已有协议：
+原生调用仍正常分派，没有原生调用的正文才交给调用平台。
+`false` 仅允许与 `caller_processed` 一起使用；该主 Agent 不接收原生工具定义，
+意外返回的原生调用在执行或创建人工追问之前失败。应用仍通过原正文处理连接执行业务，
+不会将 Assistant 操作名称加入 Nexus 静态分支。此选项不改变审核 Agent 的原有工具行为。
+Assistant 业务工作流显式传 `false`；允许附件等 Nexus 原生能力的其他调用可保持默认。
+策略创建后固定，相同请求省略默认值仍复用原运行，切换策略返回 409，不续建任务。
+
+定向检查：`tests/test_application_body_processing.py::test_body_result_continues_original_agent`、
+`::test_caller_native_call_is_rejected_before_tools_or_human_wait` 及
+`tests/test_application_tool_loop.py::test_app_run_reuses_loop_and_remote_result`，
+明确以测试进程 `NEXUSPILOT_WORKFLOW_EXECUTION_BACKEND=inline` 执行，11 项通过；
+补充的两种策略重复请求/策略变更检查 2 项通过。
+模型为固定输出，仅本地 HTTP，不增加真实模型调用。
+本机证据位于 `/private/tmp/assistant-ecosystem-20261106/` 的
+`nexus-protocol-checks.xml` 与 `nexus-policy-replay-checks.xml`。
+后续部署须先加载支持该字段的 Nexus API 与 Worker，再启用发送该字段的 Assistant。
+
+追加授权的一次真实复验使用 `application_native_tools_enabled=false`，正式 App Run
+`b855cc20-01f0-4b84-91f4-25d045fd7eda`、Workflow
+`24329c5c-65a0-4dff-a5c1-58abbc09e5e5`，独立 API/Worker、真实本地 MinIO，
+两服务均为隔离 SQLite。12 次真实 OpenCode Go `deepseek-v4.1-flash` 调用，
+原生工具调用 0、供应商重试 0，业务回调 12 次。通过正文协议自主查询、搜索地点及保存
+两条待办，前 11 次完整提议和实际结果均进入原 Agent 后续消息；固定说明和原消息前缀保留。
+第 12 份业务结果已存，但达到调用上限，没有第 13 轮读取。
+调用平台当前高德适配器不支持任务选择的步行模式，模型改用驾车取得两段路线；
+运行最终因 `agent_model_call_limit_exceeded` 失败，第三段与终答时间线卡片未完成。
+这次记录证明工具入口选择及原 Agent 续接有效，不能代表 Assistant 综合功能通过。
+现场证据：`/private/tmp/assistant-ecosystem-recheck-20261106/verification-summary.json`；
+业务说明见 Assistant 的 `docs/backend-integration/27-接口复核与AI业务调用说明.md`。
 
 ### 工具指引适用范围与定向验证（2026-11-05）
 
@@ -46,6 +118,7 @@ list_run_files仅用于依赖附件且缺少编号的任务，不为探测附件
 ```json
 {
   "application_response_mode": "caller_processed",
+  "application_native_tools_enabled": false,
   "application_protocol_instructions": "本应用的中间调用提议格式、业务操作说明和最终回答规则",
   "final_output_schema": {"type": "object"}
 }

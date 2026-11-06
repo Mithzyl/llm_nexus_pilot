@@ -56,6 +56,10 @@ class AgentWorkflowCreate(StrictContract):
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     partial_response_policy: Literal["stop", "continue_once"] = "stop"
     application_response_mode: Literal["standard", "caller_processed"] = "standard"
+    application_native_tools_enabled: bool = Field(
+        default=True,
+        description="Caller processing may explicitly disable native tools and use only its text protocol.",
+    )
     application_protocol_instructions: str | None = Field(
         default=None, min_length=1, max_length=16000
     )
@@ -78,7 +82,9 @@ class AgentWorkflowCreate(StrictContract):
 
     @model_validator(mode="after")
     def validate_required_role_bindings(self) -> "AgentWorkflowCreate":
-        """Validate an explicit general definition separately without changing legacy defaults."""
+        """Validate role bindings and caller-only tool choices while retaining legacy defaults."""
+        if not self.application_native_tools_enabled and self.application_response_mode != "caller_processed":
+            raise ValueError("Disabling application native tools requires caller_processed mode")
 
         if self.application_response_mode == "caller_processed":
             if self.workflow_name != "general_agent" or not self.application_protocol_instructions:

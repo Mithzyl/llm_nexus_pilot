@@ -17,6 +17,14 @@ Schema和创建连接固定专项已通过（36项规则/流程、8项真实Work
 协议在[App接口说明](../implementation/personal-assistant-app-integration.md#平台处理正文协议规划)，
 阶段3和10分别引用节点职责与恢复要求。后续实现按用户授权进行，当前不提交、不推送、不部署。
 
+### App 自定义业务工具与单次 Agent 运行（2026-11-04）
+
+**状态：未开始（新增规划，正式接入尚未实现或验收）。** 纳入现有 Phase 7 App 工具工作项，不新建第二套 Agent 循环。Nexus 负责模型、上下文、工具调用循环与自主结束；Assistant 负责用户交互、业务工具定义、权限/业务校验、实际操作及结果展示。一项用户任务创建一个 Agent 运行，工具回调返回后继续原运行；不让业务 App 每执行一步再创建新 Agent。
+
+复用现有 ToolCatalog、RemoteToolAdapter、工具执行记录、Worker 和原生循环，补齐受认证 App 的通用工具定义接收、版本/授权绑定、业务写入执行结果及最终 JSON 格式配置。新增业务工具不应要求 Nexus 硬编码 Assistant 的工具名称。已有 Responses 自定义 tools、原生 MCP 和动态 Python 能力不等于 App 入口已支持该协议；当前静态只读 App 接入及历史记录继续兼容。
+
+实施依赖与完成条件统一维护在[工具主计划对应工作项](../implementation/phase-7-tool-runtime-plan.md#app-自定义业务工具与单次-agent-运行2026-11-04)。Assistant 侧对应 `nexus_assistant` 仓库 `docs/产品规划-工作安排与计划接续.md` 同日分工章节。普通业务默认不额外启用审阅或子 Agent；报告实际模型轮次、token 和工具耗时，不把单一运行宣传为无需后续模型调用。隔离实验不能替代公共 App 接入及独立 Worker 的正式验收。
+
 2026-11-01：首次发布786c70f后，追加部署15dbeae并启用独立Worker及Python执行器；数据库保持0050。
 真实Worker/Python/产物/停止限定验收通过，使用私有固定响应服务，没有真实供应商请求、本次回归或额外哈希检查。
 具体环境、备份及未验收项目见[服务器更新记录](../implementation/server-deployment-20261101.md)。

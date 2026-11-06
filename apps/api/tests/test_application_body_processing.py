@@ -7,7 +7,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from nexuspilot_models.contracts import ModelResponse
+from nexuspilot_models.contracts import ModelResponse, ToolCall
 from pydantic import SecretStr
 from test_agent_workflows import (
     ScriptedAgentProvider,
@@ -119,6 +119,44 @@ PROPOSAL = json.dumps(
 )
 
 
+async def test_caller_native_call_is_rejected_before_tools_or_human_wait(
+    resource_client, body_peer, test_database_session_factory
+):
+    """Unexpected native calls cannot bypass caller dispatch or create a placeholder human question."""
+    from sqlalchemy import func, select
+    from nexuspilot_api.models import LlmModelToolCall
+    from nexuspilot_api.models.user_interactions import UserInteraction
+
+    class Provider(ScriptedAgentProvider):
+        """Return the observed protocol mix-up despite an empty advertised native catalogue."""
+        async def generate(self, request):
+            """Keep this deterministic check to one model attempt without external requests."""
+            assert not request.tools
+            return ModelResponse(
+                tool_calls=[ToolCall(id="placeholder", name="request_user_input",
+                    arguments={"kind":"input", "question":"内部占位，忽略"})],
+                finish_reason="tool_calls", input_tokens=1, output_tokens=1,
+                latency_ms=1, raw_response={},
+            )
+
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(Provider())
+    headers = app_headers("personal_assistant", "body-user")
+    run = (await resource_client.post("/api/v1/app/runs", headers=headers,
+                                      json={"user_request": INPUT})).json()
+    response = await resource_client.post(
+        f"/api/v1/app/runs/{run['run_id']}/agent-workflows", headers=headers,
+        json=general_payload("never", max_model_calls=1,
+            application_response_mode="caller_processed", application_protocol_instructions=HEAD,
+            application_native_tools_enabled=False),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "failed"
+    assert not body_peer
+    async with test_database_session_factory() as db:
+        assert await db.scalar(select(func.count()).select_from(LlmModelToolCall)) == 0
+        assert await db.scalar(select(func.count()).select_from(UserInteraction)) == 0
+
+
 @pytest.fixture
 def body_peer(monkeypatch):
     """Save one synthetic todo per stable execution identity without registering a Nexus tool."""
@@ -198,10 +236,11 @@ def body_peer(monkeypatch):
 
 
 @pytest.mark.parametrize("policy", ["never", "always", "on_verification_failure"])
+@pytest.mark.parametrize("native_tools", [True, False])
 async def test_body_result_continues_original_agent(
-    resource_client, body_peer, policy, test_database_session_factory
+    resource_client, body_peer, policy, native_tools, test_database_session_factory
 ):
-    """Keep fixed instructions, original proposal and real result across two main model calls."""
+    """Honor explicit native-tool choice while preserving one caller Agent and its actual results."""
 
     class Provider(ScriptedAgentProvider):
         """Capture real model requests and return deterministic proposal, answer and review."""
@@ -217,6 +256,7 @@ async def test_body_result_continues_original_agent(
                 text = unit_review_text(request, "supported", "Checked actual execution evidence")
             else:
                 self.main.append(request)
+                assert bool(request.tools) is native_tools
                 if len(self.main) == 1:
                     text = PROPOSAL
                 else:
@@ -251,7 +291,8 @@ async def test_body_result_continues_original_agent(
     )
     assert run.status_code == 201, run.text
     payload = general_payload(
-        policy, application_response_mode="caller_processed", application_protocol_instructions=HEAD
+        policy, application_response_mode="caller_processed", application_protocol_instructions=HEAD,
+        application_native_tools_enabled=native_tools,
     )
     path = f"/api/v1/app/runs/{run.json()['run_id']}/agent-workflows"
     result = await resource_client.post(path, headers=headers, json=payload)
@@ -287,6 +328,16 @@ async def test_body_result_continues_original_agent(
     replay = await resource_client.post(path, headers=headers, json=payload)
     assert replay.status_code in {200, 201}
     assert len(provider.main) == 2 and len(body_peer) == 2
+    if policy == "never":
+        if native_tools:
+            legacy_payload = {k: v for k, v in payload.items()
+                              if k != "application_native_tools_enabled"}
+            legacy_replay = await resource_client.post(path, headers=headers, json=legacy_payload)
+            assert legacy_replay.status_code in {200, 201}
+        changed = {**payload, "application_native_tools_enabled": not native_tools}
+        conflict = await resource_client.post(path, headers=headers, json=changed)
+        assert conflict.status_code == 409
+        assert len(provider.main) == 2 and len(body_peer) == 2
 
 
 @pytest.mark.parametrize("invalid_result", [False, True])

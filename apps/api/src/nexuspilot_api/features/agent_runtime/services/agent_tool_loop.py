@@ -143,6 +143,7 @@ async def run_file_tool_loop(
     terminal_tool_name=None,
     partial_response_policy="stop",
     body_processor=None,
+    allow_native_tools=True,
 ):
     """Run authorized tools, optionally continuing one saved text draft within the same deadline.
 
@@ -150,6 +151,8 @@ async def run_file_tool_loop(
     durable recording; continuation never catches cancellation or replays tools.
     Application tool grants are refreshed before exposing tools or reusing history.
     Memory query text is rechecked against current versions before each continuation.
+    Explicitly disabled native tools are neither exposed nor dispatched. A caller
+    may still use its body processor; ordinary loops retain native tools by default.
     """
     db = service.model_invocation_service.db_session
     tools = tool_service or AgentFileToolService(db, service.model_invocation_service.storage)
@@ -178,7 +181,7 @@ async def run_file_tool_loop(
         remaining = deadline - monotonic()
         if remaining < 1:
             raise InvalidRequestError("Agent tool task wall-time limit is exhausted")
-        definitions = tools.definitions()
+        definitions = tools.definitions() if allow_native_tools else []
         if state.pending_response is None:
             if not state.model_pending:
                 state.model_round_count += 1
@@ -328,6 +331,10 @@ async def run_file_tool_loop(
                 continue
             state.pending_response = None
             return ToolLoopResult(response, history, records)
+        if not allow_native_tools:
+            raise InvalidRequestError(
+                "Caller processing requires the application's text protocol, not native tool calls"
+            )
         if response.finish_reason not in {"tool_calls", "stop"}:
             raise InvalidRequestError("Incomplete model tool call response")
         if len(response.tool_calls) > 8 or len({call.id for call in response.tool_calls}) != len(

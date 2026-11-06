@@ -87,6 +87,9 @@ def task_tool_guidance(available_tools, *, caller_mode, delegated_roles):
             "application protocol. Nexus search_tools and describe_tools do not discover caller "
             "business APIs. "
         )
+        if not available_tools:
+            parts.append("Native tools are disabled for this task; use the application protocol "
+                         "for business calls, interface discovery and questions. ")
     parts.append(
         file_tool_guidance(
             final_format="the task-required final format", available_tools=available_tools
@@ -655,7 +658,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
         )
 
     async def _turn(self, workflow, node, payload, task, state, purpose, values):
-        """Bind role, candidate citation scope and checkpoints to each authorized turn."""
+        """Bind role/checkpoints while keeping caller text protocols separate from native tools."""
         caller_mode = (
             payload.application_response_mode == "caller_processed"
             and node.node_key == "general_agent"
@@ -793,6 +796,9 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             if tool_service.catalog.get(entry.name, entry.version, tool_service.capabilities)
             is not None
         }
+        native_tools_allowed = not caller_mode or payload.application_native_tools_enabled
+        if not native_tools_allowed:
+            available_tools = set()
         loop = await run_file_tool_loop(
             self.model_node_service,
             workflow,
@@ -835,6 +841,7 @@ class GeneralAgentOrchestrator(ModelOnlyWorkflowOrchestrator):
             terminal_tool_name="submit_review" if task.assigned_role == "reviewer" else None,
             partial_response_policy=payload.partial_response_policy,
             body_processor=process_body if caller_mode else None,
+            allow_native_tools=native_tools_allowed,
         )
         return loop.response
 
