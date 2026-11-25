@@ -34,6 +34,12 @@
 
 ## 1. 准备环境与私有配置
 
+App 可以省略工作流请求中的 `role_bindings`，由 Nexus 使用私有配置
+`NEXUSPILOT_APP_TOOLS_JSON` 中该 App 的 `workflow_role_bindings`。为
+`personal_assistant` 配置 `controller` 的供应商、目录中的模型编号和执行超时。
+启用审阅时同时配置 `reviewer`。API 和 Worker 使用同一套 Nexus 配置及模型目录。
+工作流首次创建时保存实际绑定，重复提交沿用原绑定。其他调用方仍可使用显式绑定。
+
 需要 Linux Docker Engine、Docker Compose、Python 3.10+、受控 SSH 和匹配入口域名／IP 的 TLS 证书。自签证书仅适用于明确接受信任提示的受限使用；公开服务应使用受信任证书。先核对目标主机已有服务和数据，准备访问规则；首版不使用 `docker compose down -v` 更新服务。
 
 从仓库根目录运行以下命令。替换示例域名、证书目录和版本标识：

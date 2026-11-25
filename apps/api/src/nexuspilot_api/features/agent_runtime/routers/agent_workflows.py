@@ -40,9 +40,10 @@ from nexuspilot_api.routers.common import (
 from nexuspilot_api.schemas.pagination import CursorPage
 
 router = APIRouter(tags=["agent-workflows"])
+workflow_lifecycle_router = APIRouter()
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}/claim-sources",
     response_model=ClaimSourcesRead,
 )
@@ -69,20 +70,23 @@ WORKFLOW_RESULT_CONTENT = {
 }
 
 
+WORKFLOW_CREATE_RESPONSES = {
+    status.HTTP_200_OK: {
+        "description": "Exact idempotent JSON result or persisted SSE replay",
+        "content": WORKFLOW_RESULT_CONTENT,
+    },
+    status.HTTP_201_CREATED: {
+        "description": "New synchronous JSON result or live committed SSE stream",
+        "content": WORKFLOW_RESULT_CONTENT,
+    },
+}
+
+
 @router.post(
     "/runs/{run_id}/agent-workflows",
     response_model=AgentWorkflowResultRead,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        status.HTTP_200_OK: {
-            "description": "Exact idempotent JSON result or persisted SSE replay",
-            "content": WORKFLOW_RESULT_CONTENT,
-        },
-        status.HTTP_201_CREATED: {
-            "description": "New synchronous JSON result or live committed SSE stream",
-            "content": WORKFLOW_RESULT_CONTENT,
-        },
-    },
+    responses=WORKFLOW_CREATE_RESPONSES,
 )
 async def post_agent_workflow(
     run_id: str,
@@ -168,7 +172,7 @@ async def post_agent_workflow(
     return result
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/runs/{run_id}/agent-workflow",
     response_model=AgentWorkflowSummaryRead,
 )
@@ -181,7 +185,7 @@ async def get_run_agent_workflow(
     return await get_run_workflow_summary(db_session, run_id)
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}",
     response_model=AgentWorkflowSummaryRead,
 )
@@ -194,7 +198,7 @@ async def get_agent_workflow(
     return await get_workflow_summary(db_session, workflow_execution_id)
 
 
-@router.post(
+@workflow_lifecycle_router.post(
     "/agent-workflows/{workflow_execution_id}/cancel",
     response_model=AgentWorkflowSummaryRead,
 )
@@ -207,7 +211,7 @@ async def cancel_agent_workflow(
     return await service.cancel_workflow_execution(workflow_execution_id)
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}/result",
     response_model=AgentWorkflowResultRead,
 )
@@ -220,7 +224,7 @@ async def get_agent_workflow_result(
     return await get_workflow_result(db_session, workflow_execution_id)
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}/nodes",
     response_model=CursorPage[AgentWorkflowNodeResultRead],
 )
@@ -242,7 +246,7 @@ async def get_agent_workflow_nodes(
     )
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}/nodes/{node_execution_id}",
     response_model=AgentWorkflowNodeResultRead,
 )
@@ -256,7 +260,7 @@ async def get_agent_workflow_node(
     return await get_workflow_node(db_session, workflow_execution_id, node_execution_id)
 
 
-@router.get(
+@workflow_lifecycle_router.get(
     "/agent-workflows/{workflow_execution_id}/events",
     response_model=None,
     response_class=StreamingResponse,
@@ -300,3 +304,6 @@ async def get_agent_workflow_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+router.include_router(workflow_lifecycle_router)

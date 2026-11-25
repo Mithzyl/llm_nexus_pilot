@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from nexuspilot_api.core.config import get_settings
 from nexuspilot_api.core.errors import ResourceNotFoundError
+from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import AgentRoleBindings
 from nexuspilot_api.features.identity.models.applications import (
     Application,
     ApplicationUserMapping,
@@ -124,6 +125,7 @@ class ApplicationToolConfiguration(BaseModel):
     base_url: str
     operations: dict[str, str]
     response_processing_path: str | None = None
+    workflow_role_bindings: AgentRoleBindings | None = None
     allow_local_http: bool = False
     login_redirect_uris: list[str] = Field(default_factory=list, max_length=10)
 

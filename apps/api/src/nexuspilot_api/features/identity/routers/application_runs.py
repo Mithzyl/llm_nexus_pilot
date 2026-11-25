@@ -4,13 +4,22 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 
 from nexuspilot_api.features.agent_runtime.dependencies import (
     AgentWorkflowExecutionServiceDependency,
 )
-from nexuspilot_api.features.agent_runtime.routers.agent_workflows import router as workflows
+from nexuspilot_api.features.agent_runtime.routers.agent_workflows import (
+    WORKFLOW_CREATE_RESPONSES,
+    post_agent_workflow,
+    workflow_lifecycle_router,
+)
+from nexuspilot_api.features.agent_runtime.schemas.agent_workflows import (
+    AgentWorkflowCreate,
+    AgentWorkflowResultRead,
+    ApplicationAgentWorkflowCreate,
+)
 from nexuspilot_api.features.identity.models.applications import (
     Application,
     ApplicationUserMapping,
@@ -193,8 +202,48 @@ async def cancel_application_run(
     return RunRead.model_validate(run)
 
 
-# Reuse JSON, SSE, replay and result handlers instead of creating an App-specific loop.
-router.include_router(workflows)
+@router.post(
+    "/runs/{run_id}/agent-workflows",
+    response_model=AgentWorkflowResultRead,
+    status_code=201,
+    responses=WORKFLOW_CREATE_RESPONSES,
+)
+async def post_application_workflow(
+    run_id: str,
+    payload: ApplicationAgentWorkflowCreate,
+    identity: ApplicationIdentity,
+    db: DatabaseSessionDependency,
+    response: Response,
+    service: AgentWorkflowExecutionServiceDependency,
+):
+    """Resolve an App's model bindings before entering the shared execution and replay path."""
+    bindings = payload.role_bindings
+    if bindings is None:
+        saved = await db.scalar(
+            select(LlmAgentWorkflowExecution.role_bindings_json).where(
+                LlmAgentWorkflowExecution.run_id == run_id,
+                LlmAgentWorkflowExecution.idempotency_key == payload.idempotency_key,
+            )
+        )
+        # Replaying the same run must keep the binding validated at its first submission.
+        bindings = (
+            saved if saved is not None
+            else application_tool_configurations()[identity.application_id].workflow_role_bindings
+        )
+        if bindings is None:
+            raise HTTPException(422, "No default workflow model configured for this application")
+    try:
+        resolved = AgentWorkflowCreate.model_validate(
+            {**payload.model_dump(exclude={"role_bindings"}), "role_bindings": bindings}
+        )
+    except ValidationError as exc:
+        raise HTTPException(
+            422, "Invalid workflow options or model bindings for this application"
+        ) from exc
+    return await post_agent_workflow(run_id, resolved, response, service)
+
+
+router.include_router(workflow_lifecycle_router)
 
 router.include_router(memory_router)
 router.include_router(app_management_router)

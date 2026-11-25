@@ -39,8 +39,8 @@ class AgentModelBinding(StrictContract):
     )
 
 
-class AgentWorkflowCreate(StrictContract):
-    """Validate synchronous workflows with explicit model-only or file-read permissions."""
+class AgentWorkflowParameters(StrictContract):
+    """Describe an Agent's execution policy independently of model selection."""
 
     workflow_name: Literal["model_only", "general_agent"] = "model_only"
     workflow_version: Literal["1.0.0", "1.1.0"] = "1.1.0"
@@ -48,17 +48,13 @@ class AgentWorkflowCreate(StrictContract):
         "model_only_v1"
     )
     idempotency_key: str = Field(min_length=8, max_length=128)
-    role_bindings: dict[
-        Literal["controller", "planner", "researcher", "reviewer", "verifier"],
-        AgentModelBinding,
-    ]
     reasoning: ReasoningConfiguration | None = None
     review_policy: Literal["always", "on_verification_failure", "never"] = "always"
     partial_response_policy: Literal["stop", "continue_once"] = "stop"
     application_response_mode: Literal["standard", "caller_processed"] = "standard"
     application_native_tools_enabled: bool = Field(
         default=True,
-        description="Caller processing may explicitly disable native tools and use only its text protocol.",
+        description="Caller processing can disable native tools and use its text protocol.",
     )
     application_protocol_instructions: str | None = Field(
         default=None, min_length=1, max_length=16000
@@ -80,10 +76,30 @@ class AgentWorkflowCreate(StrictContract):
     wall_time_limit_ms: int = Field(default=600_000, ge=1_000, le=600_000)
     stream: bool = False
 
+AgentRoleBindings = dict[
+    Literal["controller", "planner", "researcher", "reviewer", "verifier"],
+    AgentModelBinding,
+]
+
+
+class ApplicationAgentWorkflowCreate(AgentWorkflowParameters):
+    """Allow an authenticated App to leave model selection to Nexus deployment settings."""
+
+    role_bindings: AgentRoleBindings | None = None
+
+
+class AgentWorkflowCreate(AgentWorkflowParameters):
+    """Validate the complete, resolved workflow before execution and persistence."""
+
+    role_bindings: AgentRoleBindings
+
     @model_validator(mode="after")
     def validate_required_role_bindings(self) -> "AgentWorkflowCreate":
         """Validate role bindings and caller-only tool choices while retaining legacy defaults."""
-        if not self.application_native_tools_enabled and self.application_response_mode != "caller_processed":
+        if (
+            not self.application_native_tools_enabled
+            and self.application_response_mode != "caller_processed"
+        ):
             raise ValueError("Disabling application native tools requires caller_processed mode")
 
         if self.application_response_mode == "caller_processed":

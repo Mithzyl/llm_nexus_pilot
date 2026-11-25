@@ -46,6 +46,55 @@ def app_headers(app_id="retail", user="u1"):
     }
 
 
+async def test_app_uses_server_model_and_keeps_it_on_replay(
+    client, configured_application, monkeypatch, test_database_session_factory
+):
+    """Run with the authenticated App default and reuse the first binding after it changes."""
+    from pydantic import SecretStr
+    from sqlalchemy import select
+
+    from nexuspilot_api.models import LlmAgentWorkflowExecution
+
+    settings = get_settings()
+    config = json.loads(settings.app_tools_json.get_secret_value())
+    app_id = "personal_assistant"
+    headers = app_headers(app_id)
+    payload = general_payload("never")
+    initial_bindings = payload.pop("role_bindings")
+    provider = GeneralProvider()
+    app.dependency_overrides[get_provider_registry] = lambda: scripted_registry(provider)
+
+    created = await client.post("/api/v1/app/runs", headers=headers, json={"user_request": "Hello"})
+    assert created.status_code == 201
+    run_id = created.json()["run_id"]
+    path = f"/api/v1/app/runs/{run_id}/agent-workflows"
+    missing = await client.post(path, headers=headers, json=payload)
+    assert missing.status_code == 422
+    assert provider.requests == []
+
+    config[app_id]["workflow_role_bindings"] = initial_bindings
+    monkeypatch.setattr(settings, "app_tools_json", SecretStr(json.dumps(config)))
+    first = await client.post(path, headers=headers, json=payload)
+    assert first.status_code == 201, first.text
+    assert first.json()["status"] == "completed"
+    async with test_database_session_factory() as session:
+        workflow = await session.scalar(select(LlmAgentWorkflowExecution).where(
+            LlmAgentWorkflowExecution.run_id == run_id
+        ))
+        assert workflow.role_bindings_json["controller"]["model"] == (
+            initial_bindings["controller"]["model"]
+        )
+    calls = len(provider.requests)
+    assert calls == 1
+
+    config[app_id]["workflow_role_bindings"]["controller"]["model"] = "changed-model"
+    monkeypatch.setattr(settings, "app_tools_json", SecretStr(json.dumps(config)))
+    replay = await client.post(path, headers=headers, json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["workflow_execution_id"] == first.json()["workflow_execution_id"]
+    assert len(provider.requests) == calls
+
+
 @pytest.mark.parametrize("user,stream", [("u1", False), ("u2", True)])
 @pytest.mark.parametrize("application_id", ["retail", "personal_assistant"])
 async def test_app_run_reuses_loop_and_remote_result(
